@@ -1,0 +1,442 @@
+/* panel.css — стили веб-панели. Вынесены из index.html (был один файл 533 КБ: 396 JS +
+   31 CSS + 17 разметки — правка одной строки заставляла браузер перекачивать всё).
+
+   ГРАБЛЯ: относительные url() здесь резолвятся от /assets/, а НЕ от корня (как было
+   внутри <style> в index.html). Поэтому шрифты — url(inter-latin.woff2) БЕЗ префикса
+   assets/ (иначе /assets/assets/... = 404 и Inter молча падает в системный шрифт).
+
+   Подключается как assets/panel.css?v=<CODE из VERSION> — см. шапку index.html. */
+  /* Inter (self-hosted subset, woff2) — тот же гуманистический сан-сериф, что в макетах панели.
+     Anthropic Sans проприетарный (на роутер не положить), Inter — ближайший открытый аналог.
+     Variable-файл (wght 400..500) на диапазон; latin + cyrillic грузятся по unicode-range.
+     Никаких CDN — файлы в assets/, панель работает офлайн. */
+  @font-face{font-family:'Inter';font-style:normal;font-weight:400 500;font-display:swap;src:url(inter-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+  @font-face{font-family:'Inter';font-style:normal;font-weight:400 500;font-display:swap;src:url(inter-cyrillic.woff2) format('woff2');unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+  :root{
+    /* Родные виджеты (скроллбар, поля ввода в попапах) следуют за темой страницы, иначе
+       на тёмной панели остаётся светлый скроллбар. Старый движок свойство игнорирует —
+       безвредно, в отличие от light-dark() (см. ниже). */
+    color-scheme:light dark;
+    --bg-page:#f4f2ec; --bg-primary:#ffffff; --bg-secondary:#f1efe8;
+    --bg-success:#e1f5ee; --bg-warning:#faeeda;
+    --text-primary:#2c2c2a; --text-secondary:#5f5e5a; --text-tertiary:#888780;
+    --text-success:#0f6e56; --text-warning:#854f0b; --text-info:#185fa5;
+    /* danger — только для журнала событий: там надо отличать «сбой» (VPN упал, резервов нет)
+       от «внимание» (ушли на резерв — работает, но не штатно). В остальной панели проблемы
+       по-прежнему амберные: красным подсвечивать нечего, действия fail-open по смыслу. */
+    --text-danger:#a33a1c; --bg-danger:#f8e3dc;
+    --toggle-on:#1d9e75;
+    --border-t:rgba(0,0,0,.12); --border-s:rgba(0,0,0,.22); --border-success:#5dcaa5;
+    /* Радиусы: --r-sm нужен мелким элементам (пункт popmenu, ⋮-кнопка карточки сервера,
+       предупреждающие плашки). Его ЗАБЫЛИ объявить, а `var()` без фолбэка — это «invalid at
+       computed-value time»: свойство молча берёт начальное значение, то есть 0. Одиннадцать
+       мест (2 здесь + 9 инлайновых стилей в panel.js) рисовались с ПРЯМЫМИ углами. */
+    --r-sm:6px; --r-md:8px; --r-lg:12px;
+    --font:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji";
+    --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  /* Тёмная палитра. Два входа: (1) АВТО — системная тема, кроме случая, когда юзер
+     принудительно выбрал светлую (data-theme=light); (2) РУЧНОЙ выбор data-theme=dark.
+     Блок продублирован НАМЕРЕННО: обычный CSS не умеет делить один набор объявлений между
+     @media-условием и селектором по атрибуту, а `light-dark()` (одна строка на переменную)
+     требует свежих движков — панель же открывают со старых Android-WebView/Maxthon, где
+     неизвестная функция обнулила бы ВСЕ цвета. Правишь один блок — правь второй. */
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]){
+      --bg-page:#1a1a18; --bg-primary:#232320; --bg-secondary:#2c2c2a;
+      --bg-success:#085041; --bg-warning:#633806;
+      --text-primary:#e8e6dd; --text-secondary:#b4b2a9; --text-tertiary:#888780;
+      --text-success:#9fe1cb; --text-warning:#fac775; --text-info:#85b7eb;
+      --text-danger:#f0a08a; --bg-danger:#5c2312;
+      --toggle-on:#24b98a;
+      --border-t:rgba(255,255,255,.14); --border-s:rgba(255,255,255,.24); --border-success:#0f6e56;
+    }
+  }
+  :root[data-theme=light]{ color-scheme:light }
+  :root[data-theme=dark]{
+    color-scheme:dark;
+    --bg-page:#1a1a18; --bg-primary:#232320; --bg-secondary:#2c2c2a;
+    --bg-success:#085041; --bg-warning:#633806;
+    --text-primary:#e8e6dd; --text-secondary:#b4b2a9; --text-tertiary:#888780;
+    --text-success:#9fe1cb; --text-warning:#fac775; --text-info:#85b7eb;
+    --text-danger:#f0a08a; --bg-danger:#5c2312;
+    --toggle-on:#24b98a;
+    --border-t:rgba(255,255,255,.14); --border-s:rgba(255,255,255,.24); --border-success:#0f6e56;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg-page);color:var(--text-primary);font-family:var(--font);
+       line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:760px;margin:0 auto;padding:20px 16px 40px;display:flex;flex-direction:column;gap:14px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+  .card{background:var(--bg-primary);border:.5px solid var(--border-t);border-radius:var(--r-lg);padding:16px 20px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--text-secondary);
+        background:var(--bg-secondary);border-radius:var(--r-md);padding:4px 9px;white-space:nowrap;
+        font-variant-numeric:tabular-nums}
+  .chip .ti{font-size:15px;color:var(--text-tertiary)}
+  .badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  /* Попап «О роутере» (метрики + подсказки). Триггер — клик по чипам ЦП/ОЗУ/ПЗУ в шапке. */
+  .badges.si-open{cursor:pointer}
+  .badges.si-open:hover{opacity:.82}
+  .si-sec{margin-top:16px}
+  .si-sec:first-child{margin-top:0}
+  .si-h{font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+  .si-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:6px 0;border-bottom:.5px solid var(--border-t)}
+  .si-row:last-child{border-bottom:none}
+  .si-l{font-size:13px;color:var(--text-secondary)}
+  .si-v{font-size:13px;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .si-bar{height:6px;border-radius:3px;background:var(--bg-secondary);overflow:hidden;margin:8px 0 2px}
+  .si-bar>span{display:block;height:100%;background:var(--toggle-on)}
+  .iconbtn{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;
+           background:var(--bg-secondary);border:.5px solid var(--border-t);border-radius:var(--r-md);
+           color:var(--text-secondary);cursor:pointer;padding:0;font-size:18px;line-height:1}
+  .iconbtn:hover{background:var(--bg-primary);color:var(--text-primary)}
+  .iconbtn .ti{font-size:19px}
+  /* Колокольчик событий. Глифа ti-bell в шрифте панели нет (там подмножество 17 иконок),
+     а CDN запрещён и пересобирать woff2 ради одной иконки — лишнее звено: рисуем
+     inline-SVG в стиле Tabler (stroke, currentColor → сам следует теме и :hover). */
+  .bell-badge{position:absolute;top:-2px;right:-2px;min-width:15px;height:15px;padding:0 4px;
+    border-radius:999px;background:var(--text-danger);color:var(--bg-primary);font-size:9px;
+    font-weight:600;line-height:15px;text-align:center;box-shadow:0 0 0 2px var(--bg-page)}
+  /* Журнал событий: строка = кликабельная шапка + свёрнутое тело письма (тексты
+     многострочные, развёрнутыми они превращают список в простыню). */
+  .ev{border:1px solid var(--border-t);border-radius:var(--r-md);margin-bottom:8px;background:var(--bg-primary)}
+  .ev-head{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;cursor:pointer}
+  .ev-dot{flex-shrink:0;width:8px;height:8px;border-radius:50%;margin-top:5px}
+  .ev-t{font-size:13px;font-weight:500;color:var(--text-primary);word-break:break-word}
+  .ev-meta{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+  .ev-x{flex-shrink:0;font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+    background:var(--bg-secondary);color:var(--text-secondary);margin-top:2px}
+  .ev-new .ev-t:after{content:'новое';margin-left:7px;font-size:9px;font-weight:600;padding:1px 5px;
+    border-radius:999px;background:var(--bg-warning);color:var(--text-warning);vertical-align:1px}
+  .ev-body{display:none;padding:0 12px 11px 29px;font-size:12px;color:var(--text-secondary);
+    white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono)}
+  .ev.open .ev-body{display:block}
+  .m{background:var(--bg-secondary);border-radius:var(--r-md);padding:10px 12px;min-width:0}
+  .ml{font-size:12px;color:var(--text-tertiary);margin-bottom:3px}
+  .mv{font-size:15px;font-weight:500;color:var(--text-primary)}
+  /* Значения «Протокол»/«Конфиг» в шапке — одна строка с многоточием (длинные имена вроде
+     «interra_ams3_for_awg» распирали плитку/ломали грид на узком экране). padding-right — под ⋮. */
+  #proto,#cfg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:16px}
+  /* Кластер значков (⟳/?) в правом углу подписи плитки: margin-left:auto прижимает вправо
+     (родитель-.ml должен быть flex — задаётся точечно на плитке «Пинг», глобальный .ml не трогаем). */
+  .icls{display:inline-flex;align-items:center;gap:8px;margin-left:auto}
+  .icls .ti{color:var(--text-tertiary)}
+  .cell-kebab{position:absolute;top:8px;right:10px;color:var(--text-tertiary);font-weight:700;line-height:1}
+  .seg{flex:1;text-align:center;font-size:14px;padding:9px 8px;border-radius:var(--r-md);color:var(--text-secondary)}
+  .seg.on{background:var(--bg-primary);color:var(--text-primary);font-weight:500;border:.5px solid var(--border-t)}
+  .fc{background:var(--bg-primary);border:.5px solid var(--border-t);border-radius:var(--r-lg);
+      padding:14px 16px;display:flex;align-items:center;gap:12px;min-width:0}
+  .fc>div{min-width:0}   /* текст-блок ярлыка переносится, не распирает карточку (важно при 320px) */
+  .row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+  .grid{display:grid;gap:12px}
+  .ti{font-size:22px}
+  .vtoggle{width:52px;height:30px;border-radius:15px;position:relative;flex-shrink:0;transition:background .15s}
+  .vknob{position:absolute;top:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:left .15s,right .15s}
+  .hero-on{border-color:var(--border-success)}
+  .hero-on .vstatus{color:var(--text-success)}
+  .hero-on .vico{background:var(--bg-success);color:var(--text-success)}
+  .hero-on .vtoggle{background:var(--toggle-on)}
+  .hero-on .vknob{right:3px}
+  .hero-off{border-color:var(--text-warning)}
+  .hero-off .vstatus{color:var(--text-warning)}
+  .hero-off .vico{background:var(--bg-warning);color:var(--text-warning)}
+  .hero-off .vtoggle{background:var(--text-tertiary)}
+  .hero-off .vknob{left:3px}
+  /* Третье состояние шапки: VPN ВКЛЮЧЁН, но несущая не везёт трафик (вердикт сторожа). Цвета —
+     как у hero-off (это тревога), а тумблер ОБЯЗАН остаться во включённом положении: он и
+     предлагает «выключить», и рисовать его выключенным = врать о том, что сделает клик. */
+  .hero-bad{border-color:var(--text-warning)}
+  .hero-bad .vstatus{color:var(--text-warning)}
+  .hero-bad .vico{background:var(--bg-warning);color:var(--text-warning)}
+  .hero-bad .vtoggle{background:var(--toggle-on)}
+  .hero-bad .vknob{right:3px}
+  /* Компактный switch-тумблер (обёртка над checkbox): мастер-флаги блокировки, вкл/выкл источника. */
+  .sw{position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0;cursor:pointer;vertical-align:middle}
+  .sw input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+  .sw i{position:absolute;inset:0;border-radius:11px;background:var(--text-tertiary);transition:background .15s}
+  .sw i::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+  .sw input:checked + i{background:var(--toggle-on)}
+  .sw input:checked + i::after{left:20px}
+  .sw input:disabled{cursor:default}
+  /* Кастомный чекбокс (обёртка над native): пресеты списков / категории Zapret / бэкапа —
+     вместо страшного бело-синего браузерного. Зелёный при отметке под цвет тумблеров;
+     галочка чистым CSS (в icon-шрифте панели нет ti-check). JS читает .checked как обычно. */
+  .cb{position:relative;display:inline-block;width:18px;height:18px;flex-shrink:0;cursor:pointer;vertical-align:middle}
+  .cb input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+  .cb i{position:absolute;inset:0;border-radius:5px;background:var(--bg-primary);border:1.5px solid var(--border-s);transition:background .12s,border-color .12s}
+  .cb input:checked + i{background:var(--toggle-on);border-color:var(--toggle-on)}
+  .cb i::after{content:"";position:absolute;left:6px;top:2.5px;width:4.5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg);opacity:0;transition:opacity .12s}
+  .cb input:checked + i::after{opacity:1}
+  .cb input:focus-visible + i{outline:2px solid var(--text-info);outline-offset:2px}
+  .vico{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .muted{opacity:.5;pointer-events:none}
+  .seg.click{cursor:pointer}
+  .seg.click:hover{background:var(--bg-primary)}
+  .seg.dis{opacity:.4;cursor:not-allowed}
+  /* На узких экранах (телефон) 5 транспортов не влезают в один ряд (Zapret вылезал за
+     карточку) — пускаем сегменты в перенос: 3 в первом ряду + 2 во втором. flex:none
+     обязателен, иначе flex:1 из .seg держит их в одну строку и снова переполнение. */
+  @media (max-width:520px){
+    .segbar{flex-wrap:wrap}
+    .segbar .seg{flex:1 1 calc(33.333% - 4px);font-size:13px;padding:8px 6px}
+    /* Узкий экран: grid-«портянки» (разделы, метрики шапки) — в 2 столбца. ВАЖНО: minmax(0,1fr),
+       а НЕ 1fr — 1fr = minmax(auto,1fr), где auto = min-content ставит ПОЛ по ширине контента:
+       при 320px длинные ярлыки распирали треки шире вьюпорта → правый столбец «уезжал» за экран
+       (grid blowout). minmax(0,1fr) разрешает трекам сжиматься, контент переносится внутри. */
+    #nav-block .grid, #hero .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr) !important}
+    /* Компактнее бейджи ресурсов (иконка+значение) на телефоне. */
+    .chip{font-size:12px;padding:3px 8px}
+    .chip .ti{font-size:14px}
+    /* Шапка: бейджи ресурсов держим СПРАВА на одном уровне с блоком-заголовком (не переносим
+       ВСЮ группу вниз) — ряд не переносится, а сами бейджи внутри своей ячейки могут в 2 строки. */
+    #topbar{flex-wrap:nowrap;align-items:flex-start;gap:8px}
+    #topbar .badges{min-width:0}
+    /* Тумблер VPN — слева (щит прячем), «VPN включён»+текст СПРАВА от него на одном уровне
+       (ряд не переносим, текст сжимается и переносится внутри своего блока). */
+    #hero>.row{flex-wrap:nowrap;align-items:center;justify-content:flex-start}
+    #hero .vico{display:none}
+    #hero #vtoggle{order:-1;margin-right:12px}
+    .hero-status{min-width:0}
+    .hero-status>div{min-width:0}
+    /* Компактнее карточки-разделы на телефоне (меньше «воздуха», влезает больше). */
+    #nav-block .grid{gap:8px}
+    .fc{padding:11px 12px;gap:9px}
+    .fc .ti{font-size:19px}
+  }
+  button{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-primary);
+         border:.5px solid var(--border-s);border-radius:var(--r-md);padding:7px 14px;cursor:pointer}
+  button:hover{background:var(--bg-secondary)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .btn-link{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-primary);
+            border:.5px solid var(--border-s);border-radius:var(--r-md);padding:7px 14px;cursor:pointer;
+            text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+  .btn-link:hover{background:var(--bg-secondary)}
+  .srv-ping{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:18px 12px;overflow-y:auto}
+  .modal.open{display:flex}
+  .modal-card{background:var(--bg-primary);border:.5px solid var(--border-t);border-radius:var(--r-lg);width:100%;max-width:600px;padding:16px 18px}
+  /* Окно второго фактора (TOTP). Перекрывает панель ЦЕЛИКОМ и стоит ВЫШЕ модалок (z-index 70):
+     за ним всё равно нет данных — CGI-гейт их не отдаёт, — а полупустая панель под окном
+     читалась бы как поломка. Крестика нет намеренно: закрыть окно, не введя код, некуда. */
+  .tfa{position:fixed;inset:0;background:var(--bg-page);display:flex;align-items:center;justify-content:center;z-index:70;padding:20px}
+  .tfa-card{background:var(--bg-primary);border:.5px solid var(--border-t);border-radius:var(--r-lg);width:100%;max-width:380px;padding:22px 20px}
+  .tfa-code{width:100%;box-sizing:border-box;font-family:var(--font-mono);font-size:22px;letter-spacing:4px;text-align:center;padding:10px}
+  /* широкая модалка (тестер ByeDPI — таблица по категориям не влезает в 520px); на узких экранах
+     всё равно width:100% → мобильный адаптив сохраняется (таблица скроллится по X). */
+  .modal.wide .modal-card{max-width:920px}
+  /* Закрытие попапа — крестик (как в макетах), а не «Назад»: кнопка одна на все модалки и всегда закрывает. */
+  .modal-x{background:none;border:0;font-size:24px;line-height:1;color:var(--text-tertiary);cursor:pointer;padding:0 4px;border-radius:var(--r-md);flex-shrink:0}
+  .modal-x:hover{color:var(--text-primary);background:var(--bg-secondary)}
+  .srv{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:var(--r-md);background:var(--bg-secondary);border:.5px solid transparent;cursor:pointer;margin-bottom:8px}
+  .srv:hover{border-color:var(--border-s)}
+  .srv.active{border-color:var(--border-success);cursor:default}
+  .srv.dis{opacity:.5;cursor:not-allowed}
+  .srv.dis:hover{border-color:transparent}
+  /* ВЫБРАННЫЙ конфиг транспорта, у которого НЕТ бинаря (.active + .dis): зелёную рамку и фон
+     успеха гасим — цвет иначе спорит с ярлыком «выбран · нет бинаря» (actLbl в panel.js) и с
+     шапкой «VPN не активен». Класс .active оставляем: он про идентичность («вот этот выбран»)
+     и про поведение (клик по нему ничего не активирует), а не про «работает». */
+  .srv.active.dis{border-color:transparent}
+  /* Аккордеон подписки — сворачиваемая группа серверов; шапка кликабельна, тело — сетка чипов. */
+  .sub-acc{background:var(--bg-secondary);border-radius:var(--r-md);margin-bottom:8px;overflow:hidden}
+  .sub-hd{display:flex;align-items:center;gap:6px;padding:9px 11px;cursor:pointer;user-select:none}
+  .sub-hd:hover{background:var(--bg-primary)}
+  .sub-hd-l{display:flex;gap:7px;align-items:baseline;min-width:0;margin-right:auto;overflow:hidden}
+  .sub-cnt{font-size:11px;color:var(--text-tertiary);font-weight:400;flex-shrink:0}
+  .sub-chev{font-size:12px;color:var(--text-tertiary);transition:transform .15s;flex-shrink:0}
+  .sub-acc.open .sub-chev{transform:rotate(90deg)}
+  .sub-act{background:transparent;border:0;color:var(--text-tertiary);font-size:14px;line-height:1;padding:3px 5px;border-radius:var(--r-md);cursor:pointer;flex-shrink:0}
+  .sub-act:hover{background:var(--bg-secondary);color:var(--text-primary)}
+  .sub-body{display:none}
+  .sub-acc.open .sub-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;padding:0 9px 9px}
+  /* На узких экранах авто-fill даёт 1 колонку — форсим РОВНО 2 (помещается). */
+  @media (max-width:560px){ .sub-acc.open .sub-body{grid-template-columns:1fr 1fr;gap:6px} }
+  /* Карточка сервера: имя+флаг / хост-домен / протокол + пинг, ⋮-меню. */
+  .srv2{position:relative;background:var(--bg-primary);border:.5px solid var(--border-t);border-radius:var(--r-md);
+        padding:10px 11px;cursor:pointer;display:flex;flex-direction:column;gap:5px;min-width:0}
+  .srv2:hover{border-color:var(--border-s)}
+  .srv2.active{border-color:var(--border-success);background:var(--bg-success);cursor:default}
+  .srv2.active.dis{border-color:var(--border-t);background:var(--bg-primary)}   /* см. .srv.active.dis */
+  .srv2.dis{opacity:.55;cursor:not-allowed}
+  .srv2-sub{font-size:10px;color:var(--text-tertiary);background:var(--bg-secondary);border-radius:999px;
+            padding:1px 8px;align-self:flex-start;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .srv2.active .srv2-sub{background:var(--bg-primary)}
+  .srv2.active.dis .srv2-sub{background:var(--bg-secondary)}   /* фон карточки вернулся к обычному — пилюля тоже */
+  .srv2-top{display:flex;align-items:flex-start;gap:6px}
+  .srv2-nm{font-weight:600;font-size:13px;line-height:1.25;word-break:break-word;flex:1;min-width:0}
+  .srv2-menu{flex-shrink:0;background:transparent;border:0;color:var(--text-tertiary);font-size:17px;line-height:.7;
+             padding:0 2px;cursor:pointer;border-radius:var(--r-sm);align-self:flex-start}
+  .srv2-menu:hover{color:var(--text-primary)}
+  .srv2-host{font-size:11px;color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* Подвал карточки: бейдж + метрики (пинг·скорость). flex-wrap — если оба не влезают в строку,
+     метрики падают ПОД бейдж (а не сжимают бейдж до 1 буквы в строке). Бейдж не растёт (flex:0 1 auto),
+     но может сжаться и перенестись по сегментам (ZWSP после «·»); метрика прижата вправо (margin-left:auto). */
+  .srv2-foot{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:4px 6px;margin-top:auto}
+  .srv2-badge{font-size:10px;font-weight:700;letter-spacing:.03em;color:var(--text-warning);text-transform:uppercase;
+              line-height:1.35;overflow-wrap:break-word;min-width:0;flex:0 1 auto}
+  .srv2-badge.on{color:var(--text-success)}
+  .srv2-badge.off{color:var(--text-tertiary)}
+  .srv2 .srv-ping{font-size:11px;color:var(--text-tertiary);font-variant-numeric:tabular-nums;flex-shrink:0;margin-left:auto}
+  .srv-pinned{margin-bottom:8px}
+  /* Плавающее меню (⋮) — текстовые действия; вне модалки (position:fixed), поверх неё. */
+  .popmenu{position:fixed;z-index:60;background:var(--bg-primary);border:.5px solid var(--border-s);border-radius:var(--r-md);
+           box-shadow:0 6px 24px rgba(0,0,0,.35);padding:4px;min-width:184px;max-width:280px}
+  .popmenu-item{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text-primary);
+                font:inherit;font-size:13px;padding:9px 11px;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap}
+  .popmenu-item:hover{background:var(--bg-secondary)}
+  .popmenu-item.danger{color:var(--text-warning)}
+  /* «Приглушён» в МЕНЮ = «выбрать нельзя, но клик ведёт туда, где это чинится» — и это ПРОТИВОПОЛОЖНО
+     глобальному `.muted` (opacity+pointer-events:none, декоративная заглушка). Общий класс отнимал у
+     пунктов клики: «AmneziaWG · не установлен →» и соседи не открывали НИЧЕГО, человек жал и не получал
+     ни экрана, ни объяснения — ровно жалоба «стоит, а включить нельзя» (AX3600, 15.08.2026). Возвращаем
+     кликабельность явно; специфичность (0,2,0) бьёт глобальный (0,1,0), порядок правил тут ни при чём. */
+  .popmenu-item.muted{color:var(--text-tertiary);opacity:1;pointer-events:auto}
+  .popmenu-cap{font-size:11px;color:var(--text-tertiary);padding:7px 11px 8px;white-space:normal;line-height:1.45;border-bottom:1px solid var(--border-t);margin-bottom:2px}
+  .popmenu-sep{height:1px;background:var(--border-t);margin:4px 6px}
+  /* Заголовок popmenu с «(?)» справа (мокап «Сменить транспорт»): компактная шапка вместо
+     простыни-caption — пояснение прячется за иконкой-подсказкой. */
+  .popmenu-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+                padding:6px 8px 7px 11px;border-bottom:1px solid var(--border-t);margin-bottom:2px}
+  .popmenu-head b{font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.03em}
+  /* «(?)»-подсказка: кружок «?», раскрывает пояснение по наведению (десктоп) И тапу (мобайл;
+     там native title недоступен). Глиф — литерал «?», в icon-шрифте нужного нет (17-подмножество).
+     Всплывашка — фикс-поз, как popmenu (флип вверх при нехватке места). */
+  .help{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+        flex-shrink:0;border-radius:50%;border:1px solid var(--border-s);background:var(--bg-secondary);
+        color:var(--text-tertiary);font-size:11px;font-weight:700;line-height:1;cursor:help;
+        vertical-align:middle;user-select:none;-webkit-user-select:none}
+  .help:hover,.help.on{background:var(--toggle-on);border-color:var(--toggle-on);color:#fff}
+  .help-pop{position:fixed;z-index:70;max-width:264px;background:var(--bg-primary);
+            border:.5px solid var(--border-s);border-radius:var(--r-md);box-shadow:0 6px 24px rgba(0,0,0,.35);
+            padding:9px 12px;font-size:12px;line-height:1.5;color:var(--text-secondary);white-space:normal}
+  .srv-del{flex-shrink:0;font:inherit;font-size:13px;line-height:1;color:var(--text-tertiary);background:transparent;
+           border:.5px solid var(--border-s);border-radius:var(--r-md);padding:5px 9px;cursor:pointer}
+  .srv-del:hover{color:var(--text-warning);border-color:var(--text-warning)}
+  .srv-edit{flex-shrink:0;font:inherit;font-size:13px;line-height:1;color:var(--text-tertiary);background:transparent;
+           border:.5px solid var(--border-s);border-radius:var(--r-md);padding:5px 9px;cursor:pointer}
+  .srv-edit:hover{color:var(--text-info);border-color:var(--text-info)}
+  .srv-tabbar{display:flex;gap:6px;margin:4px 0 14px}
+  .srv-tab{flex:1 1 0;min-width:0;padding:9px 6px;font:inherit;font-size:13px;color:var(--text-tertiary);background:transparent;border:.5px solid var(--border-s);border-radius:var(--r-md);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+  .srv-tab:hover{color:var(--text-primary)}
+  .srv-tab.on{background:var(--bg-secondary);color:var(--text-primary);font-weight:600}
+  .srv-tab .srv-tab-cnt{font-size:11px;color:var(--text-tertiary);font-weight:400;margin-left:5px}
+  .srv-tab.on .srv-tab-cnt{color:var(--text-secondary)}
+  /* ОБЩАЯ панель действий экрана: подпись слева, кнопки справа. Носителей три — серверы,
+     гео-категории и менеджер источников (он же на пяти экранах). Имя осталось от серверов, где
+     блок появился первым; ЧЕТВЁРТОЙ копии инлайн-флекса не заводить — именно из-за копий
+     кнопки действий разъехались по экранам и уехали ПОД длинные списки, где их не находили.
+     На узком экране группа кнопок уходит на свою строку и переносит кнопки внутри себя
+     (иначе «Проверить все» вылезал за край модалки на 390px). */
+  .srv-tb{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}
+  .srv-tb-hint{font-size:12px;color:var(--text-tertiary);flex:1 1 140px;min-width:0}
+  .srv-tb-act{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0}
+  @media(max-width:480px){ .srv-tb-act{flex:1 1 100%;justify-content:flex-start} }
+  .srv-grp-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+  .srv-grp-ok{font-size:11px;color:var(--text-success)}
+  .srv-grp-off{font-size:11px;color:var(--text-tertiary)}
+  .srv-add-toggle{padding:6px 12px;font:inherit;font-size:12px;color:var(--text-primary);background:transparent;border:.5px solid var(--border-s);border-radius:var(--r-md);cursor:pointer;flex-shrink:0}
+  .srv-add-toggle:hover{border-color:var(--text-info);color:var(--text-info)}
+  .srv-add-toggle.open{border-color:var(--text-info);color:var(--text-info)}
+  .srv-add-body{background:var(--bg-secondary);border-radius:var(--r-md);padding:10px;margin-bottom:12px}
+  .inp{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-secondary);
+       border:.5px solid var(--border-s);border-radius:var(--r-md);padding:8px 10px;width:100%}
+  .inp:focus{outline:none;border-color:var(--text-info)}
+  /* Дропзона загрузки файлов: клик = выбор, перетаскивание = подсветка (.over) + дроп.
+     Цвета/радиусы — те же CSS-переменные, что и у карточек, чтобы вписаться в тему. */
+  .dz{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;text-align:center;
+      padding:16px 12px;border:1.5px dashed var(--border-s);border-radius:var(--r-md);background:var(--bg-primary);
+      color:var(--text-secondary);font-size:12px;line-height:1.35;cursor:pointer;
+      transition:border-color .15s,background .15s,color .15s}
+  .dz:hover{border-color:var(--text-info);background:var(--bg-secondary)}
+  .dz.over{border-color:var(--text-info);background:var(--bg-success);color:var(--text-success)}
+  .dz svg{opacity:.7;flex-shrink:0}
+  .dz.over svg{opacity:1}
+  .dz .dz-hint{font-size:11px;color:var(--text-tertiary)}
+  .dz.over .dz-hint{color:var(--text-success)}
+  .dz input[type=file]{display:none}
+  .seg[data-ip]{flex:1;cursor:pointer}
+  .seg[data-ip].on{cursor:default}
+  .wf-seg,.gst-seg{flex:1;cursor:pointer}
+  .wf-seg.on,.gst-seg.on{cursor:default}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .spin{animation:spin .8s linear infinite}
+  /* Мини-крутилка (в строке «обновлено» и в шапке попапа «О роутере») — показывает, что идёт
+     запрос к роутеру ПРЯМО СЕЙЧАС. Тот же паттерн, что у тоста (#toast .sp), но inline. */
+  .mini-sp{display:inline-block;width:11px;height:11px;border-radius:50%;border:2px solid var(--border-t);
+           border-top-color:var(--text-info);animation:spin .8s linear infinite;vertical-align:-1px}
+  /* Пульс «только что обновлено»: значения на миг притухают и разгораются на КАЖДОМ поле статуса
+     (каждые 10 с) — наглядный сигнал «данные живые», даже когда цифры не изменились. Запускается
+     повторно перезапуском анимации (снять класс → reflow → навесить). */
+  @keyframes upd-pulse{from{opacity:.35}to{opacity:1}}
+  .just-upd{animation:upd-pulse .55s ease-out}
+  /* Пока летит запрос статуса — бейджи ЦП/ОЗУ/ПЗУ слегка притушены (видно на медленном роутере). */
+  #topbar .badges .chip{transition:opacity .2s}
+  #topbar .badges.refreshing .chip{opacity:.5}
+  /* Температурная шкала в попапе «О роутере»: как .si-bar, но с порогом троттлинга (тик). */
+  .temp-bar{position:relative;height:6px;border-radius:3px;background:var(--bg-secondary);margin:8px 0 3px}
+  .temp-bar>span{display:block;height:100%;border-radius:3px;transition:width .3s}
+  .temp-tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text-tertiary);opacity:.7}
+  #ping-cell{cursor:pointer}
+  #ping-cell:hover{background:var(--bg-primary)}
+  .m.tap{cursor:pointer}
+  .m.tap:hover{background:var(--bg-primary)}
+  /* Режим стримера: блюрим чувствительные данные для записи видео (чисто визуально —
+     данные НЕ меняются, бэкенд не трогается). Моноширинное = технические идентификаторы
+     (IP/серверы/ifaces/CIDR/домены) ловим одним правилом по подстроке стиля; немоноширинные
+     идентификаторы (имя конфига, hostname, SSID, имена серверов, почта) помечены .sens или
+     адресуются по id. Класс на <body> переживает авто-рефреш и перерисовку модалок.
+     #toast-msg и #log — СВОБОДНЫЙ текст из бэкенда (d.msg): «Xray-конфиг <name> активен»,
+     «Почта сохранена (<user>)», а строка-результат скрипта (action:48) вообще сливает весь
+     stdout — хосты/IP/домены/хендшейки. Разметить .sens внутри нельзя → блюрим элемент
+     целиком (у тоста крутилку/✓/✕ оставляем — это #toast-sp, не #toast-msg). */
+  body.streamer [style*="font-mono"],
+  body.streamer .sens,
+  body.streamer #cfg,
+  body.streamer #nt-user,
+  body.streamer #toast-msg,
+  body.streamer #log,
+  body.streamer #nt-to{filter:blur(7px)!important;-webkit-filter:blur(7px)!important;user-select:none}
+  #btn-streamer.on{background:var(--toggle-on);color:#fff;border-color:transparent}
+  /* Тост действий — единый НАГЛЯДНЫЙ индикатор «что-то происходит»: виден везде,
+     в т.ч. ПОВЕРХ модалки (z-index выше .modal=50), куда раньше не доходили ни
+     #busy, ни журнал. Крутилка пока идёт действие, ✓/✕ по результату (авто-скрытие). */
+  #toast{position:fixed;left:50%;top:14px;transform:translateX(-50%) translateY(-14px);z-index:100;
+         max-width:92vw;display:flex;align-items:center;gap:9px;padding:10px 14px;border-radius:var(--r-md);
+         background:var(--bg-primary);border:.5px solid var(--border-s);box-shadow:0 8px 28px rgba(0,0,0,.22);
+         font-size:13px;color:var(--text-primary);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.ok{border-color:var(--border-success)}
+  #toast.err{border-color:var(--text-warning)}
+  #toast .sp{width:15px;height:15px;border-radius:50%;border:2px solid var(--border-t);
+             border-top-color:var(--text-info);animation:spin .8s linear infinite;flex-shrink:0}
+  #toast .mk{font-size:15px;font-weight:700;line-height:1;flex-shrink:0}
+  #toast.ok .mk{color:var(--text-success)}
+  #toast.err .mk{color:var(--text-warning)}
+  #toast-msg{word-break:break-word}
+  /* Сворачивание + перетаскивание главных блоков (#mcards). Состояние (порядок/свёрнутость)
+     в localStorage — как режим стримера, бэкенд не трогаем. Шапка-бар инжектится из JS:
+     [⠿ ручка] [заголовок — виден в свёрнутом] … [↑][↓ перестановка] [▾ шеврон]. */
+  #mcards{display:flex;flex-direction:column;gap:14px}
+  .mc-head{display:flex;align-items:center;gap:6px;margin:-6px -6px 8px;padding:2px 4px}
+  .mcard.collapsed .mc-head{margin-bottom:-6px}
+  .mc-handle{cursor:grab;color:var(--text-tertiary);font-size:14px;line-height:1;user-select:none;padding:2px;flex-shrink:0}
+  .mc-handle:active{cursor:grabbing}
+  .mc-title{font-size:13px;font-weight:500;color:var(--text-secondary);display:none;min-width:0;word-break:break-word}
+  .mcard.collapsed .mc-title{display:block}
+  .mc-chev{margin-left:auto;background:transparent;border:0;color:var(--text-tertiary);font-size:13px;line-height:1;
+           cursor:pointer;padding:4px 7px;border-radius:var(--r-md);transition:transform .15s;flex-shrink:0}
+  .mc-chev:hover{background:var(--bg-secondary)}
+  .mcard.collapsed .mc-chev{transform:rotate(-90deg)}
+  /* Кнопки перестановки ↑↓ в шапке: работают и на тач-экранах, где HTML5-drag мёртв. */
+  .mc-arrow{background:transparent;border:0;color:var(--text-tertiary);font-size:13px;line-height:1;
+            cursor:pointer;padding:4px 6px;border-radius:var(--r-md);flex-shrink:0}
+  .mc-arrow:hover{background:var(--bg-secondary)}
+  .mc-arrow:disabled{opacity:.28;cursor:default;background:transparent}
+  .mc-up{margin-left:auto}
+  /* Блок «Разделы настроек» — перемещаемый как карточка, но БЕЗ рамки/фона .card
+     (внутри сетка ярлыков .fc сидит на фоне страницы; своя рамка дала бы двойную). */
+  .mcard.nav-block .mc-head{margin:0 0 8px}
+  .mcard.collapsed .mc-body{display:none}
+  .mcard.dragging{opacity:.45}
+  .mcard.drop-before{box-shadow:0 -3px 0 0 var(--text-info)}
+  .mcard.drop-after{box-shadow:0 3px 0 0 var(--text-info)}

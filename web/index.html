@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enodia — панель роутера</title>
+<!--
+  Enodia — веб-панель управления VPN на роутере Xiaomi, отдаётся вторым uhttpd
+  под HTTP-Basic. ФАЗА 1: ЖИВОЙ статус через /cgi-bin/status (read-only). Кнопки
+  управления (VPN вкл/выкл, смена транспорта/сервера) пока НЕактивны — Фаза 2,
+  они пойдут через существующие безопасные скрипты с санитизацией ввода.
+
+  Заметки:
+   - Иконки — ЛОКАЛЬНЫЕ (assets/icons.css + icons.woff2, subset Tabler только под
+     используемые ~17 глифов, 4 КБ). Никаких внешних CDN → страница корректно грузится
+     при мёртвом WAN (на роутере нет гарантии интернета; DNS там SPOF).
+   - Цвета — CSS-переменные :root + тёмная тема: авто (prefers-color-scheme) ИЛИ
+     принудительно атрибутом data-theme=light|dark на <html> (тумблер в «Настройках»).
+-->
+<!-- Фавикон = ЗНАК Enodia T1 (local/logo-t1-ui.svg), а НЕ упрощённая иконка: у иконки кольца
+     стоят так тесно, что честного плетения там нет ни при какой маске (замер 30.08.2026), а у
+     знака тройного перекрытия лент НОЛЬ. Правило канона «ниже ~71 px ставим иконку» выведено
+     для версии С ПРОСВЕТОМ; цветной идёт без шва, и плетение несёт граница цвета — она живёт в
+     любом размере. Совпадение с каноном сверяет C45. ИНЛАЙНОМ, а не файлом: отдельный
+     ассет тянет за собой ?v=<CODE>, update-manifest, REQUIRED_FILES и проверку сборки —
+     цена, которую платить рано. Переедет в общий ассет вместе с редизайном, когда знак
+     понадобится ещё и в шапке. @media внутри SVG чтут не все браузеры (Chrome фавиконный
+     prefers-color-scheme игнорирует) ⇒ на тёмной вкладке тёмное кольцо тусклое, а знак
+     держат два тёплых. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%20width='64'%20height='64'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'%20role='img'%20aria-label='Enodia'%3E%3Cstyle%3E.cc{stroke:%232C2C2A}@media%20(prefers-color-scheme:dark){.cc{stroke:%23E8E6DD}}%3C/style%3E%3Cg%20transform='translate(-2.75%200)'%3E%3Cdefs%3E%3Cfilter%20id='enmarkbl'%20x='-40%25'%20y='-40%25'%20width='180%25'%20height='180%25'%3E%3CfeGaussianBlur%20stdDeviation='1.1'/%3E%3C/filter%3E%3C/defs%3E%3Cmask%20id='enmark0'%3E%3Crect%20width='64'%20height='64'%20fill='%23fff'/%3E%3Ccircle%20cx='26.5'%20cy='22.47'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='5.24'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark0)'%3E%3Ccircle%20cx='43'%20cy='32'%20r='15'%20fill='none'%20stroke='%23F96C00'%20stroke-width='5'/%3E%3Cmask%20id='enmark0s'%20maskUnits='userSpaceOnUse'%20x='0'%20y='0'%20width='64'%20height='64'%3E%3Ccircle%20cx='43'%20cy='32'%20r='15'%20fill='none'%20stroke='%23fff'%20stroke-width='5'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark0s)'%3E%3Ccircle%20cx='26.5'%20cy='22.47'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='9.04'%20opacity='0.42'%20filter='url(%23enmarkbl)'/%3E%3C/g%3E%3C/g%3E%3Cmask%20id='enmark1'%3E%3Crect%20width='64'%20height='64'%20fill='%23fff'/%3E%3Ccircle%20cx='43'%20cy='32'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='5.24'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark1)'%3E%3Ccircle%20cx='26.5'%20cy='41.53'%20r='15'%20fill='none'%20stroke='%23F5B300'%20stroke-width='5'/%3E%3Cmask%20id='enmark1s'%20maskUnits='userSpaceOnUse'%20x='0'%20y='0'%20width='64'%20height='64'%3E%3Ccircle%20cx='26.5'%20cy='41.53'%20r='15'%20fill='none'%20stroke='%23fff'%20stroke-width='5'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark1s)'%3E%3Ccircle%20cx='43'%20cy='32'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='9.04'%20opacity='0.42'%20filter='url(%23enmarkbl)'/%3E%3C/g%3E%3C/g%3E%3Cmask%20id='enmark2'%3E%3Crect%20width='64'%20height='64'%20fill='%23fff'/%3E%3Ccircle%20cx='26.5'%20cy='41.53'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='5.24'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark2)'%3E%3Ccircle%20cx='26.5'%20cy='22.47'%20r='15'%20fill='none'%20class='cc'%20stroke-width='5'/%3E%3Cmask%20id='enmark2s'%20maskUnits='userSpaceOnUse'%20x='0'%20y='0'%20width='64'%20height='64'%3E%3Ccircle%20cx='26.5'%20cy='22.47'%20r='15'%20fill='none'%20stroke='%23fff'%20stroke-width='5'/%3E%3C/mask%3E%3Cg%20mask='url(%23enmark2s)'%3E%3Ccircle%20cx='26.5'%20cy='41.53'%20r='15'%20fill='none'%20stroke='%23000'%20stroke-width='9.04'%20opacity='0.42'%20filter='url(%23enmarkbl)'/%3E%3C/g%3E%3C/g%3E%3C/g%3E%3C/svg%3E">
+<!-- ?v= обязателен и здесь: icons.css — единственный подресурс, который был ВНЕ инварианта
+     кэш-бастера (и вне проверки build-dev-archive.ps1), хотя кэшируется браузером ровно так же.
+     Цена всплыла на этой же правке: добавь в него класс — и правка часами не доезжает. -->
+<link rel="stylesheet" href="assets/icons.css?v=50188">
+<script>
+  /* Тема из localStorage-кэша — ДО первого кадра (в <head>, не в общем скрипте внизу):
+     истина живёт на роутере (.prefs theme), но её fetch асинхронный, и страница успела бы
+     мигнуть светлой. Значение перезапишет loadPrefs(), если на роутере другое. */
+  try{ var _th=localStorage.getItem('enodia_theme');
+       if(_th==='light'||_th==='dark') document.documentElement.setAttribute('data-theme',_th); }catch(e){}
+</script>
+<!-- Стили и логика вынесены в assets/panel.css / assets/panel.js.
+     ?v=<CODE> ОБЯЗАТЕЛЕН и обязан совпадать с CODE в VERSION: uhttpd отдаёт статику с
+     ETag/Last-Modified, но БЕЗ Cache-Control -> браузер кэширует подресурсы эвристически
+     (~10% возраста файла) и после деплоя способен часами держать СТАРЫЙ panel.js рядом с
+     новым index.html = «панель сломалась на ровном месте». Смена ?v= рвёт этот кэш.
+     Бампится вместе с CODE (build-dev-archive.ps1 синкает и проверяет). -->
+<link rel="stylesheet" href="assets/panel.css?v=50188">
+</head>
+<body>
+<h2 class="sr-only">Enodia — веб-панель управления VPN на роутере Xiaomi: живой статус подключения, протокол, серверы и разделы настроек.</h2>
+
+<div class="wrap">
+
+  <div class="row" id="topbar">
+    <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+      <i class="ti ti-router" style="font-size:26px" aria-hidden="true"></i>
+      <div>
+        <div id="model" style="font-size:16px;font-weight:500">Xiaomi</div>
+        <div id="fw" style="font-size:12px;color:var(--text-tertiary)">192.168.31.1</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;min-width:0">
+      <div class="badges">
+        <span class="chip" title="Загрузка ЦП"><i class="ti ti-cpu" aria-hidden="true"></i><span id="cpu">…</span></span>
+        <span class="chip" title="ОЗУ: свободно / всего, МБ"><i class="ti ti-server-2" aria-hidden="true"></i><span id="ram">…</span></span>
+        <span class="chip" title="ПЗУ (флеш): свободно / всего · занято, %"><i class="ti ti-database" aria-hidden="true"></i><span id="rom">…</span></span>
+      </div>
+      <button id="bell" class="iconbtn" type="button" title="События роутера" aria-label="События роутера" style="position:relative">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></svg>
+        <span id="bell-badge" class="bell-badge" style="display:none">0</span>
+      </button>
+      <button id="burger" class="iconbtn" type="button" title="Меню роутера" aria-label="Меню роутера">☰</button>
+    </div>
+  </div>
+
+  <div id="hero" class="card hero-on">
+    <div class="row">
+      <div class="hero-status" style="display:flex;align-items:center;gap:12px">
+        <div class="vico">
+          <i id="vico-i" class="ti ti-shield-check" style="font-size:24px" aria-hidden="true"></i>
+        </div>
+        <div>
+          <div id="vpn-title" class="vstatus" style="font-size:17px;font-weight:500">Загрузка статуса…</div>
+          <div id="vpn-sub" style="font-size:13px;color:var(--text-secondary)">Запрашиваю состояние у роутера</div>
+        </div>
+        <span id="support-ind" role="button" tabindex="0" title="Открыт удалённый доступ разработчику — нажмите, чтобы закрыть" style="display:none;align-items:center;gap:5px;background:var(--bg-warning);color:var(--text-warning);font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;white-space:nowrap;cursor:pointer"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="9"/><path d="M15 15l3.35 3.35"/><path d="M9 15l-3.35 3.35"/><path d="M5.65 5.65l3.35 3.35"/><path d="M18.35 5.65l-3.35 3.35"/></svg>поддержка активна</span>
+        <span id="exit-ind" role="button" tabindex="0" title="Дополнительный выход включён, но его несущая не поднялась — привязанные сайты идут запасным путём. Нажмите, чтобы открыть «Серверы»" style="display:none;align-items:center;gap:5px;background:var(--bg-warning);color:var(--text-warning);font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;white-space:nowrap;cursor:pointer"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><path d="M12 9v4"/><path d="M12 16h.01"/><path d="M10.36 3.59 2.26 17.12A1.91 1.91 0 0 0 3.9 20h16.21a1.91 1.91 0 0 0 1.63-2.88L13.64 3.6a1.91 1.91 0 0 0-3.28 0z"/></svg><span>выход не работает</span></span>
+      </div>
+      <div id="vtoggle" class="vtoggle" role="button" tabindex="0" aria-label="Включить или выключить VPN" style="cursor:pointer"><div class="vknob"></div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-top:14px">
+      <div class="m tap" id="proto-cell" title="Сменить транспорт" style="position:relative"><div class="ml">Протокол</div><div id="proto" class="mv">…</div><span class="cell-kebab" aria-hidden="true">⋮</span></div>
+      <div class="m tap" id="cfg-cell" title="Выбрать сервер / конфиг" style="position:relative"><div class="ml">Конфиг</div><div id="cfg" class="mv">…</div><div id="cfg-sub" style="font-size:11px;color:var(--text-tertiary);margin-top:2px"></div><span class="cell-kebab" aria-hidden="true">⋮</span></div>
+      <div class="m"><div class="ml">Рукопожатие</div><div id="hs" class="mv">…</div></div>
+      <div class="m" id="ping-cell" title="Клик — проверить пинг ещё раз"><div class="ml" style="display:flex;align-items:center">Пинг <span class="icls"><i class="ti ti-refresh" id="ping-ref" style="font-size:12px" aria-hidden="true"></i><span id="ping-help"></span></span></div><div id="ping" class="mv" style="font-size:14px;color:var(--text-secondary)">…</div><div id="ping-srv" style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);margin-top:2px"></div></div>
+    </div>
+    <div id="updated" style="text-align:right;font-size:11px;color:var(--text-tertiary);margin-top:8px">…</div>
+    <!-- Компактная строка «ваш IP → зарубежный выход» внизу шапки (стиль как у #updated). WAN слева,
+         длинная стрелка-шафт, egress-IP справа (зеленью). VPN выкл → только WAN слева. Данные — из
+         loadIp (cgi-bin/ip), видимость стрелки+выхода — по cur.live. ЕДИНСТВЕННОЕ место показа IP
+         (отдельную карточку «IP-адреса» убрали 2026-07-09 как дубль этой строки). -->
+    <div id="hipline" style="margin-top:4px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono)">
+      <span id="hip-wan">…</span>
+      <span id="hip-sep" style="flex:1;display:none;align-items:center">
+        <span style="flex:1;height:1px;background:var(--text-tertiary);opacity:.55"></span>
+        <span style="width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent;border-left:5px solid var(--text-tertiary)"></span>
+      </span>
+      <span id="hip-egress" style="display:none;color:var(--text-success)"></span>
+    </div>
+  </div>
+
+  <div id="mcards">
+  <div class="card mcard" id="card-traffic" data-card="traffic" data-title="Трафик">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-size:13px;color:var(--text-secondary)">Трафик <span id="tr-vif" style="color:var(--text-tertiary)"></span></div>
+      <div style="font-size:12px;color:var(--text-tertiary)" id="tr-rate">…</div>
+    </div>
+    <div class="segbar" id="trsrc-bar" style="display:flex;gap:6px;background:var(--bg-secondary);padding:4px;border-radius:var(--r-md);margin-bottom:10px">
+      <div class="seg on" data-src="vpn" style="cursor:pointer">через VPN</div>
+      <div class="seg" data-src="direct" style="cursor:pointer">напрямую</div>
+      <div class="seg" data-src="total" style="cursor:pointer">всего</div>
+    </div>
+    <!-- 4 периода ВСЕГДА в один ряд (repeat(4,minmax(0,1fr)) — не auto-fit, иначе на мобиле
+         ломалось 3+1; minmax(0,…) держит от распирания при 320px). -->
+    <div class="grid" style="grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:12px">
+      <div class="m" style="text-align:center;padding:10px 6px"><div class="ml">Сегодня</div><div class="mv" id="tr-today" style="font-size:14px">…</div></div>
+      <div class="m" style="text-align:center;padding:10px 6px"><div class="ml">Неделя</div><div class="mv" id="tr-week" style="font-size:14px">…</div></div>
+      <div class="m" style="text-align:center;padding:10px 6px"><div class="ml">Месяц</div><div class="mv" id="tr-month" style="font-size:14px">…</div></div>
+      <div class="m" style="text-align:center;padding:10px 6px"><div class="ml">Год</div><div class="mv" id="tr-year" style="font-size:14px">…</div></div>
+    </div>
+    <div class="segbar" id="trrng-bar" style="display:flex;gap:6px;background:var(--bg-secondary);padding:4px;border-radius:var(--r-md);margin-bottom:8px">
+      <div class="seg on" data-rng="week" style="cursor:pointer">7 дней</div>
+      <div class="seg" data-rng="month" style="cursor:pointer">30 дней</div>
+      <div class="seg" data-rng="year" style="cursor:pointer">Год</div>
+    </div>
+    <svg id="tr-chart" viewBox="0 0 340 150" style="width:100%;height:auto;display:block" role="img" aria-label="График трафика по дням"></svg>
+    <div style="font-size:11px;color:var(--text-tertiary);margin-top:8px" id="tr-foot">Накопление трафика…</div>
+  </div>
+
+  </div>
+
+  <div class="row" style="gap:10px">
+    <button id="btn-repair" type="button">Починить правила</button>
+    <button id="btn-streamer" type="button" title="Скрыть чувствительные данные (IP, серверы, SSID, почта) для записи видео">Режим стримера</button>
+    <a id="btn-diag" class="btn-link" href="/cgi-bin/diag?full=1" download title="Скачать архив: состояние роутера и все логи, включая системный (ключи, адреса, имена сетей и устройств замаскированы)">Скачать логи</a>
+    <span id="busy" style="font-size:12px;color:var(--text-tertiary)"></span>
+  </div>
+
+  <div id="nav-block" class="mcard nav-block" data-card="nav" data-title="Разделы настроек">
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+    <div class="fc" id="card-servers" style="cursor:pointer">
+      <i class="ti ti-world" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Серверы и конфиги</div><div style="font-size:12px;color:var(--text-secondary)">awg · xray · hy2 + загрузка</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-mode" style="cursor:pointer">
+      <i class="ti ti-shield-check" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Режим и failover</div><div id="card-mode-sub" style="font-size:12px;color:var(--text-secondary)">заблокированные сайты через VPS · авто-резерв</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-devices" style="cursor:pointer">
+      <i class="ti ti-devices" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Устройства</div><div style="font-size:12px;color:var(--text-secondary)">мимо / через VPN</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-sites" style="cursor:pointer">
+      <i class="ti ti-list-search" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Сайты, домены, IP</div><div style="font-size:12px;color:var(--text-secondary)">что идёт через VPN</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-wifi" style="cursor:pointer">
+      <i class="ti ti-wifi" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Wi-Fi и подсети</div><div style="font-size:12px;color:var(--text-secondary)">гостевая, IoT</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-vpnsrv" style="cursor:pointer">
+      <i class="ti ti-router" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Доступ домой</div><div style="font-size:12px;color:var(--text-secondary)">подключиться к роутеру снаружи</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-notify" style="cursor:pointer">
+      <i class="ti ti-mail" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Уведомления</div><div style="font-size:12px;color:var(--text-secondary)">на почту</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-packages" style="cursor:pointer">
+      <i class="ti ti-cpu" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Компоненты</div><div style="font-size:12px;color:var(--text-secondary)">протоколы и модули · место на флеше</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <!-- СКРЫТА: публичный репозиторий заморожен ⇒ апдейтеру нечего предлагать (защита от
+         даунгрейда всё равно откажет — там версия старее нашей), а кнопка «Проверить
+         обновления» отвечала бы «обновлений нет» на живом канале. Разметку и openUpdate НЕ
+         удаляем: вернуть карточку = снять display:none. Идиома та же, что у card-byedpi ниже. -->
+    <div class="fc" id="card-update" style="cursor:pointer;display:none">
+      <i class="ti ti-refresh" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Обновление</div><div style="font-size:12px;color:var(--text-secondary)">версия · обновить скрипты с GitHub</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-byedpi" style="cursor:pointer;display:none">
+      <i class="ti ti-flask" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">ByeDPI (десинк)</div><div style="font-size:12px;color:var(--text-secondary)">обход DPI без VPS · стратегии</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-zapret" style="cursor:pointer">
+      <i class="ti ti-world" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Zapret (десинк напрямую)</div><div style="font-size:12px;color:var(--text-secondary)">транспорт без VPS · категории · nfqws</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-blocking" style="cursor:pointer">
+      <i class="ti ti-shield-off" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Блокировка рекламы и IP</div><div style="font-size:12px;color:var(--text-secondary)">DNS-адблок · вредоносные IP</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-geo" style="cursor:pointer">
+      <i class="ti ti-list" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Гео-списки</div><div style="font-size:12px;color:var(--text-secondary)">страны и сервисы · в VPN / мимо / блок</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-backup" style="cursor:pointer">
+      <i class="ti ti-database" style="color:var(--text-info)" aria-hidden="true"></i>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Бэкап настроек</div><div style="font-size:12px;color:var(--text-secondary)">экспорт · импорт в файл</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-support" style="cursor:pointer">
+      <!-- Спасательный круг — инлайн-SVG: класса ti-lifebuoy в icons.css нет, и глифа в woff2-сабсете
+           тоже (ширина 0), карточка стояла БЕЗ иконки. class="ti" оставлен ради размеров: .ti задаёт
+           22px, а .fc .ti на телефоне 19px — width/height в em идут за ними, как у соседних иконок. -->
+      <svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:1em;height:1em;flex-shrink:0;color:var(--text-info)"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="9"/><path d="M15 15l3.35 3.35"/><path d="M9 15l-3.35 3.35"/><path d="M5.65 5.65l3.35 3.35"/><path d="M18.35 5.65l-3.35 3.35"/></svg>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Режим поддержки</div><div style="font-size:12px;color:var(--text-secondary)">удалённая диагностика разработчиком</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+    <div class="fc" id="card-settings" style="cursor:pointer">
+      <span style="font-size:17px;width:20px;text-align:center;flex-shrink:0" aria-hidden="true">⚙️</span>
+      <div style="flex:1"><div style="font-size:15px;font-weight:500">Настройки</div><div style="font-size:12px;color:var(--text-secondary)">проверка серверов · параметры панели</div></div>
+      <i class="ti ti-chevron-right" style="font-size:18px;color:var(--text-tertiary)" aria-hidden="true"></i>
+    </div>
+  </div>
+  </div>
+
+  <div class="row" style="justify-content:center;gap:18px;font-size:13px;flex-wrap:wrap">
+    <a href="https://t.me/+tfMLMVKG03FhMGYy" target="_blank" rel="noopener" style="color:var(--text-info);text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-brand-telegram" aria-hidden="true"></i>Новости проекта</a>
+    <a href="https://github.com/Axel173/xiaomi-be7000-amnezia#12-поддержать-автора" target="_blank" rel="noopener" style="color:var(--text-info);text-decoration:none;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-heart" aria-hidden="true"></i>Поддержать проект</a>
+  </div>
+
+  <div class="card" style="padding:12px 16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:13px;color:var(--text-secondary)"><i class="ti ti-list" aria-hidden="true" style="font-size:15px;vertical-align:-2px;margin-right:5px"></i>Журнал действий</div>
+      <button id="btn-logclear" type="button" style="padding:4px 10px;font-size:12px">Очистить</button>
+    </div>
+    <div id="log" style="max-height:170px;overflow-y:auto;font-family:var(--font-mono);font-size:12px;line-height:1.55;color:var(--text-secondary);background:var(--bg-secondary);border-radius:var(--r-md);padding:8px 10px"></div>
+  </div>
+
+</div>
+
+<div id="toast" role="status" aria-live="polite"><span id="toast-sp" class="sp"></span><span id="toast-msg"></span></div>
+
+<div id="modal" class="modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="row" style="margin-bottom:12px">
+      <div id="modal-title" style="font-size:16px;font-weight:500">…</div>
+      <button id="modal-close" type="button" class="modal-x" aria-label="Закрыть">×</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="assets/panel.js?v=50188"></script>
+</body>
+</html>

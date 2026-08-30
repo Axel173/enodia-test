@@ -1,0 +1,169 @@
+# update-manifest.txt — список файлов, которые gh-update.sh apply-scripts обновляет с GitHub.
+# Один репо-относительный путь в строке; # — комментарий. ТОЛЬКО публично-безопасные файлы
+# (без секретов: awg.conf / configs/ / *.json / *.yaml кроме hev.yaml / notify.conf — НЕ здесь).
+# gh-update.sh дополнительно фильтрует по whitelist (manifest_safe), так что лишнее отсеется.
+# Бинари (bin/*.user) обновляются отдельным путём (gh-update.sh fetch-bin / proto-install.sh).
+
+VERSION
+update-manifest.txt
+
+# Роутерные скрипты (ядро + плагины + рантайм)
+mark-core.sh
+transport.sh
+# Реестр «выходов» (слотов) мульти-транспорта — mark-core.sh зовёт его list-enabled (нет
+# файла/реестр пуст => слот-блок no-op, деградация безопасна).
+slots.sh
+transport-awg.sh
+# Общий резолв имени сервера: грузят awg_setup.sh и плагины xray/hy2 — без него несущая
+# не встанет, поэтому файл должен ехать в ЛЮБОМ обновлении, где едут они.
+dns-lib.sh
+# Общий примитив «внешний IPv4» (IP-литерал-проба, DNS-free) — сорсят status.sh и web/cgi-bin/ip.
+ip-lib.sh
+# «Сколько прошло с отметки» с защитой от скачка часов (RTC нет, стоковый ntp доходит через ~13 мин
+# после загрузки и двигает часы разом). Сорсят сторож, transport-awg, switch-vpn, heal, статус,
+# дамп, iplist и cgi-bin/status. Без файла у каждого шим = ПРЕЖНЕЕ поведение, то есть баг.
+clock-lib.sh
+# Сброс уже установленных соединений (NSS/ECM держит их мимо свежих правил) — сорсят два десятка
+# скриптов правил и оба CGI. На ядре 4.4 утилиты conntrack в прошивке НЕТ, и прежняя россыпь
+# `conntrack -F || true` была тихим no-op: правило стояло, эффект был только у НОВЫХ соединений.
+ct-lib.sh
+# Ожидание xtables-лока: подменяет команду `iptables` и добавляет `-w`. Сорсят все 25 скриптов,
+# которые правила ставят или проверяют. Лок занят стоковым кроном (sp_check, mobile_accel, mipctld, upnp) ⇒ без
+# ожидания правило МОЛЧА не встаёт, а половина вызовов глушит stderr. Нет файла — прежний путь.
+ipt-lib.sh
+# «Текст роутера → строка внутри JSON» (jesc/jtrim) — сорсят cgi-bin/{action,data,2fa} и web-ui.sh.
+# Без файла у каждого срабатывает шим «как было раньше»: панель работает, но длинное русское
+# сообщение снова обрывается посреди буквы.
+json-lib.sh
+# Где лежит бинарь (внешний накопитель или флеш) — сорсят ВСЕ плагины транспортов, transport.sh,
+# packages.sh и proto-install.sh. Без файла у каждого срабатывает шим «прежний путь в $ENODIA_DIR»,
+# то есть роутер без накопителя не замечает разницы — но тогда не заметит и переезд на накопитель.
+store-lib.sh
+# Движок внешнего накопителя (монтаж + переезд бинарей). Его зовут heal.sh и watchdog.sh
+# вербом mount-ensure; без файла [ -x ] у обоих ложен ⇒ роутер ведёт себя как до накопителя.
+usb-offload.sh
+# Единый детект модели роутера — сорсят web/cgi-bin/status (шапка), notify.sh и events.sh (префикс тем).
+router-lib.sh
+# Выбор языка событийных уведомлений (письма + журнал панели) по панельному pref lang — сорсят
+# iplist-update/heal.sh/switch-vpn/xray|hy2-transport. Без него деградируют в ru (шим у caller'а).
+nf-i18n.sh
+# Общий слой шифрованного DNS (DoH): сорсят dns-сеттеры транспортов (awg/xray/hy2/byedpi/zapret).
+# Без него DoH недоступен, поведение прежнее (шим doh_apply_dns→1 у каждого caller'а).
+doh-lib.sh
+slot-tun-lib.sh
+xray-transport.sh
+transport-hy2.sh
+transport-byedpi.sh
+byedpi-test.sh
+xray-test.sh
+zapret.sh
+heal.sh
+watchdog.sh
+switch-vpn.sh
+vpn-toggle.sh
+apply-bypass.sh
+domain.sh
+# Склейка ipset=-строк доменов из ВСЕХ подсистем (+ единственная точка рестарта dnsmasq для них).
+# Зовут его domain/groups/geo/lists-lib/zapret/heal.sh; нет файла — каждый падает на свой прежний
+# рестарт, поведение как до склейки (правило домена, названного дважды, наполняет один набор).
+dns-merge.sh
+iplist-update.sh
+lists-lib.sh
+set-lib.sh
+# «Какая Wi-Fi сеть на каком wlN» — сорсит apply-bypass.sh, чтобы правила сетей хранились по
+# ИМЕНИ СЕТИ, а не по имени интерфейса (сток переклеивает их при правке Wi-Fi). Нет файла — шим
+# трактует строку хранилища как имя интерфейса, то есть поведение ровно до 04.08.2026.
+wifi-lib.sh
+# «Кто сейчас в эфире и на какой скорости» — карточка устройств спрашивает его через
+# data?section=wifi_sta (секция `wifi` — про СЕТИ, это другой срез). Только чтение
+# (`wlanconfig list sta`), ничего не настраивает; нет файла — блока статистики просто нет.
+wifi-stats.sh
+# «Кому принадлежит адрес в локальной сети» — аренды, neighbor, приватный MAC и снимок «для кого
+# заводили правило». Сорсят cgi-bin/data, cgi-bin/action и dhcp-static.sh; нет файла — новые поля
+# в списке устройств просто не появляются, поведение ровно до 10.08.2026.
+lease-lib.sh
+# Закрепление адреса за устройством (dhcp-host= для dnsmasq). Правила проекта ключуются по IPv4, а
+# аренда живёт 12 часов — без резервации правило со временем уезжает на чужое устройство.
+# Переигрывают heal.sh (ramfs) и импорт бэкапа; нет файла — кнопка в панели честно отказывает.
+dhcp-static.sh
+lists-update.sh
+groups.sh
+geo.sh
+geo-v2fly-catalog.txt
+geo-rfip-catalog.txt
+geo-rfgs-catalog.txt
+status.sh
+dump.sh
+# Чистка флеша + разбивка занятого. Это ЕДИНСТВЕННЫЙ владелец списка «что считается мусором»:
+# карточка «Компоненты» зовёт его вербами json/clean, второй копии списка в CGI нет намеренно.
+clean.sh
+# «Кто ест ОЗУ» — тот же по форме ответ, но про живые процессы; зовёт карточка «О роутере»
+# (data?section=ram) ЛЕНИВО, по клику. Ничего не меняет и ничего не запускает.
+ram-usage.sh
+notify.sh
+notify-event.sh
+events.sh
+install.sh
+awg_setup.sh
+xiaomi-bypass.sh
+gh-update.sh
+proto-install.sh
+packages.sh
+uninstall.sh
+web-ui.sh
+traffic-acct.sh
+support.sh
+devwatch.sh
+dns-hosts.sh
+dns-split.sh
+net-tune.sh
+update-sched.sh
+# Headless-обновление подписок (cron) + общий слой подписок: их зовут update-sched.sh (job subs)
+# и cgi-bin/action (fetch_sub делегирует закачку — одна копия гарда/gzip-детекта).
+subs-update.sh
+subs-lib.sh
+# Второй фактор входа в панель (TOTP) + сессии: CGI-гейт СОРСИТ этот файл, а cgi-bin/2fa зовёт
+# его вербами. Без него панель работает как раньше (гейт — no-op), поэтому порядок доставки
+# внутри обновления неважен.
+totp.sh
+# «Доступ домой» (роутер как VPN-сервер, awgs0): секции heal.sh/vpn-toggle repair зовут его
+# только при флаге server/.on, панель — только при наличии файла. Ключи пиров лежат в server/
+# на /data и обновлением НЕ затрагиваются.
+vpn-server.sh
+hev.yaml
+
+# Шаблоны (без секретов)
+notify.conf.example
+iplist.conf.example
+awg.conf.example
+
+# Веб-панель (появится в публичном репо позже — сейчас 404 пропустится без ошибки).
+# panel.css/panel.js вынесены из index.html — тянуть ОБЯЗАТЕЛЬНО вместе с ним: index.html
+# ссылается на них с ?v=<CODE>, и без свежей пары панель останется на старом коде.
+web/index.html
+web/htmlwrap
+web/assets/panel.css
+web/assets/panel.js
+web/assets/icons.css
+web/assets/icons.woff2
+# Шрифт интерфейса (Inter, латиница + кириллица отдельными подрезками). CDN у нас нет by design,
+# файл лежит рядом с панелью — и без этих двух строк apply-scripts не обновит его НИКОГДА:
+# имя постоянное, значит новое начертание доедет только полной переустановкой с ПК.
+web/assets/inter-latin.woff2
+web/assets/inter-cyrillic.woff2
+web/cgi-bin/status
+web/cgi-bin/sysinfo
+web/cgi-bin/ip
+web/cgi-bin/ping
+web/cgi-bin/list
+web/cgi-bin/data
+web/cgi-bin/action
+web/cgi-bin/token
+web/cgi-bin/traffic
+# Вход по коду (второй фактор) — без этого файла панель с включённым 2FA не пустит НИКОГО.
+web/cgi-bin/2fa
+# backup/diag раньше сюда не входили (обновлялись только с ПК), но теперь именно в них живёт
+# 2FA-гейт: без доставки они остались бы единственными CGI, отдающими бэкап с ключами и полный
+# диаг-срез в обход второго фактора.
+web/cgi-bin/backup
+web/cgi-bin/diag

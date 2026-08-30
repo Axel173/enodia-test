@@ -1,0 +1,131 @@
+#!/bin/sh
+# cgi-bin/list — серверы (конфиги) ВСЕХ транспортов для карточки «Серверы».
+# Read-only: имена configs/*.conf (awg) + xray-configs/*.json + hy2-configs/*.yaml,
+# активный каждого (.active / .xray-active / .hy2-active) и флаг ready (бинарь+конфиг
+# реально установлены) от transport.sh list. Переключение/активация — действия
+# set_server (awg) / set_xray_server / set_hy2_server в cgi-bin/action.
+# 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
+[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+echo "Content-Type: application/json; charset=utf-8"
+echo "Cache-Control: no-store"
+echo ""
+
+D=/data/usr/app/enodia
+DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
+t=$(cat "$DS/.transport" 2>/dev/null | tr -d ' \r\n')
+[ -n "$t" ] || t=awg
+
+# Где лежит бинарь — ответ даёт store-lib (с внешним накопителем это НЕ $D). Иначе `bin_present`
+# ниже говорил бы «нужен бинарь» о переехавшем xray, причём РЯДОМ с `ready:true` от
+# transport.sh (тот store-aware) — то есть карточка спорила бы сама с собой.
+# Гард `[ -f ]` обязателен: провалившийся `.` в busybox ash убивает шелл на месте.
+if [ -f "$D/store-lib.sh" ]; then . "$D/store-lib.sh"; fi
+command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$D/$1"; }
+
+# Готовые транспорты (плагин+конфиг+бинарь). Обрамляем пробелами для точного
+# match'а " awg " (а не подстроки). Локально/быстро, без сети.
+ready=" $(sh "$D/transport.sh" list 2>/dev/null | tr '\n' ' ') "
+is_ready() { case "$ready" in *" $1 "*) printf true ;; *) printf false ;; esac; }
+
+# Установлен ли БИНАРЬ несущей (без учёта конфига). Панель по нему отличает «нет бинаря»
+# (не установлен транспорт) от «нужен конфиг» (бинарь есть, но нет секрет-конфига — типовой
+# случай Evgenii: awg докачали из панели, но без awg.conf transport_ready=false, а карточка
+# врала «нужен бинарь»). awg = ОБА бинаря; xray/hy2 = свой бинарь + общий hev (tun2socks).
+bin_present() {
+	case "$1" in
+		awg)  [ -x "$(bin_path amneziawg-go)" ] && [ -x "$(bin_path awg)" ] ;;
+		xray) [ -x "$(bin_path xray)" ]     && [ -x "$(bin_path hev)" ] ;;
+		hy2)  [ -x "$(bin_path hysteria)" ] && [ -x "$(bin_path hev)" ] ;;
+		*)    false ;;
+	esac && printf true || printf false
+}
+
+# Имена *.EXT в каталоге -> JSON-массив элементов "a","b" (без расширения).
+list_dir() {
+	dir="$1"; ext="$2"; out=""
+	for f in "$dir"/*."$ext"; do
+		[ -f "$f" ] || continue
+		n=$(basename "$f" ".$ext" | tr -d '"\\')
+		out="$out${out:+,}\"$n\""
+	done
+	printf '%s' "$out"
+}
+
+# Мета для карточек и редактора в панели (гибрид-редактор get_config_raw/editServer). Отдаём
+# ТОЛЬКО редактируемые/показываемые поля — sni/fp (xray), sni/insecure (hy2). Секреты (uuid/ключи/
+# пароль) НЕ включаем. JSON-объект {"имя":{...},...}. Значения — hostname/fp/bool =
+# JSON-безопасны, но на всякий срезаем кавычки/бэкслеш.
+meta_xray() {
+	out=""
+	for f in "$DS"/xray-configs/*.json; do
+		[ -f "$f" ] || continue
+		n=$(basename "$f" .json | tr -d '"\\')
+		sni=$(sed -n 's/.*"serverName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1 | tr -d '"\\')
+		fp=$(sed -n 's/.*"fingerprint"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1 | tr -d '"\\')
+		# host (server/домен) для подписи под именем в панели (как в v2rayNG). vnext address.
+		host=$(grep -oE '"address"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/' | tr -d '"\\')
+		# Протокол outbound'а (vless/vmess/trojan/shadowsocks) — для бейджа на карточке и шапки.
+		# Берём ПЕРВЫЙ "protocol" из четвёрки (inbound=socks фильтр отсекает; head -1 = outbound).
+		proto=$(grep -oE '"protocol"[[:space:]]*:[[:space:]]*"(vless|vmess|trojan|shadowsocks)"' "$f" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+		[ -n "$proto" ] || proto=vless
+		# Транспорт/защита/flow — для доп-инфы на карточке (Reality·xhttp·Vision и т.п.).
+		net=$(grep -oE '"network"[[:space:]]*:[[:space:]]*"[^"]*"'  "$f" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/' | tr -d '"\\')
+		sec=$(grep -oE '"security"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/' | tr -d '"\\')
+		flw=$(grep -oE '"flow"[[:space:]]*:[[:space:]]*"[^"]*"'     "$f" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/' | tr -d '"\\')
+		out="$out${out:+,}\"$n\":{\"proto\":\"$proto\",\"sni\":\"$sni\",\"fp\":\"$fp\",\"host\":\"$host\",\"network\":\"$net\",\"security\":\"$sec\",\"flow\":\"$flw\"}"
+	done
+	printf '%s' "$out"
+}
+meta_hy2() {
+	out=""
+	for f in "$DS"/hy2-configs/*.yaml; do
+		[ -f "$f" ] || continue
+		n=$(basename "$f" .yaml | tr -d '"\\')
+		sni=$(sed -n 's/^[[:space:]]*sni:[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$f" | head -1 | tr -d '"\\')
+		ins=$(sed -n 's/^[[:space:]]*insecure:[[:space:]]*\([A-Za-z]*\).*$/\1/p' "$f" | head -1)
+		out="$out${out:+,}\"$n\":{\"sni\":\"$sni\",\"insecure\":\"$ins\"}"
+	done
+	printf '%s' "$out"
+}
+
+# Подписки (метаданные с роутера) -> [{"tag","label"}]. URL (кред) НЕ отдаём — обновление
+# подписки идёт по tag (cgi-bin/action fetch_sub сам берёт url из .subs). Формат .subs:
+# строки "tag⇥url⇥label" (см. action save_sub). Так подписки видны с ЛЮБОГО устройства.
+subs_list() {
+	[ -f "$DS/.subs" ] || return
+	TAB=$(printf '\t'); out=""
+	while IFS="$TAB" read -r tag url label; do
+		[ -n "$tag" ] || continue
+		tag=$(printf '%s' "$tag" | tr -d '"\\')
+		label=$(printf '%s' "$label" | tr -d '"\\')
+		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\"}"
+	done < "$DS/.subs"
+	printf '%s' "$out"
+}
+
+# Настоящие имена серверов подписки (эмодзи/флаги/юникод — v2rayNG-стиль). В имя файла такое
+# не кладём (ломает глоб/скрипты); сырой remark лежит в .sub-names ("файл⇥remark"). Отдаём
+# карту {"файл":"remark"} — фронт показывает её вместо обрезанного имени файла.
+names_map() {
+	[ -f "$DS/.sub-names" ] || return
+	TAB=$(printf '\t'); out=""
+	while IFS="$TAB" read -r file rem; do
+		[ -n "$file" ] || continue
+		file=$(printf '%s' "$file" | tr -d '"\\')
+		rem=$(printf '%s' "$rem" | sed 's/\\/\\\\/g; s/"/\\"/g')
+		out="$out${out:+,}\"$file\":\"$rem\""
+	done < "$DS/.sub-names"
+	printf '%s' "$out"
+}
+
+aw_active=$(cat "$DS/.active"      2>/dev/null | tr -d ' \r\n"\\')
+xr_active=$(cat "$DS/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')
+hy_active=$(cat "$DS/.hy2-active"  2>/dev/null | tr -d ' \r\n"\\')
+
+printf '{"transport":"%s",' "$t"
+printf '"awg":{"active":"%s","ready":%s,"bin":%s,"servers":[%s]},'  "${aw_active:-?}" "$(is_ready awg)"  "$(bin_present awg)"  "$(list_dir "$DS/configs" conf)"
+printf '"xray":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},' "${xr_active:-?}" "$(is_ready xray)" "$(bin_present xray)" "$(list_dir "$DS/xray-configs" json)" "$(meta_xray)"
+printf '"hy2":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},'  "${hy_active:-?}" "$(is_ready hy2)"  "$(bin_present hy2)"  "$(list_dir "$DS/hy2-configs" yaml)" "$(meta_hy2)"
+printf '"subs":[%s],' "$(subs_list)"
+printf '"names":{%s}}' "$(names_map)"
+printf '\n'

@@ -1,0 +1,126 @@
+#!/bin/sh
+# cgi-bin/traffic — трафик для панели (read-only, без сетевых проб).
+# Зовётся uhttpd (CGI) ТОЛЬКО после HTTP-Basic. Состояние НЕ меняет.
+#
+# Отдаёт: (1) мгновенные кумулятивные счётчики VPN-несущей (awg0/xtun) и WAN (eth0) —
+# фронт по дельте между опросами считает ТЕКУЩУЮ скорость; (2) суммы за сегодня/неделю/
+# месяц/год и (3) массив последних дней для столбчатого графика — из посуточного файла
+# `.traffic-daily`, который пишет фоновый `traffic-acct.sh` (cron */5). Чтобы цифры были
+# «живыми» между тиками cron, к суммам ПРИБАВЛЯЕМ незаписанную дельту (текущие счётчики −
+# последний замер `.traffic-last`). Per-device НЕТ сознательно: NSS-offload уводит потоки
+# мимо netfilter → учёт по IP недостоверен (CLAUDE.md). Числа — %.0f (awk-double до 2^53),
+# НЕ %d (busybox awk %d 32-битный → переполнение на счётчиках >2 ГБ).
+# 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
+[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+echo "Content-Type: application/json; charset=utf-8"
+echo "Cache-Control: no-store"
+echo ""
+
+D=/data/usr/app/enodia
+DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
+LAST="$DS/.traffic-last"
+DAILY="$DS/.traffic-daily"
+# trim + дефолт: `cat || echo awg` не ловил пустой-но-существующий .transport (t="" → vif=xtun,
+# и счётчики VPN читались с xtun вместо awg0). См. ту же грабля в cgi-bin/status.
+t=$(cat "$DS/.transport" 2>/dev/null | tr -d ' \r\n')
+# Пусто = ЛИБО роутер СТАРШЕ флага (несущая там awg — историческое поведение, ломать нельзя), ЛИБО
+# установка «только панель», где транспорта нет вовсе. Отличает их ОДИН владелец — оркестратор;
+# код 2 = старая копия скрипта ⇒ ведём себя как раньше. Без этого карточка подписывалась «Трафик ·
+# awg0» на роутере, где awg0 не существует и наших правил нет вообще (замерено на AX3600
+# 16.08.2026) — шапка честно писала «Протокол не выбран», а карточка тут же называла несущую.
+# Фолбэк на awg спрашиваем ТОЛЬКО при пустом флаге, то есть на настроенном роутере форка нет.
+if [ -z "$t" ]; then
+    t=awg
+    if [ -f "$D/transport.sh" ]; then
+        sh "$D/transport.sh" configured >/dev/null 2>&1
+        [ "$?" = 1 ] && t=none
+    fi
+fi
+# Пустой vif панель рисует как «Трафик» без имени интерфейса (см. tr-vif в panel.js).
+# zapret — В ОДНОЙ ВЕТКЕ С none: у десинка несущей НЕТ ВООБЩЕ (весь трафик идёт напрямую), а
+# `*)` подписывал карточку несуществующим xtun и держал «через VPN» вечным нулём. Класс тот же,
+# что «вилка забыла альт ⇒ шапка врёт AmneziaWG»: у каждой вилки по транспорту спрашивай, знает
+# ли она все пять. Ту же ветку держит traffic-acct.sh (там "-", здесь "" — см. его комментарий);
+# на zapret и none счётчики несущей нулевые в любом случае, поэтому расхождение первого поля с
+# .traffic-last ничего не стоит.
+case "$t" in none|zapret) vif="" ;; awg) vif=awg0 ;; *) vif=xtun ;; esac
+wan_if=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+
+devbytes() { sed 's/:/ /' /proc/net/dev 2>/dev/null | awk -v i="$1" '$1==i{print $2" "$10; f=1} END{if(!f)print "0 0"}'; }
+set -- $(devbytes "$vif");          vrx=${1:-0}; vtx=${2:-0}
+set -- $(devbytes "${wan_if:-_}");  wrx=${1:-0}; wtx=${2:-0}
+
+# незаписанная дельта (текущие счётчики − последний замер acct'а), с детектом обнуления.
+# Формат .traffic-last — КОНТРАКТ с traffic-acct.sh: "vif vrx vtx wrx wtx wif". Шестое поле (имя
+# WAN-iface) дописано 04.08.2026 и ЧИТАТЬ ЕГО ОБЯЗАТЕЛЬНО: без него `read` сложил бы «wtx wif» в
+# одну переменную, та не прошла бы числовую проверку → lwtx=0 → «незаписанной дельтой» показался
+# бы ВЕСЬ кумулятивный счётчик WAN. Старый файл из пяти полей → lwif пуст → судим как раньше.
+# СТАРТОВОЕ `lwif="?"` — не мелочь: пустая строка тут означает «файл СТАРОГО формата, суди как
+# раньше», и она же доставалась случаю «файла НЕТ ВОВСЕ». Тогда `wsame` выходил истинным при
+# lwrx=0, и «незаписанной дельтой» объявлялся ВЕСЬ кумулятивный счётчик WAN. Видно это на КАЖДОЙ
+# свежей установке: замерено на AX3600 16.08.2026 — панель через минуту после установки писала
+# «сегодня через интернет 14.2 ГБ» (это счётчик с последней перезагрузки роутера), и так до первого
+# тика traffic-acct (до 5 минут). «?» = «в прошлый замер базы не было» — ровно наша ситуация, и
+# ветка wunk ниже честно даёт ноль. Пятиполевый файл старого формата затрёт «?» пустой строкой
+# сам (шестого поля в нём нет) — прежнее поведение сохраняется.
+lvif=""; lvrx=0; lvtx=0; lwrx=0; lwtx=0; lwif="?"
+[ -f "$LAST" ] && read lvif lvrx lvtx lwrx lwtx lwif < "$LAST"
+for n in lvrx lvtx lwrx lwtx; do eval "x=\$$n"; case "$x" in ''|*[!0-9]*) eval "$n=0";; esac; done
+set -- $(awk -v vif="$vif" -v lvif="$lvif" -v vrx="$vrx" -v vtx="$vtx" -v wrx="$wrx" -v wtx="$wtx" \
+             -v lvrx="$lvrx" -v lvtx="$lvtx" -v lwrx="$lwrx" -v lwtx="$lwtx" \
+             -v wif="${wan_if:-?}" -v lwif="$lwif" 'BEGIN{OFMT="%.0f";CONVFMT="%.0f";
+    wsame=(lwif=="" || wif==lwif); wunk=(lwif=="?");   # "?" = в прошлый замер WAN не существовало
+    printf "%.0f %.0f %.0f %.0f",
+      (vif==lvif&&vrx>=lvrx)?vrx-lvrx:(vif==lvif?vrx:0),
+      (vif==lvif&&vtx>=lvtx)?vtx-lvtx:(vif==lvif?vtx:0),
+      wunk?0:((wsame&&wrx>=lwrx)?wrx-lwrx:(wsame?wrx:0)),
+      wunk?0:((wsame&&wtx>=lwtx)?wtx-lwtx:(wsame?wtx:0)) }')
+uvr=${1:-0}; uvt=${2:-0}; uwr=${3:-0}; uwt=${4:-0}
+
+now=$(date +%s); today=$(date +%F)
+src="$DAILY"; [ -f "$src" ] || src=/dev/null
+
+# суммы по периодам (+ незаписанная дельта u* — она относится к «сейчас» = во все периоды)
+set -- $(awk -v now="$now" -v today="$today" -v uvr="$uvr" -v uvt="$uvt" -v uwr="$uwr" -v uwt="$uwt" 'BEGIN{OFMT="%.0f";CONVFMT="%.0f"}
+{
+  e=$1+0;
+  if($2==today){dvr+=$3;dvt+=$4;dwr+=$5;dwt+=$6}
+  if(e>=now-604800){wvr+=$3;wvt+=$4;wwr+=$5;wwt+=$6}
+  if(e>=now-2592000){mvr+=$3;mvt+=$4;mwr+=$5;mwt+=$6}
+  if(e>=now-31536000){yvr+=$3;yvt+=$4;ywr+=$5;ywt+=$6}
+}
+END{ printf "%.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f",
+  dvr+uvr,dvt+uvt,dwr+uwr,dwt+uwt, wvr+uvr,wvt+uvt,wwr+uwr,wwt+uwt,
+  mvr+uvr,mvt+uvt,mwr+uwr,mwt+uwt, yvr+uvr,yvt+uvt,ywr+uwr,ywt+uwt }' "$src")
+tdvr=${1:-0}; tdvt=${2:-0}; tdwr=${3:-0}; tdwt=${4:-0}
+wvr=${5:-0};  wvt=${6:-0};  wwr=${7:-0};  wwt=${8:-0}
+mvr=${9:-0};  mvt=${10:-0}; mwr=${11:-0}; mwt=${12:-0}
+yvr=${13:-0}; yvt=${14:-0}; ywr=${15:-0}; ywt=${16:-0}
+
+# окно графика: week=7 дней, month=30 дней (дневные столбцы), year=12 месяцев (агрегат).
+# Во всех случаях сегодняшний столбец += незаписанная дельта (живой бар). Данные берём из
+# того же посуточного файла (traffic-acct держит 400 дней). busybox awk: только массивы+substr.
+rng=week
+case "$QUERY_STRING" in *chart=year*) rng=year ;; *chart=month*) rng=month ;; esac
+
+if [ "$rng" = year ]; then
+	days=$(awk -v today="$today" -v uvr="$uvr" -v uvt="$uvt" -v uwr="$uwr" -v uwt="$uwt" 'BEGIN{OFMT="%.0f";CONVFMT="%.0f"}
+	{ k=substr($2,1,7); v[k]+=$3+$4; w[k]+=$5+$6; if(!(k in seen)){seen[k]=1; ord[++n]=k} }
+	END{ tk=substr(today,1,7); if(!(tk in seen)){seen[tk]=1; ord[++n]=tk}
+	     v[tk]+=uvr+uvt; w[tk]+=uwr+uwt;
+	     s=n-11; if(s<1)s=1;
+	     for(i=s;i<=n;i++){ k=ord[i]; printf "%s{\"d\":\"%s\",\"vpn\":%.0f,\"wan\":%.0f}", (i>s?",":""), substr(k,3), v[k], w[k] } }' "$src")
+else
+	N=7; [ "$rng" = month ] && N=30
+	days=$(tail -n "$N" "$src" 2>/dev/null | awk -v today="$today" -v uvr="$uvr" -v uvt="$uvt" -v uwr="$uwr" -v uwt="$uwt" 'BEGIN{OFMT="%.0f";CONVFMT="%.0f"}
+	{ vpn=$3+$4; wan=$5+$6; if($2==today){vpn+=uvr+uvt; wan+=uwr+uwt}
+	  printf "%s{\"d\":\"%s\",\"vpn\":%.0f,\"wan\":%.0f}", (NR>1?",":""), substr($2,6), vpn, wan }')
+fi
+
+printf '{"transport":"%s","vif":"%s","wan_if":"%s","vpn_rx":%s,"vpn_tx":%s,"wan_rx":%s,"wan_tx":%s,' \
+	"$t" "$vif" "${wan_if:-?}" "${vrx:-0}" "${vtx:-0}" "${wrx:-0}" "${wtx:-0}"
+printf '"today_vpn_rx":%s,"today_vpn_tx":%s,"today_wan_rx":%s,"today_wan_tx":%s,' "$tdvr" "$tdvt" "$tdwr" "$tdwt"
+printf '"week_vpn_rx":%s,"week_vpn_tx":%s,"week_wan_rx":%s,"week_wan_tx":%s,' "$wvr" "$wvt" "$wwr" "$wwt"
+printf '"month_vpn_rx":%s,"month_vpn_tx":%s,"month_wan_rx":%s,"month_wan_tx":%s,' "$mvr" "$mvt" "$mwr" "$mwt"
+printf '"year_vpn_rx":%s,"year_vpn_tx":%s,"year_wan_rx":%s,"year_wan_tx":%s,' "$yvr" "$yvt" "$ywr" "$ywt"
+printf '"days":[%s],"chart":"%s","ts":%s}\n' "$days" "$rng" "$now"

@@ -1,0 +1,160 @@
+#!/bin/sh
+# cgi-bin/2fa — ЕДИНСТВЕННАЯ точка входа для второго фактора (TOTP): вход по коду, привязка
+# приложения, отключение, перевыпуск кодов восстановления, список подтверждённых устройств и
+# выход на всех / на всех кроме текущего / на одном конкретном.
+# Вся логика — в $ENODIA_DIR/totp.sh (одна копия), тут только разбор формы и куки.
+#
+# ПОЧЕМУ ОТДЕЛЬНЫЙ CGI, А НЕ ВЕТКА В action: сессионную куку выдаёт заголовок Set-Cookie, а
+# action печатает заголовки ПЕРВОЙ строкой, ещё не зная результата — приделать туда куку можно
+# было бы только переписав его вывод целиком. Плюс `op=login` обязан работать БЕЗ действующей
+# сессии (это и есть вход), а любая ветка внутри action по определению уже за гейтом.
+#
+# Защита:
+#  - HTTP-Basic (uhttpd) — как у всей панели: сюда доходят только знающие пароль;
+#  - CSRF-токен синхронизатора (как в action) на КАЖДУЮ операцию, включая вход;
+#  - гейт 2FA на всё, кроме op=login (иначе знающий пароль отключил бы второй фактор);
+#  - перебор кода тормозит счётчик неудач в totp.sh (пауза 60 с → ×2 → 15 мин).
+ENODIA_DIR=/data/usr/app/enodia
+TOKFILE=/tmp/enodia-panel-token
+
+TOTP_LIB=1
+[ -f "$ENODIA_DIR/totp.sh" ] || {
+	echo "Content-Type: application/json; charset=utf-8"; echo "Cache-Control: no-store"; echo ""
+	printf '{"ok":false,"msg":"totp.sh не установлен (обнови панель)"}\n'; exit 0; }
+. "$ENODIA_DIR/totp.sh"
+
+# jesc <лимит> — «текст скрипта → строка внутри JSON» (json-lib.sh, одна копия на проект). Ветки
+# enable/disable/recovery ниже показывают ЧЕЛОВЕКУ причину отказа из totp.sh, а она по-русски:
+# прежняя форма резала `cut -c1-160` БАЙТАМИ и обрывала сообщение посреди буквы. Шим = прежнее
+# поведение (либа могла не доехать на старую установку).
+if [ -f "$ENODIA_DIR/json-lib.sh" ]; then . "$ENODIA_DIR/json-lib.sh"; fi
+command -v jesc >/dev/null 2>&1 || {
+	jesc() { tr -d '\033\r' | tr '\n\t' '  ' | cut -c1-"$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+}
+
+# Ответ формируем ДО заголовков: от результата зависит Set-Cookie.
+out=""; cookie=""
+say()  { out=$(printf '{"ok":true,"msg":"%s"}' "$1"); }
+deny() { out=$(printf '{"ok":false,"msg":"%s"}' "$1"); }
+
+emit() {
+	echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"
+	[ -n "$cookie" ] && echo "Set-Cookie: $cookie"
+	echo ""
+	printf '%s\n' "$out"
+	exit 0
+}
+
+# Кука сессии. HttpOnly — чтобы её не достал XSS; SameSite=Strict — чтобы чужая страница не
+# ходила ею в панель; Secure НЕ ставим (см. шапку totp.sh: дома панель работает по HTTP, и с
+# Secure кука там просто не сохранилась бы, а наружу голый HTTP не выставляется никогда).
+set_cookie()   { cookie="panel2fa=$1; Path=/; Max-Age=$TOTP_SESS_TTL; HttpOnly; SameSite=Strict"; }
+clear_cookie() { cookie="panel2fa=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"; }
+
+[ "$REQUEST_METHOD" = "POST" ] || { deny "только POST"; emit; }
+
+len=${CONTENT_LENGTH:-0}
+case "$len" in ''|*[!0-9]*) len=0 ;; esac
+{ [ "$len" -gt 0 ] && [ "$len" -le 4096 ]; } || { deny "пустой или слишком большой запрос"; emit; }
+body=$(head -c "$len")
+field() { echo "$body" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2-; }
+
+tok=$(field token)
+echo "$tok" | grep -qE '^[0-9a-f]+$' || { deny "нет токена"; emit; }
+{ [ -s "$TOKFILE" ] && [ "$tok" = "$(cat "$TOKFILE")" ]; } || { deny "неверный токен (перезагрузи панель)"; emit; }
+
+op=$(field op | tr -cd 'a-z')
+# Код: только цифры/буквы/дефис (коды восстановления вида xxxxx-xxxxx). В shell-команду не
+# уходит никогда — totp.sh сравнивает его строкой.
+code=$(field code | tr -cd '0-9A-Za-z-' | cut -c1-16)
+# id сессии для точечного отзыва = sha256 её токена (см. totp_sess_list).
+sid=$(field sid | tr -cd 'a-f0-9' | cut -c1-64)
+
+# Гейт на всё, кроме входа. Формально это тот же totp_gate_deny, но ответ здесь — обычный JSON
+# без 403: фронт на этих экранах уже знает про 2FA, и HTTP-ошибка только запутала бы обработчик.
+case "$op" in
+	login) : ;;
+	*) totp_gate || { deny "нужен вход по коду"; emit; } ;;
+esac
+
+case "$op" in
+	# --- Вход по коду. Тут же выдаём сессию: это единственное место, где она рождается.
+	login)
+		totp_enabled || { deny "двухфакторный вход выключен"; emit; }
+		totp_check_code "$code"; r=$?
+		case "$r" in
+			# UA и адрес пишем ЗДЕСЬ и только здесь — это единственный момент, когда мы знаем,
+			# с какого устройства пришёл вход. Санитайзеры живут в totp.sh (значения из заголовков
+			# полностью подконтрольны клиенту и уезжают и в TSV, и в JSON).
+			0) t=$(totp_sess_new "${HTTP_USER_AGENT:-}" "${REMOTE_ADDR:-}") || { deny "не удалось создать сессию"; emit; }
+			   set_cookie "$t"; say "вход выполнен" ;;
+			2) deny "часы роутера не синхронизированы — подождите минуту и повторите" ;;
+			3) out=$(printf '{"ok":false,"msg":"слишком много неудачных попыток","lock":%s}' "$(totp_lock_left)") ;;
+			*) out=$(printf '{"ok":false,"msg":"код не подошёл","left":%s}' "$(totp_rec_left)") ;;
+		esac ;;
+	# --- Привязка приложения: секрет живёт в .totp-pending до подтверждения кодом.
+	enroll)
+		totp_enabled && { deny "двухфакторный вход уже включён"; emit; }
+		s=$(sh "$ENODIA_DIR/totp.sh" enroll 2>/dev/null)
+		b32=$(printf '%s' "$s" | head -1 | tr -cd 'A-Z2-7')
+		uri=$(printf '%s' "$s" | sed -n '2p' | tr -d '"\\')
+		[ -n "$b32" ] || { deny "не удалось сгенерировать секрет"; emit; }
+		out=$(printf '{"ok":true,"secret":"%s","uri":"%s"}' "$b32" "$uri") ;;
+	# --- Включение: код ИЗ ПРИВЯЗЫВАЕМОГО секрета + сразу сессия текущему браузеру, иначе
+	# человек, включивший 2FA, тут же получил бы окно ввода кода поверх своей же панели.
+	enable)
+		res=$(sh "$ENODIA_DIR/totp.sh" enable "$code" 2>&1); rc=$?
+		if [ "$rc" != 0 ]; then
+			deny "$(printf '%s' "$res" | jesc 160)"; emit
+		fi
+		t=$(totp_sess_new "${HTTP_USER_AGENT:-}" "${REMOTE_ADDR:-}") && set_cookie "$t"
+		codes=""
+		for c in $res; do
+			case "$c" in *-*) codes="$codes,\"$c\"" ;; esac
+		done
+		out=$(printf '{"ok":true,"msg":"двухфакторный вход включён","recovery":[%s]}' "${codes#,}") ;;
+	# --- Отключение: сессия (гейт выше) И действующий код. Знать пароль панели мало.
+	disable)
+		res=$(sh "$ENODIA_DIR/totp.sh" disable "$code" 2>&1); rc=$?
+		if [ "$rc" != 0 ]; then
+			deny "$(printf '%s' "$res" | jesc 160)"; emit
+		fi
+		clear_cookie; say "двухфакторный вход выключен" ;;
+	# --- Перевыпуск кодов восстановления (старые перестают работать сразу).
+	recovery)
+		res=$(sh "$ENODIA_DIR/totp.sh" recovery-new "$code" 2>&1); rc=$?
+		if [ "$rc" != 0 ]; then
+			deny "$(printf '%s' "$res" | jesc 160)"; emit
+		fi
+		codes=""
+		for c in $res; do
+			case "$c" in *-*) codes="$codes,\"$c\"" ;; esac
+		done
+		out=$(printf '{"ok":true,"msg":"коды восстановления перевыпущены","recovery":[%s]}' "${codes#,}") ;;
+	# --- Список подтверждённых устройств. Кода не требует: запрос и так за гейтом, то есть
+	# сессия уже подтверждена вторым фактором. Отдаём как есть — свою сессию панель узнаёт по
+	# полю `cur`, а не по адресу (адрес за panel-tls всегда наш же LAN, см. шапку totp.sh).
+	sessions)
+		out=$(printf '{"ok":true,"sessions":%s}' "$(totp_sess_list "$(totp_cookie)")") ;;
+	# --- Выход на всех устройствах (сменили телефон, отдали ноутбук, потеряли доверие к сети).
+	logout)
+		totp_sess_clear
+		clear_cookie; say "все устройства разлогинены" ;;
+	# --- Выход на ОСТАЛЬНЫХ: самый частый случай («вошёл с чужого ноутбука и забыл выйти»),
+	# при котором переспрашивать код у себя же незачем. Куку НЕ гасим — эта сессия остаётся.
+	others)
+		totp_sess_keep_only "$(totp_cookie)" || { deny "текущая сессия не найдена — попробуйте войти заново"; emit; }
+		say "остальные устройства разлогинены" ;;
+	# --- Отзыв ОДНОГО устройства. Если отзывают то, с которого пришли, куку надо погасить здесь
+	# же: иначе браузер продолжал бы слать мёртвый токен и получал 403 на каждом поллинге.
+	revoke)
+		[ -n "$sid" ] || { deny "не указано устройство"; emit; }
+		self=""; c=$(totp_cookie); [ -n "$c" ] && self=$(totp_sess_id "$c")
+		totp_sess_revoke "$sid" || { deny "такого устройства уже нет в списке"; emit; }
+		if [ "$sid" = "$self" ]; then clear_cookie; say "вы вышли на этом устройстве"
+		else say "устройство отвязано"; fi ;;
+	*) deny "неизвестная операция" ;;
+esac
+
+emit

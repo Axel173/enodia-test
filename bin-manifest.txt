@@ -1,0 +1,27 @@
+# bin-manifest.txt — что лежит в bin/<арка>/: РАЗМЕР (байты) и ВЕРСИЯ каждого бинаря.
+# Генерится local/build-bin-manifest.ps1 из реальных файлов; правки руками затрутся.
+# Читают: gh-update.sh (bin-size/bin-ver/fetch-bin), proto-install.sh (гард места), панель.
+# Формат: имя<TAB>арка<TAB>байты<TAB>версия   (# — комментарий)
+#
+# Размер тут = размер СЖАТОГО UPX файла в репо, т.е. ровно то, что займёт /data после
+# установки (на роутер кладётся байт-в-байт, не распаковывая).
+amneziawg-go	arm64	1023240	v3.1.20260814
+amneziawg-go	armv7	1028928	v3.1.20260814
+awg	arm64	139300	v3.1.20260812
+awg	armv7	152180	v3.1.20260812
+byedpi	arm64	138376	0.17.3
+byedpi	armv7	64244	0.17.3
+dot-proxy	arm64	305136	own-2026-08-24
+dot-proxy	armv7	302908	own-2026-08-24
+hev	arm64	157404	2.17.1
+hev	armv7	134820	2.17.1
+https-dns-proxy	arm64	635304	own-2026-08-24
+https-dns-proxy	armv7	629944	own-2026-08-24
+hysteria	arm64	5240976	v2.12.2
+hysteria	armv7	5198796	v2.12.2
+nfqws	arm64	125444	v72.13
+nfqws	armv7	121688	v72.13
+panel-tls	arm64	295816	own-2026-08-24
+panel-tls	armv7	293492	own-2026-08-24
+xray	arm64	8175020	26.7.28
+xray	armv7	7992848	26.7.28
