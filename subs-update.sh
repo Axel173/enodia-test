@@ -1112,9 +1112,10 @@ take_lock() {
 		rm -rf "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || return 1
 	fi
 	echo $$ > "$LOCK/pid" 2>/dev/null
+	SUBS_LOCK_MINE=1
 	return 0
 }
-drop_lock() { rm -rf "$LOCK" 2>/dev/null; }
+drop_lock() { rm -rf "$LOCK" 2>/dev/null; SUBS_LOCK_MINE=0; }
 
 # Лог в /tmp (RAM, ротации в проекте нет) — но подрезаем, чтобы частый cron не съел память.
 trim_log() {
@@ -1130,7 +1131,9 @@ mkdir -p "$TMPD" 2>/dev/null
 # и каталог остаётся в /tmp, то есть в ОЗУ. Замерено на живом роутере: такой каталог (тогда он звался
 # /tmp/enodia-subs-update.7007) пережил обрыв и не убирался ничем. Сигнал — ВЫХОД (C121): ловушка без
 # `exit` убирала каталог, а прогон шёл дальше — уже без него.
-trap 'rm -rf "$TMPD" 2>/dev/null' EXIT
+# Свой лок — тоже здесь: строку `drop_lock` после cmd_update выход по сигналу пропускает.
+SUBS_LOCK_MINE=0
+trap 'rm -rf "$TMPD" 2>/dev/null; [ "$SUBS_LOCK_MINE" = 1 ] && drop_lock' EXIT
 trap 'exit 1' INT TERM HUP PIPE
 trim_log
 

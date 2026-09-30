@@ -356,8 +356,11 @@ case "$1" in
         # ЧУЖОЙ лок не трогаем (его снимет владелец), свой снимаем trap'ом.
         SWLOCK=/tmp/enodia-switching.lock; SWMINE=0
         [ -e "$SWLOCK" ] || { : > "$SWLOCK" 2>/dev/null && SWMINE=1; }
+        # Сигнал — ВЫХОД (C121). HUP и PIPE глушим, как pkg-install.sh: между снятием несущей и подъёмом новой — минуты закачек,
+        # и обрыв SSH у ручного запуска не должен бросать роутер без транспорта посреди смены.
         trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT
-        trap 'exit 1' INT TERM HUP PIPE
+        trap 'exit 1' INT TERM
+        trap '' HUP PIPE
         apply "$2"
         ;;
     state) cat "$STATE" 2>/dev/null || echo IDLE ;;

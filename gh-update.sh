@@ -308,7 +308,31 @@ gh_socks_release() {
 # закрыл экран, `-K` из CGI), а брошенный ciadpi остался бы жить до ребута, отнимая память у
 # несущей. На busybox EXIT-ловушка по сигналу НЕ срабатывает — её зовёт `exit` сигнальной; без него
 # ловушка лишь гасила смерть, и закачка шла дальше без socks (C121).
-trap 'gh_socks_release' EXIT
+# ФОНОВАЯ ЗАКАЧКА (fetch_bin_one) — ТОЖЕ в уборке выхода: сигнал теперь выходит (C121), а `curl` — внук, подоболочку gh_get
+# переживает и докачивал бы в ОЗУ/на флеш уже ничей `.dl`. Потомков — ВСЕХ уровней (у socks-ветки `sh socks-up` — правнук) —
+# собираем, ПОКА жив родитель: после его смерти их PPid = 1. `.dl` снимаем и без живого фона: файл лежит рядом с местом установки
+# до самого `mv` (проверки размера, ELF и суммы — секунды), а это пик 20-МБ /data.
+gh_bg_stop() {
+    if [ -n "$GH_BGPID" ]; then
+        _gbk="$GH_BGPID"; _gbq="$GH_BGPID"
+        while [ -n "$_gbq" ]; do
+            _gbn=""
+            for _gbp in $_gbq; do
+                for _gbf in /proc/[0-9]*/status; do
+                    grep -q "^PPid:[[:space:]]*$_gbp\$" "$_gbf" 2>/dev/null || continue
+                    _gbc=${_gbf#/proc/}; _gbn="$_gbn ${_gbc%/status}"
+                done
+            done
+            _gbk="$_gbk$_gbn"; _gbq=$_gbn
+        done
+        kill $_gbk 2>/dev/null
+    fi
+    [ -n "$GH_BGDL" ] && rm -f "$GH_BGDL" 2>/dev/null
+    GH_BGPID=; GH_BGDL=
+    return 0
+}
+gh_exit() { gh_bg_stop; gh_socks_release; }
+trap 'gh_exit' EXIT
 trap 'exit 1' INT TERM HUP PIPE
 # ОДНА попытка через socks. `--resolve` здесь не нужен и не работает: имя резолвит прокси
 # (--socks5-hostname), в этом половина смысла — DNS-путь тоже не наш.
@@ -850,12 +874,14 @@ fetch_bin_staged() {   # $1 = имя, $2 = куда, [$3 = каталог-ист
     else _fsw="загруженный"; log "[fetch-bin] $_fsn <- файл, загруженный с компьютера"; fi
     _fsl=$(bm_line "$_fsn"); _fss=${_fsl#* }
     [ "${#_fss}" = 64 ] || { rm -f "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsn: в манифесте нет суммы — $_fsw файл не проверить"; return 1; }
+    GH_BGDL="$_fsd.dl"   # уборка выхода (gh_bg_stop) снимает копию, не доехавшую до `mv`
     cp "$_fsc/$_fsn" "$_fsd.dl" 2>/dev/null || { rm -f "$_fsd.dl"; fb_fail "не скопировать $_fsw $_fsn (место?)"; return 1; }
     _fsh=$(file_sha256 "$_fsd.dl")
     if [ "$_fsh" != "$_fss" ]; then rm -f "$_fsd.dl" "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsw $_fsn не совпал с манифестом"; return 1; fi
     if ! elf_ok "$_fsd.dl"; then rm -f "$_fsd.dl" "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsw $_fsn не ELF (не бинарь)"; return 1; fi
     chmod +x "$_fsd.dl"
     mv "$_fsd.dl" "$_fsd" || { rm -f "$_fsd.dl"; fb_fail "не смог поставить $_fsn"; return 1; }
+    GH_BGDL=
     if [ ! -x "$_fsd" ]; then
         chmod +x "$_fsd" 2>/dev/null
         [ -x "$_fsd" ] || { rm -f "$_fsd"; fb_fail "$_fsn лёг без права на исполнение ($_fsd) — накопитель смонтирован без exec?"; return 1; }
@@ -896,7 +922,7 @@ fetch_bin_one() {
     t0=$(date +%s)
     gh_code_reset          # чтобы ответ прошлого канала не выдали за причину этого
     gh_get "$url" "$dst.dl" &
-    cpid=$!
+    cpid=$!; GH_BGPID=$cpid; GH_BGDL="$dst.dl"
     while kill -0 "$cpid" 2>/dev/null; do
         sleep 2
         cur=$(stat -c%s "$dst.dl" 2>/dev/null || echo 0); case "$cur" in ''|*[!0-9]*) cur=0;; esac
@@ -905,7 +931,7 @@ fetch_bin_one() {
     el=$(( $(date +%s) - t0 )); [ "$el" -gt 0 ] || el=1
         log "[fetch-bin] $name: $((cur/1024)) КБ ($((cur/1024/el)) КБ/с)"
     done
-    wait "$cpid" 2>/dev/null; rc=$?
+    wait "$cpid" 2>/dev/null; rc=$?; GH_BGPID=
     # ПРИЧИНУ НАЗЫВАЕМ, а не гадаем. «(сеть/нет места?)» стояло тут годом раньше и оба раза мимо:
     # на 429 сеть в порядке и места вдоволь, а человек по такой строке идёт чинить не то.
     if [ "$rc" != 0 ]; then
@@ -932,6 +958,7 @@ fetch_bin_one() {
     fi
     chmod +x "$dst.dl"
     mv "$dst.dl" "$dst" || { rm -f "$dst.dl"; fb_fail "не смог поставить $name"; return 1; }
+    GH_BGDL=
     # Исполняемость судим ПО ФАКТУ, а не по тому, что chmod отработал: с появлением внешнего
     # накопителя $dst бывает на exFAT/NTFS, где права задаёт МОНТИРОВАНИЕ (fmask), а chmod молча
     # не делает ничего. Файл, легший без +x, — это связка, которая навсегда осталась «не
@@ -1121,8 +1148,8 @@ cmd_apply() {
     fi
     pkg_cleanup
     pkg_mkdir || { log "[apply] СТОП: не создать рабочий каталог в /tmp — обновление отменено"; return 1; }
-    trap 'gh_socks_release; pkg_cleanup' EXIT
-    trap 'gh_socks_release; pkg_cleanup; exit 1' INT TERM HUP
+    trap 'gh_exit; pkg_cleanup' EXIT
+    trap 'exit 1' INT TERM HUP
     _pu="https://github.com/$REPO/releases/download/$REL_TAG/$REL_PKG"
     log "[apply] релиз $REL_VERSION (код $REL_CODE): подпись сошлась, качаю $REL_PKG ($REL_SIZE байт)"
     if ! gh_get "$_pu" "$PKG_TMP/pkg.tar.gz"; then
@@ -1227,8 +1254,8 @@ cmd_rollback() {
     [ -f "$ENODIA_DIR/pkg-install.sh" ] || { log "[rollback] нет $ENODIA_DIR/pkg-install.sh — откатывать нечем; переустановите с компьютера"; return 1; }
     pkg_cleanup
     pkg_mkdir || { log "[rollback] СТОП: не создать рабочий каталог в /tmp"; return 1; }
-    trap 'gh_socks_release; pkg_cleanup' EXIT
-    trap 'gh_socks_release; pkg_cleanup; exit 1' INT TERM HUP
+    trap 'gh_exit; pkg_cleanup' EXIT
+    trap 'exit 1' INT TERM HUP
     if ! tar -xzf "$SNAP_DIR/$last" -C "$PKG_TMP/root" 2>/dev/null; then
         pkg_cleanup; log "[rollback] не открыть снимок ${last%.tar.gz} (повреждён?)"; return 1
     fi

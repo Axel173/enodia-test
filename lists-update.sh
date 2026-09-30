@@ -458,7 +458,7 @@ do_wire() {
 	trap 'ls_lock_drop "$_wlk"' EXIT
 	trap 'exit 1' INT TERM HUP PIPE
 	ensure_block_rules
-	ls_lock_drop "$_wlk"; trap - EXIT INT TERM HUP PIPE
+	trap - EXIT INT TERM HUP PIPE; ls_lock_drop "$_wlk"
 }
 # wired: снесена ли цепочка, которая обязана стоять — 0 стоит (или ставить нечего), 3 снесена, иное — не знаю. Спрашивает сторож,
 # когда VPN выключен и чужой reload заметить больше не по чему (правила несущей в этом состоянии нет вовсе; хвост 10 ревью dev233).

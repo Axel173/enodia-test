@@ -1276,7 +1276,7 @@ cmd_archive() {
 # в /tmp, то есть в ОЗУ, копился бы файл с КАЖДОГО обрыва (имя-то с PID). На сигнале выходим
 # ЯВНО: трап без exit только гасит смерть по SIGPIPE, и дамп домалывал бы диагностику в уже
 # закрытый сокет — минуты работы роутера впустую.
-trap 'rm -f "$ENV_SED"; exit 141' HUP INT TERM PIPE
+trap 'exit 141' HUP INT TERM PIPE
 trap 'rm -f "$ENV_SED"' EXIT
 
 case "${1:-}" in

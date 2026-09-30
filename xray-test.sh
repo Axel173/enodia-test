@@ -97,7 +97,7 @@ cleanup() {
 # Сигнал — выход после уборки: ловушка busybox на сигнале без `exit` вернула бы управление в середину скрипта.
 xt_done() { cleanup; [ "$_lk" = 1 ] && rm -rf "$TLOCK" 2>/dev/null; _lk=0; return 0; }
 trap xt_done EXIT
-trap 'xt_done; exit 1' INT TERM HUP PIPE
+trap 'exit 1' INT TERM HUP PIPE
 
 [ -n "$name" ] || { emit '{"ok":false,"msg":"не задано имя конфига"}'; exit 0; }
 src="$ENODIA_STATE/xray-configs/$name.json"

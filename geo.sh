@@ -970,6 +970,12 @@ overlap_scan() {   # $1=CIDR-агрегат «в VPN»  $2=набор «мимо
 # сборку двумя словами.
 upd_state() {
 	_us=$(cat "$RAM/.update.state" 2>/dev/null | tr -d ' \r\n')
+	# «Идёт» — ТОЛЬКО пока жив держатель лока (тот же разбор, что lists-update.sh::cat_state): сборка, вышедшая по сигналу (ловушка
+	# теперь ВЫХОДИТ, C121) или убитая -9, оставляла RUNNING до следующей сборки — панель держала «обновляю…». Держатель мог
+	# ЗАКОНЧИТЬ между чтением и проверкой лока — перечитываем, и прерванной считаем, только если в файле по-прежнему RUNNING.
+	if [ "$_us" = RUNNING ] && { [ ! -d "$GEO_LOCK" ] || _lock_stale "$GEO_LOCK"; }; then
+		_us=$(cat "$RAM/.update.state" 2>/dev/null | tr -d ' \r\n'); [ "$_us" = RUNNING ] && _us=ABORTED
+	fi
 	printf '%s' "${_us:-IDLE}"
 }
 # ГОЛОВА ОТВЕТА `list`: состояние сборки, счётчики сетов и признаки десинка. Печатает `{` и поля с хвостовой
@@ -1153,7 +1159,7 @@ case "$1" in
 		trap 'ls_lock_drop "$GEO_LOCK"' EXIT
 		trap 'exit 1' INT TERM HUP PIPE
 		geo_block_wire
-		ls_lock_drop "$GEO_LOCK"; trap - EXIT INT TERM HUP PIPE
+		trap - EXIT INT TERM HUP PIPE; ls_lock_drop "$GEO_LOCK"
 		exit 0 ;;
 	# Снесена ли цепочка «Блока», которая обязана стоять: 0 — стоит (или «Блока» нет), 3 — снесена, иное — не знаю (1 отдаёт любой
 	# общий отказ скрипта — «снесено» им быть не может). Признак «обязана» —
