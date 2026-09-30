@@ -6927,12 +6927,12 @@
     "Последний снимок старше формы входа в панель: откат туда оставил бы её открытой всей домашней сети, поэтому роутер откажет.":"The latest snapshot predates the panel sign-in form: rolling back to it would leave the panel open to the whole home network, so the router will refuse.",
     "Откатить к последнему снимку":"Roll back to the latest snapshot",
     "Целостность":"Integrity",
-    "Сверяет установленные файлы. Код — с суммами его же пакета, без сети (обновление и установка с компьютера ставят один и тот же пакет): расхождение значит, что файл правили на роутере или он побился. Бинари и код прежних установок сверяются с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.":"Checks the installed files. The code is compared with the sums of its own package, offline (an update and an installation from a computer install the same package): a difference means the file was edited on the router or got damaged. The binaries and the code of older installations are compared with what is published on GitHub — if the build is newer than the public one, differences there are normal.",
+    "Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). Расхождение значит, что файл правили на роутере или он побился. Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.":"Checks the installed files against their own package, offline: the code against the package sums, the protocol programs against its signed manifest (an update and an install from a computer put the same package). A difference means the file was edited on the router or got corrupted. Code of older installs, put without a package, is compared with what is published on GitHub — if the build is newer than the public one, differences there are normal.",
     "по суммам пакета":"against the package sums",
     "Сверяю…":"Comparing…","Роутер не ответил — сверка не прошла. Повторите.":"The router did not answer — the comparison failed. Try again.",
     "Сверить не удалось: роутер ответил не то.":"Could not compare: the router answered something else.",
     "На GitHub нет файла контрольных сумм — сверять не с чем.":"GitHub has no checksum file — nothing to compare with.",
-    "Совпало":"Matched","расходится":"differ","нет на роутере":"missing on the router","Сверить с GitHub":"Compare with GitHub",
+    "Совпало":"Matched","расходится":"differ","нет на роутере":"missing on the router","Сверить":"Verify",
     "Апдейтера на роутере нет — обновите панель с компьютера.":"There is no updater on the router — update the panel from a computer.",
     "Роутер не ответил — откройте экран ещё раз.":"The router did not answer — open the screen again.",
     "Состояние обновления получить не удалось: роутер ответил не то. Если вход в панель истёк — обновите страницу.":"Could not get the update state: the router answered something else. If your panel sign-in expired, reload the page.",
@@ -22196,7 +22196,7 @@
   // ---- карточка «Целостность»: что из установленного расходится с опубликованным ----
   function updIntHtml(d){
     var r=updVer, h='<div class="card" id="upd-int"><div class="wt">Целостность</div>'
-      + dkLine('Сверяет установленные файлы. Код — с суммами его же пакета, без сети (обновление и установка с компьютера ставят один и тот же пакет): расхождение значит, что файл правили на роутере или он побился. Бинари и код прежних установок сверяются с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.');
+      + dkLine('Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). Расхождение значит, что файл правили на роутере или он побился. Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.');
     var out='';
     if(r && r.run) out='<span>Сверяю…</span>';
     else if(r && r.err) out='<span class="wr">'+(r.err==='net' ? 'Роутер не ответил — сверка не прошла. Повторите.' : 'Сверить не удалось: роутер ответил не то.')+'</span>';
@@ -22208,7 +22208,7 @@
       if(r.miss.length) h+='<details class="ri-more" data-more="miss"><summary>Нет на роутере: '+r.miss.length+'</summary><div class="ri-list mono">'+r.miss.map(function(x){ return '<div>'+esc(x)+'</div>'; }).join('')+'</div></details>';
     }
     if(d.apply.running) h+=dkLine('Пока идёт обновление или откат, сверка заперта: посреди замены она показала бы смешанный набор.');
-    return h+'<div class="acts">'+updBtn('verify', 'Сверить с GitHub', false, !!(r && r.run) || d.apply.running)+'</div></div>';
+    return h+'<div class="acts">'+updBtn('verify', 'Сверить', false, !!(r && r.run) || d.apply.running)+'</div></div>';
   }
   function updWire(b){
     // Обновление и откат — ОБА фоном (откат ставит и установщик возвращённой версии, синхронный CGI убил бы uhttpd по потолку): роутер
