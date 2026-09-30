@@ -149,8 +149,8 @@ for _f in /tmp/dnsmasq.d/[0-9][0-9]-*.conf /tmp/dnsmasq.d/enodia-*.conf /tmp/dns
 done
 TMP_OURS="$TMP_DNSQ"
 # …и бинари, загруженные с компьютера, — до установки они лежат в ОЗУ (до ~17 МБ) вместе с времянками приёма (gh-update.sh bin-stage,
-# cgi-bin/binup).
-for _d in /tmp/enodia-geo /tmp/enodia-lists /tmp/enodia-bin-stage /tmp/enodia-binup-*; do
+# cgi-bin/binup), — и скачанные движком заранее (gh-update.sh bin-prefetch: на время операции, до ~17 МБ).
+for _d in /tmp/enodia-geo /tmp/enodia-lists /tmp/enodia-bin-stage /tmp/enodia-bin-prefetch /tmp/enodia-binup-*; do
     [ -d "$_d" ] && TMP_OURS="$TMP_OURS $_d"
 done
 if [ -f "$ENODIA_DIR/clean.sh" ]; then

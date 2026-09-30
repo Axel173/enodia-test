@@ -6695,7 +6695,8 @@
     "поимённо, где лежит каждый движок, и чистка":"where each engine lives, one by one, and cleanup",
     "Поставить":"Install","Снять":"Remove","Смена набора протоколов":"Protocol set change",   // «снять» — ниже, у действий
     "прервана":"interrupted","Журнал операции":"Operation log","идёт":"running",
-    "Удаления идут первыми, потом закачка с GitHub. Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.":"Removals go first, then the download from GitHub. While it runs, the list does not change and the plan cannot be applied, and the router will not start moving engines to the drive. If the router goes silent for 10 minutes, the panel will say so instead of waiting forever.",
+    "Сперва всё нужное скачивается в память роутера, потом удаления и установка. Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.":"First everything needed is downloaded into the router’s memory, then the removals and the installation. While it runs, the list does not change and the plan cannot be applied, and the router will not start moving engines to the drive. If the router goes silent for 10 minutes, the panel will say so instead of waiting forever.",
+    "Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.":"While it runs, the list does not change and the plan cannot be applied, and the router will not start moving engines to the drive. If the router goes silent for 10 minutes, the panel will say so instead of waiting forever.",
     "Операцию оборвали на полпути — перезагрузкой роутера или нехваткой памяти. Часть файлов могла не доехать: сверьте список выше и примените план ещё раз, если нужно.":"The operation was cut off halfway — by a router reboot or a lack of memory. Some files may not have arrived: check the list above and apply the plan again if needed.",
     "Роутер не ответил — список компонентов не пришёл. Откройте экран ещё раз.":"The router did not answer — the component list did not arrive. Open the screen again.",
     "Список компонентов получить не удалось: роутер ответил не то. Если вход в панель истёк — обновите страницу.":"Could not get the component list: the router answered something else. If your panel sign-in expired, reload the page.",
@@ -6734,7 +6735,8 @@
     "Не хватает":"Not enough by",
     "Что можно снять":"What can be removed",
     "Сбросить":"Reset",                             // «Применить» уже есть выше (карточка MTU)
-    "Удаления идут первыми, потом закачка с GitHub. Активную несущую и дополнительные выходы операция не переключает.":"Removals go first, then the download from GitHub. The operation does not switch the active carrier or the extra exits.",
+    "Сперва всё нужное скачивается с GitHub в память роутера, потом удаления и установка: не скачалось — не меняется ничего. Активную несущую и дополнительные выходы операция не переключает.":"First everything needed is downloaded from GitHub into the router’s memory, then the removals and the installation: if anything fails to download, nothing changes. The operation does not switch the active carrier or the extra exits.",
+    "Активную несущую и дополнительные выходы операция не переключает.":"The operation does not switch the active carrier or the extra exits.",
     "Удаления идут первыми, потом установка из загруженных файлов — GitHub не нужен. Активную несущую и дополнительные выходы операция не переключает.":"Removals go first, then the installation from the uploaded files — GitHub is not needed. The operation does not switch the active carrier or the extra exits.",
     // «Что занимает место» (clean.sh json/clean). Подписи групп чистки намеренно длинные:
     // цена у трёх групп разная, и без пояснения «снимки» читаются как такой же мусор.
@@ -22994,7 +22996,8 @@
       + '<div class="ds one" id="pi-progress" aria-live="polite">'+esc(last||'')+'</div></div><span class="chip wr">идёт</span></div>'
       // Срок — от ПОСЛЕДНЕГО ПРОГРЕССА, а не от нажатия (разбор у pollProto): «замолчит» здесь значит ровно это. Перенос на накопитель
       // не ждёт, а ОТКАЗЫВАЕТ, пока идёт установка (usb-offload.sh смотрит на тот же лок) — так и говорим (ревью шага 6c, круг 1).
-      + dkLine('Удаления идут первыми, потом закачка с GitHub. Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.')+'</div>';
+      // Порядок — закачка заранее (packages.sh): сперва всё в ОЗУ, потом снятия и установка; у операции без установки качать нечего.
+      + dkLine((op.ins ? 'Сперва всё нужное скачивается в память роутера, потом удаления и установка. ' : '')+'Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.')+'</div>';
   }
   // ---- карточка «Что должно стоять» ----
   function pkgListHtml(d){
@@ -23249,8 +23252,9 @@
     var can=(p.ok===true) && !pkgRunning;
     h+='<div class="acts"><div class="grow"></div><button type="button" class="btn gh" data-pka="reset">Сбросить</button>'
       + '<button type="button" class="btn pri" id="pkg-apply" data-pka="apply" data-busy="1"'+(can ? '' : ' data-na="1"')+((can && !busy) ? '' : ' disabled')+'>Применить</button></div>'
-      + dkLine(pkgFromUp(df.ins) ? 'Удаления идут первыми, потом установка из загруженных файлов — GitHub не нужен. Активную несущую и дополнительные выходы операция не переключает.'
-                                 : 'Удаления идут первыми, потом закачка с GitHub. Активную несущую и дополнительные выходы операция не переключает.');
+      + dkLine(!(df.ins && df.ins.length) ? 'Активную несущую и дополнительные выходы операция не переключает.'
+             : pkgFromUp(df.ins) ? 'Удаления идут первыми, потом установка из загруженных файлов — GitHub не нужен. Активную несущую и дополнительные выходы операция не переключает.'
+             : 'Сперва всё нужное скачивается с GitHub в память роутера, потом удаления и установка: не скачалось — не меняется ничего. Активную несущую и дополнительные выходы операция не переключает.');
     el.innerHTML=h;
     back();
   }
