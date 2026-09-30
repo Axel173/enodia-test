@@ -255,13 +255,14 @@ sync_pass() {
 do_sync() {
 	: > "$DIRTY" 2>/dev/null
 	lock_take || return 0
-	trap 'rm -f "$PAIRS" "$DRAFT" 2>/dev/null; lock_drop' EXIT INT TERM
+	trap 'rm -f "$PAIRS" "$DRAFT" 2>/dev/null; lock_drop' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 	while :; do
 		rm -f "$DIRTY" 2>/dev/null
 		sync_pass "$1"
 		[ -f "$DIRTY" ] || break
 	done
-	trap - EXIT INT TERM
+	trap - EXIT INT TERM HUP PIPE
 	rm -f "$PAIRS" "$DRAFT" 2>/dev/null
 	lock_drop
 }

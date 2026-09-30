@@ -391,7 +391,8 @@ do_update() {
 	W=$(ram_dir "$CAT")                       # ОЗУ: сюда ВСЕ закачки/рабочие файлы (не на флеш!)
 	lock="$W/.update.lock"
 	ls_lock_take "$lock" "$W/.update.dirty" || return 0   # держатель жив → он переиграет под свежий реестр
-	trap 'ls_lock_drop "$lock"' EXIT INT TERM
+	trap 'ls_lock_drop "$lock"' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 
 	: > "$W/.update.log"; ustate RUNNING
 	exec >>"$W/.update.log" 2>&1
@@ -402,7 +403,7 @@ do_update() {
 		echo "--- реестр менялся во время обновления → переигрываю проход ---"
 	done
 	ustate DONE
-	trap - EXIT INT TERM
+	trap - EXIT INT TERM HUP PIPE
 	ls_lock_drop "$lock"
 	return 0
 }
@@ -454,9 +455,10 @@ do_wire() {
 	# пришедшего посреди его прохода. Цена — повторная закачка, но совпадение починки с обновлением блок-листа редкое.
 	_wlk="$(ram_dir ipblock)/.update.lock"
 	ls_lock_take "$_wlk" "$(ram_dir ipblock)/.update.dirty" || return 0
-	trap 'ls_lock_drop "$_wlk"' EXIT INT TERM
+	trap 'ls_lock_drop "$_wlk"' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 	ensure_block_rules
-	ls_lock_drop "$_wlk"; trap - EXIT INT TERM
+	ls_lock_drop "$_wlk"; trap - EXIT INT TERM HUP PIPE
 }
 # wired: снесена ли цепочка, которая обязана стоять — 0 стоит (или ставить нечего), 3 снесена, иное — не знаю. Спрашивает сторож,
 # когда VPN выключен и чужой reload заметить больше не по чему (правила несущей в этом состоянии нет вовсе; хвост 10 ревью dev233).

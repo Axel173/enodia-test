@@ -1210,7 +1210,8 @@ cmd_archive() {
     ts=$(date +%Y%m%d-%H%M%S 2>/dev/null); case "$ts" in ''|*[!0-9-]*) ts=diag ;; esac
     base="enodia-diag-$ts"
     td="/tmp/.enodia-diag-$$"
-    trap 'rm -rf "$td" "$ENV_SED"' EXIT HUP INT TERM PIPE
+    # Только EXIT: сигнал ведёт ловушка уровня файла (`exit 141`, ниже), а её `exit` и зовёт эту уборку (C121).
+    trap 'rm -rf "$td" "$ENV_SED"' EXIT
     rm -rf "$td"; mkdir -p "$td/$base/logs" "$td/$base/system" 2>/dev/null || return 1
 
     sys_budget; st=$SYS_TAIL; olds=$SYS_OLD
@@ -1266,7 +1267,7 @@ cmd_archive() {
     } > "$td/$base/README.txt"
 
     tar -cz -C "$td" "$base" 2>/dev/null
-    rm -rf "$td" "$ENV_SED"; trap - EXIT HUP INT TERM PIPE
+    rm -rf "$td" "$ENV_SED"; trap 'rm -f "$ENV_SED"' EXIT
     return 0
 }
 

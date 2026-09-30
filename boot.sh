@@ -514,7 +514,8 @@ cmd_hotplug() {
     # Лок НЕ ЖДЁТ: событие одной флешки бывает не одно (разделов несколько, повторное add), и второму
     # делать нечего — первый уже монтирует. mkdir атомарен, /tmp = ОЗУ.
     mkdir "$BOOT_LOCK" 2>/dev/null || return 0
-    trap 'rm -rf "$BOOT_LOCK"' EXIT HUP INT TERM PIPE
+    trap 'rm -rf "$BOOT_LOCK"' EXIT
+    trap 'exit 1' INT TERM HUP PIPE
     rm -f "$SCAN_STAMP" 2>/dev/null          # событие важнее троттла: ищем немедленно
     hook_ensure
     if resolve; then

@@ -93,7 +93,8 @@ command -v dom_ok >/dev/null 2>&1 || {
 SWITCH_LOCK_MINE=0
 hold_switch() {
 	[ -e "$SWITCH_LOCK" ] || { : > "$SWITCH_LOCK" 2>/dev/null && SWITCH_LOCK_MINE=1; }
-	trap 'drop_switch' EXIT INT TERM
+	trap 'drop_switch' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 }
 drop_switch() { _rc=$?; [ "$SWITCH_LOCK_MINE" = 1 ] && rm -f "$SWITCH_LOCK" 2>/dev/null; return "$_rc"; }
 
@@ -410,7 +411,8 @@ case "$act" in
 		cof=/tmp/enodia-console.$$
 		# `.rc` ловушка НЕ трогает: по нему сторож узнаёт, что команда кончилась, и стёртый раньше его взгляда он принимал за «идёт» —
 		# минуту крутил опрос и гасил дерево уже закончившейся команды вместе с её честным фоном (ревью шага 6d, круг 3). Его убирает сторож.
-		trap 'rm -f "$cof" "$cof.k" "$cof.cut"' EXIT HUP INT TERM PIPE
+		trap 'rm -f "$cof" "$cof.k" "$cof.cut"' EXIT
+		trap 'exit 1' INT TERM HUP PIPE
 		# Вывод — ПРЯМО В ФАЙЛ, без трубы: `head -c` в трубе копит вывод в своём буфере до выхода, а фон, оставленный командой без
 		# перенаправления (`sh x.sh &`), держит трубу и не даёт ему выйти — ответ приходил пустым (ревью шага 6d, круг 3). Потолок по
 		# объёму держит сторож ниже. stdio фона — в /dev/null: унаследованный stdout CGI держал бы ответ, пока жив фон.
@@ -720,7 +722,7 @@ case "$act" in
 		[ -e "$SWITCH_LOCK" ] && fail "Роутер занят другой операцией — попробуйте через минуту"
 		: > "$SWITCH_LOCK" 2>/dev/null || fail "не удалось взять лок смены транспорта"
 		if _drc; then rm -f "$SWITCH_LOCK" 2>/dev/null; fail "Роутер сейчас сам восстанавливает соединение — попробуйте через минуту"; fi
-		spawn_bg /tmp/enodia-doh-retry.pid -c ": doh-retry; trap 'rm -f \"$SWITCH_LOCK\"' EXIT HUP INT TERM PIPE; sh '$ENODIA_DIR/transport.sh' dns >/dev/null 2>&1"
+		spawn_bg /tmp/enodia-doh-retry.pid -c ": doh-retry; trap 'rm -f \"$SWITCH_LOCK\"' EXIT; trap 'exit 1' INT TERM HUP PIPE; sh '$ENODIA_DIR/transport.sh' dns >/dev/null 2>&1"
 		_drp=$(cat /tmp/enodia-doh-retry.pid 2>/dev/null | tr -cd '0-9'); _drw=0
 		# Узел не поднялся (нет пидфайла и после запаса) — лок наш и снять его больше некому: иначе сторож стоял бы до SWITCH_STALE.
 		# fixed-wait: запас на запись пидфайла внуком start-stop-daemon под нагрузкой (spawn_bg ждёт 2 с), жизнь судить не по чему.

@@ -828,7 +828,8 @@ do_build() {
 		echo 'гео: сборка уже идёт — учту свежий выбор в ней'
 		return 0
 	fi
-	trap 'ls_lock_drop "$GEO_LOCK"' EXIT INT TERM
+	trap 'ls_lock_drop "$GEO_LOCK"' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 	_sum=''; _rc=0
 	while :; do
 		rm -f "$GEO_DIRTY" 2>/dev/null   # сброс ДО чтения реестра: пойманный dirty ⇒ реестр прочитан ПОСЛЕ мутации
@@ -837,7 +838,7 @@ do_build() {
 		_want=$(cat "$GEO_DIRTY" 2>/dev/null | tr -d ' \r\n'); [ "$_want" = 1 ] || _want=0
 	done
 	ustate DONE
-	trap - EXIT INT TERM
+	trap - EXIT INT TERM HUP PIPE
 	ls_lock_drop "$GEO_LOCK"
 	[ -z "$_sum" ] || echo "$_sum"
 	return $_rc   # провал заливки набора не должен читаться как «применено» (сводка это же и говорит)
@@ -1149,9 +1150,10 @@ case "$1" in
 		[ -s "$SNAP_BLK" ] || exit 0
 		_gwd=$(cat "$GEO_DIRTY" 2>/dev/null | tr -d ' \r\n'); [ "$_gwd" = 1 ] || _gwd=0
 		ls_lock_take "$GEO_LOCK" "$GEO_DIRTY" "$_gwd" || exit 0
-		trap 'ls_lock_drop "$GEO_LOCK"' EXIT INT TERM
+		trap 'ls_lock_drop "$GEO_LOCK"' EXIT
+		trap 'exit 1' INT TERM HUP PIPE
 		geo_block_wire
-		ls_lock_drop "$GEO_LOCK"; trap - EXIT INT TERM
+		ls_lock_drop "$GEO_LOCK"; trap - EXIT INT TERM HUP PIPE
 		exit 0 ;;
 	# Снесена ли цепочка «Блока», которая обязана стоять: 0 — стоит (или «Блока» нет), 3 — снесена, иное — не знаю (1 отдаёт любой
 	# общий отказ скрипта — «снесено» им быть не может). Признак «обязана» —

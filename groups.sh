@@ -456,14 +456,15 @@ do_apply() {
 		echo 'группы: сборка уже идёт — учту свежий состав в ней'
 		return 0
 	fi
-	trap 'ls_lock_drop "$GRP_LOCK"' EXIT INT TERM
+	trap 'ls_lock_drop "$GRP_LOCK"' EXIT
+	trap 'exit 1' INT TERM HUP PIPE
 	_sum=''; _rc=0
 	while :; do
 		rm -f "$GRP_DIRTY" 2>/dev/null   # сброс ДО чтения реестра: пойманный dirty ⇒ реестр прочитан ПОСЛЕ мутации
 		_sum=$(_apply_pass); _rc=$?
 		[ -f "$GRP_DIRTY" ] || break
 	done
-	trap - EXIT INT TERM
+	trap - EXIT INT TERM HUP PIPE
 	ls_lock_drop "$GRP_LOCK"
 	[ -z "$_sum" ] || echo "$_sum"
 	return $_rc

@@ -325,7 +325,9 @@ SWITCH_LOCK_MINE=0
 take_switch_lock() {
     [ -e "$SWITCH_LOCK" ] && return 0
     : > "$SWITCH_LOCK" 2>/dev/null && SWITCH_LOCK_MINE=1
-    trap 'drop_switch_lock' EXIT INT TERM HUP
+    # Сигнал — ВЫХОД (C121): ловушка без `exit` снимала лок, а шелл шёл дальше — смена несущей без лока, окно сторожу открыто.
+    trap 'drop_switch_lock' EXIT
+    trap 'exit 1' INT TERM HUP PIPE
     return 0
 }
 drop_switch_lock() {

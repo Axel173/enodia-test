@@ -356,7 +356,8 @@ case "$1" in
         # ЧУЖОЙ лок не трогаем (его снимет владелец), свой снимаем trap'ом.
         SWLOCK=/tmp/enodia-switching.lock; SWMINE=0
         [ -e "$SWLOCK" ] || { : > "$SWLOCK" 2>/dev/null && SWMINE=1; }
-        trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT INT TERM HUP PIPE
+        trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT
+        trap 'exit 1' INT TERM HUP PIPE
         apply "$2"
         ;;
     state) cat "$STATE" 2>/dev/null || echo IDLE ;;

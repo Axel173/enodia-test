@@ -51,7 +51,7 @@ if [ -e "$LOCK" ]; then
     _lt=$(cat "$LOCK" 2>/dev/null); case "$_lt" in ''|*[!0-9]*) _lt=0 ;; esac
     [ "$(age_since "$_lt")" -lt "$LOCK_STALE" ] && exit 0
 fi
-date +%s > "$LOCK"; trap 'rm -f "$LOCK"' EXIT INT TERM HUP
+date +%s > "$LOCK"; trap 'rm -f "$LOCK"' EXIT; trap 'exit 1' INT TERM HUP PIPE
 
 # Часы ещё не выставлены? У BE7000 НЕТ RTC — после холодного ребута время неверно,
 # пока не отработает ntpsetclock (cron */15). Пропускаем тик, иначе записали бы дельту

@@ -143,7 +143,8 @@ TMP="/tmp/.enodia-ipcache.$$"
 # таких файла от двух мёртвых pid за пять часов аптайма. Судим по ЖИВОСТИ ХОЗЯИНА (pid зашит в
 # имя), а НЕ по возрасту: параллельный запрос панели идёт своим pid'ом, и трогать его нельзя —
 # он как раз пишет туда результат. Заодно подбираем `.c` — ступень записи кэша, если `mv` не удался.
-trap 'rm -f "$TMP.w" "$TMP.v" "$TMP.c" 2>/dev/null' EXIT HUP INT TERM PIPE
+trap 'rm -f "$TMP.w" "$TMP.v" "$TMP.c" 2>/dev/null' EXIT
+trap 'exit 1' INT TERM HUP PIPE
 for _st in /tmp/.enodia-ipcache.*.w /tmp/.enodia-ipcache.*.v /tmp/.enodia-ipcache.*.c \
            /tmp/.awg-ipcache.*.w /tmp/.awg-ipcache.*.v /tmp/.awg-ipcache.*.c; do   # legacy-name: остатки ДОРЕБРЕНДИНГОВОГО имени кэша — подобрать и забыть
 	[ -f "$_st" ] || continue

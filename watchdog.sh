@@ -1957,7 +1957,9 @@ if [ -e "$LOCK" ]; then
 fi
 date +%s > "$LOCK"
 echo $$ > "$WD_PID"        # «держатель жив?» — вопрос вердикта, см. tick_running
-trap 'rm -f "$LOCK" "$WD_PID"' EXIT INT TERM HUP
+# Сигнал — ВЫХОД (C121): ловушка без `exit` снимала лок, а тик шёл дальше — следующий тик входил в середину этого.
+trap 'rm -f "$LOCK" "$WD_PID"' EXIT
+trap 'exit 1' INT TERM HUP PIPE
 
 # --- Режим поддержки: погасить истёкший туннель (до boot-grace — экспайр важнее) ---
 # DRY: watchdog уже бежит cron */2, поэтому reap живёт здесь, а не отдельным демоном. Дёшево

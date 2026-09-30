@@ -142,7 +142,9 @@ acquire_lock() {
     # безусловный `rm` в trap) освобождала лок, который держал КТО-ТО ДРУГОЙ: смена сервера из
     # панели посреди установки компонентов открывала сторожу дорогу в середину чужой операции.
     [ -e "$SWITCH_LOCK" ] || { : > "$SWITCH_LOCK" 2>/dev/null && SWITCH_LOCK_MINE=1; }
-    trap 'release_lock' EXIT INT TERM HUP
+    # Сигнал — ВЫХОД (C121): ловушка без `exit` снимала лок, а смена страны шла дальше уже без него.
+    trap 'release_lock' EXIT
+    trap 'exit 1' INT TERM HUP PIPE
 }
 release_lock() {
     # Сохраняем код возврата: failover отдаёт его watchdog'у (0=встал на резерв /
