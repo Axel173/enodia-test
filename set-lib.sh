@@ -32,7 +32,7 @@
 # Потребители: groups.sh, geo.sh (у каждого guarded-source + шим на прежнее поведение — файла
 # может не оказаться после частичного apply-scripts).
 
-SET_SNAP=${SET_SNAP:-/tmp/.set-snap}
+SET_SNAP=${SET_SNAP:-/tmp/.enodia-set-snap}
 
 # Чем сравнивать снимок с текущим составом. `cmp` есть НЕ во всякой сборке busybox — в проекте его
 # везде гардят (gh-update.sh, install.sh), и здесь гард нужен ОСОБЕННО: без него оба
@@ -94,8 +94,8 @@ set_sync() {
 	_sl_pc="$SET_SNAP-$_sl_ss.cidr"; _sl_pd="$SET_SNAP-$_sl_ss.dom"
 	# ПИД в имени временных: apply групп и apply гео — РАЗНЫЕ процессы и могут идти одновременно
 	# (общего лока у них нет), а на общих именах они топтали бы файлы друг друга.
-	_sl_nc="/tmp/.set-sync.$$.cidr"; _sl_nd="/tmp/.set-sync.$$.dom"
-	_sl_dy="/tmp/.set-sync.$$.dyn"; _sl_cur="/tmp/.set-sync.$$.cur"
+	_sl_nc="/tmp/.enodia-set-sync.$$.cidr"; _sl_nd="/tmp/.enodia-set-sync.$$.dom"
+	_sl_dy="/tmp/.enodia-set-sync.$$.dyn"; _sl_cur="/tmp/.enodia-set-sync.$$.cur"
 	sort "$_sl_sf" 2>/dev/null > "$_sl_nc" || : > "$_sl_nc"
 	if [ -n "$_sl_sd" ] && [ -f "$_sl_sd" ]; then sort "$_sl_sd" 2>/dev/null > "$_sl_nd" || : > "$_sl_nd"
 	else : > "$_sl_nd"; fi

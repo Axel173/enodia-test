@@ -25,12 +25,12 @@
 # нужна, о загрузке heal шлёт своё письмо. Письма идут через notify-event.sh
 # (он уважает .notify-off и throttle; здесь throttle 0 — события и так редкие).
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 SET=iplist_set
-TMP=/tmp/iplist.txt
-LOG=/tmp/iplist-update.log
+TMP=/tmp/enodia-iplist.txt
+LOG=/tmp/enodia-iplist-update.log
 NOTIFY_EVENT="$ENODIA_DIR/notify-event.sh"
 COUNT_FILE="$ENODIA_STATE/.iplist.count"   # прошлое число подсетей (для дельты; переживает ребут)
 SNAP_FILE="$ENODIA_STATE/.iplist.snapshot" # последний удачно скачанный список — fallback на boot при мёртвом источнике (переживает ребут)
@@ -62,6 +62,13 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 if [ -f "$ENODIA_DIR/nf-i18n.sh" ]; then . "$ENODIA_DIR/nf-i18n.sh"; fi
 command -v nf_lang >/dev/null 2>&1 || nf_lang() { echo ru; }
 NF_LANG=$(nf_lang)
+# Чья подписка у активного сервера — у ВЛАДЕЛЬЦА ответа (subs-lib.sh::sub_owner_tag: ДЛИННЕЙШИЙ подходящий тег). Своя копия резала
+# имя до первого дефиса, а теги бывают префиксами друг друга и сами с дефисом («liberty» ⊂ «liberty-vpn»): утреннее письмо
+# подписывало сервер ЧУЖОЙ подпиской, а сервер подписки с дефисом в теге — никакой (ревью приёмки, 25.09.2026). Без библиотеки
+# (частичная установка) письмо честно уходит без метки подписки.
+if [ -f "$ENODIA_DIR/subs-lib.sh" ]; then . "$ENODIA_DIR/subs-lib.sh"; fi
+command -v sub_owner_tag >/dev/null 2>&1 || sub_owner_tag() { :; }
+command -v sub_label_of  >/dev/null 2>&1 || sub_label_of()  { :; }
 
 # --- Источник списка: настраивается опциональным $ENODIA_STATE/iplist.conf ----------
 # Файл на /data → переживает ребут. Нет файла → дефолт (весь cidr4 с opencck),
@@ -151,7 +158,7 @@ load_set_from_files() {
 # DNS туннеля ('no-resolv; server=<VPN_DNS>'), а туннель ещё НЕ несёт → резолв
 # ЛЮБОГО имени мёртв → curl падает 'download failed', а на fresh-install снимка
 # нет → iplist_set остаётся ПУСТЫМ до ручного «обновить список» / ребута / 5:00
-# (поймано на железе 2026-06-24, лог /tmp/iplist-update.log). Трафик к opencck
+# (поймано на железе 2026-06-24, лог /tmp/enodia-iplist-update.log). Трафик к opencck
 # всё равно идёт ПРЯМО (мимо туннеля, до mark-core), поэтому при сбое штатного пути
 # резолвим хост ЧЕРЕЗ DoH ПО IP-ЛИТЕРАЛУ (самим адресам 1.1.1.1/8.8.8.8 DNS не нужен —
 # dnsmasq в цепочке нет) и тянем по curl --resolve.
@@ -246,12 +253,13 @@ subnets. Routing was left on the PREVIOUS iplist_set list."
         echo "only-mode: нет/пуст $IPLIST_CUSTOM_FILE"
         if [ "$NF_LANG" = en ]; then
             mail_event iplist-fail 0 "BE7000: custom list is missing" \
-"Mode 'only', but file $IPLIST_CUSTOM_FILE is missing or empty. Upload a list via
-be7000 (IP list source -> Custom local file). The live set was left untouched."
+"Mode 'only', but file $IPLIST_CUSTOM_FILE is missing or empty. Put a list into
+that file, or switch the sources in the panel («Sites, domains, IP»). The live
+set was left untouched."
         else
             mail_event iplist-fail 0 "BE7000: кастомный список отсутствует" \
-"Режим 'only', но файла $IPLIST_CUSTOM_FILE нет или он пуст. Залей список через
-be7000 (Источник списка IP -> Кастомный локальный файл). Боевой set не тронут."
+"Режим 'only', но файла $IPLIST_CUSTOM_FILE нет или он пуст. Положите список в этот
+файл либо переключите источники в панели («Сайты, домены, IP»). Боевой set не тронут."
         fi
     fi
 else
@@ -302,7 +310,7 @@ days, check that the source is reachable."
 Источник: $URL
 Маршрутизация работает на ПРОШЛОМ списке ($CUR подсетей) — ничего не
 сломалось, новых подсетей не добавилось. Если повторяется несколько
-дней — проверь доступность источника."
+дней — проверьте доступность источника."
             fi
             exit 1
         elif [ -s "$SNAP_FILE" ] || [ "$HAVE_CUSTOM" = 1 ]; then
@@ -348,10 +356,22 @@ echo "ipset $SET: $COUNT entries (fallback=$USED_FALLBACK)"
 # смог» у него нет. Без этой ветки утренняя сводка бодро рапортовала «список IP обновлён — 0
 # подсетей», хотя это ровно та авария, ради которой в legacy-пути написаны три разных письма:
 # сплит по CIDR мёртв целиком (едут только домены через enodia_list), и человек об этом не узнаёт.
-DELEG_EMPTY=0
+# …НО ПУСТОЙ НАБОР БЫВАЕТ И РЕШЕНИЕМ: человек выключил в «Источниках списков» все источники CIDR — и тогда пул пуст
+# намеренно (lists-update.sh при nen=0 сам его очищает, снимок не поднимает). Письмо «источники недоступны, наполнится при
+# следующем обновлении» с уровнем «сбой» врало тут дважды: источников нет вовсе, и само не наполнится никогда (Роман,
+# 06.09.2026 — при полностью рабочем роутере). Число включённых — у владельца реестра (lists-lib.sh reg_nen); старый
+# lists-lib без функции даёт пусто — судим по-прежнему, как об аварии.
+DELEG_EMPTY=0; DELEG_OFF=0
 if [ "$DELEGATED" = 1 ] && [ "$COUNT" = 0 ]; then
-    DELEG_EMPTY=1
-    echo "ВНИМАНИЕ: делегированное наполнение дало ПУСТОЙ $SET (источники недоступны, снимка нет)"
+    _nen=""
+    [ -f "$ENODIA_DIR/lists-lib.sh" ] && _nen=$( . "$ENODIA_DIR/lists-lib.sh" 2>/dev/null; command -v reg_nen >/dev/null 2>&1 && reg_nen tunnel-cidr 2>/dev/null )
+    if [ "$_nen" = 0 ]; then
+        DELEG_OFF=1
+        echo "$SET пуст намеренно: все источники CIDR-списка выключены"
+    else
+        DELEG_EMPTY=1
+        echo "ВНИМАНИЕ: делегированное наполнение дало ПУСТОЙ $SET (источники недоступны, снимка нет)"
+    fi
 fi
 
 # 4. Правило маркировки (идемпотентно — добавляем если нет).
@@ -361,8 +381,18 @@ fi
 # человек выберет транспорт в панели, маркировке будет что метить сразу, а не с утреннего cron.
 # Ответ спрашиваем у оркестратора; код 2 (старая копия) = ведём себя как раньше.
 _tcfg=0; [ -f "$ENODIA_DIR/transport.sh" ] && { sh "$ENODIA_DIR/transport.sh" configured >/dev/null 2>&1; [ "$?" = 1 ] && _tcfg=1; }
-if [ "$_tcfg" = 1 ]; then
-    echo "транспорт не настроен (установка «только панель») — правило маркировки не ставлю"
+# …и ТО ЖЕ САМОЕ, когда человек ВЫКЛЮЧИЛ VPN тумблером (.vpn-off переживает ребут с 02.09.2026):
+# `vpn-toggle off` снимает ip rule, heal при флаге не зовёт mark-core — значит метить снова некуда,
+# а наше правило было бы единственным следом в mangle. Замерено на живом AX3600: без этой ветки
+# после ребута выключенный роутер получал обратно `MARK --set-mark 0x1` для iplist_set. Обратно
+# правило кладёт mark-core на `on` — тем же путём, что и после «только панели».
+_voff=0; [ -f "$ENODIA_STATE/.vpn-off" ] && _voff=1
+if [ "$_tcfg" = 1 ] || [ "$_voff" = 1 ]; then
+    if [ "$_voff" = 1 ]; then
+        echo "VPN выключен человеком — правило маркировки не ставлю (вернёт vpn-toggle.sh on)"
+    else
+        echo "транспорт не настроен (установка «только панель») — правило маркировки не ставлю"
+    fi
 elif ! iptables -t mangle -C PREROUTING -m set --match-set "$SET" dst -j MARK --set-mark 0x1 2>/dev/null; then
     iptables -t mangle -A PREROUTING -m set --match-set "$SET" dst -j MARK --set-mark 0x1
     echo "mangle rule added for $SET"
@@ -467,10 +497,8 @@ if [ "$NOTIFY" = 1 ]; then
             if [ -f "$ENODIA_STATE/.sub-names" ]; then
                 while IFS="$TAB" read -r _f _r; do [ "$_f" = "$active" ] && { disp="$_r"; break; }; done < "$ENODIA_STATE/.sub-names"
             fi
-            _tag=$(printf '%s' "$active" | sed 's/^sub-//; s/-.*//')
-            if [ -f "$ENODIA_STATE/.subs" ]; then
-                while IFS="$TAB" read -r _t _u _l; do [ "$_t" = "$_tag" ] && { lbl="$_l"; break; }; done < "$ENODIA_STATE/.subs"
-            fi
+            _tag=$(sub_owner_tag "$active")
+            [ -n "$_tag" ] && lbl=$(sub_label_of "$_tag")
             [ -n "$disp" ] || disp="$active"
             if [ -n "$lbl" ]; then active_disp="$disp (подписка «$lbl»)"; else active_disp="$disp"; fi
             [ "$NF_LANG" = en ] && [ -n "$lbl" ] && active_disp="$disp (subscription «$lbl»)"
@@ -534,6 +562,33 @@ if [ "$NOTIFY" = 1 ]; then
 "Рунет и домены (enodia_list) работают, но CDN-подсети из CIDR-списка временно НЕ" \
 "заворачиваются в VPN. Наполнится при следующем удачном обновлении" \
 "(ближайший ребут или 5:00)." \
+"" \
+"Транспорт: $dg_label." \
+"VPN: $vpn_state." \
+"Внешний IP сейчас: ${ip:-неизвестен}.")
+        fi
+    fi
+    # Источники выключены человеком — не авария и не «обновлено — 0 подсетей»: сводка говорит, что CIDR-пул не используется
+    # и почему, и как вернуть. Ключ — обычной сводки (уровень «инфо»): письмо про решение человека не «сбой».
+    if [ "$DELEG_OFF" = 1 ]; then
+        if [ "$NF_LANG" = en ]; then
+            subj="BE7000: IP list is not used — all sources are off"
+            BODY=$(printf '%s\n' \
+"All sources of the shared IP list (CIDR) are turned off, so iplist_set is empty on purpose." \
+"Nothing is broken: domain rules (enodia_list), groups and geo categories work as usual;" \
+"only subnets from the CIDR list are not routed into the VPN." \
+"To use the list again, turn a source on in «Routing» → «List sources»." \
+"" \
+"Transport: $dg_label." \
+"VPN: $vpn_state." \
+"External IP now: ${ip:-unknown}.")
+        else
+            subj="BE7000: список IP не используется — все источники выключены"
+            BODY=$(printf '%s\n' \
+"Все источники общего списка IP (CIDR) выключены — поэтому iplist_set пуст намеренно." \
+"Ничего не сломано: доменные правила (enodia_list), группы и гео-категории работают как" \
+"обычно; не заворачиваются в VPN только подсети из CIDR-списка." \
+"Чтобы вернуть список, включите источник в «Маршрутизация» → «Источники списков»." \
 "" \
 "Транспорт: $dg_label." \
 "VPN: $vpn_state." \

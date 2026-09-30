@@ -9,6 +9,16 @@
 : "${ENODIA_BIN:=/data/usr/app/enodia-bin}"
 config_file="$ENODIA_STATE/amnezia_for_awg.conf"
 interface_config="$ENODIA_STATE/awg0.conf"
+# «ОТКЛЮЧИТЬ VPN» — awg0 НЕ ПОДНИМАЕМ ДАЖЕ ТЁПЛЫМ РЕЗЕРВОМ. Нас зовут пятеро (heal на буте, смена и перебор серверов switch-vpn,
+# плагин awg, доустановка протокола), и каждый прошёл свою проверку флага РАНЬШЕ: перебор серверов досчитывал до живого и поднимал
+# awg0 минуты спустя после выключения (ревью ветки, круг 2). Спрашиваем здесь, в единственном месте, где awg0 рождается, — ДО (ничего
+# не делаем, даже firewall reload) и ПОСЛЕ подъёма (выключили по ходу — гасим свой демон). Владелец ответа — daemon-lib.sh.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+if carrier_barred; then
+    echo "VPN выключен вручную — awg0 не поднимаю (включить: тумблер в панели)"
+    exit 1
+fi
 if [ ! -f "$config_file" ]; then
     echo "File $config_file not found"
     exit 1
@@ -46,13 +56,23 @@ echo "DNS: $dns"
 
 if [ -f "$interface_config" ]; then
     echo "$interface_config already exists"
+    # Миграция: awg0.conf, собранный ДО вырезки ListenPort (ниже), переживает ребут и обновление и пересобирается лишь при
+    # смене сервера — порт жил бы в нём до неё (ревью 27.09.2026). Снимаем на месте; grep впереди — без записи на флеш зря.
+    # Регистр имени ключа — любой (wg читает его без учёта регистра); правка — через файл рядом и `mv`, как у генератора.
+    if grep -qiE '^[[:space:]]*listenport[[:space:]]*=' "$interface_config" 2>/dev/null; then
+        awk '{ t = tolower($0) } !(t ~ /^[[:space:]]*listenport[[:space:]]*=/)' "$interface_config" > "$interface_config.lp" 2>/dev/null \
+            && mv "$interface_config.lp" "$interface_config"
+    fi
 else
     # ВАЖНО: вырезаем ВСЕ wg-quick-only директивы. `awg setconf` (форк wg setconf) их НЕ
     # понимает и на ПЕРВОЙ же такой строке падает "Line unrecognized: MTU=..." →
     # отвергает ВЕСЬ конфиг → awg0 поднимается ПУСТЫМ (без PrivateKey и [Peer]) → handshake
     # невозможен. Старый фильтр резал только Address/DNS и спотыкался на MTU из WARP-конфига.
     # Валидные для setconf ключи [Interface]: PrivateKey/ListenPort/FwMark + AWG (Jc/S*/H*/I*).
-    awk '!/^[[:space:]]*(Address|DNS|MTU|Table|PreUp|PostUp|PreDown|PostDown|SaveConfig)[[:space:]]*=/' "$config_file" > "$interface_config"
+    # ListenPort — вон, как и у выхода (transport-awg.sh slot_gen_conf): клиенту фиксированный порт не нужен, а занятый другим
+    # нашим демоном («доступ домой» awgs0, выход) порт = рукопожатия нет никогда.
+    # Имя ключа — без учёта регистра (как у парсера wg); зеркало — transport-awg.sh slot_gen_conf.
+    awk '{ t = tolower($0) } !(t ~ /^[[:space:]]*(address|dns|mtu|table|preup|postup|predown|postdown|saveconfig|listenport)[[:space:]]*=/)' "$config_file" > "$interface_config"
     # Пустые I1..I5 (AmneziaVPN 4.8.12.9+ кладёт заготовки даже в Legacy) валят setconf целиком:
     # «Line unrecognized: I2=» ⇒ awg0 встаёт ПУСТЫМ, хендшейка нет. Чистку имели switch-vpn.sh,
     # heal.sh, install.sh и transport-awg.sh, а здесь её не было — и путь «конфиг
@@ -83,7 +103,7 @@ if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 # Под `[ -f ]`: провалившийся `.` в ash фатален и МОЛЧАЛИВ (шелл выходит на месте, rc=2), а этот
 # файл — генератор awg0.conf, и «тихо ничего не сгенерировали» читалось бы как «awg не поднялся».
 if [ -f "$ENODIA_DIR/dns-lib.sh" ]; then . "$ENODIA_DIR/dns-lib.sh"; else
-    echo "нет $ENODIA_DIR/dns-lib.sh — обнови скрипты (gh-update apply-scripts)" >&2; exit 1
+    echo "нет $ENODIA_DIR/dns-lib.sh — обновите установку (панель → «Обновление» или переустановка с компьютера)" >&2; exit 1
 fi
 ep_src=$(grep -E '^[[:space:]]*Endpoint[[:space:]]*=' "$config_file" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
 ep_host=$(echo "$ep_src" | sed 's/:[0-9]*$//')
@@ -112,7 +132,13 @@ esac
 # (НЕ тянем старьё с внешнего github; репо может исчезнуть).
 # Восстановление при пропаже/порче = переустановка с ПК
 # (отдельной .working.bak-копии на роутере больше не держим — экономия флеша).
-if [ ! -f "awg" ] || [ ! -f "amneziawg-go" ]; then
+# ПУТЬ АБСОЛЮТНЫЙ (следит C51). Голые имена означали «ищем в ТЕКУЩЕМ каталоге» и работали
+# лишь потому, что вызыватель делал `cd $ENODIA_DIR`, где бинари тогда и лежали. После
+# переезда бинарей в $ENODIA_BIN (30.08.2026) гард стал ЛОЖНО-ОТРИЦАТЕЛЬНЫМ: смена
+# сервера/страны падала «бинари не найдены» ВСЕГДА, а switch-vpn.sh следом делал
+# safety_off — то есть кнопка «сменить сервер» гасила VPN. Поймано на живом AX3600
+# 31.08.2026. Судим по НАЛИЧИЮ (-f), а не по биту -x: бит не наш (--push кладёт 644).
+if [ ! -f "$ENODIA_BIN/awg" ] || [ ! -f "$ENODIA_BIN/amneziawg-go" ]; then
     echo "ERROR: бинари AmneziaWG (awg/amneziawg-go) не найдены." >&2
     echo "       Поставьте AmneziaWG в панели :8088 -> «Компоненты». Качать старую" >&2
     echo "       AWG 1.x с github НЕ будем — она ломает конфиг AWG 2.0." >&2
@@ -138,7 +164,7 @@ echo "AmneziaWG binaries exist, setting up awg0 interface"
 # «доступ домой»), — а `pidof`/`killall amneziawg-go` бьют по ВСЕМ сразу. Любой failover звал
 # switch-vpn.sh → этот скрипт и молча гасил сервер со слотами: правила фаервола оставались,
 # несущей не было, «доступ домой» отваливался до следующего ребута. Матчим РОВНО awg0 по
-# /proc/*/cmdline — зеркало slot_kill_daemon (transport-awg.sh) и srv_kill_daemon (vpn-server.sh).
+# /proc/*/cmdline — зеркало awg_kill_daemon (transport-awg.sh) и srv_kill_daemon (vpn-server.sh).
 awg0_daemon_pids() {
     for p in /proc/[0-9]*; do
         [ -r "$p/cmdline" ] || continue
@@ -185,6 +211,13 @@ if [ -f "$ENODIA_DIR/net-tune.sh" ]; then
     sh "$ENODIA_DIR/net-tune.sh" mtu >/dev/null 2>&1
 fi
 ip l set up awg0
+# Выключили, пока поднимали, — отпускаем СВОЙ демон (матч по cmdline, другие инстансы не трогаем) и не доходим до firewall reload.
+if carrier_barred; then
+    echo "VPN выключили вручную, пока поднимался awg0, — снимаю его"
+    for p in $(awg0_daemon_pids); do kill "$p" 2>/dev/null; done
+    ip link del awg0 2>/dev/null
+    exit 1
+fi
 
 # $ENODIA_BIN/awg - check connection
 

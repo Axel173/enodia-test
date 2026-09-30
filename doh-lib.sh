@@ -34,6 +34,18 @@
 # байт-в-байт (install.sh переносит из стейджа bin/*.user). Шим на случай установки без lib.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
+# Ожидание СТАРТА демона (daemon-lib.sh). «Дождаться, пока поднятый демон станет готов» — один
+# вопрос на проект: у несущих это socks, здесь UDP-порт резолвера. Вторая реализация разошлась бы
+# с первой (у нас это уже случалось с resolve_ipv4 и probe_ext_ip). Нет файла (частичный
+# apply-scripts) — шим повторяет ПРЕЖНИЙ путь байт-в-байт: фиксированный потолок + свой гард жизни.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v daemon_wait_uport >/dev/null 2>&1 || daemon_wait_uport() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do
+        netstat -lnu 2>/dev/null | grep -q "$4:$5 " && return 0
+        _dwp=$(cat "$1" 2>/dev/null); [ -d "/proc/${_dwp:-none}" ] || break
+        sleep 1; _dwi=$((_dwi+1))
+    done
+    DAEMON_WAIT_WHY="порт $5 не появился за $_dwi с (или процесс умер)"; return 1; }
 
 # Свой резолвер (`custom`) требует ДВУХ чужих умений, и оба уже написаны — копий не заводим:
 # резолв его ИМЕНИ мимо туннеля/через DoH-по-IP (dns-lib: на буте системный резолвер заперт в
@@ -46,19 +58,24 @@ if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Устройство несущей (`default` в table 1000) — у владельца ip-lib.sh::carrier_iface (следит C81):
+# по нему doh_direct_regime судит «прямой ли режим». Шим той же строки — на случай частичной установки.
+if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
+command -v carrier_iface >/dev/null 2>&1 || carrier_iface() { ip route show table 1000 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
 command -v age_since >/dev/null 2>&1 || age_since() {
 	case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
 	[ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
+command -v clock_sane >/dev/null 2>&1 || clock_sane() { _csn=${1:-$(date +%s 2>/dev/null)}; case "$_csn" in ''|*[!0-9]*) return 1 ;; esac; [ "$_csn" -gt 1700000000 ] 2>/dev/null && [ "$_csn" -lt 4102444800 ] 2>/dev/null; }
 DOH_BIN=$(bin_path https-dns-proxy)  # рантайм-бинарь https-dns-proxy (стейдж bin/https-dns-proxy.user)
 DOT_BIN=$(bin_path dot-proxy)        # DoT-альтернатива (наш mbedTLS-статик, RFC 7858; стейдж bin/dot-proxy.user)
 DOH_ADDR="127.0.0.1"
 DOH_PORT="5053"
-DOH_PID="/tmp/doh.pid"        # /tmp=RAM ⇒ демон переигрывается heal-ом на буте (как прочие альты)
-DOH_LOG="/tmp/doh.log"
-DOH_LOG_MAX=524288            # порог ротации, байт (см. doh_log_rotate)
-DOH_LOG_KEEP=131072           # сколько ХВОСТА оставляем при ротации
-DOH_UPSTREAM="$DOH_ADDR#$DOH_PORT"            # токен для dnsmasq `server=` (зовёт step-B dns_set_upstream)
+DOH_PID="/tmp/enodia-doh.pid"      # /tmp=RAM ⇒ демон переигрывается heal-ом на буте (как прочие альты)
+DOH_LOG="/tmp/enodia-doh.log"
+DOH_LOG_MAX=524288                 # порог ротации, байт (см. doh_log_rotate)
+DOH_LOG_KEEP=131072                # сколько ХВОСТА оставляем при ротации
+DOH_UPSTREAM="$DOH_ADDR#$DOH_PORT" # токен для dnsmasq `server=` (зовёт step-B dns_set_upstream)
 
 # --- Состояние (персист на /data, переживает ребут) ---
 #   .doh-on         — тумблер ("on" = включён ВСЕГДА, в любом режиме; иначе выкл)
@@ -76,10 +93,13 @@ DOH_UPSTREAM="$DOH_ADDR#$DOH_PORT"            # токен для dnsmasq `serve
 #   $DOH_HEALTH_STAMP   — когда в последний раз щупали живость авто-DoH (троттл, см. doh_health_tick)
 #   $DOH_HEALTH_MISS    — промахов пробы ПОДРЯД (успех обнуляет)
 #   $DOH_AUTO_COOLDOWN  — до какой отметки времени авто-режим не пере-взводим после отката
-DOH_AUTO_STAMP="/tmp/.doh-auto-on"
-DOH_HEALTH_STAMP="/tmp/.doh-health.stamp"
-DOH_HEALTH_MISS="/tmp/.doh-health.miss"
-DOH_AUTO_COOLDOWN="/tmp/.doh-auto-cooldown"
+#   $DOH_DOT_FALLBACK   — «выбран DoT, а порт 853 через текущий путь не проходит ⇒ прокси шифрует по
+#                         DoH того же резолвера» (эпоха переезда; см. doh_proto_now и doh_dot_fallback)
+#   $DOH_PORT_STAMP     — когда в последний раз сверяли порт DoT на текущем пути (троттл doh_port_tick)
+DOH_AUTO_STAMP="/tmp/.enodia-doh-auto-on"
+DOH_HEALTH_STAMP="/tmp/.enodia-doh-health.stamp"
+DOH_HEALTH_MISS="/tmp/.enodia-doh-health.miss"
+DOH_AUTO_COOLDOWN="/tmp/.enodia-doh-auto-cooldown"
 DOH_HEALTH_EVERY=${DOH_HEALTH_EVERY:-600}         # как часто щупаем авто-DoH (сек)
 DOH_HEALTH_MISS_MAX=${DOH_HEALTH_MISS_MAX:-2}     # столько промахов ПОДРЯД = деградация, откат
 DOH_COOLDOWN_SEC=${DOH_COOLDOWN_SEC:-3600}        # на сколько после отката запрещаем авто-режим
@@ -88,10 +108,56 @@ DOH_PLAIN_DNS2=${DOH_PLAIN_DNS2:-8.8.8.8}
 
 # --- Протокол: doh (HTTPS/:443, дефолт) | dot (TLS/:853). Один слой, один порт 5053, один
 # pidfile — меняется ТОЛЬКО запускаемый бинарь и порт форс-марки. Whitelist как у резолвера.
-doh_proto()   { [ "$(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null)" = dot ] && echo dot || echo doh; }
-doh_bin_for() { [ "${1:-$(doh_proto)}" = dot ] && echo "$DOT_BIN" || echo "$DOH_BIN"; }
-# Порт резолвера на проводе (для форс-марки/RETURN): DoT=853, DoH=443.
-doh_wire_port() { [ "$(doh_proto)" = dot ] && echo 853 || echo 443; }
+# ДВА ВОПРОСА — ДВЕ ФУНКЦИИ, и путать их нельзя (разбор — у doh_dot_fallback):
+#   doh_proto     — НАМЕРЕНИЕ человека (`.doh-proto`): что выбрано на экране и куда возвращаться;
+#   doh_proto_now — чем прокси шифрует СЕЙЧАС. Выбран DoT, а порт 853 через текущий путь не проходит
+#                   (замер 09.09.2026: у VLESS-выхода 853 не выпускает сервер, 443 идеален) ⇒ DoH ТОГО
+#                   ЖЕ резолвера, пока DoT не заработает снова. Нет программы DoH — переезжать не на что.
+# Всё, что поднимает демона и ставит правила, спрашивает doh_proto_now; экран выбора и вербы смены — doh_proto.
+DOH_DOT_FALLBACK="/tmp/.enodia-dot-fallback.stamp"
+doh_proto()     { [ "$(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null)" = dot ] && echo dot || echo doh; }
+doh_proto_now() {
+	[ "$(doh_proto)" = dot ] || { echo doh; return 0; }
+	[ -f "$DOH_DOT_FALLBACK" ] && [ -x "$DOH_BIN" ] && { echo doh; return 0; }
+	echo dot
+}
+doh_bin_for() { [ "${1:-$(doh_proto_now)}" = dot ] && echo "$DOT_BIN" || echo "$DOH_BIN"; }
+
+# ПОРТ И ИМЯ НА ПРОВОДЕ — ЕДИНСТВЕННЫЙ ответ «куда прокси протокола X ходит» (форс-марка/RETURN, проба провода,
+# переезд порта). Прежде порт был литералом по протоколу (DoT=853, DoH=443), и свой резолвер с портом в адресе
+# (`https://хост:8443/…` — AdGuard Home на нестандартном порту) получал марку и RETURN на :443, а прокси ходил на
+# :8443 мимо обоих: в туннельном режиме — мимо туннеля, в прямом — под десинк (бэклог ветки fix/dot-port-fallback, (3)).
+# DoH — порт из URL (https-dns-proxy берёт его оттуда же: main.c, CURLUPART_PORT); DoT — 853, у своего резолвера —
+# порт из `tls://хост:порт` (doh_custom_parse кладёт его в `.doh-custom-dot-port`). $2 — имя резолвера (деф. текущий).
+doh_url_port() {
+	_dup=${1#https://}; _dup=${_dup%%/*}
+	case "$_dup" in *:*) _dup=${_dup##*:} ;; *) _dup=443 ;; esac
+	case "$_dup" in ''|*[!0-9]*) echo 443 ;; *) echo "$_dup" ;; esac
+}
+doh_url_host() { _duh=${1#https://}; _duh=${_duh%%/*}; printf '%s\n' "${_duh%%:*}"; }
+doh_proto_port() {
+	if [ "$1" = dot ]; then
+		if [ "${2:-$(doh_resolver_name)}" = custom ]; then
+			_dpp=$(cat "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null | tr -cd '0-9')
+			[ -n "$_dpp" ] && { echo "$_dpp"; return 0; }
+		fi
+		echo 853; return 0
+	fi
+	_dpps=$(doh_resolver_spec "$2"); doh_url_port "${_dpps%%$(printf '\t')*}"
+}
+# Имя, которое прокси протокола $1 предъявляет в SNI: DoT — dot_resolver_sni, DoH — хост URL (пусто у IP-литерала:
+# curl его в SNI не шлёт, и проба провода обязана вести себя так же).
+doh_proto_sni() {
+	if [ "$1" = dot ]; then dot_resolver_sni "$2"; return 0; fi
+	_dpsn=$(doh_resolver_spec "$2"); _dpsn=$(doh_url_host "${_dpsn%%$(printf '\t')*}")
+	case "$_dpsn" in *[!0-9.]*) printf '%s\n' "$_dpsn" ;; esac
+	return 0
+}
+# Порт резолвера на проводе у АКТИВНОГО протокола (для форс-марки/RETURN).
+doh_wire_port() { doh_proto_port "$(doh_proto_now)"; }
+# ВСЕ порты, на которых у резолвера $1 могли стоять наши правила: снятие обязано быть proto-agnostic (смена протокола не
+# оставляет марку прежнего порта) и переживать смену ПОРТА (правило :443 версии, не знавшей порта из URL, снимается тоже).
+doh_all_ports() { printf '%s\n' 443 853 "$(doh_proto_port doh "$1")" "$(doh_proto_port dot "$1")" | sort -u | tr '\n' ' '; }
 
 # «Установлен» = есть бинарь АКТИВНОГО протокола (гейт doh_enabled/doh_auto: выбрал dot без
 # бинаря → шифрование честно не включается, DNS остаётся на прежнем пути транспорта).
@@ -99,18 +165,54 @@ doh_installed() { [ -x "$(doh_bin_for)" ]; }
 doh_enabled()   { [ "$(cat "$ENODIA_STATE/.doh-on" 2>/dev/null)" = on ] && doh_installed; }
 doh_upstream()  { echo "$DOH_UPSTREAM"; }
 
+# ЧЕМ РОУТЕР РЕЗОЛВИТ ПРЯМО СЕЙЧАС — ОДИН ответ на проект. Спрашивают ДВОЕ: карточка «Шифрованный
+# DNS» (там это строка «Сейчас DNS») и лента технического состояния «Обзора» — и обе обязаны
+# говорить одно и то же, иначе панель спорит сама с собой на соседних экранах. Живёт ЗДЕСЬ,
+# потому что владелец DNS-пути во всех режимах — этот слой: он же и переставляет upstream.
+# Истина ровно там, где живёт dnsmasq: наш `00-upstream.conf` идёт с `no-resolv` и перебивает
+# всё; нет его — работает стоковый resolv.conf.auto. Живую копию (/tmp) спрашиваем ПЕРВОЙ:
+# init копирует /etc→/tmp, расходятся они ровно в окне правки.
+# Печатаем КЛАСС пути (doh|ours|stock) и адреса — фразу подбирает панель, вердиктов тут нет.
+# Формат — строки `ключ=значение` (как у `net-tune.sh detect`): адресов бывает несколько, и
+# разделителем в одной строке они бы слиплись с ключом.
+dns_now() {
+	_dnsrc=stock; _dnadr=""; _dnupf=""
+	for _dnf in /tmp/dnsmasq.d/00-upstream.conf /etc/dnsmasq.d/00-upstream.conf; do
+		if [ -f "$_dnf" ]; then _dnupf="$_dnf"; break; fi
+	done
+	if [ -n "$_dnupf" ]; then
+		_dnsrc=ours
+		_dnadr=$(sed -n 's/^server=//p' "$_dnupf" | grep -v '^/' | tr '\n' ' ' | sed 's/ *$//')
+		# Локальный прокси в upstream = DNS уходит шифрованным (порт 5053 держит doh/dot-proxy).
+		case "$_dnadr" in *127.0.0.1#*) _dnsrc=doh ;; esac
+	else
+		for _dnf in /tmp/resolv.conf.auto /tmp/resolv.conf.d/resolv.conf.auto; do
+			if [ -f "$_dnf" ]; then
+				_dnadr=$(sed -n 's/^nameserver *//p' "$_dnf" | tr '\n' ' ' | sed 's/ *$//'); break
+			fi
+		done
+	fi
+	# КУДА ЭТИ ЗАПРОСЫ ИДУТ — вторая половина вопроса. Класс пути говорит, КТО отвечает, но не говорит,
+	# видит ли их провайдер: `ours` — это и туннельный резолвер VPS, и открытый 1.1.1.1 прямого режима,
+	# у которых ответ противоположный. Судим ТЕМ ЖЕ, чем решает сам слой, своей арифметики не заводим:
+	# прямой режим — `doh_direct_regime` (он же выбирает якорь резолвера), уведённый мимо несущей
+	# резолвер — флаг `DOH_UNTUNNELED` (по нему doh_anchor_apply ставит RETURN вместо марки). Сток — мимо
+	# туннеля по определению: наших правил DNS нет вовсе.
+	_dnvia=tunnel
+	if [ "$_dnsrc" = stock ] || doh_direct_regime; then _dnvia=direct
+	elif [ "$_dnsrc" = doh ] && [ -f "$DOH_UNTUNNELED" ]; then _dnvia=direct; fi
+	printf 'src=%s\naddr=%s\nvia=%s\n' "$_dnsrc" "$_dnadr" "$_dnvia"
+}
+
 # АВТО-РЕЖИМ: в прямых режимах (byedpi/zapret/fail-open) туннеля НЕТ ⇒ dnsmasq форвардит на
 # 1.1.1.1/8.8.8.8 ОТКРЫТЫМ UDP:53 — ровно там, где агрессивный ISP спуфит/травит DNS. В
 # tunnel-режимах DNS и так спрятан в туннеле, авто там не нужен (не трогаем проверенный путь).
 # Дефолт ВКЛ: «юзеру настраивать не надо» — но обвязан функциональной пробой (см. doh_apply_dns),
 # так что заблокированный/битый DoH-резолвер откатывает нас на прежний DNS, а не рвёт его.
-# Часы: RTC на роутере НЕТ, до ntpsetclock `date +%s` показывает мусор ⇒ всё, что судит по
-# отметкам времени, обязано этот случай пропускать (общий инвариант проекта).
-doh_clock_ok() {
-	_dcn=$(date +%s 2>/dev/null)
-	case "$_dcn" in ''|*[!0-9]*) return 1 ;; esac
-	[ "$_dcn" -gt 1700000000 ]
-}
+# Часы: RTC на роутере НЕТ, до синхронизации `date +%s` показывает мусор ⇒ всё, что судит по
+# отметкам времени, обязано этот случай пропускать (общий инвариант проекта). Порог — у владельца
+# (clock-lib.sh::clock_sane, следит C82); шим той же строки объявлен в шапке файла.
+doh_clock_ok() { clock_sane; }
 # КАРАНТИН после отката (doh_health_tick): авто-режим взводит КАЖДЫЙ dns-сеттер транспорта, и без
 # карантина откат жил бы до первого же switch/repair — резолвер, который мы только что признали
 # мёртвым, тут же вернулся бы на место. Часы не выставлены → отметке верим (карантин держим), а не
@@ -140,12 +242,17 @@ doh_resolver_list() { echo "cloudflare google quad9 adguard nextdns custom"; }
 
 # --- СВОЙ резолвер: разбор ввода -------------------------------------------------------------
 # ОДНО поле на всё, тип выводим сами (человеку незачем знать, что DoH — это URL, а DoT — имя+SNI):
-#   https://хост[:порт][/путь]  → берём как есть; SNI = хост
-#   tls://хост | хост          → URL достраиваем как https://хост/dns-query (де-факто стандарт
-#                                 пути у всех известных резолверов), SNI = хост
+#   https://хост[:порт][/путь]  → берём как есть (порт — DoH-порт, его знает URL); SNI = хост
+#   tls://хост[:порт] | хост[:порт] → URL достраиваем как https://хост/dns-query (де-факто стандарт
+#                                 пути у всех известных резолверов), SNI = хост; ПОРТ — DoT-порт
+#   хост[:порт]/путь (без схемы) → это URL без `https://` — достраиваем схему, порт уходит в URL
 #   IP-литерал в любой форме   → URL по литералу, SNI ПУСТ ⇒ DoT недоступен (нечего предъявить
 #                                 в SNI, а `-s` у dot-proxy обязателен)
-# Печатает "<url>\t<sni>" или НИЧЕГО при негодном вводе. Валидация СТРОГАЯ и живёт ЗДЕСЬ, а не в
+# ПОРТ БЕЗ СХЕМЫ — ПОРТ DoT, А НЕ DoH (бэклог ветки fix/dot-port-fallback, (3)). Прежде `tls://хост:8853` уезжал в URL
+# DoH (`https://хост:8853/dns-query` — DoH на порт DoT), а сам DoT шёл на 853: порт, который человек ввёл ради DoT,
+# доставался не тому протоколу. Так пишут адрес DoT все известные клиенты (AdGuard Home: `tls://хост:853`), а DoH —
+# полным URL. Путь без схемы (`хост/dns-query`) раньше получал ВТОРОЙ `/dns-query` в хвост — теперь берётся как есть.
+# Печатает "<url>\t<sni>\t<хост>\t<порт DoT|пусто>" или НИЧЕГО при негодном вводе. Валидация СТРОГАЯ и живёт ЗДЕСЬ, а не в
 # CGI: значение уезжает и в argv демона, и в файлы конфига, а потребителей у него уже двое.
 doh_custom_parse() {
 	# ЛЮБОЕ склеивание введённого — ошибка одного класса, и обе её формы поймала песочница
@@ -167,17 +274,31 @@ doh_custom_parse() {
 	# песочницей parse-test.sh). Заодно уходит нужда в `sed -E` — форма годится любому sed.
 	_dch=$(printf '%s' "$_dcp" | sed 's#^https://##; s#^tls://##; s#/.*$##; s#:[0-9][0-9]*$##')
 	[ -n "$_dch" ] || return 1
+	# Порт из ввода (цифры после хоста) — чей он, решает форма ниже.
+	_dcr=${_dcp#https://}; _dcr=${_dcr#tls://}; _dcr=${_dcr%%/*}; _dcpt=''
+	case "$_dcr" in *:*) _dcpt=${_dcr##*:} ;; esac
+	# Порт — число 1..65535: разбор выше пропускает до пяти цифр, а `:0`/`:99999` уронили бы демона на старте.
+	case "$_dcpt" in '') : ;; *) [ "$_dcpt" -ge 1 ] 2>/dev/null && [ "$_dcpt" -le 65535 ] 2>/dev/null || return 1 ;; esac
+	# Ведущий ноль — ОТКАЗ, а не подрезка (ревью ветки, круг 1): dot-proxy и curl читают `0853` десятичным, а iptables разбирает
+	# `--dport` с основанием 0 — `0853` отвергает, `0443` делает портом 291. Марка и RETURN встали бы не на тот порт, и прокси
+	# ходил бы мимо правил. Та же грабля уже лечилась в panel_tls_on.
+	case "$_dcpt" in 0*) return 1 ;; esac
+	_dcdp=''
 	case "$_dcp" in
 		https://*) _dcu="$_dcp" ;;
-		*)         _dcu="https://${_dcp#tls://}/dns-query" ;;
+		tls://*)   _dcu="https://$_dch/dns-query"; _dcdp=$_dcpt ;;
+		*/*)       _dcu="https://$_dcp" ;;
+		*)         _dcu="https://$_dch/dns-query"; _dcdp=$_dcpt ;;
 	esac
+	# 853 — порт DoT по умолчанию: писать его в файл незачем (пусто = 853 у doh_proto_port).
+	[ "$_dcdp" = 853 ] && _dcdp=''
 	# SNI только для ИМЕНИ: у IP-литерала предъявлять в SNI нечего (сертификат на IP — редкость,
 	# а dot-proxy без -s не стартует; честнее отдать пусто и отказать в DoT, чем врать TLS-ом).
 	if command -v is_ipv4 >/dev/null 2>&1 && is_ipv4 "$_dch"; then _dcs=""; else _dcs="$_dch"; fi
 	# Третьим полем — ХОСТ как есть (имя или литерал). Он нужен зовущему, чтобы посчитать якоря:
 	# у имени их даёт резолв, у литерала якорь — сам литерал. Выводить его из URL повторно было бы
-	# второй копией разбора, а разбор тут ровно один.
-	printf '%s\t%s\t%s\n' "$_dcu" "$_dcs" "$_dch"
+	# второй копией разбора, а разбор тут ровно один. Четвёртым — порт DoT (пусто = 853).
+	printf '%s\t%s\t%s\t%s\n' "$_dcu" "$_dcs" "$_dch" "$_dcdp"
 }
 
 # Хост своего резолвера (для перерезолва якорей). Пусто = не custom / введён IP-литерал.
@@ -232,7 +353,10 @@ doh_resolver_ips() {
 		# цикле `for _ip in $(doh_resolver_ips)` при расстановке правил — сетевой вызов внутри
 		# сделал бы iptables-проход платным и (в busybox нет `local`) затёр бы `_ip` вызывающему.
 		# Кто наполняет файл — doh_custom_refresh; пустой = якорей нет, см. его же шапку.
-		custom)  cat "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null | tr '\n' ' ' ;;
+		# Ответ — РОВНО «адрес пробел адрес», без хвоста: файл построчный, и `tr '\n' ' '` оставлял хвостовой пробел, а doh_start
+		# превращает пробелы в запятые — dot-proxy получал `-r 1.0.0.1,1.1.1.1,` (замер 29.09.2026; пустой элемент он пропускал,
+		# но другой потребитель вправе не прощать).
+		custom)  cat "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null | tr -s '\r\n\t ' '    ' | sed 's/^ //; s/ $//' ;;
 		*)       echo '1.1.1.1 1.0.0.1' ;;   # DoH-URL литеральный (только 1.1.1.1), но DoT ходит на оба
 	esac
 }
@@ -250,7 +374,7 @@ doh_resolver_ips() {
 # равно лучше пустого: пустой снимает и марку, и RETURN разом), просто уходим ни с чем.
 # Смена набора обязана быть ПРИМЕНЕНА, а не только записана: правила висят на СТАРЫХ адресах, и
 # снять их можно лишь пока файл ещё старый ⇒ порядок «teardown → запись → расстановка» жёсткий.
-DOH_CUSTOM_STAMP="/tmp/.doh-custom.stamp"
+DOH_CUSTOM_STAMP="/tmp/.enodia-doh-custom.stamp"
 DOH_CUSTOM_EVERY=${DOH_CUSTOM_EVERY:-3600}   # как часто перерезолвим в тике сторожа (сек)
 
 # doh_anchor_ips <host> — якорные адреса ИМЕНИ, КАНОНИЗИРОВАННЫЕ. Копия одна на двоих: считает их
@@ -301,6 +425,14 @@ doh_custom_refresh() {
 		doh_resolver_mark del; doh_resolver_bypass del
 		echo "$_dcr_new" > "$ENODIA_STATE/.doh-custom-ips"
 		doh_anchor_apply
+		# …и закрепление имени — за новыми якорями: c-ares прокси перечитывает hosts по mtime на следующем опросе,
+		# иначе прокси ходил бы на старые адреса, а правила стояли бы уже на новых.
+		doh_pin_hosts
+		# DoT ИМЕНИ НЕ РЕЗОЛВИТ: адреса dot-proxy получил аргументом `-r` при старте, и живая сессия к СТАРОМУ якорю осталась
+		# без марки/RETURN — в туннеле это чёрная дыра (conntrack держит подмену адреса на awg0, а пакеты уходят в WAN), в
+		# прямом режиме — сессия под десинк. Прокси молчит до TCP-таймаута ядра, провод к НОВЫМ якорям жив — «DoT здоров»
+		# (ревью ветки fix/dot-tails, круг 2). Рестарт под новый `-r`: прокси встаёт за доли секунды, dnsmasq смотрит тот же порт.
+		if [ "$(doh_proto_now)" = dot ] && doh_running; then doh_restart; fi
 	else
 		echo "$_dcr_new" > "$ENODIA_STATE/.doh-custom-ips"
 	fi
@@ -390,6 +522,34 @@ doh_log_rotate() {
 	return 0
 }
 
+# ИМЯ РЕЗОЛВЕРА → ЕГО ЯКОРЯ, В /etc/hosts (закрепление). ЗАЧЕМ (замер 29.09.2026, бэклог ветки fix/dot-port-fallback,
+# (6)): правила резолвера (марка в несущую / RETURN мимо неё) стоят на ЯКОРНЫХ адресах (doh_resolver_ips), а
+# https-dns-proxy ходит туда, куда c-ares резолвит имя из URL. У NextDNS это РАЗНЫЕ адреса: dns.nextdns.io отдаёт ближний
+# узел (95.179.134.211/188.172.219.167 через 1.1.1.1, 45.11.106.155 через 8.8.8.8), якоря — anycast 45.90.28.0/
+# 45.90.30.0. Прокси ходил мимо обоих правил — в туннельном режиме мимо туннеля, в прямом под десинк, — а проба провода
+# щупала якоря и «доказывала» чужой путь. c-ares читает /etc/hosts РАНЬШЕ DNS (порядок «fb» по умолчанию; nsswitch.conf/
+# host.conf на BE7000 нет — замер 29.09.2026), и строка «якорь имя» ставит прокси ровно туда, где стоят правила
+# (проверено: наш https-dns-proxy под qemu с подменённым /etc/hosts ходит на 45.90.28.0/45.90.30.0, TLS с SNI
+# dns.nextdns.io встаёт, имена идут). Заодно уходит plain :53 bootstrap-запрос имени резолвера — c-ares в сеть не идёт
+# вовсе; у google/quad9/adguard якоря и есть их A-записи, так что меняется только это. dnsmasq читает тот же файл ⇒
+# клиенты сети получают на имя резолвера те же якоря — это его же официальные адреса.
+# `CARES_HOSTS` НЕ годится: c-ares читает его лишь с флагом ARES_AI_ENVHOSTS, а прокси флаг не ставит (замер там же).
+# Владелец строк — dns-lib.sh::seed_hosts_put (метка общая с сидами несущих ⇒ uninstall.sh снимает и эти); пишет, только
+# если набор сменился (на AX3600 /etc — флеш). IP-литерал в URL (cloudflare, свой по IP) и DoT закреплять нечего —
+# строки снимаем. Нет dns-lib — прежний путь (bootstrap) байт-в-байт.
+DOH_PIN_OWNER=enodia-doh-resolver
+doh_pin_hosts() {
+	command -v seed_hosts_put >/dev/null 2>&1 || return 0
+	_dph_h=''; [ "$(doh_proto_now)" = dot ] || _dph_h=$(doh_proto_sni doh)
+	_dph_i=$(doh_resolver_ips)
+	if [ -n "$_dph_h" ] && [ -n "$(printf '%s' "$_dph_i" | tr -d ' ')" ]; then
+		seed_hosts_put "$_dph_h" "$_dph_i" "$DOH_PIN_OWNER"
+	else
+		seed_hosts_clear "$DOH_PIN_OWNER" >/dev/null 2>&1
+	fi
+	return 0
+}
+
 # Поднять демон идемпотентно: только если нужен (тумблер ИЛИ авто), установлен и ещё не бежит.
 # `-v -v` (loglevel INFO) ОБЯЗАТЕЛЕН для живой диагностики: дефолт бинаря — LOG_ERROR, при нём
 # ВСЕ curl/TLS-варнинги (таймауты, No response, SSL verify) МОЛЧА глотаются, а INFO-строки старта
@@ -407,15 +567,18 @@ doh_start() {
 	# касается вовсе (внутри первая же строка отсеивает по имени).
 	doh_custom_refresh force
 	doh_reap_stray            # порт держит неучтённый экземпляр ⇒ иначе наш старт упадёт «Address in use»
-	if [ "$(doh_proto)" = dot ]; then
+	if [ "$(doh_proto_now)" = dot ]; then
 		# DoT: наш dot-proxy — IP-литералы + SNI, bootstrap-DNS не нужен. CA ОБЯЗАТЕЛЕН
 		# (бинарь без -C честно отказывается — непроверенный TLS хуже открытого UDP-осознанного).
 		_ips=$(doh_resolver_ips | tr ' ' ',')
 		_sni=$(dot_resolver_sni)
 		_ca=$(doh_ca_file) || return 1
 		[ -n "$_ips" ] && [ -n "$_sni" ] || return 1
+		# Имя DoT-прокси не резолвит вовсе (IP-литералы + SNI) — закрепление для DoH ему не нужно и снимается.
+		doh_pin_hosts
+		# `-P` — порт резолвера (свой `tls://хост:порт`); 853 передаём тоже: ключ знают все сборки dot-proxy.
 		start-stop-daemon -S -b -m -p "$DOH_PID" -x "$DOT_BIN" -- \
-			-a "$DOH_ADDR" -p "$DOH_PORT" -r "$_ips" -s "$_sni" -C "$_ca" -l "$DOH_LOG"
+			-a "$DOH_ADDR" -p "$DOH_PORT" -r "$_ips" -P "$(doh_proto_port dot)" -s "$_sni" -C "$_ca" -l "$DOH_LOG"
 		return $?
 	fi
 	spec=$(doh_resolver_spec)
@@ -423,6 +586,7 @@ doh_start() {
 	boot=$(printf '%s' "$spec" | cut -f2)
 	[ -n "$url" ] || return 1
 	ca=$(doh_ca_file) || return 1   # без CA статик-сборка не проверит сертификат ⇒ старт бессмыслен
+	doh_pin_hosts                   # имя резолвера → его якоря, ДО старта: первый же резолв c-ares читает hosts
 	set -- -C "$ca"
 	start-stop-daemon -S -b -m -p "$DOH_PID" -x "$DOH_BIN" -- \
 		-a "$DOH_ADDR" -p "$DOH_PORT" -4 -v -v -r "$url" -b "$boot" -l "$DOH_LOG" "$@"
@@ -437,6 +601,22 @@ doh_stop() {
 # Перезапуск под новый резолвер / после transport switch (форс-марку резолвера ставит зовущий).
 doh_restart() { doh_stop; doh_start; }
 
+# ПОРТ, А НЕ ПРОЦЕСС. Живой pid не значит «готов принимать»: ЗАМЕРЕНО на железе 31.08.2026 —
+# между стартом и «Listening» у https-dns-proxy проходит ~26-28 с (BE7000 и AX3600 одинаково),
+# у dot-proxy столько же. Всё это время dnsmasq, уже уведённый на 127.0.0.1#5053, форвардит в
+# никуда: сеть без имён, а функциональная проба честно проваливается и откатывает ИСПРАВНЫЙ DoH.
+# Поэтому порядок такой: подняли -> ДОЖДАЛИСЬ порта -> и только потом трогаем DNS. Не дождались
+# (умер или завис на инициализации) — DNS не трогаем ВООБЩЕ, и окна без имён не возникает.
+# Умер по дороге — выходим сразу, ждать нечего.
+# $1 — потолок ожидания в секундах (деф. 45: замеренные 28 + запас на медленный флеш). Само
+# ожидание ведёт ОБЩИЙ владелец (daemon-lib.sh): «умер ⇒ отказ сразу, жив ⇒ ждём до потолка», и
+# потолок он поднимет сам, если бинарь окажется на медленном накопителе. Причина отказа —
+# в $DAEMON_WAIT_WHY (её печатает вызывающий).
+doh_wait_listen() {
+	_dwlb=$(doh_bin_for)
+	daemon_wait_uport "$DOH_PID" "${_dwlb##*/}" "${1:-45}" "$DOH_ADDR" "$DOH_PORT"
+}
+
 # --- Применение DNS через DoH (единая точка входа для dns-сеттеров транспортов) ---
 # Маркировка/RETURN :443 резолвера идут через ту же mangle-OUTPUT-цепочку, что и mark-core:
 #  - tunnel-режим (awg/xray/hy2): форсим :443 резолвера в table 1000 — DoH-запрос уходит
@@ -448,17 +628,18 @@ doh_restart() { doh_stop; doh_start; }
 # режим для того же резолвера (idempotent). Полный план — local/CLAUDE-DoH-план.md.
 DOH_MARK=0x1                       # та же метка «в table 1000», что FWMARK транспортов
 
-# Форс-марка :443/:853 текущего (или $2) резолвера в туннель. $1 = add|del. Идемпотентно,
+# Форс-марка порта резолвера текущего (или $2) резолвера в туннель. $1 = add|del. Идемпотентно,
 # по ВСЕМ IP резолвера (doh_resolver_ips). add — порт АКТИВНОГО протокола (doh_wire_port);
-# del — ОБА порта (teardown обязан быть proto-agnostic: смена протокола не должна оставлять
-# висеть марку прежнего порта; del несуществующего правила = no-op, это дёшево).
+# del — ВСЕ порты (doh_all_ports: teardown обязан быть proto-agnostic — смена протокола не должна
+# оставлять висеть марку прежнего порта; del несуществующего правила = no-op, это дёшево).
 doh_resolver_mark() {
+	_drmp=$(doh_wire_port); _drma=$(doh_all_ports "$2")
 	for _ip in $(doh_resolver_ips "$2"); do
 		case "$1" in
-			add) _prt=$(doh_wire_port)
+			add) _prt=$_drmp
 				iptables -t mangle -C OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j MARK --set-mark $DOH_MARK 2>/dev/null || \
 				iptables -t mangle -A OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j MARK --set-mark $DOH_MARK ;;
-			del) for _prt in 443 853; do
+			del) for _prt in $_drma; do
 				while iptables -t mangle -C OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j MARK --set-mark $DOH_MARK 2>/dev/null; do
 					iptables -t mangle -D OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j MARK --set-mark $DOH_MARK 2>/dev/null || break
 				done
@@ -467,21 +648,75 @@ doh_resolver_mark() {
 	done
 }
 
+# doh_bootstrap_ip [имя] [any] — bootstrap-адрес резолвера, и ТОЛЬКО когда он реально используется:
+# у резолвера ПО ИМЕНИ (google/quad9/adguard/nextdns, свой по имени) прокси при КАЖДОМ старте
+# резолвит имя резолвера plain-DNS на этот адрес (c-ares, `-b`). URL по IP-литералу (cloudflare,
+# свой по IP) bootstrap не трогает — пусто. DoT — тоже пусто: наш `dot-proxy` ходит по IP-литералам
+# с SNI и bootstrap не делает вовсе, а RETURN :53 стал бы правилом без владельца.
+# `any` — ответ БЕЗ оглядки на протокол, для СНЯТИЯ (teardown proto-agnostic, как у портов): протокол
+# теперь меняется и сам (doh_dot_fallback/doh_dot_back), и снимать пришлось бы в строго одном порядке
+# «сначала правила, потом флаг» — иначе RETURN :53, поставленный на время DoH, пережил бы возврат на DoT.
+doh_bootstrap_ip() {
+	[ "$2" != any ] && [ "$(doh_proto_now)" = dot ] && return 0
+	_dbs=$(doh_resolver_spec "$1")
+	_dbu=${_dbs%%$(printf '\t')*}; _dbi=${_dbs#*$(printf '\t')}
+	_dbh=${_dbu#https://}; _dbh=${_dbh%%/*}; _dbh=${_dbh%%:*}
+	case "$_dbh" in *[!0-9.]*) printf '%s' "$_dbi" ;; esac
+}
+
 # RETURN :443/:853 текущего (или $2) резолвера МИМО маркировки. $1 = add|del. Ставим ПЕРВЫМ в
 # OUTPUT (-I 1), чтобы обойти mark-core, как dns_direct_rules в byedpi/zapret. Идемпотентно.
+# BOOTSTRAP :53 — ТОЙ ЖЕ ДОРОГОЙ (ревью 05.09.2026). Резолвер по имени сперва резолвится сам —
+# plain-DNS к bootstrap-адресу, а 8.8.8.8/9.9.9.9 лежат в iplist_set ⇒ без RETURN этот UDP:53
+# метится в table 1000: в прямом режиме — под десинк xtun (UDP через socks не проходит), при уводе
+# «мимо несущей» — в ту самую мёртвую несущую, и прокси не поднимался вовсе: увод работал только
+# у cloudflare по IP-литералу. del снимает оба протокола (кто ставил — неважно).
 doh_resolver_bypass() {
+	_drbp=$(doh_wire_port); _drba=$(doh_all_ports "$2")
 	for _ip in $(doh_resolver_ips "$2"); do
 		case "$1" in
-			add) _prt=$(doh_wire_port)
+			add) _prt=$_drbp
 				iptables -t mangle -C OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j RETURN 2>/dev/null || \
 				iptables -t mangle -I OUTPUT 1 -d "$_ip" -p tcp --dport "$_prt" -j RETURN ;;
-			del) for _prt in 443 853; do
+			del) for _prt in $_drba; do
 				while iptables -t mangle -C OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j RETURN 2>/dev/null; do
 					iptables -t mangle -D OUTPUT -d "$_ip" -p tcp --dport "$_prt" -j RETURN 2>/dev/null || break
 				done
 			done ;;
 		esac
 	done
+	if [ "$1" = del ]; then _dbp=$(doh_bootstrap_ip "$2" any); else _dbp=$(doh_bootstrap_ip "$2"); fi
+	[ -n "$_dbp" ] || return 0
+	for _pro in udp tcp; do
+		case "$1" in
+			add) iptables -t mangle -C OUTPUT -d "$_dbp" -p "$_pro" --dport 53 -j RETURN 2>/dev/null || \
+			     iptables -t mangle -I OUTPUT 1 -d "$_dbp" -p "$_pro" --dport 53 -j RETURN ;;
+			del) while iptables -t mangle -C OUTPUT -d "$_dbp" -p "$_pro" --dport 53 -j RETURN 2>/dev/null; do
+			         iptables -t mangle -D OUTPUT -d "$_dbp" -p "$_pro" --dport 53 -j RETURN 2>/dev/null || break
+			     done ;;
+		esac
+	done
+}
+
+# doh_anchor_state [имя] — что стоит В ЯДРЕ СЕЙЧАС: `mark` | `bypass` | `none`. Спрашиваем по
+# ПЕРВОМУ адресу резолвера: обе формы ставятся и снимаются по ВСЕМ его адресам разом, так что
+# одного `iptables -C` довольно. Нужно ровно для одного вопроса — «якорь МЕНЯЕТСЯ?» (см.
+# doh_apply_dns): смена якоря переносит живую TLS-сессию прокси на ДРУГОЙ путь, и её надо рвать.
+# ПОРЯДОК ОПРОСА — ПОРЯДОК ЯДРА, А НЕ АЛФАВИТ (ревью 3, 06.09.2026). RETURN ставится `-I OUTPUT 1`,
+# марка — `-A` (в конец): если в цепочке лежат ОБА (снятие марки не прошло из-за занятого
+# xtables-лока, оборванный switch), выигрывает RETURN — и функция обязана назвать ЕГО, иначе
+# `doh_apply_dns` решит «якорь не менялся» там, где путь резолвера реально переезжает. По той же
+# причине АКТИВНЫЙ порт спрашиваем первым: осиротевшая `MARK :443` от прежней DoH-конфигурации не
+# должна перебивать живой `RETURN :853` у DoT. Прочие порты (doh_all_ports) — следом, в любом порядке.
+doh_anchor_state() {
+	_das_ip=$(doh_resolver_ips "$1" | awk '{print $1; exit}')
+	[ -n "$_das_ip" ] || { echo none; return 0; }
+	_das_act=$(doh_wire_port)
+	for _das_p in "$_das_act" $(doh_all_ports "$1"); do
+		iptables -t mangle -C OUTPUT -d "$_das_ip" -p tcp --dport "$_das_p" -j RETURN 2>/dev/null && { echo bypass; return 0; }
+		iptables -t mangle -C OUTPUT -d "$_das_ip" -p tcp --dport "$_das_p" -j MARK --set-mark $DOH_MARK 2>/dev/null && { echo mark; return 0; }
+	done
+	echo none
 }
 
 # doh_anchor_apply — ЕДИНСТВЕННЫЙ ответ «какое из двух правил резолвера должно стоять ПРЯМО СЕЙЧАС».
@@ -518,7 +753,39 @@ doh_anchor_apply() {
 # запросы по-прежнему шифрованы (тот же TLS к тому же резолверу), теряется лишь «провайдер не
 # видит, чьим резолвером мы пользуемся» — цена, несопоставимая с домом без DNS. Возврат в туннель
 # — на первом же тике, где health прошёл (и штатно, на любом `doh_apply_dns tunnel`).
-DOH_UNTUNNELED="/tmp/.doh-untunneled"   # флаг «резолвер уведён мимо несущей»; RAM ⇒ на буте состояние переберётся заново
+# Флаг «резолвер уведён мимо несущей»; RAM ⇒ на буте состояние переберётся заново. Имя кончается
+# на `.stamp`, и это НЕ косметика: содержимое — эпоха, а маску `*.stamp` обходит clock_rebase_stamps,
+# то есть после сдвига часов на буте возраст флага в дампе остаётся честным (ревью 2, 06.09.2026).
+DOH_UNTUNNELED="/tmp/.enodia-doh-untunneled.stamp"
+# Возврат в несущую доказал, что ЧЕРЕЗ неё резолвер не отвечает (VPS не достаёт до 1.1.1.1:443) —
+# отметка держит паузу перед следующей попыткой, иначе флип-флоп по два рестарта прокси каждый тик.
+# Эпоха в /tmp ⇒ возраст через age_since, сдвиг часов переносит её clock_rebase_stamps.
+DOH_RETUNNEL_STAMP="/tmp/enodia-doh-retunnel.stamp"
+DOH_RETUNNEL_BACKOFF=${DOH_RETUNNEL_BACKOFF:-1800}
+
+# doh_untunnel_apply — САМ УВОД, без гейтов «есть ли что уводить» (они у doh_untunnel; up-путь
+# несущей зовёт увод без них — см. doh_apply_dns: там режим назвал плагин, и он знает лучше сети).
+# Флаг ДО расстановки: правило выбирает doh_anchor_apply, и решает он именно по флагу. Затем
+# РЕСТАРТ ПРОКСИ: у него ЖИВОЕ TLS/HTTP-2 соединение по УМЕРШЕМУ пути, правило маршрутизации его
+# не разрывает, и без рестарта он молчал бы до своего внутреннего таймаута — то есть ровно те
+# минуты без DNS, ради которых всё это и делается. dnsmasq смотрит на прокси ⇒ оставить его
+# лежащим нельзя. И ДОЖДАТЬСЯ ПОРТА (doh_wait_listen): у прокси прежних сборок между стартом и
+# «Listening» 26–46 с (блокирующий /dev/random, см. шапку doh_wait_listen), и проба сразу после
+# рестарта ложилась бы в не слушающий порт — увод «не сработал бы» ровно там, где нужен; с новым
+# бинарём ожидание — ноль. Код = слушает ли прокси после рестарта.
+# `$1 = nowait` — НЕ ждать порта. Ждать имеет смысл ровно там, где СРАЗУ ЗА уводом идёт проба
+# (up-путь): она и есть потребитель ожидания. Там, где пробы нет (сторож на SUSPECT, повторный
+# увод после неудачного возврата), ожидание не защищает ничего, а на прежних сборках прокси
+# СЪЕДАЕТ до 46 с тика — и в паре с возвратом это два ожидания подряд, больше двух минут под
+# локом сторожа, то есть пропущенный следующий тик (ревью 2, 06.09.2026).
+doh_untunnel_apply() {
+	date +%s > "$DOH_UNTUNNELED" 2>/dev/null || : > "$DOH_UNTUNNELED"   # содержимое = эпоха увода (дамп печатает возраст)
+	doh_anchor_apply
+	doh_restart; sleep 1
+	doh_running || doh_start
+	[ "$1" = nowait ] && { doh_running; return $?; }
+	doh_wait_listen
+}
 
 # doh_untunnel — увести резолвер мимо несущей. Код 0 = реально увели (вызывающему есть что сказать).
 doh_untunnel() {
@@ -530,48 +797,148 @@ doh_untunnel() {
 	# флаг, по которому doh_retunnel потом уводил резолвер ПОД ДЕСИНК (см. doh_anchor_apply).
 	doh_direct_regime && return 1
 	[ -f "$DOH_UNTUNNELED" ] && return 1     # уже уведён
-	# Флаг ДО расстановки: правило выбирает doh_anchor_apply, и решает он именно по флагу.
-	: > "$DOH_UNTUNNELED"
-	doh_anchor_apply
-	# У прокси ЖИВОЕ TLS/HTTP-2 соединение по УМЕРШЕМУ пути: правило маршрутизации его не разрывает,
-	# и без рестарта он молчал бы до своего внутреннего таймаута — то есть ровно те минуты без DNS,
-	# ради которых всё это и делается. dnsmasq смотрит на прокси ⇒ оставить его лежащим нельзя.
-	doh_restart; sleep 1
-	doh_running || doh_start
+	doh_untunnel_apply nowait                # пробы за уводом нет ⇒ и ждать порта незачем: не жжём тик
 	return 0
 }
 
-# doh_retunnel — вернуть резолвер в несущую (health снова проходит). Код 0 = реально вернули.
+# doh_retunnel — вернуть резолвер в несущую (health снова проходит). Код 0 = реально вернули;
+# 2 = несущая везёт, а резолвер ЧЕРЕЗ неё не отвечает — оставлен мимо, пауза DOH_RETUNNEL_BACKOFF;
+# 1 = делать нечего (флага нет, DoH выключен, пауза не вышла).
 doh_retunnel() {
 	[ -f "$DOH_UNTUNNELED" ] || return 1
 	# doh_want спрашиваем ДО снятия флага: между уводом и возвратом DoH могли выключить, и тогда
 	# стёртый флаг оставил бы RETURN :443 без единого напоминания о нём. Порядок «сначала проверить,
 	# потом стирать» дороже ноль, а путаницы состояний не оставляет.
 	doh_want || return 1
+	[ "$(age_since "$(cat "$DOH_RETUNNEL_STAMP" 2>/dev/null | tr -cd '0-9')")" -ge "$DOH_RETUNNEL_BACKOFF" ] || return 1
+	# ВОЗВРАЩАТЬ НЕКУДА, ПОКА МАРШРУТА НЕТ. Сторож зовёт нас на «health прошёл», а health
+	# tunnel-транспорта идёт через socks и НЕ ЗНАЕТ, что `default` из table 1000 пропал (это чинит
+	# heal_carrier_route НИЖЕ в том же тике). Сняв флаг в этот момент, мы получили бы «прямой» ответ
+	# doh_anchor_apply, RETURN на месте и лог «резолвер вернулся в туннель» — враньё; вернёмся
+	# следующим тиком, когда маршрут уже на месте (ревью 2, 06.09.2026). Спрашиваем ИМЕННО
+	# `doh_direct_by_name`, а не `doh_direct_regime`: второй у транспорта с ПОТЕРЯННЫМ маршрутом
+	# честно отвечает «прямой» — то есть ровно в чинимом случае разрешил бы возврат (ревью 3).
+	doh_direct_by_name || [ -n "$(carrier_iface)" ] || return 1
 	rm -f "$DOH_UNTUNNELED" 2>/dev/null
 	# ЧТО ставить — спрашиваем владельца, а не «раз вернулись, значит марка». Флага уже нет, так что
 	# в туннельном режиме это ровно прежнее поведение; в прямом (сюда доезжает лишь флаг, оставшийся
 	# от версии ДО гарда в doh_untunnel) резолвер честно останется мимо маркировки.
 	doh_anchor_apply
+	if ! doh_direct_regime; then
+		# ПРОКСИ — ТА ЖЕ БЕДА, ЧТО ПРИ УВОДЕ, ЗЕРКАЛЬНО: его сессия к резолверу поднята ПО WAN с
+		# WAN-адресом источника, а после возврата марки те же пакеты уходят в несущую с этим адресом —
+		# сервер WireGuard/AWG молча отбрасывает источник вне AllowedIPs пира, у tun2socks чужой
+		# мид-стрим не имеет соединения (NAT для УЖЕ установленного соединения не пересчитывается).
+		# Сессия висела бы до внутреннего таймаута прокси = возврат в туннель стоил бы минуту без DNS.
+		# Рестарт + ожидание порта (у прежних сборок прокси до 46 с до «Listening», у новых — ноль).
+		# Только в ТУННЕЛЬНОМ режиме: в прямом якорь не менялся, дёргать нечего.
+		doh_restart; sleep 1; doh_running || doh_start; doh_wait_listen
+		# ПРОВЕРИТЬ, А НЕ ПОВЕРИТЬ (ревью 05.09.2026). Up-путь мог увести резолвер потому, что ЧЕРЕЗ
+		# несущую он не отвечает ВООБЩЕ (VPS не достаёт до 1.1.1.1:443, DPI на его стороне) при живом
+		# рукопожатии — health несущей DNS-независим и не усомнится никогда, а вслепую вернувшийся
+		# резолвер = дом без DNS при зелёном тумблере до следующего switch. Не пошли имена — уводим
+		# обратно и молчим бэкофф.
+		# ПРОБА ПРОВОЛОКИ ПЕРВОЙ, И БЕЗ НЕЁ ВСЯ ВЕТКА — ПУСТЫШКА (ревью 2, 06.09.2026): `doh_probe`
+		# спрашивает ИМЯ через dnsmasq, а `example.com` тот закэшировал минуты назад — пробой up-пути,
+		# которая шла МИМО несущей. Кэш живёт по TTL записи (заведомо дольше двух тиков), dnsmasq мы
+		# здесь не рестартим ⇒ ответ пришёл бы из памяти и «доказал» бы работоспособность мёртвого
+		# пути. `doh_wire_ok` идёт curl'ом на IP резолвера БЕЗ бинда — то есть ровно под только что
+		# вернувшуюся марку, в несущую, и кэшировать там нечего.
+		# …НО ПРОВОД ГОВОРИТ ЛИШЬ «TLS ВСТАЛ» (29.09.2026): у DoT через VPS рукопожатие встаёт за 4.3 с, а dot-proxy
+		# до 1.2 рвал его через 3 с — провод жив, имён нет, и кэш «доказал» бы мёртвый путь. 1.2 ждёт 8 с, но старый
+		# бинарь живёт на роутере до переустановки компонента, а «TLS встал ≠ прокси отвечает» верно и без него.
+		# Поэтому имена — МИМО кэша (doh_names_ok), это редкая ветка, сброс кэша здесь дёшев (ревью ветки
+		# fix/dot-port-fallback, круг 2).
+		if ! doh_wire_ok || ! doh_names_ok 3; then
+			# ПОРТ, А НЕ ПУТЬ? Несущая везёт (health прошёл, маршрут на месте), а резолвер через неё молчит — у
+			# альт-выхода это закрытый сервером 853 при живом 443 (09.09.2026). Тогда в туннель возвращаемся
+			# по DoH того же резолвера, а не уходим обратно мимо несущей на полчаса.
+			if doh_dot_rescue; then rm -f "$DOH_RETUNNEL_STAMP" 2>/dev/null; return 0; fi
+			# Отказ увода не глотаем МОЛЧА: dnsmasq в этот момент уже смотрит в :5053, и «прокси не
+			# поднялся» — единственный след того, почему дом остался без имён (ревью 3, 06.09.2026).
+			# Пишем в лог самого прокси: своего лога у библиотеки нет, а вызывающий (сторож) видит
+			# только код возврата.
+			doh_untunnel_apply nowait || echo "$(date '+%Y-%m-%d %H:%M:%S') [doh] возврат не удался: прокси после увода обратно не слушает — DNS молчит до следующего тика" >> "$DOH_LOG" 2>/dev/null
+			# ФОЛБЭК ОБЯЗАТЕЛЕН: пустая отметка читается как возраст 999999, то есть «пауза вышла» —
+			# и получился бы флип-флоп каждые две минуты вместо паузы (ревью 3, 06.09.2026).
+			date +%s > "$DOH_RETUNNEL_STAMP" 2>/dev/null || : > "$DOH_RETUNNEL_STAMP" 2>/dev/null
+			return 2
+		fi
+	fi
+	rm -f "$DOH_RETUNNEL_STAMP" 2>/dev/null
 	return 0
 }
 
 # Откат авто-режима: снять RETURN :443 резолвера, погасить прокси, снять стамп. Зовущий получает 1
 # и дальше пишет СВОЙ прежний upstream (plain 1.1.1.1/8.8.8.8) + рестартит dnsmasq ⇒ DNS не остаётся
 # висеть на мёртвом/глухом прокси. Ручной режим (тумблер) не откатываем — там выбор пользователя.
-doh_auto_rollback() {
-	rm -f "$DOH_AUTO_STAMP" 2>/dev/null
+# ОБЩИЙ ОТКАТ «DoH не взял DNS»: снять правила резолвера (ставим одну форму из двух — какую,
+# зависит от режима, поэтому чистим обе; удаление идемпотентно) и погасить бесполезный прокси.
+# Флаг `.doh-on` НЕ трогаем: это НАМЕРЕНИЕ пользователя, и решать его судьбу — не библиотеке, а
+# тому, кто видит человека (панельный верб doh_on). Осиротевшая форс-марка резолвера, найденная
+# на AX3600 31.08.2026, приехала ровно отсюда — прежний откат чистил только bypass.
+doh_dns_bailout() {
+	doh_resolver_mark del
 	doh_resolver_bypass del
 	doh_stop
+	# Флаг «уведён» и пауза возврата — состояние ТОЙ проводки, которой больше нет: стейл-флаг доезжал
+	# бы до doh_anchor_apply через keepalive сторожа и ставил RETURN вместо марки.
+	rm -f "$DOH_UNTUNNELED" "$DOH_RETUNNEL_STAMP" 2>/dev/null
+	# Закрепление имени резолвера — проводка того же прокси: DNS отдан прежнему пути, и держать имя прибитым незачем.
+	command -v seed_hosts_clear >/dev/null 2>&1 && seed_hosts_clear "$DOH_PIN_OWNER" >/dev/null 2>&1
+	return 0
+}
+
+doh_auto_rollback() {
+	rm -f "$DOH_AUTO_STAMP" 2>/dev/null
+	doh_dns_bailout
+}
+
+# ПАУЗА ПОСЛЕ НЕУДАЧНОЙ ПЕРЕПРОВОДКИ РУЧНОГО DoH (бэклог ветки fix/dot-port-fallback, (4)). Резолвер мёртв на ОБОИХ путях
+# (в несущей и мимо неё): doh_apply_dns честно откатывается (doh_dns_bailout гасит прокси, плагин пишет свой DNS), а тумблер
+# остаётся — это намерение человека. Дальше круг на КАЖДОМ тике сторожа: keepalive видит «DoH нужен, прокси не бежит» и
+# поднимает его, сверка указателя видит «прокси жив, dnsmasq мимо» и зовёт `transport.sh dns` — то есть снова три пробы
+# имён, пробы провода, увод, откат: до минуты под локом сторожа и ДВА рестарта dnsmasq всему дому каждые две минуты. У
+# авто-режима тот же круг разрывает свой карантин (DOH_AUTO_COOLDOWN), у ручного разрывать было нечем. Отметку ставит
+# провал doh_apply_dns в ручном режиме, снимает — ЛЮБАЯ перепроводка (она и есть попытка): бут, тумблер, смена
+# транспорта и резолвера приходят через doh_apply_dns и пробуют сразу; сторож ждёт срок. DNS в паузе цел — его держит
+# прежний путь транспорта, прокси ему не нужен.
+DOH_BAIL_STAMP="/tmp/.enodia-doh-bail.stamp"
+DOH_BAIL_BACKOFF=${DOH_BAIL_BACKOFF:-900}
+# ОТКАТ ПРОВАЛИВШЕЙСЯ ПЕРЕПРОВОДКИ — одна ветка на все провалы doh_apply_dns (не встал, не слушает, имён нет): авто-режим
+# уходит в свой карантин, ручной — в эту паузу. `_doh_auto` — режим, названный doh_apply_dns в начале вызова.
+doh_apply_fail() {
+	if [ "$_doh_auto" = 1 ]; then doh_auto_rollback; return 0; fi
+	doh_dns_bailout
+	# ПАУЗА — ТОЛЬКО КОГДА ВИНОВАТ РЕЗОЛВЕР, а не мёртвый WAN (ревью ветки fix/dot-tails, круг 1): провал перепроводки в провал
+	# провайдера ставил 15 минут открытого DNS ПОСЛЕ возврата связи — сторож до ветки возвращал DoH за ≤2 мин. Судим локальными
+	# признаками владельца (`ip-lib.sh::wan_up`: линк и дефолт, без пробы); «линк есть, интернета нет» так не отличить — ту паузу
+	# снимает сторож, когда подтверждённая авария провайдера кончилась (doh_bail_forget ниже). Нет библиотеки — пауза как была.
+	if command -v wan_up >/dev/null 2>&1 && ! wan_up; then return 0; fi
+	date +%s > "$DOH_BAIL_STAMP" 2>/dev/null
+	return 0
+}
+# ЗАБЫТЬ ПАУЗУ — зовёт сторож, когда ПОДТВЕРЖДЁННАЯ авария провайдера («линк есть, интернета нет») кончилась (watchdog.sh::
+# wan_out_clear). Пауза отвечает на «резолвер не отвечает», а в аварии не отвечал весь интернет: не сними её, и после возврата
+# связи дом ещё до 15 минут резолвил бы открыто — сторож до паузы возвращал DoH за ≤2 мин (остаток ревью ветки fix/dot-tails,
+# круг 1). Звать ТОЛЬКО на конце эпизода, а не на каждом здоровом тике: иначе пауза не держала бы ничего, и вернулся бы круг
+# «поднять → перепровести → пробы → откат» каждые две минуты.
+doh_bail_forget() { rm -f "$DOH_BAIL_STAMP" 2>/dev/null; return 0; }
+# Код 0 = сторожу сейчас уместно поднимать прокси и возвращать на него dnsmasq (паузы нет или она вышла).
+doh_rearm_due() {
+	[ -f "$DOH_BAIL_STAMP" ] || return 0
+	[ "$(age_since "$(cat "$DOH_BAIL_STAMP" 2>/dev/null | tr -cd '0-9')")" -ge "$DOH_BAIL_BACKOFF" ]
 }
 
 # Функциональная проба резолва через УЖЕ переключённый dnsmasq→прокси. Живого pid мало: резолвер
 # может быть недостижим (ISP режет :443 к 1.1.1.1, VPS лежит) — прокси бежит, ответов нет, DNS
 # всего дома мёртв. $1 — число попыток (деф. 2: HTTP/2-сессия прокси и рестарт dnsmasq не мгновенны).
 # Каждая попытка ОГРАНИЧЕНА 4 с: busybox nslookup сам ждёт до ~10 с, а нам ценнее дать прокси ЕЩЁ
-# попытку, чем досидеть одну (у DoT цена холодного старта — 3 с на TLS-таймаут одного IP + 3 с
-# backoff перед перебором; на железе 2026-07-27 первый же медленный anycast-узел Cloudflare:853
-# давал ЛОЖНОЕ «протокол не заработал» и откат, хотя через минуту тот же переключатель проходил).
+# попытку, чем досидеть одну (у DoT цена холодного старта — рукопожатие; на железе 2026-07-27 первый
+# же медленный anycast-узел Cloudflare:853 давал ЛОЖНОЕ «протокол не заработал» и откат, хотя через
+# минуту тот же переключатель проходил). Две попытки покрывают рукопожатие до ~9 с: вторая стартует
+# на 6-й секунде, её запрос ждёт в очереди UDP, пока dot-proxy (срок рукопожатия 8 с с версии 1.2)
+# не поднимет TLS, — а через VPS оно встаёт за 4.3–4.7 с (замер 29.09.2026).
 doh_probe() {
 	_pn=${1:-2}; _pi=0
 	while [ "$_pi" -lt "$_pn" ]; do
@@ -589,29 +956,340 @@ doh_probe() {
 # инциденте 09.08.2026. Адрес — ЛИТЕРАЛ, DNS для самой пробы не нужен.
 # Бинда к WAN здесь НЕТ и быть не должно (в отличие от фолбэка резолва в dns-lib): мы меряем путь
 # ПРОКСИ, а он ходит как есть.
-# ВЕРДИКТ СНИМАЕМ ИНВЕРСИЕЙ — «мертво» только у кодов, которые ОДНОЗНАЧНО значат «не соединились»
-# (7 connect refused/unreachable, 28 таймаут, 35 TLS не встал). Всё прочее считаем живым: у DoH
-# :443 обычный GET даёт 301/400/404 (код 0), DoT :853 на HTTP-запрос — 52/56 (TLS состоялся, тела
-# нет), возможны и h2-ошибки. Ошибиться в сторону «жив» дёшево — рядом работает doh_probe; ошибка
-# в другую сторону снесла бы РАБОЧИЙ резолвер и посадила дом на открытый DNS.
+# ВЕРДИКТ — «TLS СОСТОЯЛСЯ» (`time_appconnect` > 0), а НЕ КОД ВЫХОДА curl. Прежде «мертво» читали по кодам
+# 7/28/35 в расчёте, что DoT-сервер на HTTP-запрос рвёт соединение (52/56). ЗАМЕР BE7000 29.09.2026: не рвёт —
+# Cloudflare :853 после рукопожатия за 0.19 с молча ждёт свой DNS-кадр, curl досиживает до --max-time и выходит
+# с 28, то есть ЖИВОЙ DoT объявлялся мёртвым (и авто-режиму, и возврату в несущую, и переезду порта). Ждать тела
+# незачем вовсе: `--speed-time 2 --speed-limit 1` снимает curl через 2 с тишины ПОСЛЕ рукопожатия (на самом
+# рукопожатии этот предел не действует — замерено: TLS 4.3 с прошёл целиком). У DoH :443 ответ 301/404 приходит
+# сразу. Ошибиться в сторону «жив» дёшево — рядом работает doh_probe; ошибка в другую сторону снесла бы РАБОЧИЙ
+# резолвер и посадила дом на открытый DNS.
 # ТАЙМАУТ ЩЕДРЫЙ, и это ЗАМЕР, а не осторожность: на BE7000 09.08.2026 при ЗАВЕДОМО живом
 # резолвере (его `/dns-query` отвечал 200 пять раз из пяти) TCP-коннект к 1.1.1.1:443 занимал
-# 0.06 с, а TLS-хендшейк — 4.35..4.45 с (один прогон из пяти уложился в 0.18 с). С кэпом 4 с
-# функция давала «мертво» 3 раза из 3, то есть ровно ту дорогую ошибку, от которой сама же и
-# страхует. Гистерезис в 2 промаха подряд её не спасал: медленный хендшейк воспроизводится
-# СИСТЕМАТИЧЕСКИ. Цена щедрости платится только в аварии (в норме первый же IP отвечает).
-# ЧЕСТНО ПРО ЗАМЕР: он снят в ТУННЕЛЬНОМ режиме — мы не биндимся к WAN, поэтому curl ушёл в awg0
-# и медленный хендшейк был путём VPS. В режиме, где функция реально работает (прямой), тот же
-# путь идёт мимо туннеля и укладывается в ~0.15 с (замерено там же, ногами wan_probe_ok). Кэп
-# обязан переживать ОБА: бинда у нас нет намеренно, значит и медленный путь возможен.
+# 0.06 с, а TLS-хендшейк — 4.35..4.45 с (один прогон из пяти уложился в 0.18 с); 29.09.2026 — то же у
+# 1.0.0.1:853 и :443 через awg0 (4.3–4.5 с). С кэпом 4 с функция давала «мертво» 3 раза из 3, то есть ровно ту
+# дорогую ошибку, от которой сама же и страхует. Цена щедрости платится только в аварии.
+# ЧЕСТНО ПРО ЗАМЕР: медленное рукопожатие — путь VPS (мы не биндимся к WAN, curl уходит в несущую); мимо туннеля
+# тот же путь укладывается в ~0.1 с. Кэп обязан переживать ОБА: бинда у нас нет намеренно.
+# $1 — ПРОТОКОЛ doh|dot (деф. активный): порт и имя берём у владельца (doh_proto_port/doh_proto_sni), а не литералом
+# — у своего резолвера порт бывает нестандартным, и проба «443 жив» при прокси на :8443 мерила бы не тот провод.
+# ИМЯ — В SNI (`--resolve имя:порт:IP`): резолвер, которому SNI обязателен (NextDNS отдаёт профиль по имени, часть
+# своих резолверов без SNI рвёт рукопожатие), без имени «мёртв на проводе» ВСЕГДА — а прокси, предъявляющий имя,
+# при этом работал бы. У IP-литерала (cloudflare по 1.1.1.1) имени нет и у прокси — щупаем так же, по адресу.
+# ДРУГОЙ порт щупаем ТЕМ ЖЕ ПУТЁМ, что ходит прокси: ставим на
+# время пробы правило той же формы (марка в несущую / RETURN мимо неё) и снимаем после. Без него «443 жив»
+# мерил бы общий путь, а не тот, на который мы собрались переезжать (doh_dot_rescue).
+# ПРАВИЛО ПРОБЫ ОТЛИЧИМО от настоящего: оно ловит только порты источника DOH_PROBE_SPORTS, а curl пробы
+# берёт порт оттуда же (`--local-port`). Побайтная копия настоящего правила снималась бы ВМЕСТЕ с ним: CGI
+# смены протокола лока сторожа не берут, и настоящий RETURN :443, поставленный в окно пробы, пропадал бы —
+# в прямом режиме это DoH-сессия под десинком (ревью ветки, круг 1). Заодно проба не трогает путь живого прокси.
+# АДРЕСА — ПАРАЛЛЕЛЬНО, а не по очереди: у мёртвого порта каждый адрес съедает весь кэп, и два адреса
+# по очереди стоили 20 с — а ждут этого ответа при уже переведённом на прокси dnsmasq, то есть дом без
+# имён (up-путь) или тик сторожа под локом. Параллельно — один кэп на любое число адресов. `wait <pid>`
+# отдаёт код ИМЕННО этого задания и для уже закончившегося (замер busybox 1.25.1 на BE7000, 29.09.2026);
+# голый `wait` ждал бы и чужие фоновые задания вызывающего.
+# АДРЕСА — ОДНИМ СНИМКОМ на весь вызов (ревью ветки, круг 3): CGI смены резолвера лока сторожа не берёт, и снятие по
+# НОВЫМ адресам оставляло правила пробы на старых навсегда.
 DOH_WIRE_TIMEOUT=${DOH_WIRE_TIMEOUT:-10}
+DOH_PROBE_SPORTS=${DOH_PROBE_SPORTS:-40000:40099}   # `--sport` правила пробы; curl получает тот же диапазон через «-»
 doh_wire_ok() {
-	_dwp=$(doh_wire_port)
-	for _dwi in $(doh_resolver_ips); do
-		curl -s -k -o /dev/null --max-time "$DOH_WIRE_TIMEOUT" "https://$_dwi:$_dwp/" 2>/dev/null
-		case $? in 7|28|35) ;; *) return 0 ;; esac
+	_dwpr=${1:-$(doh_proto_now)}
+	_dwp=$(doh_proto_port "$_dwpr"); _dwsn=$(doh_proto_sni "$_dwpr")
+	_dwt=''; _dwl=''; _dwips=$(doh_resolver_ips)
+	if [ "$_dwp" != "$(doh_wire_port)" ]; then
+		_dwt=$(doh_anchor_state)
+		case "$_dwt" in
+			mark|bypass) doh_probe_rule add "$_dwt" "$_dwp" "$_dwips"; _dwl="--local-port ${DOH_PROBE_SPORTS%:*}-${DOH_PROBE_SPORTS#*:}" ;;
+			*)           _dwt='' ;;
+		esac
+	fi
+	_dwj=''
+	for _dwi in $_dwips; do
+		if [ -n "$_dwsn" ]; then _dwu="https://$_dwsn:$_dwp/"; _dwrs="--resolve $_dwsn:$_dwp:$_dwi"; else _dwu="https://$_dwi:$_dwp/"; _dwrs=''; fi
+		# $_dwl/$_dwrs — без кавычек намеренно: пусто или два слова (`--local-port A-B`, `--resolve имя:порт:IP`;
+		# имя прошло строгий разбор — пробелов в нём нет).
+		( _dwa=$(curl -s -k -o /dev/null $_dwl $_dwrs -w '%{time_appconnect}' --connect-timeout "$DOH_WIRE_TIMEOUT" \
+		         --max-time "$DOH_WIRE_TIMEOUT" --speed-time 2 --speed-limit 1 "$_dwu" 2>/dev/null)
+		  awk -v a="$_dwa" 'BEGIN{exit !(a+0 > 0)}' ) &
+		_dwj="$_dwj $!"
 	done
+	_dwr=1
+	for _dwk in $_dwj; do wait "$_dwk" && _dwr=0; done
+	[ -n "$_dwt" ] && doh_probe_rule del "$_dwt" "$_dwp" "$_dwips"
+	return $_dwr
+}
+
+# Правило ПРОБЫ порта $3 в форме $2 (mark|bypass), $1 = add|del, $4 — адреса (снимок вызывающего; пусто — текущие).
+# Место в цепочке — как у настоящего той же формы (марка — в конец, RETURN — первым), чтобы проба шла ровно тем
+# путём, которым пойдёт прокси.
+doh_probe_rule() {
+	case "$2" in mark) _dprj="MARK --set-mark $DOH_MARK"; _dpra="-A OUTPUT" ;; bypass) _dprj=RETURN; _dpra="-I OUTPUT 1" ;; *) return 0 ;; esac
+	for _dpri in ${4:-$(doh_resolver_ips)}; do
+		# $_dprj/$_dpra — без кавычек намеренно: цель и место — по нескольку слов.
+		if [ "$1" = add ]; then
+			iptables -t mangle -C OUTPUT -d "$_dpri" -p tcp --dport "$3" --sport "$DOH_PROBE_SPORTS" -j $_dprj 2>/dev/null || \
+			iptables -t mangle $_dpra -d "$_dpri" -p tcp --dport "$3" --sport "$DOH_PROBE_SPORTS" -j $_dprj
+		else
+			while iptables -t mangle -C OUTPUT -d "$_dpri" -p tcp --dport "$3" --sport "$DOH_PROBE_SPORTS" -j $_dprj 2>/dev/null; do
+				iptables -t mangle -D OUTPUT -d "$_dpri" -p tcp --dport "$3" --sport "$DOH_PROBE_SPORTS" -j $_dprj 2>/dev/null || break
+			done
+		fi
+	done
+}
+
+# ---- ПЕРЕЕЗД ПОРТА: DoT → DoH ТОГО ЖЕ резолвера ПО ТОМУ ЖЕ пути ------------------------------
+# ЗАЧЕМ (замер 09.09.2026, жалоба «xray не пашет»). Выбран DoT, активен VLESS-выход: 853 через него не
+# проходит ни к одному резолверу, 443 идеален. dnsmasq отдан прокси ⇒ DNS мёртв у всего дома, кроме рунета
+# (его уводит раздельный резолв), — человек видит зелёную панель, рабочий рунет и мёртвый ютуб и винит
+# транспорт. Прокси при этом жив и вторые сутки пишет таймауты в лог: «демон жив ≠ сервис работает», и
+# рестарт не лечит ничего — лечит смена ПОРТА. Увод мимо несущей меняет ПУТЬ и от этой беды не спасает:
+# несущая здорова, а мимо неё 853 у провайдера тоже под вопросом.
+# ПОЧЕМУ DoH, А НЕ ОТКАТ ШИФРОВАНИЯ: тот же резолвер и тот же путь (форма якоря сохраняется: марка в несущую
+# остаётся маркой, RETURN — RETURN'ом), шифрование на месте, а для нашей модели угроз DoH не слабее DoT —
+# он неотличим от веб-трафика (разбор — local/CLAUDE-DoH-план.md). НАМЕРЕНИЕ человека (`.doh-proto=dot`) не
+# трогаем: флаг живёт в ОЗУ, а сторож раз в DOH_DOT_RETRY щупает 853 и возвращает DoT сам (doh_port_tick).
+# ВЛАДЕЛЕЦ ПЕРЕЕЗДА ОДИН — doh_dot_fallback/doh_dot_back: они же пишут событие в журнал. Только журнал, без
+# письма: связь и шифрование сохранены, это объяснение, а не авария (тот же выбор, что у clock_step_event).
+DOH_DOT_RETRY=${DOH_DOT_RETRY:-3600}   # через сколько после переезда (или прошлой попытки) снова щупать DoT (сек)
+DOH_PORT_EVERY=${DOH_PORT_EVERY:-600}  # как часто тик сторожа сверяет порт DoT на текущем пути (сек)
+DOH_PORT_STAMP="/tmp/.enodia-doh-port.stamp"
+# Когда в последний раз ПРОБОВАЛИ вернуть DoT (эпоха). Отдельно от флага: флаг хранит ВРЕМЯ ПЕРЕЕЗДА, и
+# неудачная попытка, переписывая его, раз в час обнуляла бы «переведён на DoH N назад» на экране и в дампе.
+DOH_DOT_TRY="/tmp/.enodia-dot-try.stamp"
+# НА КАКОМ ПУТИ случился переезд: «<транспорт> <форма якоря>» (бэклог ветки fix/dot-port-fallback, (10)). Вердикт «853
+# не проходит» — про ПУТЬ, а жил он дольше пути: сменили транспорт (xray с закрытым 853 → awg, где DoT жив), включили
+# авто-режим в прямом режиме, резолвер увели мимо несущей — и до часа роутер шифровал по DoH там, где DoT работает.
+# Путь сменился ⇒ вердикт устарел: перепроводка (doh_apply_dns) пробует DoT сразу, тик сторожа — не дожидаясь
+# DOH_DOT_RETRY. Файла нет (переезд прежней версии) — вердикт живёт по часам, как раньше.
+DOH_DOT_PATH="/tmp/.enodia-dot-path"
+doh_dot_path_id() { printf '%s %s\n' "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" "$1"; }
+# Код 0 = переезд есть, путь его записан и ОТЛИЧАЕТСЯ от пути с формой $1 (mark|bypass|none).
+doh_dot_path_stale() {
+	[ -f "$DOH_DOT_FALLBACK" ] && [ -f "$DOH_DOT_PATH" ] || return 1
+	[ "$(cat "$DOH_DOT_PATH" 2>/dev/null)" != "$(doh_dot_path_id "$1")" ]
+}
+
+# Переставить правила резолвера на порт АКТИВНОГО протокола в той же форме ($1 = mark|bypass|none) и
+# перезапустить прокси другим бинарём. Решения «какую форму ставить» тут нет и быть не должно: путь не меняется.
+doh_port_move() {
+	doh_resolver_mark del; doh_resolver_bypass del
+	case "$1" in mark) doh_resolver_mark add ;; bypass) doh_resolver_bypass add ;; esac
+	doh_restart   # ДРУГОЙ бинарь: без рестарта прежний протокол жил бы под правилами нового порта
+	sleep 1; doh_running || doh_start
+}
+
+# ИМЕНА ПОШЛИ? — проба БЕЗ КЭША dnsmasq. `example.com` мог остаться в его памяти от прежнего протокола, и
+# переезд «доказал» бы себя ответом, которого новый прокси не давал (та же ловушка, что разобрана у
+# doh_wire_ok). SIGHUP чистит кэш dnsmasq, не роняя сервис; нет процесса — проба идёт как есть.
+# НО у dnsmasq с `--dhcp-script` тот же SIGHUP зовёт скрипт для ВСЕХ аренд (man dnsmasq), а на OpenWrt это буря
+# hotplug-событий `dhcp` по каждому устройству (ревью ветки, круг 2). На BE7000 скрипта нет (замер 29.09.2026), на
+# прочих прошивках не знаем — там кэш не трогаем, и проба честна лишь настолько, насколько свеж кэш. Зовут нас
+# редко: при признаках беды (doh_dot_troubled), при переезде и при возврате в несущую — не на каждом тике.
+doh_names_ok() {
+	doh_dhcp_script_set || killall -HUP dnsmasq 2>/dev/null
+	doh_probe "${1:-2}"
+}
+
+# ЗАДАН ЛИ У dnsmasq `dhcp-script`? Ищем ТАМ, ОТКУДА ДЕМОН ЧИТАЕТ КОНФИГ, а не в одном угаданном файле (бэклог ветки
+# fix/dot-port-fallback, (9)): прежде смотрели только `/var/etc/dnsmasq.conf*` (отрисовка uci на OpenWrt), а скрипт
+# кладут и ключом в командной строке, и в `conf-file=`, и в сниппет `conf-dir=` — там SIGHUP звал бы его по всем арендам.
+# Порядок: argv живого процесса (`-6`/`--dhcp-script` прямо в нём; `-C`/`--conf-file` — какой файл он читает), затем
+# `conf-file=`/`conf-dir=` из этих файлов (замер BE7000 29.09.2026: argv `-C /var/etc/dnsmasq.conf.cfg01411c`, в нём
+# `conf-file=/etc/dnsmasq.conf` и `conf-dir=/tmp/dnsmasq.d`) и оба наших conf-dir. argv читаем ЦЕЛИКОМ через `tr`:
+# grep по /proc/*/cmdline видит только argv[0] (C115). Процесса нет — смотрим прежние файлы: вреда от лишней проверки нет.
+# Код 0 = скрипт задан (кэш не трогаем); 1 = не задан.
+doh_dhcp_script_set() {
+	_dds_f=''
+	for _dds_p in $(pidof dnsmasq 2>/dev/null); do
+		_dds_a=$(tr '\0' '\n' < "/proc/$_dds_p/cmdline" 2>/dev/null)
+		printf '%s\n' "$_dds_a" | grep -qE '^(-6|--dhcp-script|--dhcp-luascript)' && return 0
+		_dds_f="$_dds_f $(printf '%s\n' "$_dds_a" | awk 'c {print; c=0; next} $0=="-C" || $0=="--conf-file" {c=1; next} /^--conf-file=/ {sub(/^--conf-file=/, ""); print; next} /^-C./ {print substr($0, 3)}')"
+	done
+	_dds_f="$_dds_f /var/etc/dnsmasq.conf* /etc/dnsmasq.conf"
+	# $_dds_f — без кавычек намеренно: список путей (и маска прежних файлов), пробелов в путях dnsmasq нет.
+	_dds_f="$_dds_f $(cat $_dds_f 2>/dev/null | sed -n 's/^[[:space:]]*conf-file=//p')"
+	for _dds_d in /etc/dnsmasq.d /tmp/dnsmasq.d $(cat $_dds_f 2>/dev/null | sed -n 's/^[[:space:]]*conf-dir=\([^,]*\).*/\1/p'); do
+		_dds_f="$_dds_f $_dds_d/*"
+	done
+	cat $_dds_f 2>/dev/null | grep -qE '^[[:space:]]*dhcp-(lua)?script'
+}
+
+# ПРИЗНАК БЕДЫ У DoT — без пробы имён, то есть без сброса кэша у здорового DoT на каждой сверке: TLS к 853 этим путём
+# не встаёт, ИЛИ dot-proxy с $1 (эпоха прошлой сверки; 0 — с начала лога) писал ошибки. Ошибка dot-proxy — ровно та
+# беда, что пришла с железа 29.09.2026 (рукопожатие рвётся по его сроку при живом TLS). Лог наш, формат «[E] <эпоха> …»
+# стабилен; строки старше отметки (в том числе от https-dns-proxy до смены протокола) не считаются.
+# НЕ ЛЮБАЯ `[E]` (бэклог ветки fix/dot-port-fallback, (7)): `tls read: …` — это обрыв УЖЕ ЖИВОГО соединения, и
+# резолверы рвут простаивающие соединения сбросом так же штатно, как close_notify; прежняя «любая [E]» на шумном пути
+# сбрасывала кэш dnsmasq всему дому раз в 10 мин ради здорового DoT. Беда — только НЕ ПОЛУЧИЛОСЬ СОЕДИНИТЬСЯ (`connect`,
+# `handshake`; у 1.2 и «no reply within N ms (-T)») или ответы не приходят (`inflight table full`), и лишь пока после
+# неё не было `connected`: DoT, переподключившийся сам, здоров. Третье слово строки — событие (формат dot-proxy
+# стабилен: «[E] <эпоха> <событие> …»).
+doh_dot_troubled() {
+	doh_wire_ok || return 0
+	case "$1" in ''|*[!0-9]*) return 0 ;; esac
+	# `inflight` (запрос снят: соединение умирало на нём раз за разом; таблица ждущих полна) — беда, которую `connected` НЕ
+	# снимает: рукопожатие тут и не было проблемой, путь рвёт соединение на первой же записи данных. Прогрев 1.3 пишет
+	# `connected` через 10–25 с после обрыва, и прежняя форма читала «здоров» при мёртвом DNS (ревью ветки, круг 2).
+	# `silent` (1.4: соединение живо, а не отвечает НИЧЕГО, даже пробе) `connected` тоже не снимает — рукопожатие тут как раз
+	# проходит; снимает ответ по соединению (`answering`) или СТАРТ нового процесса (`[I] … dot-proxy … listening`): у нового
+	# `answering` не будет никогда — он о прежней тишине не знает (ревью ветки fix/dot-proxy-tails, круг 1).
+	awk -v t="$1" '$2+0 < t {next}
+		$1=="[E]" && ($3=="handshake" || $3=="connect") {bad=1}
+		$1=="[E]" && $3=="inflight" {inf=1}
+		$1=="[E]" && $3=="silent" {sil=1}
+		$1=="[I]" && $3=="connected" {bad=0}
+		$1=="[I]" && ($3=="answering" || $3=="dot-proxy") {sil=0}
+		END{exit !(bad || inf || sil)}' "$DOH_LOG" 2>/dev/null
+}
+
+# Событие переезда — в журнал панели. $1 = fallback|back, $2 = форма якоря (каким путём это выяснилось).
+doh_dot_event() {
+	[ -n "$ENODIA_DIR" ] && [ -f "$ENODIA_DIR/events.sh" ] || return 0
+	case "$2" in mark) _dde_via='через туннель' ;; bypass) _dde_via='напрямую через провайдера' ;; *) _dde_via='текущий' ;; esac
+	if [ "$1" = fallback ]; then
+		sh "$ENODIA_DIR/events.sh" add doh-dot-fallback 86400 "DoT не работает — DNS шифруется по DoH" \
+"Резолвер $(doh_resolver_name) не отвечает по DoT (путь: $_dde_via), а по DoH того же резолвера отвечает: порт 853 закрыт по дороге или рукопожатие DoT не укладывается в срок. Роутер перевёл шифрованный DNS на DoH: запросы по-прежнему шифруются, выбор DoT сохранён. Раз в $((DOH_DOT_RETRY / 60)) мин роутер проверяет DoT и вернётся на него сам, когда тот заработает." >/dev/null 2>&1 || true
+	else
+		sh "$ENODIA_DIR/events.sh" add doh-dot-back 86400 "DoT снова работает" \
+"Резолвер $(doh_resolver_name) снова отвечает по DoT (путь: $_dde_via) — шифрованный DNS вернулся с DoH на выбранный DoT." >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+
+# DoT → DoH, И ПЕРЕЕЗД ЗАСЧИТЫВАЕТСЯ, ТОЛЬКО ЕСЛИ ИМЕНА ПОШЛИ. Живой провод 443 доказывает лишь, что TLS к IP:443
+# встаёт, но не что там DoH: у своего резолвера, введённого как tls://имя, адрес https://имя/dns-query достроен
+# угадыванием (на 443 там может быть просто сайт); у резолвера по имени может не пройти bootstrap; программа DoH
+# бывает битой. Без отката такой переезд оставлял дом без DNS до следующей проверки DoT (до часа), а увод мимо
+# несущей шёл бы уже на мёртвом DoH, хотя DoT там работал (ревью ветки, круг 1). Поэтому не пошли — возвращаем
+# DoT той же формой пути. Форму читаем ДО флага: флаг меняет активный порт, а с ним и ответ doh_anchor_state.
+# ФОРМУ ОТКАТА — ЗАНОВО, ИЗ ЯДРА (ревью ветки, круг 3): между переездом и откатом до ~100 с (ожидание порта, проба
+# имён), лока смены сторож тут не держит, и человек успевает сменить транспорт — xray (марка) на byedpi (RETURN).
+# Откат запомненной МАРКОЙ оставил бы в прямом режиме сессию DoT в xtun→ciadpi, то есть дом без DNS до следующей
+# перепроводки. doh_anchor_state спрашивает оба порта, так что правило, поставленное плагином на :443 в окне, найдёт.
+# Код 0 = прокси по DoH отдаёт имена (событие пишем только тогда); 1 = откатились на DoT.
+doh_dot_fallback() {
+	_ddf_f=$(doh_anchor_state)
+	date +%s > "$DOH_DOT_FALLBACK" 2>/dev/null || : > "$DOH_DOT_FALLBACK"
+	rm -f "$DOH_DOT_TRY" 2>/dev/null
+	doh_port_move "$_ddf_f"
+	if doh_wait_listen && doh_names_ok; then
+		doh_dot_path_id "$_ddf_f" > "$DOH_DOT_PATH" 2>/dev/null   # вердикт — про ЭТОТ путь (см. DOH_DOT_PATH)
+		doh_dot_event fallback "$_ddf_f"
+		return 0
+	fi
+	rm -f "$DOH_DOT_FALLBACK" "$DOH_DOT_PATH" 2>/dev/null
+	doh_port_move "$(doh_anchor_state)"
+	doh_wait_listen
 	return 1
+}
+
+# DoH → обратно на выбранный DoT, с той же проверкой. Код 0 = имена по DoT пошли (событие); 1 = не пошли —
+# возвращаем DoH (он работал: так его и засчитали) с ПРЕЖНИМ временем переезда и отметкой попытки, следующая —
+# через полный DOH_DOT_RETRY. Форма отката — заново из ядра, как у doh_dot_fallback.
+doh_dot_back() {
+	_ddb_f=$(doh_anchor_state)
+	_ddb_t=$(cat "$DOH_DOT_FALLBACK" 2>/dev/null | tr -cd '0-9')
+	rm -f "$DOH_DOT_FALLBACK" "$DOH_DOT_TRY" "$DOH_DOT_PATH" 2>/dev/null
+	doh_port_move "$_ddb_f"
+	if doh_wait_listen && doh_names_ok; then
+		doh_dot_event back "$_ddb_f"
+		return 0
+	fi
+	if [ -n "$_ddb_t" ]; then echo "$_ddb_t" > "$DOH_DOT_FALLBACK" 2>/dev/null; else date +%s > "$DOH_DOT_FALLBACK" 2>/dev/null; fi
+	date +%s > "$DOH_DOT_TRY" 2>/dev/null
+	doh_dot_path_id "$_ddb_f" > "$DOH_DOT_PATH" 2>/dev/null   # вердикт подтверждён на ЭТОМ пути
+	doh_port_move "$(doh_anchor_state)"
+	doh_wait_listen
+	return 1
+}
+
+# Забыть переезд — это НОВОЕ НАМЕРЕНИЕ человека (включил шифрование, сменил протокол или резолвер): прежний
+# вердикт был про другой выбор или другой путь, и подъём обязан сперва попробовать DoT. Код 0 = переезд БЫЛ и
+# забыт: живой прокси при этом ещё на DoH, и перезапустить его под DoT — дело вызывающего (вербы смены протокола
+# и резолвера перезапускают его и так). doh_dns_bailout флаг НЕ трогает намеренно: «853 этим путём закрыт»
+# остаётся правдой и после снятия проводки, а забытый вердикт стоил бы лишней проверки DoT (секунды без имён)
+# на каждой перепроводке.
+doh_dot_forget() {
+	[ -f "$DOH_DOT_FALLBACK" ] || { rm -f "$DOH_DOT_TRY" "$DOH_DOT_PATH" 2>/dev/null; return 1; }
+	rm -f "$DOH_DOT_FALLBACK" "$DOH_DOT_TRY" "$DOH_DOT_PATH" 2>/dev/null
+	return 0
+}
+
+# «Имена по DoT не идут — а этот же путь вообще жив?» Зовут там, где проба резолва уже провалилась: up-путь
+# (doh_apply_dns) и возврат в несущую (doh_retunnel). Решаем по ИМЕНАМ, а не по проводу 853: живой TLS к 853 не
+# доказывает рабочий DoT — ЗАМЕР BE7000 29.09.2026: через awg0 рукопожатие к 853 встаёт за 0.19–4.3 с, а наш
+# dot-proxy до 1.2 рвал его через 3 с и молчал, пока DoH того же резолвера тем же путём работал (1.2 ждёт 8 с,
+# но путь бывает и медленнее, а старый бинарь живёт до переустановки компонента). Вопрос
+# «порт или путь» сводится к одному: 443 ЭТИМ ЖЕ путём жив? Жив — пробуем DoH (doh_dot_fallback засчитает
+# переезд, только если имена пошли, иначе вернёт DoT); мёртв — путь мёртв целиком (несущая ещё не везёт), и это
+# дело прежней логики увода, не наше. Код 0 = переехали на DoH, и имена пошли; 1 — прокси на DoT, как был.
+# ОБРАТНЫЙ ХОД: выбран DoT, прокси на DoH после прежнего переезда, и молчит уже DoH. Путь мог смениться так, что 443 к
+# резолверу закрыт, а 853 открыт (провайдер душил :443 к 1.1.1.1 — 09.08.2026). Без этой ветки DoH «прилипал» до
+# ребута: переезд переживает bailout намеренно, а тик сверки до прокси, мимо которого идёт DNS, не доходит (гард
+# doh_upstream_set) — ревью ветки, круг 2. Возврат проверяется именами (doh_dot_back), не пошли — остаёмся на DoH.
+doh_dot_rescue() {
+	[ "$(doh_proto)" = dot ] || return 1          # выбран DoH — менять нечего
+	if [ "$(doh_proto_now)" = doh ]; then
+		doh_wire_ok dot || return 1
+		doh_dot_back
+		return $?
+	fi
+	[ -x "$DOH_BIN" ] || return 1                 # переезжать не на что
+	doh_wire_ok doh || return 1                   # путь мёртв целиком — не порт
+	doh_dot_fallback
+}
+
+# ПЕРИОДИЧЕСКАЯ СВЕРКА DoT — зовёт сторож (finish(), РАНЬШЕ doh_health_tick: сперва чиним протокол, потом
+# судим о резолвере). Разовой пробы при подъёме МАЛО по той же причине, что у авто-режима: путь меняется ПОД
+# прокси (подписка сменила сервер, у нового выхода 853 закрыт), а ручной тумблер не проверял никто — дом
+# сидел без имён при зелёной панели. Два направления в одной функции:
+#   DoT активен      — имена по DoT не идут (проба МИМО кэша: doh_names_ok), а 443 этим путём жив ⇒ переезд на
+#                      DoH (код 3); DoH имён тоже не отдал — остались на DoT (код 5: DNS мёртв, и сказать об этом
+#                      обязан сторож; следующая попытка — не раньше DOH_DOT_RETRY). Судим по ИМЕНАМ, а не по
+#                      проводу 853 (разбор — у doh_dot_rescue), но пробу имён — со сбросом кэша dnsmasq — зовём
+#                      только при признаке беды (doh_dot_troubled): здоровый DoT кэш дома не трогает;
+#   DoH вместо DoT   — с переезда (или прошлой попытки) прошло DOH_DOT_RETRY и TLS к 853 встаёт ⇒ возврат (код 4;
+#                      не пошли имена — doh_dot_back сам вернул DoH и отметил попытку, код 0). Провод здесь —
+#                      лишь дешёвый отсев: без живого TLS пробовать DoT незачем, а решает всё равно проба имён.
+# Код 0 — делать нечего. Ручной и авто-режим одинаково: переезд ничего не выключает.
+# $1 — ИМЯ функции «жив ли аплинк» (как у doh_health_tick): при мёртвом аплинке молчащий DoT о протоколе не говорит.
+doh_port_tick() {
+	if [ "$(doh_proto)" != dot ]; then rm -f "$DOH_DOT_FALLBACK" "$DOH_DOT_TRY" "$DOH_DOT_PATH" 2>/dev/null; return 0; fi
+	doh_want && doh_running || return 0
+	doh_upstream_set || return 0          # DNS идёт мимо прокси — порт прокси ни на что не влияет
+	[ -x "$DOH_BIN" ] || return 0         # переезжать не на что
+	doh_clock_ok || return 0
+	# Возраст отметок — ТОЛЬКО через age_since: все в /tmp и рождаются после загрузки, а часы тут прыгают.
+	_dpt=$(cat "$DOH_PORT_STAMP" 2>/dev/null | tr -cd '0-9'); [ -n "$_dpt" ] || _dpt=0
+	[ "$(age_since "$_dpt")" -ge "$DOH_PORT_EVERY" ] || return 0
+	date +%s > "$DOH_PORT_STAMP"      # $_dpt остаётся эпохой ПРОШЛОЙ сверки — с неё doh_dot_troubled читает лог
+	if [ -f "$DOH_DOT_FALLBACK" ]; then
+		# Срок — от ПОСЛЕДНЕЙ попытки вернуть DoT, а не было её — от переезда. ПУТЬ СМЕНИЛСЯ (увод мимо несущей и
+		# обратно, смена транспорта без перепроводки DNS) — вердикт не про него, срок не ждём.
+		_dpl=$(cat "$DOH_DOT_TRY" 2>/dev/null | tr -cd '0-9')
+		[ -n "$_dpl" ] || _dpl=$(cat "$DOH_DOT_FALLBACK" 2>/dev/null | tr -cd '0-9')
+		[ "$(age_since "$_dpl")" -ge "$DOH_DOT_RETRY" ] || doh_dot_path_stale "$(doh_anchor_state)" || return 0
+		if ! doh_wire_ok dot; then
+			# TLS к 853 не встаёт — следующая попытка через полный DOH_DOT_RETRY, а не на каждом тике: и вердикт теперь
+			# про ЭТОТ путь (иначе «путь сменился» гнал бы пробу провода каждые DOH_PORT_EVERY).
+			date +%s > "$DOH_DOT_TRY" 2>/dev/null
+			[ -f "$DOH_DOT_PATH" ] && doh_dot_path_id "$(doh_anchor_state)" > "$DOH_DOT_PATH" 2>/dev/null
+			return 0
+		fi
+		doh_dot_back && return 4
+		return 0
+	fi
+	doh_dot_troubled "$_dpt" || return 0  # TLS встаёт и прокси не жаловался — кэш не трогаем, DoT здоров
+	doh_names_ok && return 0
+	if [ -n "$1" ] && ! "$1"; then return 0; fi
+	doh_wire_ok doh || return 0           # мертвы оба протокола этим путём — это путь, его чинят несущая и увод
+	# Неудачный переезд — не чаще раза в DOH_DOT_RETRY: при мёртвом резолвере каждая попытка стоит двух рестартов
+	# прокси под локом сторожа (ревью ветки, круг 2). Отметку снимает удачный переезд.
+	_dpl=$(cat "$DOH_DOT_TRY" 2>/dev/null | tr -cd '0-9')
+	[ -z "$_dpl" ] || [ "$(age_since "$_dpl")" -ge "$DOH_DOT_RETRY" ] || return 0
+	doh_dot_fallback && return 3
+	date +%s > "$DOH_DOT_TRY" 2>/dev/null
+	return 5
 }
 
 # ЕДИНСТВЕННОЕ место, где doh-lib зовёт плагин транспорта, и список ЗАКРЫТЫЙ. Верб `dns` ставит
@@ -619,11 +1297,19 @@ doh_wire_ok() {
 # для 1.1.1.1/8.8.8.8 в mangle. У awg/xray/hy2 ТОТ ЖЕ верб ставит ТУННЕЛЬНЫЙ резолвер — позвать
 # его в fail-open значило бы увести DNS в мёртвый туннель, то есть починить хуже, чем не чинить.
 # Новый транспорт с прямым DNS обязан дописать себя СЮДА. Возврат 0 = плагин отработал.
-doh_plugin_direct_dns() {
+# doh_direct_by_name — «у ЭТОГО транспорта прямой режим ПО ОПРЕДЕЛЕНИЮ» (десинк без несущей).
+# ЕДИНСТВЕННЫЙ список на файл: тот же вопрос задают doh_plugin_direct_dns (кому можно отдать верб
+# `dns`), doh_direct_regime (какой якорь ставить) и doh_retunnel (ждать ли маршрут). Три копии
+# разъехались бы на шестом транспорте — забытая строка молча запретила бы ему возврат резолвера.
+# Новый транспорт с прямым DNS дописывает себя СЮДА, и только сюда.
+doh_direct_by_name() {
 	case "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" in
-		byedpi|zapret) ;;
-		*) return 1 ;;
+		byedpi|zapret) return 0 ;;
 	esac
+	return 1
+}
+doh_plugin_direct_dns() {
+	doh_direct_by_name || return 1
 	[ -f "$ENODIA_DIR/transport.sh" ] || return 1
 	sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
 }
@@ -632,10 +1318,8 @@ doh_plugin_direct_dns() {
 # `default` в table 1000 ⇒ её DNS туннельный, и авто-режиму там места нет. byedpi/zapret —
 # исключение: у них несущая (или её отсутствие) прямая по определению.
 doh_direct_regime() {
-	case "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" in
-		byedpi|zapret) return 0 ;;
-	esac
-	[ -z "$(ip route show table 1000 2>/dev/null | awk '/^default/{print $1; exit}')" ]
+	doh_direct_by_name && return 0
+	[ -z "$(carrier_iface)" ]
 }
 
 # Вернуть DNS прямого режима. ГРАБЛЯ (ревью 09.08.2026): своя запись 00-upstream.conf чинила ровно
@@ -653,6 +1337,36 @@ doh_restore_plain_dns() {
 	mkdir -p /etc/dnsmasq.d
 	printf 'no-resolv\nserver=%s\nserver=%s\n' "$DOH_PLAIN_DNS1" "$DOH_PLAIN_DNS2" > /etc/dnsmasq.d/00-upstream.conf
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+}
+
+# dnsmasq ОТДАН ПРОКСИ? Истина — строка в конфиге, в ЛЮБОЙ из двух копий (init копирует /etc→/tmp
+# аддитивно, расходятся они ровно в окне правки). Спрашивают двое: снятие указателя ниже и сверка порта
+# (doh_port_tick) — там «DNS идёт мимо прокси» значит «порт прокси ни на что не влияет».
+doh_upstream_set() {
+	for _dus in /etc/dnsmasq.d/00-upstream.conf /tmp/dnsmasq.d/00-upstream.conf; do
+		grep -q "server=$DOH_ADDR#$DOH_PORT" "$_dus" 2>/dev/null && return 0
+	done
+	return 1
+}
+
+# СНЯТЬ НАШ УКАЗАТЕЛЬ НА ЛОКАЛЬНЫЙ ПРОКСИ, когда владельца DNS не осталось вовсе.
+# ГРАБЛЯ (живой AX3600, 31.08.2026, у пользователя дважды пропадал интернет): в установке
+# «только панель» транспорта НЕТ, поэтому `transport.sh dns` делегировать некому, и вся его
+# ветка сводится к `doh_apply_dns direct`. При включении тот пишет `server=127.0.0.1#5053` — а
+# при ВЫКЛЮЧЕНИИ честно «оставляет прежний путь байт-в-байт», и прежний путь это та же строка,
+# которую он сам и написал. Прокси к этому моменту уже погашен (`doh_stop` в doh_off) ⇒ dnsmasq
+# форвардит в мёртвый порт, и ВСЯ сеть за роутером остаётся без имён до ручного вмешательства.
+# У транспортов дыры нет: там DNS возвращает плагин.
+# Возвращаем СТОКОВЫЙ резолв (снимаем файл), а не 1.1.1.1/8.8.8.8: в PANEL_ONLY DNS изначально
+# стоковый, подменять его открытым upstream'ом не наше дело — install.sh на этом же месте файл
+# именно СНИМАЕТ. Обе копии обязательны: init копирует /etc -> /tmp АДДИТИВНО, без чистки.
+# Судим по СОДЕРЖИМОМУ: чужую строку (туннельный DNS, стоковый апстрим) не трогаем никогда.
+# Возврат: 0 — сняли, 1 — трогать было нечего.
+doh_release_upstream() {
+	doh_upstream_set || return 1
+	rm -f /etc/dnsmasq.d/00-upstream.conf /tmp/dnsmasq.d/00-upstream.conf 2>/dev/null
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+	return 0
 }
 
 # ВЗВОД АВТО-РЕЖИМА ПОСЛЕ КАРАНТИНА. Письмо об откате обещает «через час роутер попробует снова»,
@@ -744,6 +1458,78 @@ doh_health_tick() {
 	return 1
 }
 
+# ЗДОРОВЬЕ СЛОЯ ОДНИМ ОТВЕТОМ — для экрана «Шифрованный DNS». Всё это слой УЖЕ знает (флаги в /tmp выше),
+# но до сих пор рассказывал только сторожу и письмам: панель видела «прокси работает» там, где резолвер
+# ушёл мимо туннеля, откатился на час или копит промахи к откату. «Демон жив» ≠ «сервис работает» —
+# инвариант проекта, и отвечать на него обязан тот, кто принимает решения, а не читатель его файлов:
+# сроки (пауза возврата, карантин) — константы ЭТОГО файла, у панели своей арифметики над ними нет.
+# Формат — строки `ключ=значение` (как у dns_now); числа — секунды, `-1` = «нет такого состояния».
+#   untun=0|1      резолвер уведён мимо несущей (туннель не прошёл проверку сторожа)
+#   untun_age=N    сколько секунд назад увели; -1 — отметка без времени (часы или старая версия)
+#   retun_in=N     возврат в туннель уже пробовали и через туннель резолвер НЕ ответил — до следующей попытки
+#   cool=N         авто-режим на карантине после отката — осталось; -2 — карантин держится, срок неизвестен
+#                  (часы не выставлены: тот же выбор, что у doh_auto_cooling, — верим отметке)
+#   miss=N         промахов проверки авто-режима подряд (из DOH_HEALTH_MISS_MAX)
+#   miss_max=N     после скольких промахов откат
+#   dotfb=0|1      выбран DoT, а прокси шифрует по DoH: порт 853 этим путём не проходит (doh_dot_fallback)
+#   dotfb_age=N    сколько секунд назад переехали; -1 — отметка без времени
+#   dotfb_retry=N  через сколько секунд сторож снова пощупает DoT (0 — на ближайшей сверке); -1 — неизвестно
+doh_health_state() {
+	_hsu=0; _hsua=-1; _hsri=-1; _hsc=-1
+	if [ -f "$DOH_UNTUNNELED" ]; then
+		_hsu=1
+		_hsua=$(age_since "$(cat "$DOH_UNTUNNELED" 2>/dev/null | tr -cd '0-9')")
+		[ "$_hsua" -lt 999999 ] 2>/dev/null || _hsua=-1
+		# Пауза возврата — только пока резолвер ещё уведён: после удачного возврата отметку снимает doh_retunnel.
+		if [ -f "$DOH_RETUNNEL_STAMP" ]; then
+			_hsra=$(age_since "$(cat "$DOH_RETUNNEL_STAMP" 2>/dev/null | tr -cd '0-9')")
+			if [ "$_hsra" -lt 999999 ] 2>/dev/null; then
+				_hsri=$((DOH_RETUNNEL_BACKOFF - _hsra)); [ "$_hsri" -ge 0 ] || _hsri=0
+			fi
+		fi
+	fi
+	if [ -f "$DOH_AUTO_COOLDOWN" ]; then
+		_hscu=$(cat "$DOH_AUTO_COOLDOWN" 2>/dev/null | tr -cd '0-9')
+		if [ -n "$_hscu" ]; then
+			# Отметка — эпоха КОНЦА карантина, и сравнение с «сейчас» ровно то, что делает doh_auto_cooling
+			# (владелец решения): без выставленных часов срок неизвестен, но карантин держится.
+			if doh_clock_ok; then
+				_hsc=$(( _hscu - $(date +%s) ))   # clock-raw: тот же вопрос, что у doh_auto_cooling, — «истёк ли срок»
+				[ "$_hsc" -ge 0 ] || _hsc=-1
+			else
+				_hsc=-2
+			fi
+		fi
+	fi
+	_hsm=$(cat "$DOH_HEALTH_MISS" 2>/dev/null | tr -cd '0-9'); [ -n "$_hsm" ] || _hsm=0
+	# Переезд порта — по ТОМУ ЖЕ вопросу, что задаёт демон (doh_proto_now), а не по голому файлу: флаг без
+	# программы DoH ничего не меняет, и экран не должен говорить «шифрую по DoH», когда шифрует DoT. И только
+	# пока шифрованный DNS вообще нужен (doh_want): флаг переживает выключение, а «шифрует DoH» при выключенном
+	# шифровании было бы неправдой в дампе.
+	_hsf=0; _hsfa=-1; _hsfr=-1
+	if doh_want && doh_upstream_set && [ "$(doh_proto)" = dot ] && [ "$(doh_proto_now)" = doh ]; then
+		_hsf=1
+		_hsfa=$(age_since "$(cat "$DOH_DOT_FALLBACK" 2>/dev/null | tr -cd '0-9')")
+		[ "$_hsfa" -lt 999999 ] 2>/dev/null || _hsfa=-1
+		# Срок следующей попытки — тем же правилом, что у doh_port_tick: от прошлой попытки, а не было её — от переезда.
+		_hsfl=$(cat "$DOH_DOT_TRY" 2>/dev/null | tr -cd '0-9')
+		[ -n "$_hsfl" ] || _hsfl=$(cat "$DOH_DOT_FALLBACK" 2>/dev/null | tr -cd '0-9')
+		_hsfl=$(age_since "$_hsfl")
+		if [ "$_hsfl" -lt 999999 ] 2>/dev/null; then
+			_hsfr=$((DOH_DOT_RETRY - _hsfl)); [ "$_hsfr" -ge 0 ] || _hsfr=0
+		fi
+	fi
+	# Пауза ручного DoH после неудачной перепроводки (doh_rearm_due): сколько до следующей попытки сторожа, -1 — паузы нет.
+	# Только пока тумблер включён и dnsmasq смотрит мимо прокси: иначе пауза ни на что не влияет.
+	_hsb=-1
+	if [ -f "$DOH_BAIL_STAMP" ] && doh_enabled && ! doh_upstream_set; then
+		_hsba=$(age_since "$(cat "$DOH_BAIL_STAMP" 2>/dev/null | tr -cd '0-9')")
+		if [ "$_hsba" -lt 999999 ] 2>/dev/null; then _hsb=$((DOH_BAIL_BACKOFF - _hsba)); [ "$_hsb" -ge 0 ] || _hsb=0; fi
+	fi
+	printf 'untun=%s\nuntun_age=%s\nretun_in=%s\ncool=%s\nmiss=%s\nmiss_max=%s\ndotfb=%s\ndotfb_age=%s\ndotfb_retry=%s\nbail_in=%s\n' \
+		"$_hsu" "$_hsua" "$_hsri" "$_hsc" "$_hsm" "$DOH_HEALTH_MISS_MAX" "$_hsf" "$_hsfa" "$_hsfr" "$_hsb"
+}
+
 # doh_apply_dns <tunnel|direct> — ЗОВУТ dns-сеттеры транспортов ПЕРВОЙ строкой.
 #   Тумблер ВКЛ → поднять прокси, dnsmasq→127.0.0.1#5053, :443 резолвера (tunnel=форс-марка в
 #              туннель / direct=RETURN мимо марки), рестарт dnsmasq; возврат 0 ⇒ зовущий `return 0`.
@@ -752,7 +1538,7 @@ doh_health_tick() {
 #   Иначе    → возврат 1 ⇒ зовущий продолжает СВОЙ прежний путь (байт-в-байт, НОЛЬ регрессий).
 # Гарантия нулевой регрессии для TUNNEL-режимов сохраняется: без .doh-on функция там даёт 1 сразу.
 doh_apply_dns() {
-	_doh_auto=0
+	_doh_auto=0; DOH_APPLY_NOTE=
 	if doh_enabled; then
 		rm -f "$DOH_AUTO_STAMP" 2>/dev/null       # DNS держит тумблер, а не авто-режим
 	elif [ "$1" = direct ] && doh_auto; then
@@ -760,7 +1546,17 @@ doh_apply_dns() {
 		: > "$DOH_AUTO_STAMP"                     # ДО doh_start: гейт doh_want обязан пропустить
 	else
 		rm -f "$DOH_AUTO_STAMP" 2>/dev/null       # авто больше не держит DNS (ушли в туннель/запрещён)
+		rm -f "$DOH_UNTUNNELED" "$DOH_RETUNNEL_STAMP" 2>/dev/null   # DoH выключен ⇒ и «уведён» не про что
 		return 1
+	fi
+	# Мы и есть перепроводка: пауза после прошлой неудачи (DOH_BAIL_STAMP) своё отслужила — провал ниже поставит её заново.
+	rm -f "$DOH_BAIL_STAMP" 2>/dev/null
+	# ВЕРДИКТ ПЕРЕЕЗДА — ПРО ПУТЬ (DOH_DOT_PATH): перепроводка на другой путь (сменили транспорт, авто-режим в прямом режиме)
+	# обязана сперва попробовать выбранный DoT. Прокси при этом ещё на DoH — гасим, ниже он встанет под DoT, а не пошли
+	# имена — проба ниже отдаст решение doh_dot_rescue, как на любом подъёме. Путь тот же — вердикт живёт, цена ноль.
+	if doh_dot_path_stale "$([ "$1" = tunnel ] && echo mark || echo bypass)"; then
+		doh_dot_forget
+		doh_running && { doh_resolver_mark del; doh_resolver_bypass del; doh_stop; }
 	fi
 	# Прокси должен РЕАЛЬНО работать, прежде чем уводить на него dnsmasq: несовместимый/битый
 	# бинарь (напр. version skew ядра 4.4 на AX3600 — libcurl<7.62) форкается и тут же падает,
@@ -773,38 +1569,139 @@ doh_apply_dns() {
 		doh_start
 		sleep 1
 		if ! doh_running; then
-			[ "$_doh_auto" = 1 ] && doh_auto_rollback
+			doh_apply_fail
 			return 1
 		fi
 		_doh_started=1
 	fi
+	# ДОЖДАТЬСЯ ПОРТА до того, как трогать DNS (см. doh_wait_listen): иначе окно в
+	# полминуты, где dnsmasq уже уведён на ещё не слушающий прокси, а сеть без имён.
+	if ! doh_wait_listen; then
+		doh_apply_fail
+		return 1
+	fi
 	# Штатная перепроводка отменяет «уведён мимо несущей»: сюда приходят с ПОДНЯТОЙ несущей
 	# (up/switch/repair/тумблер), то есть повод, по которому уводили, снят. Иначе флаг пережил бы
 	# починку и сторож больше никогда не вернул бы резолвер в туннель.
-	rm -f "$DOH_UNTUNNELED" 2>/dev/null
+	rm -f "$DOH_UNTUNNELED" "$DOH_RETUNNEL_STAMP" 2>/dev/null
+	_doh_was=$(doh_anchor_state)
 	if [ "$1" = tunnel ]; then
 		doh_resolver_bypass del      # если оставался RETURN прямого режима — снять
 		doh_resolver_mark add
+		_doh_now=mark
 	else
 		doh_resolver_mark del        # если оставалась форс-марка туннельного режима — снять
 		doh_resolver_bypass add
+		_doh_now=bypass
+	fi
+	# ЯКОРЬ СМЕНИЛСЯ ПОД ЖИВЫМ ПРОКСИ ⇒ РВЁМ ЕГО СЕССИЮ (ревью 2, 06.09.2026). Прокси мы застали
+	# поднятым (`_doh_started=0`) — типичный бут: его поднял ранний старт или heal 5.14 ДО несущей,
+	# и TLS/HTTP-2 к резолверу установлен ПО WAN с WAN-адресом источника. Свежая марка уводит те же
+	# пакеты в несущую с тем же адресом: сервер WireGuard/AWG отбрасывает источник вне AllowedIPs,
+	# у tun2socks чужой мид-стрим соединения не имеет — сессия молчит до внутреннего таймаута. Без
+	# рестарта проба ниже валится ПО ВИНЕ ПРОКСИ, а причиной в лог уезжает «несущая ещё не везёт».
+	# Тот же приём и по той же причине стоит в doh_untunnel_apply / doh_retunnel. Якорь не менялся
+	# И несущую не трогали (штатный повторный `dns`) ⇒ рестарта нет: цена ноль.
+	# …А НЕСУЩАЯ — ВТОРАЯ ПОЛОВИНА ТОГО ЖЕ ВОПРОСА (ревью 3, 06.09.2026): нас зовут из `cmd_up`
+	# плагина СРАЗУ после пересоздания awg0/xtun (reup сторожа, failover, switch, repair). Якорь при
+	# этом был `mark` и остался `mark`, а сокет прокси всё равно мёртв — он висел на СНЕСЁННОМ
+	# устройстве. Без рестарта проба ниже валилась по вине прокси, и в лог плагина уезжал ложный
+	# диагноз «несущая ещё не везёт» плюс лишний увод. Признак «несущую только что подняли» уже
+	# есть — отметка плагинов $CARRIER_UP_STAMP (clock-lib.sh).
+	_doh_fresh=0
+	[ "$(age_since "$(cat "${CARRIER_UP_STAMP:-/tmp/.enodia-carrier-up.stamp}" 2>/dev/null | tr -cd '0-9')")" -lt 60 ] && _doh_fresh=1
+	if [ "$_doh_started" = 0 ] && { [ "$_doh_was" != "$_doh_now" ] || [ "$_doh_fresh" = 1 ]; }; then
+		doh_restart; sleep 1; doh_running || doh_start
+		# Потолок КОРОТКИЙ: порт слушал секунду назад, значит бинарь уже прогрет и «Listening»
+		# приходит мгновенно. Полные 45 с тут были бы третьим ожиданием в одном вызове (ревью 3).
+		doh_wait_listen 10 || { doh_apply_fail; return 1; }
 	fi
 	mkdir -p /etc/dnsmasq.d
 	printf 'no-resolv\nserver=%s\n' "$DOH_UPSTREAM" > /etc/dnsmasq.d/00-upstream.conf
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
-	# АВТО: проверяем, что после переключения имена ДЕЙСТВИТЕЛЬНО резолвятся; нет — откат на прежний
-	# путь транспорта. Ручной режим не пробим намеренно: там DoH — осознанный выбор пользователя, а
-	# лишний рестарт/задержка ломали бы уже проверенный на железе путь.
-	if [ "$_doh_auto" = 1 ] && ! doh_probe; then
-		doh_auto_rollback
+	# ПРОВЕРЯЕМ, ЧТО ИМЕНА ДЕЙСТВИТЕЛЬНО РЕЗОЛВЯТСЯ — В ОБОИХ РЕЖИМАХ. Раньше ручной не пробили
+	# намеренно («DoH — осознанный выбор пользователя»), и это стоило всей сети за роутером:
+	# на AX3600 прокси запускается, слушает порт и НЕ отвечает ни на один запрос, а dnsmasq к
+	# этому моменту уже нацелен на него ⇒ дом без имён, и ловит это только health-тик через ~10
+	# минут (поймано 31.08.2026, у пользователя дважды пропадал интернет). Согласие «шифровать
+	# DNS» не есть согласие «остаться без DNS»: не смогли — возвращаем прежний путь СРАЗУ.
+	# Цена платится только в аварии: на здоровом роутере первый же nslookup отвечает за миллисекунды.
+	# Проба заодно РАБОТАЕТ ПРОГРЕВОМ (первый запрос платит за TCP+TLS+HTTP/2, busybox-клиенты
+	# столько не ждут) — отдельной строки прогрева больше нет.
+	# В ТУННЕЛЬНОМ режиме пробе дают ТРИ попытки, а не две: сюда приходят СРАЗУ после подъёма
+	# несущей, а рукопожатие awg занимает 5–9 с (замер 05.09.2026) — резолвер, увезённый маркой в
+	# туннель, эти секунды честно молчит, и две попытки (≈10 с) ложились на самую границу.
+	_doh_pn=2; [ "$1" = tunnel ] && _doh_pn=3
+	if ! doh_probe "$_doh_pn"; then
+		# НЕСУЩАЯ ЕЩЁ НЕ ВЕЗЁТ (сервер молчит, рукопожатие отброшено, DPI), а резолвер уже в ней —
+		# ровно тот дедлок, который сторож разрывает `doh_untunnel`. Но сторож приходит после
+		# boot-grace и двух тиков гистерезиса (до ~7 минут), а откат ОТСЮДА гасил DoH целиком:
+		# плагин писал plain-upstream в ту же мёртвую несущую (дом без DNS те же минуты), а когда
+		# несущая вставала, резолв шёл ОТКРЫТЫМ при зелёном «шифрованный DNS: вкл» — до следующего
+		# switch/repair (heal 5.14 поднимал прокси обратно, но dnsmasq на него уже не смотрел).
+		# Делаем то, что сделал бы сторож, СРАЗУ: резолвер МИМО несущей (шифрование сохранено, флаг
+		# стоит) — пошли имена ТАК, значит DNS у дома жив, а сторож вернёт резолвер в туннель первым
+		# же здоровым тиком (doh_retunnel). Не пошли и так — дорога мертва целиком, откат прежний.
+		# Слово об уводе — вызывающему (DOH_APPLY_NOTE): в лог плагина, а не в журнал событий —
+		# на медленном рукопожатии это штатный бут, а не авария.
+		# ПОРТ — РАНЬШЕ ПУТИ (09.09.2026, xray у тестера): несущая везёт, а её сервер не выпускает 853. Увод
+		# мимо несущей тут лечит не то, а откат гасит шифрование при живом 443. «Порт или путь» решает
+		# doh_dot_rescue (443 этим путём жив — пробуем DoH с проверкой имён); путь мёртв целиком — прежний увод.
+		# После увода — тот же вопрос ещё раз: мимо несущей 853 у провайдера бывает закрыт, а 443 открыт.
+		if doh_dot_rescue; then
+			if [ "$(doh_proto_now)" = dot ]; then
+				DOH_APPLY_NOTE="DoH этим путём не отдаёт имён, а выбранный DoT отдаёт — вернулся на DoT"
+			else
+				DOH_APPLY_NOTE="DoT этим путём не отдаёт имён, а DoH того же резолвера отдаёт — шифрую по DoH; сторож проверит DoT и вернётся на него сам"
+			fi
+			return 0
+		fi
+		_doh_pb=$(doh_proto_now)
+		if [ "$1" = tunnel ] && doh_untunnel_apply && { doh_probe || doh_dot_rescue; }; then
+			DOH_APPLY_NOTE="резолвер уведён мимо несущей — та ещё не везёт (рукопожатие/сервер); сторож вернёт его в туннель, когда health пройдёт"
+			# …И О ПРОТОКОЛЕ (бэклог ветки fix/dot-port-fallback, (11)): после увода имена мог дать только ДРУГОЙ протокол
+			# (doh_dot_rescue), и слово «уведён» молчало бы о том, что DNS теперь шифруется не тем, что выбрано.
+			# Прокси был на DoH ещё ДО увода (прежний переезд) — DoT мимо несущей никто не щупал, и говорить «не отдаёт»
+			# было бы неправдой: сторож проверит его сам (путь сменился — срок DOH_DOT_RETRY не ждёт).
+			_doh_pa=$(doh_proto_now)
+			if [ "$_doh_pa" != "$_doh_pb" ]; then
+				if [ "$_doh_pa" = dot ]; then
+					DOH_APPLY_NOTE="$DOH_APPLY_NOTE; мимо несущей DoH не отдал имён, а выбранный DoT отдаёт — вернулся на DoT"
+				else
+					DOH_APPLY_NOTE="$DOH_APPLY_NOTE; мимо несущей DoT не отдаёт имён, а DoH того же резолвера отдаёт — шифрую по DoH, сторож проверит DoT и вернётся на него сам"
+				fi
+			elif [ "$_doh_pa" = doh ] && [ "$(doh_proto)" = dot ]; then
+				DOH_APPLY_NOTE="$DOH_APPLY_NOTE; шифрую по DoH, как и до увода, хотя выбран DoT — сторож проверит DoT на новом пути и вернётся на него сам"
+			fi
+			return 0
+		fi
+		rm -f "$DOH_UNTUNNELED" 2>/dev/null
+		doh_apply_fail
 		return 1
 	fi
-	# ПРОГРЕВ (только если прокси подняли ПРЯМО СЕЙЧАС): самый первый запрос платит за TCP+TLS+HTTP/2
-	# к резолверу, и busybox-клиенты этого не дожидаются — на железе AX3600 сразу после включения
-	# тумблера `nslookup` отвечал «Try again», хотя через пару секунд всё резолвилось. Дёргаем один
-	# запрос САМИ, результат игнорируем (в авто-режиме его уже сделал doh_probe): пользователь не
-	# должен видеть «интернет отвалился» ровно в момент включения. Ограничены 5 с — CGI-верб панели
-	# ждёт синхронно, а мёртвый резолвер в ручном режиме мы намеренно не лечим.
-	[ "$_doh_started" = 1 ] && [ "$_doh_auto" != 1 ] && timeout -t 5 nslookup example.com >/dev/null 2>&1
 	return 0
 }
+
+
+# --- ЕДИНСТВЕННЫЙ CLI-ВЕРБ: `sh doh-lib.sh start` --------------------------------------------
+# Библиотека, которую МОЖНО запустить, — и это не небрежность. Прокси надо поднимать РАНЬШЕ, чем
+# отработает первый тик cron: там, где /etc персистентен (AX3600, BE3600), dnsmasq стартует со
+# ссылкой на 127.0.0.1#5053 (наш сниппет пережил ребут), а прокси до сих пор поднимал именно
+# первый тик — до минуты локалка без имён (замерено 31.08.2026: на 60-й секунде аптайма порт
+# ещё не слушает, на 107-й уже слушает).
+# Зовёт его init-скрипт `/etc/init.d/enodia-early`, а тот не вправе знать порядок загрузки наших
+# библиотек и имена внутренних функций. Верб делает РОВНО то же, что секция 5.14 heal.sh, — тем
+# же кодом: гейты `doh_want`/`doh_running` внутри doh_start, так что выключенный DoH это no-op.
+# ЗВАТЬ heal.sh ЦЕЛИКОМ ОТТУДА НЕЛЬЗЯ: у него бутовый лок 1×/boot, и слишком ранний прогон СЪЕЛ
+# бы его — тик cron через минуту пропустил бы восстановление, и роутер остался бы полуподнятым.
+# Гард по `$0`: файл СОРСЯТ полтора десятка скриптов, у каждого свой `$1`, и без проверки
+# «нас запустили, а не подключили» любой `web-ui.sh start` поднимал бы DoH побочным эффектом.
+case "$0" in
+	*doh-lib.sh)
+		case "${1:-}" in
+			start) doh_start ;;
+			"")    : ;;
+			*)     echo "usage: $0 start" >&2; exit 2 ;;
+		esac
+		;;
+esac

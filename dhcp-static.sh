@@ -61,7 +61,8 @@ TAB=$(printf '\t')
 if [ -f "$ENODIA_DIR/lease-lib.sh" ]; then . "$ENODIA_DIR/lease-lib.sh"; fi
 if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
 
-mac_ok() { printf '%s' "$1" | grep -qE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
+# Разбор MAC — у lease-lib.sh (одна копия на проект); шим той же строки — на payload без библиотеки.
+command -v mac_ok >/dev/null 2>&1 || mac_ok() { printf '%s' "$1" | grep -qE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
 ip_ok()  { printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
 
 # Резервировать имеет смысл только адрес НАШЕЙ сети. Гард не про синтаксис, а про смысл: публичный
@@ -73,7 +74,8 @@ lan_ip_ok() {
     return 0
 }
 
-norm_mac() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n'; }
+if command -v mac_norm >/dev/null 2>&1; then norm_mac() { mac_norm "$1"; }
+else norm_mac() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n'; }; fi
 
 # Строка персиста, у которой поле $1 равно $2 (awk умеет динамический номер поля).
 store_row_by() { [ -f "$STORE" ] || return 1; awk -F'\t' -v c="$1" -v w="$2" '$c==w{print; exit}' "$STORE" 2>/dev/null; }
@@ -163,20 +165,20 @@ same_file() { [ -f "$1" ] && [ -f "$2" ] && [ "$(md5sum < "$1" 2>/dev/null)" = "
 # атомарен и демон, перечитанный чужим вызовом ровно в этот момент, половины файла не увидит.
 place_conf() {   # $1 = готовый кандидат
     mkdir -p /tmp/dnsmasq.d 2>/dev/null
-    cp "$1" "/tmp/.$CONF_NAME.stage" 2>/dev/null && mv "/tmp/.$CONF_NAME.stage" "$CONF_LIVE" 2>/dev/null || return 1
+    cp "$1" "/tmp/.enodia-$CONF_NAME.stage" 2>/dev/null && mv "/tmp/.enodia-$CONF_NAME.stage" "$CONF_LIVE" 2>/dev/null || return 1
     # Копию в /etc сносим ВСЕГДА: она могла остаться от версии, которая писала обе (до 10.08.2026),
     # и тогда init размножил бы её в /tmp — тот самый дубль, от которого демон не стартует.
     rm -f "$CONF_ETC" 2>/dev/null
     return 0
 }
 
-drop_conf() { rm -f "$CONF_ETC" "$CONF_LIVE" "/tmp/.$CONF_NAME.stage" 2>/dev/null; }
+drop_conf() { rm -f "$CONF_ETC" "$CONF_LIVE" "/tmp/.enodia-$CONF_NAME.stage" 2>/dev/null; }
 
 # $1 = "norestart": выложить файлы, но не трогать демона. Нужен ровно одному вызывающему —
 # heal.sh на буте: там dnsmasq всё равно рестартуют ниже одной общей строкой, а лишний рестарт
 # посреди подъёма это ещё одна секунда без DNS для всей сети.
 cmd_apply() {
-    _dc=/tmp/.dhcp-static.cand.$$
+    _dc=/tmp/.enodia-dhcp-static.cand.$$
     build_conf "$_dc"
     # Резерваций не осталось — файла быть не должно. Пустой сниппет (один заголовок) работает так
     # же, но врёт диагностике: «файл есть» читается как «что-то закреплено».
@@ -195,7 +197,7 @@ cmd_apply() {
         return 0
     fi
     # Копия на случай отката: вернуть сеть в прежнее состояние важнее, чем применить резервацию.
-    _dbl=/tmp/.dhcp-static.bak-live.$$
+    _dbl=/tmp/.enodia-dhcp-static.bak-live.$$
     [ -f "$CONF_LIVE" ] && cp "$CONF_LIVE" "$_dbl" 2>/dev/null
     if ! place_conf "$_dc"; then
         rm -f "$_dc" "$_dbl" 2>/dev/null

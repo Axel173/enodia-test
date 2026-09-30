@@ -38,8 +38,14 @@
 #   slots.sh enable <id> / disable <id>
 #   slots.sh del <id>            — снять правила (unwire) + удалить из реестра
 #   slots.sh unwire <id>         — только снять iptables/ip rule слота (без правки реестра)
+#   slots.sh rename-config <транспорт> <старое> <новое> — конфиг ПЕРЕИМЕНОВАН: поле config выходов этого транспорта
+#                                  со старым именем → новое (печатает, сколько строк переписано)
+#   slots.sh key-holder <конфиг> <main|2|3|4> [live] — занят ли КЛЮЧ этого awg-конфига основным каналом или
+#                                  другим выходом (0 = занят, причина словами; 1 = свободен; 2 = не судить);
+#                                  без `live` — «можно ли назначить», с `live` — «поднимать ли сейчас» (см. блок ключей)
+#   slots.sh key-map             — «конфиг⇥держатель» по занятым ключам configs/ (пометки в выборе панели)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
@@ -95,7 +101,7 @@ slot_line() { grep "^$1$TAB" "$SLOTS_FILE" 2>/dev/null | head -n1; }
 # или теряют выход; cmd_add вдобавок выбирает id ЧТЕНИЕМ (TOCTOU). Лок — КАТАЛОГ (mkdir атомарен
 # на любой ФС, идиома groups/geo/dns-merge), устаревший снимаем `rm -rf`: внутри пид-файл, rmdir
 # его не возьмёт. Временный файл — со СВОИМ ПИДом: общее имя `.new` два процесса делили бы.
-SLOTS_LOCK=/tmp/.slots.lock
+SLOTS_LOCK=/tmp/.enodia-slots.lock
 slots_lock_take() {   # $1 = сколько секунд ждать (деф. 10)
     _lw="${1:-10}"; _li=0
     while ! mkdir "$SLOTS_LOCK" 2>/dev/null; do
@@ -178,7 +184,7 @@ collect_domains() {   # <id> -> дописать домены привязок �
     if [ -f "$_geor" ]; then
         while IFS="$TAB" read -r _gk _ga _gc _gt _gs; do
             [ "$_ga" = vpn ] && [ "${_gs:-0}" = "$_c" ] || continue
-            [ -f "/tmp/geo/cache/$_gk" ] && cat "/tmp/geo/cache/$_gk" >> "$_raw"
+            [ -f "/tmp/enodia-geo/cache/$_gk" ] && cat "/tmp/enodia-geo/cache/$_gk" >> "$_raw"
         done < "$_geor"
     fi
     # (б) живой dnsmasq: `ipset=/дом/сет[,сет2]` -> домен. Хвост после последнего «/» — СПИСОК
@@ -197,7 +203,7 @@ cmd_domains() {
         *) valid_id "$_id" || { echo "[slots] domains: битый id '$_id'" >&2; return 1; } ;;
     esac
     _cap="$2"; case "$_cap" in ''|*[!0-9]*) _cap=24 ;; esac
-    _raw="/tmp/.slot-doms.$$"; : > "$_raw"
+    _raw="/tmp/.enodia-slot-doms.$$"; : > "$_raw"
     if [ "$_id" = zapret ]; then
         # Особый «выход» для карточки Zapret: nfqws ОДИН на очередь 212 ⇒ стратегия у транспорта
         # и у всех zapret-выходов ОБЩАЯ, значит честный пул проверки — всё, что он десинкает.
@@ -272,10 +278,14 @@ cmd_route() {   # <id|0|zapret> <домен>
     esac
     _rh="$2"
     printf '%s' "$_rh" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$' || { printf 'badhost\t-\t-\n'; return 1; }
-    # ВСЕ A-записи имени, а не первую: у CDN/anycast в сете может лежать лишь часть адресов.
-    # IP берём перебором полей — busybox nslookup печатает и «Address 1: IP», и «Address: IP имя»,
-    # так что $NF врал бы (в одном формате это хост, а не адрес).
-    _rips=$(nslookup "$_rh" 2>/dev/null | awk '/^Name:/{f=1} f&&/^Address/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i}')
+    # ВСЕ A-записи имени, а не первую: у CDN/anycast в сете может лежать лишь часть адресов. Разбор
+    # вывода busybox nslookup — у dns-lib.sh::ns_ips (там же, почему `$NF` врёт): копий этого awk было
+    # две, и третья просилась в проверялку «что победит». БИБЛИОТЕКУ СОРСИМ ЗДЕСЬ, А НЕ В ШАПКЕ: её
+    # 47 КБ разбора платил бы КАЖДЫЙ `list-json`, а его зовёт опрос панели. Нет библиотеки (частично
+    # доехавший apply-scripts) — прежний путь байт-в-байт.
+    if ! command -v ns_ips >/dev/null 2>&1 && [ -f "$ENODIA_DIR/dns-lib.sh" ]; then . "$ENODIA_DIR/dns-lib.sh"; fi
+    if command -v ns_ips >/dev/null 2>&1; then _rips=$(ns_ips "$_rh")
+    else _rips=$(nslookup "$_rh" 2>/dev/null | awk '/^Name:/{f=1} f&&/^Address/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i}'); fi
     [ -n "$_rips" ] || { printf 'noresolve\t-\t-\n'; return 0; }
     _rsets=$(slot_route_sets "$_rid")
     for _ri in $_rips; do
@@ -314,13 +324,13 @@ slot_state() {   # <id> <transport> <fallback>
         _srul=0
         iptables -t mangle -S POSTROUTING 2>/dev/null | grep -q -- "--match-set grp_vpn_s$_sid dst" && _srul=1
         iptables -t mangle -S POSTROUTING 2>/dev/null | grep -q -- "--match-set geo_vpn_s$_sid dst" && _srul=1
-        _spid=$(cat /tmp/zapret-nfqws.pid 2>/dev/null | tr -d ' \r\n')
+        _spid=$(cat /tmp/enodia-zapret-nfqws.pid 2>/dev/null | tr -d ' \r\n')
         if [ "$_srul" = 1 ] && [ -n "$_spid" ] && kill -0 "$_spid" 2>/dev/null; then echo up; else echo down; fi
         return 0
     fi
     _srl=$(ip rule show 2>/dev/null | grep "fwmark 0x$_sid " | head -n1)
     [ -n "$_srl" ] || { echo down; return 0; }
-    if ip route show table "100$_sid" 2>/dev/null | grep -q '^default'; then
+    if ip route show table "100$_sid" 2>/dev/null | grep -q '^default'; then   # not-wan: несущая СЛОТА (table 100N), а не основная и не WAN
         # Маршрут есть — но у socks-выходов (byedpi/xray/hy2) он ведёт в tun2socks, а тот без
         # ЖИВОГО socks просто глотает пакеты: «маршрут на месте» ≠ «выход везёт». Демон мог
         # умереть между тиками сторожа (ciadpi самовыключается на accept-EINVAL) — тогда сайты
@@ -374,7 +384,7 @@ cmd_list_json() {
             esac
         done < "$_geor"
     fi
-    _n=0; _first=1
+    _n=0; _first=1; _krlx=0; _krix=0   # держатели ключей — один раз на ответ, а не на выход (живой ключ = вызовы awg)
     printf '{"slots":['
     if [ -s "$SLOTS_FILE" ]; then
         while IFS="$TAB" read -r id nb t cfg fb en; do
@@ -388,8 +398,19 @@ cmd_list_json() {
             # state — честный статус (см. slot_state): панель красит точку и объясняет, почему
             # включённый выход не везёт трафик. Выключенный не щупаем (правил у него нет).
             if [ "$en" = on ]; then _st=$(slot_state "$id" "$t" "$fb"); else _st=off; fi
-            printf '{"id":%s,"name_b64":"%s","transport":"%s","config":"%s","fallback":"%s","enabled":%s,"state":"%s","groups":%s,"geo":%s,"geo_keys":[%s]}' \
-                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_gc" "$_ge" "$_gk"
+            # key_clash — КТО МЕШАЕТ этому awg-выходу (main | s<N> | пусто), и вопрос у включённого и выключенного разный:
+            # включённому — «почему не поднимается» (live: держатель занимает сессию СЕЙЧАС — cmd_slot_up откажет, а состояние
+            # скажет лишь «несущая не поднялась»), выключенному — «почему не включится» (intent: откажет форма). Иначе работающий
+            # выход носил бы плашку «не поднимется», пока ключ лишь числится за выключенным соседом (ревью 27.09.2026).
+            # Попадают сюда мимо формы: импорт бэкапа, ручная правка `.slots`, выход, заведённый до гарда.
+            _kcl=''
+            if [ "$t" = awg ] && [ -f "$AWG_CONFIGS/$cfg.conf" ]; then
+                if [ "$en" = on ]; then [ "$_krlx" = 1 ] || { _krl=$(key_rows live); _krlx=1; }; _kr=$_krl
+                else [ "$_krix" = 1 ] || { _kri=$(key_rows intent); _krix=1; }; _kr=$_kri; fi
+                _kcl=$(awg_ids "$AWG_CONFIGS/$cfg.conf" | key_match "$_kr" "s$id" | head -n1 | cut -f2)
+            fi
+            printf '{"id":%s,"name_b64":"%s","transport":"%s","config":"%s","fallback":"%s","enabled":%s,"state":"%s","groups":%s,"geo":%s,"geo_keys":[%s],"key_clash":"%s"}' \
+                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_gc" "$_ge" "$_gk" "$_kcl"
         done < "$SLOTS_FILE"
     fi
     # Транспорты, готовые нести ДОП-ВЫХОД, — от ОРКЕСТРАТОРА (`transport.sh slot-list`),
@@ -397,7 +418,7 @@ cmd_list_json() {
     # сервер из каталога, активный конфиг ему не нужен (см. slot_ready в transport.sh) —
     # по `list` xray/hy2 без активации основным в пикер бы не попали. Фолбэк на `list` —
     # для дрейфа деплоя (старый transport.sh без верба: пусто лучше не отдавать).
-    # configs для формы панель берёт из /cgi-bin/list (уже загружены карточкой «Серверы»).
+    # configs для формы панель берёт из /cgi-bin/list (тот же ответ, что у экрана «Серверы»).
     _ready=''
     # `-f`, а не `-x`: зовём через `sh` (класс Б5-9). Снятый бит выключал бы ВЕСЬ пикер
     # транспортов в форме «добавить выход» — панель показала бы «нечего добавить» при живом
@@ -421,12 +442,179 @@ cmd_list_json() {
 # разъехалось бы по полям реестра (и утащило бы за собой fallback/en — read их схлопывает),
 # а поле пишут и CLI, и панель ⇒ валидируем здесь, как transport/fallback: движок обязан быть
 # безопасен и из CLI. '-' = «конфига нет» (byedpi/zapret).
+# Имя — ОДНОЙ строкой: `grep ^…$` судит построчно, и имя с переводом строки внутри проходило бы по первой строке — а в реестр
+# (TSV) легла бы лишняя строка и обрезанная эта (ревью пачки 2: POST переименования с `%0A` дописывал в .slots выход №7).
 valid_config() {
     case "$1" in
         -) return 0 ;;
         '') return 1 ;;
-        *) printf '%s' "$1" | grep -qE '^[A-Za-z0-9._-]+$' ;;
+        *) [ "$(printf '%s' "$1" | wc -l)" -eq 0 ] && printf '%s' "$1" | grep -qE '^[A-Za-z0-9._-]+$' ;;
     esac
+}
+
+# --- «ЭТОТ КЛЮЧ AmneziaWG УЖЕ ЗАНЯТ?» — ЕДИНСТВЕННЫЙ ответ на роутер ----------------------------------
+# Сервер WireGuard/AmneziaWG опознаёт клиента по КЛЮЧУ, и сессия у ключа ОДНА: два наших демона на одном
+# ключе (основной awg0 — живой или ТЁПЛЫМ РЕЗЕРВОМ — и выход awgN, либо два выхода) перетягивают её, и
+# выход переустанавливает рукопожатие каждые 25–40 с (замер на BE3600 тестера 10.09.2026: конфиг
+# выхода был тем же файлом, что у основного). Человек видит «выход не работает» и письмо про мёртвый
+# сервер, а сервер жив — связать это сам он не может: в панели нет ни строчки о занятом ключе.
+# Сверяем КЛЮЧ, а НЕ имя файла: первое, что сделает человек, которому сказали «заведите выходу свой
+# конфиг», — скопирует файл под новым именем, и сверка имён пропустила бы ту же беду. ИДЕНТИЧНОСТЬ
+# СЕССИИ — пара «PrivateKey : PublicKey пира»: один клиентский ключ на ДВУХ РАЗНЫХ серверах (пира
+# переносят между своими серверами) — две независимые сессии, и отказ был бы ложным (ревью 27.09.2026).
+# Пира нет с одной из сторон — судим по одному приватнику. Сам ключ не печатаем НИКОГДА — наружу
+# уходят только имена.
+# ДВА РЕЖИМА, потому что вопросов два:
+#   intent — «можно ли НАЗНАЧИТЬ» (форма: add/set/enable, смена сервера основного, пометки в выборе).
+#            Держатели — всё, что поднимется: `awg.conf` основного (его поднимает AmneziaWG основным и
+#            держит тёплым резервом, даже когда основной транспорт другой), ключ ЖИВОГО awg0 (резерв мог
+#            остаться от прежнего сервера — warm-carrier-keeps-old-server), «дом» режима «Домой»
+#            (`.failover-home`: сторож вернётся на него, и возврат упёрся бы в выход) и awg-выходы,
+#            ВКЛЮЧЁННЫЕ И НЕТ (выключенный включат позже — беда проявилась бы вдали от места, где её назвать).
+#   live   — «поднимать ли СЕЙЧАС» (подъём выхода, transport-awg.sh cmd_slot_up — последний рубеж).
+#            Держатели — только те, кто ЗАНИМАЕТ сессию: живой awg0, `awg.conf`, когда основной — AmneziaWG
+#            (awg0 встанет с минуты на минуту: порядок подъёма на буте не наш), и ЖИВЫЕ соседние выходы. По
+#            намерению тут судить нельзя: выход, заведённый до гарда при основном VLESS и `awg.conf` от
+#            прежнего AmneziaWG, работал — и снимался бы на первом же ребуте без письма (ревью 27.09.2026).
+#            Два включённых выхода на одном ключе: поднимается первый, второй получает отказ.
+# Потребители: add/set/enable (здесь), смена сервера основного канала и перебор его резервов
+# (switch-vpn.sh), подъём выхода (transport-awg.sh), пометки «занят» (cgi-bin/list → панель) и
+# `key_clash` выхода (list-json). Своих копий не заводить.
+# Только AmneziaWG: у VLESS/Hysteria один UUID обычно держит несколько подключений (не замерено ⇒ не
+# запрещаем), у byedpi/zapret конфига нет вовсе.
+AWG_CONFIGS="$ENODIA_STATE/configs"
+# Разбор конфигов — ОДНИМ awk на любое их число (прежний путь звал ~19 процессов на конфиг, а `cgi-bin/list` — это меню
+# «Сервер»: 30 конфигов = 571 процесс; ревью 27.09.2026). Имя ключа — без учёта регистра (как у wg), комментарий `# …` после
+# значения — вон, префикс ОТРЕЗАЕМ, а не делим по «=»: ключ — base64 с «=» на конце (грабля 27.09.2026 у сверки пира).
+# ПИРОВ МОЖЕТ БЫТЬ НЕСКОЛЬКО, и порядок их у userspace-демона случаен (обход Go-map) ⇒ никакого «первого пира»: на каждый пир —
+# своя строка «C⇥имя⇥ключ:пир» (пиров нет — «ключ»), и совпадение ЛЮБОЙ пары — одна сессия на двоих (ревью 28.09.2026, круг 2).
+AWG_ID_AWK='
+FNR == 1 && NR > 1 && pk != "" { if (np == 0) print "C\t" nm "\t" pk; for (k = 1; k <= np; k++) print "C\t" nm "\t" pk ":" pe[k] }
+FNR == 1 { nm = FILENAME; sub(/.*\//, "", nm); sub(/\.conf$/, "", nm); pk = ""; np = 0 }
+{ l = $0; sub(/\r$/, "", l); t = tolower(l) }
+t ~ /^[ \t]*privatekey[ \t]*=/ && pk == "" { v = l; sub(/^[^=]*=/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v); pk = v }
+t ~ /^[ \t]*publickey[ \t]*=/ { v = l; sub(/^[^=]*=/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v); if (v != "") pe[++np] = v }
+END { if (pk != "") { if (np == 0) print "C\t" nm "\t" pk; for (k = 1; k <= np; k++) print "C\t" nm "\t" pk ":" pe[k] } }'
+awg_ids() { awk "$AWG_ID_AWK" "$@" 2>/dev/null; }             # файлы .conf -> «C⇥имя⇥идентичность» (строка на пир)
+awg_key_file() { [ -f "$1" ] || return 0; awg_ids "$1" | cut -f3; }
+awg_key_live() {   # $1 = iface -> «ключ:пир» живого демона строкой на пир (пусто, если его нет или нечем спросить)
+    ip link show "$1" >/dev/null 2>&1 || return 0
+    _kb=$(bin_path awg); [ -x "$_kb" ] || return 0
+    _kl=$("$_kb" show "$1" private-key 2>/dev/null | head -n1 | tr -d ' \t\r')
+    [ -n "$_kl" ] || return 0
+    _kp=$("$_kb" show "$1" peers 2>/dev/null | tr -d ' \t\r')
+    if [ -z "$_kp" ]; then printf '%s\n' "$_kl"; return 0; fi
+    printf '%s\n' "$_kp" | while IFS= read -r _kq; do [ -n "$_kq" ] && printf '%s:%s\n' "$_kl" "$_kq"; done
+    return 0
+}
+key_row() {   # $1 = кто, $2 = имя, $3 = идентичности строками -> R-строки
+    printf '%s\n' "$3" | while IFS= read -r _kr1; do [ -n "$_kr1" ] && printf 'R\t%s\t%s\t%s\n' "$1" "$2" "$_kr1"; done
+    return 0
+}
+# key_rows <intent|live> -> держатели строками «R⇥кто⇥имя⇥идентичность» (кто = main | s<N>). Считаются ОДИН раз на вопрос:
+# живой ключ — это два вызова `awg` на интерфейс. Имена переменных — СВОИ (`_r*`): `local` в busybox sh нет.
+key_rows() {
+    _rmode="$1"
+    _rm=$(awg_key_file "$ENODIA_STATE/awg.conf"); _ra=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d ' \r\n')
+    if [ "$_rmode" = intent ] || [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = awg ]; then
+        key_row main "$_ra" "$_rm"
+    fi
+    # Живой awg0: имя из `.active` — ТОЛЬКО когда он на ключе конфига основного; иначе это резерв ПРЕЖНЕГО сервера, и имя из
+    # `.active` назвало бы чужой конфиг. Пустое имя = «неизвестно» (принято в проекте). Сверяем приватник (до «:»).
+    _rl=$(awg_key_live awg0)
+    if [ -n "$_rl" ]; then
+        if [ "$(printf '%s\n' "$_rl" | head -n1 | cut -d: -f1)" = "$(printf '%s\n' "$_rm" | head -n1 | cut -d: -f1)" ]; then
+            key_row main "$_ra" "$_rl"
+        else key_row main '' "$_rl"; fi
+    fi
+    if [ "$_rmode" = intent ] && [ "$(cat "$ENODIA_STATE/.failover-mode" 2>/dev/null | tr -d ' \t\r\n')" = home ]; then
+        _rh=$(cat "$ENODIA_STATE/.failover-home" 2>/dev/null | tr -d ' \r\n')
+        if [ -n "$_rh" ] && [ "$_rh" != "$_ra" ] && valid_config "$_rh"; then
+            key_row main "$_rh" "$(awg_key_file "$AWG_CONFIGS/$_rh.conf")"
+        fi
+    fi
+    [ -s "$SLOTS_FILE" ] || return 0
+    # `|| [ -n ]` — последняя строка без перевода строки не теряется (busybox read).
+    while IFS="$TAB" read -r _ri _rn _rt _rc _rf _re || [ -n "$_ri" ]; do
+        [ "$_rt" = awg ] || continue
+        if [ "$_rmode" = intent ]; then _rk=$(awg_key_file "$AWG_CONFIGS/$_rc.conf")
+        else [ "$_re" = on ] || continue; _rk=$(awg_key_live "awg$_ri"); fi
+        key_row "s$_ri" "$_rc" "$_rk"
+    done < "$SLOTS_FILE"
+}
+# СВЕРКА — ОДНА на все вопросы: stdin = R-строки держателей, затем C-строки конфигов; -v self = кто спрашивает (main | s<N> |
+# none — «все»; себя пропускаем: выход не конфликтует сам с собой, основной — сам с собой). Печатает «конфиг⇥кто⇥имя» на каждое
+# совпадение: приватники равны И пиры равны (или пира нет с одной из сторон). Без split()/функций — busybox awk их не умеет.
+KEY_MATCH_AWK='
+$1 == "R" { n++; rw[n] = $2; rn[n] = $3; rp[n] = $4; next }
+$1 == "C" {
+    ck = $3; sub(/:.*/, "", ck); ce = ""; if ($3 ~ /:/) { ce = $3; sub(/^[^:]*:/, "", ce) }
+    for (i = 1; i <= n; i++) {
+        if (rw[i] == self) continue
+        rk = rp[i]; sub(/:.*/, "", rk)
+        if (rk == "" || rk != ck) continue
+        re = ""; if (rp[i] ~ /:/) { re = rp[i]; sub(/^[^:]*:/, "", re) }
+        if (ce != "" && re != "" && ce != re) continue
+        print $2 "\t" rw[i] "\t" rn[i]
+    }
+}'
+key_match() {   # $1 = R-строки (key_rows), $2 = self; stdin — C-строки
+    { printf '%s\n' "$1"; cat; } | awk -F"$TAB" -v self="$2" "$KEY_MATCH_AWK"
+}
+# Человеческая причина отказа — ОДНА формулировка на все точки (выход и основной канал говорят одно).
+# $1 = имя конфига, $2 = «main⇥имя» | «s<N>⇥имя» (держатель).
+key_busy_msg() {
+    _mh=$(printf '%s' "$2" | cut -f1); _mhn=$(printf '%s' "$2" | cut -f2)
+    # Держатель «main» — СЕРВЕР AmneziaWG основного канала, и называем его так: он занят и тогда, когда основной сейчас
+    # другой протокол (резервом и для возврата AmneziaWG держит именно его), и «занят основным каналом» при xray сбивало бы.
+    case "$_mh" in
+        main) _mwho="сервер AmneziaWG основного канала" ;;
+        *)    _mwho="конфиг выхода №${_mh#s}" ;;
+    esac
+    if [ "$_mhn" = "$1" ]; then
+        _mwhat="конфиг «$1» уже занят: это $_mwho"
+    elif [ -n "$_mhn" ]; then
+        _mwhat="у конфига «$1» тот же ключ, что у «$_mhn», а это $_mwho"
+    else
+        _mwhat="у конфига «$1» тот же ключ, что у $(printf '%s' "$_mwho" | sed 's/^сервер /сервера /; s/^конфиг /конфига /')"
+    fi
+    echo "$_mwhat. Один ключ AmneziaWG не держит два подключения: сервер оставит одно, и второе будет постоянно отваливаться. Заведите отдельный конфиг (с другим ключом)."
+}
+key_self() { case "$1" in main|none) printf '%s' "$1" ;; *) printf 's%s' "$1" ;; esac; }
+# key-holder <имя конфига> <main|2|3|4> [live] — CLI-вход для switch-vpn.sh (intent) и transport-awg.sh (live).
+# Код: 0 — ЗАНЯТ (в stdout причина словами), 1 — свободен, 2 — судить не по чему (нет файла/ключа).
+cmd_key_holder() {
+    _kc="$1"; _ks=$(key_self "$2"); _kmode=intent; [ "$3" = live ] && _kmode=live
+    valid_config "$_kc" && [ "$_kc" != '-' ] || return 2
+    [ -f "$AWG_CONFIGS/$_kc.conf" ] || return 2
+    _kid=$(awg_ids "$AWG_CONFIGS/$_kc.conf"); [ -n "$_kid" ] || return 2
+    _kh=$(printf '%s\n' "$_kid" | key_match "$(key_rows "$_kmode")" "$_ks" | head -n1 | cut -f2-)
+    [ -n "$_kh" ] || return 1
+    key_busy_msg "$_kc" "$_kh"
+    return 0
+}
+# key-map — ПОМЕТКИ для выбора конфига в панели: «имя⇥держатели» (через запятую: main, s2…) по каждому
+# конфигу configs/, чей ключ держит основной канал или выход (intent). Сами их конфиги — тоже: панель вычтет
+# «себя» и отличит «это мой» от «занят чужим»; ВСЕ держатели, а не первый — иначе при двух выходах на
+# одном ключе (импорт бэкапа, ручная правка) предупреждение досталось бы только одному. Незанятые не печатаем.
+cmd_key_map() {
+    [ -d "$AWG_CONFIGS" ] || return 0
+    # Только читаемые файлы: busybox awk на первом же нечитаемом (каталог с именем *.conf, битые права) бросает ВЕСЬ проход, и
+    # пометок не осталось бы ни у одного конфига.
+    set --; for _kf in "$AWG_CONFIGS"/*.conf; do [ -f "$_kf" ] && [ -r "$_kf" ] && set -- "$@" "$_kf"; done
+    [ $# -gt 0 ] || return 0
+    awg_ids "$@" | key_match "$(key_rows intent)" none | awk -F"$TAB" '
+        { kk = $1 "\t" $2; if (kk in s) next; s[kk] = 1
+          if ($1 in h) h[$1] = h[$1] "," $2; else { k++; o[k] = $1; h[$1] = $2 } }
+        END { for (i = 1; i <= k; i++) print o[i] "\t" h[o[i]] }'
+}
+# Гард назначения конфига ВЫХОДУ (add/set config/enable): занят — отказ причиной. $1 = транспорт,
+# $2 = конфиг, $3 = id выхода (у add — «new»: себя в реестре ещё нет).
+slot_key_guard() {
+    [ "$1" = awg ] || return 0
+    _kg=$(cmd_key_holder "$2" "$3") || return 0
+    echo "[slots] $_kg"
+    return 1
 }
 
 cmd_add() {
@@ -436,8 +624,11 @@ cmd_add() {
     valid_config "$cfg" || { echo "[slots] недопустимое имя конфига (буквы, цифры, . _ - или '-')"; return 1; }
     case "$fb" in main|direct) ;; *) echo "[slots] fallback = main|direct"; return 1 ;; esac
     # Лок держим на ВЕСЬ выбор id + запись: без него два клика панели выбрали бы ОДИН свободный
-    # id и второй затёр бы первый (или строки склеились).
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повтори"; return 1; }
+    # id и второй затёр бы первый (или строки склеились). Сверка ключа — ПОД ТЕМ ЖЕ локом: два одновременных add на один
+    # свободный конфиг иначе оба прошли бы гард (ревью 27.09.2026). У set/enable гонку добирает последний рубеж — подъём
+    # выхода (live): из двух выходов на одном ключе встаёт первый.
+    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
+    slot_key_guard "$t" "$cfg" new || { slots_lock_drop; return 1; }
     id=""
     i=$MIN_ID
     while [ "$i" -le "$MAX_ID" ]; do
@@ -453,6 +644,35 @@ cmd_add() {
     # «-» = «конфига нет» (zapret) — в сообщении не показываем, иначе «(zapret · -)».
     if [ "$cfg" = '-' ]; then _cfgh=""; else _cfgh=" · $cfg"; fi
     echo "[slots] выход №$id «$name» ($t$_cfgh) создан, fallback=$fb"
+}
+
+# rename-config <транспорт> <старое> <новое> — конфиг ПЕРЕИМЕНОВАН (cgi-bin/action::rename_config): у всех выходов этого
+# транспорта со старым именем поле config → новое. Несущую НЕ трогаем: работающий демон держит уже прочитанный конфиг, а его
+# рабочая копия названа по НОМЕРУ слота. Без правки реестра первый же переподъём (сторож, heal, ребут) не нашёл бы конфиг и увёл
+# выход на запасной путь. Печатает число переписанных строк (0 — выходов на этом конфиге нет).
+cmd_rename_config() {
+    t="$1"; old="$2"; new="$3"
+    valid_transport "$t" || { echo "[slots] неизвестный транспорт '$t'"; return 1; }
+    { [ "$old" != '-' ] && valid_config "$old" && [ "$new" != '-' ] && valid_config "$new"; } \
+        || { echo "[slots] недопустимое имя конфига"; return 1; }
+    [ -f "$SLOTS_FILE" ] || { echo 0; return 0; }
+    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
+    # Новое имя уже указано у выхода (его сервер удалили, а ссылка осталась) — переименование ТИХО привязало бы этот выход к
+    # переименованному серверу. Отказ словами. Откат (обратное переименование, когда `mv` файла не удался) проходит ту же проверку,
+    # но старого имени у выходов после прямого прохода уже нет — отказа не будет.
+    _rdup=$(awk -F"$TAB" -v t="$t" -v n="$new" '$3==t && $4==n { print $1; exit }' "$SLOTS_FILE" 2>/dev/null)
+    if [ -n "$_rdup" ]; then slots_lock_drop; echo "[slots] имя «$new» уже указано у выхода №$_rdup — выберите другое"; return 1; fi
+    _rn=0; _rtmp="$SLOTS_FILE.$$"
+    : > "$_rtmp"
+    # `|| [ -n ]` — последняя строка без перевода строки не теряется (busybox read).
+    while IFS="$TAB" read -r _i _nb _t _c _f _e || [ -n "$_i" ]; do
+        [ -n "$_i" ] || continue
+        if [ "$_t" = "$t" ] && [ "$_c" = "$old" ]; then _c="$new"; _rn=$((_rn+1)); fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_i" "$_nb" "$_t" "$_c" "$_f" "$_e" >> "$_rtmp"
+    done < "$SLOTS_FILE"
+    if [ "$_rn" -gt 0 ]; then mv "$_rtmp" "$SLOTS_FILE"; else rm -f "$_rtmp"; fi
+    slots_lock_drop
+    echo "$_rn"
 }
 
 # Переписать одно поле строки id. Правка через временный файл + mv (атомарно на /data,
@@ -473,6 +693,8 @@ cmd_set() {
                    old_fb="$val" ;;
         *) echo "[slots] поле = name|transport|config|fallback"; return 1 ;;
     esac
+    # Сверка ключа — и при смене КОНФИГА, и при смене ТРАНСПОРТА на awg (конфиг тот, что уже записан).
+    case "$field" in transport|config) slot_key_guard "$old_t" "$old_cfg" "$id" || return 1 ;; esac
     # Несущая ВКЛЮЧЁННОГО выхода уже поднята по СТАРЫМ (транспорт, конфиг) — одной записи в реестр
     # мало: демон продолжил бы ходить прежним сервером («сменил сервер, а выход тот же»), а смена
     # ТРАНСПОРТА ещё и осиротила бы старую несущую (следующий slot-down ушёл бы уже в НОВЫЙ плагин,
@@ -481,9 +703,15 @@ cmd_set() {
     reup=0
     case "$field" in transport|config) [ "$old_en" = on ] && reup=1 ;; esac
     [ "$reup" = 1 ] && [ -f "$ENODIA_DIR/transport.sh" ] && sh "$ENODIA_DIR/transport.sh" slot-down "$id" >/dev/null 2>&1
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повтори"; return 1; }
+    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
     _slots_write "$id" "$old_nb" "$old_t" "$old_cfg" "$old_fb" "$old_en"
     slots_lock_drop
+    # VPN выключен вручную — несущая выхода не поднимется (плагин при флаге отказывает, daemon-lib.sh::carrier_run), и «идёт по
+    # запасному пути» было бы неправдой: при выключенном VPN выход не ведёт никуда. Поднимет «Включить VPN».
+    if [ "$reup" = 1 ] && [ -f "$ENODIA_STATE/.vpn-off" ]; then
+        echo "[slots] слот №$id: $field обновлён; VPN выключен вручную — выход поднимется при включении"
+        return 0
+    fi
     if [ "$reup" = 1 ]; then
         if [ -f "$ENODIA_DIR/transport.sh" ] && sh "$ENODIA_DIR/transport.sh" slot-up "$id" >/dev/null 2>&1; then
             echo "[slots] слот №$id: $field обновлён, несущая перезапущена"
@@ -502,7 +730,7 @@ cmd_set() {
 
 # Переписать поле en (6-е) строки слота id: под локом, атомарно tmp+mv (как cmd_set).
 write_en() {
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повтори"; return 1; }
+    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
     line=$(slot_line "$1")
     [ -n "$line" ] || { slots_lock_drop; return 1; }
     _slots_write "$1" "$(printf '%s' "$line" | cut -f2)" "$(printf '%s' "$line" | cut -f3)" \
@@ -519,7 +747,7 @@ write_en() {
 # едут основным выходом, пока владелец не пересоберётся — «включил выход, а пул не поехал».
 # Зовём ТОЛЬКО тех владельцев, у кого реально есть привязка к этому слоту (иначе даром гоняем
 # сборку): groups — синхронно (дёшево, ровно как при правке группы), geo — ФОНОМ через тот же
-# пидфайл /tmp/geo.pid, что и CGI geo_apply (пересбор каталога ~1600 элементов держать в
+# пидфайл /tmp/enodia-geo.pid, что и CGI geo_apply (пересбор каталога ~1600 элементов держать в
 # CGI-запросе нельзя; geo.sh сам сериализуется ls_lock).
 rebind_owners() {
     id="$1"
@@ -541,8 +769,8 @@ rebind_owners() {
     if [ -f "$ENODIA_DIR/geo.sh" ] && [ -s "$ENODIA_STATE/geo/actions.tsv" ] &&
        awk -F"$TAB" -v s="$id" '$5==s{f=1} END{exit !f}' "$ENODIA_STATE/geo/actions.tsv" 2>/dev/null; then
         if [ -x /sbin/start-stop-daemon ]; then
-            rm -f /tmp/geo.pid 2>/dev/null
-            start-stop-daemon -S -b -m -p /tmp/geo.pid -x /bin/sh -- "$ENODIA_DIR/geo.sh" apply >/dev/null 2>&1
+            rm -f /tmp/enodia-geo.pid 2>/dev/null
+            start-stop-daemon -S -b -m -p /tmp/enodia-geo.pid -x /bin/sh -- "$ENODIA_DIR/geo.sh" apply >/dev/null 2>&1
         else
             ( sh "$ENODIA_DIR/geo.sh" apply >/dev/null 2>&1 & )
         fi
@@ -572,6 +800,10 @@ cmd_toggle() {
     [ -n "$(slot_line "$id")" ] || { echo "[slots] нет слота №$id"; return 1; }
     TRANSPORT_SH="$ENODIA_DIR/transport.sh"
     if [ "$en" = on ]; then
+        # Выход, заведённый ДО гарда (или приехавший импортом бэкапа), мог получить занятый ключ: включение
+        # — та же точка назначения, что add/set, и отказывает той же причиной, не трогая реестр.
+        _tl=$(slot_line "$id")
+        slot_key_guard "$(printf '%s' "$_tl" | cut -f3)" "$(printf '%s' "$_tl" | cut -f4)" "$id" || return 1
         # Порядок: сперва пишем on (диспетч slot-up в плагин ТРЕБУЕТ включённый слот —
         # _slot_dispatch читает поле en), затем ввод в строй. Запись не прошла (реестр занят) —
         # НЕ активируем: диспетч всё равно увидел бы off, а мы отрапортовали бы «включён».
@@ -619,7 +851,7 @@ cmd_del() {
         sh "$ENODIA_DIR/transport.sh" slot-down "$id" >/dev/null 2>&1
     fi
     cmd_unwire "$id"
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повтори"; return 1; }
+    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
     _slots_write "$id"          # без полей = удалить строку (последняя ⇒ файл убираем целиком)
     slots_lock_drop
     # Реестра слота больше нет — привязки (groups.slot/geo.slot) осиротели: переигрываем
@@ -643,5 +875,8 @@ case "$1" in
     disable)      cmd_toggle "$2" off ;;
     del)          cmd_del "$2" ;;
     unwire)       cmd_unwire "$2" ;;
-    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>"; exit 2 ;;
+    rename-config) cmd_rename_config "$2" "$3" "$4" ;;
+    key-holder)   cmd_key_holder "$2" "$3" "$4" ;;
+    key-map)      cmd_key_map ;;
+    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>|rename-config <транспорт> <старое> <новое>|key-holder <конфиг> <main|2..4> [live]|key-map"; exit 2 ;;
 esac

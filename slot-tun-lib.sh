@@ -14,7 +14,9 @@
 #   HEV         — путь к бинарю hev-socks5-tunnel;
 #   SOCKS_ADDR  — адрес локального socks (127.0.0.1);
 #   log()       — вывод в лог плагина;
-#   proc_alive() — «жив ли pid из пидфайла» (пустой пидфайл = НЕ жив, см. грабли плагинов).
+#   proc_alive() — «жив ли pid из пидфайла» (пустой пидфайл = НЕ жив, см. грабли плагинов);
+#   daemon_wait_port()/daemon_wait_dev() — ожидание старта демона (daemon-lib.sh или шим плагина):
+#     срок старта зависит от НОСИТЕЛЯ бинаря, и держать вторую копию этого знания здесь нельзя.
 # Библиотека НЕ имеет собственных дефолтов для них СОЗНАТЕЛЬНО: молчаливый дефолт замаскировал
 # бы неполный source (плагин без ENODIA_DIR не должен «почти работать» на чужих путях).
 #
@@ -35,6 +37,8 @@
 # ради того, чтобы карриер-маршруты слота не зависели от полноты чужого пролога. Нет файла —
 # прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Нет ipt-lib.sh с `ipt_top` (частичное обновление) ⇒ прежнее «первым в цепочку», байт-в-байт.
+command -v ipt_top >/dev/null 2>&1 || ipt_top() { _itc=$1; shift; iptables -C "$_itc" "$@" 2>/dev/null || iptables -I "$_itc" 1 "$@"; }
 
 : "${ENODIA_STATE:=/data/usr/app/enodia-state}"
 
@@ -43,8 +47,8 @@ SLOT_SOCKS_BASE=10830
 slot_socks_port() { echo $(( SLOT_SOCKS_BASE + $1 )); }   # id 2 -> 10832 ...
 slot_tun()        { echo "xtun$1"; }
 slot_table()      { echo "100$1"; }
-slot_hev_pid()    { echo "/tmp/hev-s$1.pid"; }
-slot_hev_log()    { echo "/tmp/hev-s$1.log"; }
+slot_hev_pid()    { echo "/tmp/enodia-hev-s$1.pid"; }
+slot_hev_log()    { echo "/tmp/enodia-hev-s$1.log"; }
 slot_hev_yaml()   { echo "$ENODIA_STATE/hev-s$1.yaml"; }
 
 # per-slot hev.yaml: свой tun/порт/ipv4. 198.18.<id>.1 — бенчмарк-диапазон (RFC 2544), не
@@ -66,10 +70,23 @@ misc:
 YAML
 }
 
-# Дождаться, пока socks-порт слота начнёт слушать. $2 = число попыток (деф. 8).
-# Пробел в grep-шаблоне обязателен: без него "10832" матчил бы и "108320" (чужой порт).
-slot_wait_socks() {   # $1 = port ; $2 = tries
+# Дождаться, пока socks-порт слота начнёт слушать. Ждать «пока жив процесс, но не дольше
+# потолка» умеет ОДИН владелец — daemon_wait_port (daemon-lib.sh): срок зависит от носителя
+# бинаря, а слот и основная несущая отличаются здесь только пидфайлом.
+# Пустой $2 = вызов из ПЛАГИНА ПРОШЛОЙ СБОРКИ (дрейф деплоя: библиотека новее плагина) — судить
+# по процессу нечем, работаем прежним фиксированным сроком, а не отказываем на пустом пидфайле.
+slot_wait_socks() {   # $1 = порт ; $2 = пидфайл демона слота ; $3 = имя бинаря ; $4 = срок на флеше (деф. 8)
+    # СУДИМ ПО ФОРМЕ ВТОРОГО АРГУМЕНТА, а не по его пустоте. У ПРЕЖНЕЙ подписи там шло ЧИСЛО
+    # попыток (`slot_wait_socks <порт> <попыток>`), и проверка «непусто ⇒ это пидфайл» увела бы
+    # старый вызов в новый путь с пидфайлом «8»: `cat 8` пуст, и через три секунды мы объявили бы
+    # «процесс НЕ ЗАПУСТИЛСЯ» про живой демон — то есть ветка совместимости не работала бы ровно
+    # в том случае, ради которого написана. Пидфайл — всегда абсолютный путь, число — никогда.
+    case "$2" in
+        /*) daemon_wait_port "$2" "$3" "${4:-8}" "$SOCKS_ADDR" "$1"; return $? ;;
+    esac
     _p="$1"; _t="${2:-8}"; _i=0
+    # fixed-wait: пидфайла не дали — судить по процессу НЕЧЕМ. Сознательно ПРЕЖНИЙ путь для
+    # плагина из старой сборки (см. шапку функции); новый код сюда не попадает никогда.
     while [ "$_i" -lt "$_t" ]; do
         netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$_p " && return 0
         sleep 1; _i=$((_i+1))
@@ -114,9 +131,8 @@ slot_hev_up() {   # $1 = id
         log "слот №$_id: запускаю hev (tun2socks -> $_tun)…"
         start-stop-daemon -S -b -m -p "$(slot_hev_pid "$_id")" -x "$HEV" -- "$(slot_hev_yaml "$_id")"
     fi
-    _i=0; while [ $_i -lt 6 ]; do ip link show "$_tun" >/dev/null 2>&1 && break; sleep 1; _i=$((_i+1)); done
-    ip link show "$_tun" >/dev/null 2>&1 || {
-        log "слот №$_id: tun $_tun не создан. Лог hev:"; tail -n 15 "$(slot_hev_log "$_id")" 2>/dev/null; return 1; }
+    daemon_wait_dev "$(slot_hev_pid "$_id")" hev 6 "$_tun" || {
+        log "слот №$_id: tun $_tun не создан ($DAEMON_WAIT_WHY). Лог hev:"; tail -n 15 "$(slot_hev_log "$_id")" 2>/dev/null; return 1; }
     return 0
 }
 
@@ -140,8 +156,8 @@ slot_hev_down() {   # $1 = id
 slot_apply_routing() {   # $1 = id
     _id="$1"; _tun=$(slot_tun "$_id"); _tab=$(slot_table "$_id")
     ip link set "$_tun" up 2>/dev/null
-    iptables -C FORWARD -o "$_tun" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$_tun" -j ACCEPT
-    iptables -C FORWARD -i "$_tun" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$_tun" -j ACCEPT
+    ipt_top FORWARD -o "$_tun" -j ACCEPT
+    ipt_top FORWARD -i "$_tun" -j ACCEPT
     ip route replace default dev "$_tun" table "$_tab"
 }
 slot_remove_routing() {   # $1 = id

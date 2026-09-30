@@ -5,7 +5,7 @@
 #
 #   dns-hosts.sh add <домен> <ip>   — upsert (домен = ключ, IPv4 или IPv6)
 #   dns-hosts.sh del <домен>        — убрать
-#   dns-hosts.sh list               — JSON [{"domain":..,"ip":..}] для панели
+#   dns-hosts.sh list               — JSON [{"domain":..,"ip":..,"solo":true|false}] для панели (solo — разбор у fam_solo)
 #   dns-hosts.sh apply              — перегенерить живой conf из персиста + reload dnsmasq
 #   dns-hosts.sh build              — только перегенерить conf (БЕЗ reload; для heal-цепочки)
 #
@@ -19,7 +19,7 @@
 # reload: `address=` SIGHUP НЕ перечитывает → нужен полный рестарт dnsmasq (как adblock). Блип
 # DNS ~1с на весь LAN — терпимо (соединения не рвутся), делаем ТОЛЬКО при реальном изменении.
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 SRC="$ENODIA_STATE/.dns-hosts"
 CONFDIR=/tmp/dnsmasq.d
@@ -84,6 +84,22 @@ valid_ip() {
 	printf '%s' "$1" | grep -qE '^[0-9A-Fa-f:]{2,45}$'
 }
 
+# Все строки, КРОМЕ домена $1, — ТОЧНЫМ сравнением поля, а не регуляркой `grep -v "^$d⇥"`: точка в домене у
+# grep — «любой символ», и правка `a.b` молча сносила соседнее `axb` (ревью шага 5a, круг 1; стенд
+# local/dns-hosts-cgi-test.sh). Нет файла — пусто.
+others_than() { [ -f "$SRC" ] && awk -F"$TAB" -v d="$1" '$1!=d' "$SRC"; }
+# ДРУГАЯ СЕМЬЯ АДРЕСОВ. `address=/дом/<IPv4>` задаёт ответ на A, а что будет с AAAA, решает ВЕРСИЯ dnsmasq: с 2.86 запрос
+# другой семьи уходит к upstream как обычно (замер BE7000, 2.86, 21.09.2026: заглушка 0.0.0.0 — AAAA от провайдера, `::` —
+# A от провайдера); раньше, по документации, другая семья получала пустой ответ (AX3600 с 2.80 не замерен). Экран говорит
+# «по IPv6 имя по-прежнему резолвится» ТОЛЬКО по этому ответу — на старом dnsmasq это было бы неправдой (ревью 5a, круг 2).
+# 0 = с 2.86 и новее; 1 = старше или версию не разобрать (тогда экран о другой семье молчит).
+fam_solo() {
+	_fv=$(/usr/sbin/dnsmasq -v 2>/dev/null | sed -n '1s/^Dnsmasq version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+	[ -n "$_fv" ] || return 1
+	set -- $_fv
+	[ "$1" -gt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -ge 86 ]; }
+}
+
 # Нормализация домена: срезать схему/www/путь, в нижний регистр.
 norm_domain() { printf '%s' "$1" | sed -E 's|^https?://||; s|^www\.||; s|/.*$||' | tr 'A-Z' 'a-z'; }
 
@@ -109,11 +125,11 @@ case "$1" in
 		# conf-dir кладём лишь после вердикта dnsmasq. Так негодная строка не появляется в
 		# каталоге демона ВООБЩЕ — иначе чужой рестарт (нас зовут шесть подсистем) мог бы
 		# подхватить её в это окно и оставить сеть без DNS.
-		_dhb=/tmp/.dns-hosts.bak.$$
+		_dhb=/tmp/.enodia-dns-hosts.bak.$$
 		[ -f "$SRC" ] && cp "$SRC" "$_dhb" 2>/dev/null
-		{ [ -f "$SRC" ] && grep -v "^$d$TAB" "$SRC"; printf '%s\t%s\n' "$d" "$ip"; } > "$SRC.new" 2>/dev/null
+		{ others_than "$d"; printf '%s\t%s\n' "$d" "$ip"; } > "$SRC.new" 2>/dev/null
 		mv "$SRC.new" "$SRC" 2>/dev/null
-		_dhc=/tmp/.dns-hosts.cand.$$
+		_dhc=/tmp/.enodia-dns-hosts.cand.$$
 		build "$_dhc"
 		if [ -f "$_dhc" ] && ! conf_test "$_dhc"; then
 			if [ -f "$_dhb" ]; then mv "$_dhb" "$SRC" 2>/dev/null; else rm -f "$SRC" 2>/dev/null; fi
@@ -126,18 +142,24 @@ case "$1" in
 	del)
 		d=$(norm_domain "$2")
 		[ -n "$d" ] || { echo "нет домена"; exit 1; }
-		if [ -f "$SRC" ]; then grep -v "^$d$TAB" "$SRC" > "$SRC.new" 2>/dev/null; mv "$SRC.new" "$SRC" 2>/dev/null; fi
+		# Убирать НЕЧЕГО — так и сказать, а не «ок» с лишним рестартом DNS всей сети: панель писала «убрано» про
+		# имя, которого уже не было (сняли с другого устройства). Сверка ТОЧНАЯ (awk по полю), а не регуляркой:
+		# точка в домене у grep — «любой символ».
+		awk -F"$TAB" -v d="$d" '$1==d{f=1} END{exit !f}' "$SRC" 2>/dev/null || { echo "такого имени нет"; exit 1; }
+		if [ -f "$SRC" ]; then others_than "$d" > "$SRC.new" 2>/dev/null; mv "$SRC.new" "$SRC" 2>/dev/null; fi
 		build; reload; echo "ok" ;;
 	apply) build; reload; echo "ok" ;;
 	build) build; echo "ok" ;;
 	list)
+		# `solo` — запрос ДРУГОЙ семьи по этому имени dnsmasq отвечает как обычно (разбор у fam_solo); нет поля — неизвестно.
+		solo=false; fam_solo && solo=true
 		printf '['
 		first=1
 		if [ -f "$SRC" ]; then
 			while IFS="$TAB" read -r d ip; do
 				[ -n "$d" ] || continue
 				[ "$first" -eq 1 ] || printf ','
-				printf '{"domain":"%s","ip":"%s"}' "$d" "$ip"
+				printf '{"domain":"%s","ip":"%s","solo":%s}' "$d" "$ip" "$solo"
 				first=0
 			done < "$SRC"
 		fi

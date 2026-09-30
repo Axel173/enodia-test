@@ -56,7 +56,12 @@ BYPASS_SET="enodia_bypass"
 # ПЕРСИСТ на /data. КРИТИЧНО: /etc = ramfs → enodia-custom.conf стирается на КАЖДОМ ребуте,
 # а восстанавливать было нечем (юзер: «очистился список, который я вчера добавлял»). Держим
 # зеркало на /data (переживает ребут) — heal.sh кладёт его обратно в /etc на буте (секция 2b).
-ENODIA_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd); [ -d "$ENODIA_DIR" ] || ENODIA_DIR=/data/usr/app/enodia
+# Окружение ПЕРВЕЕ собственного каталога: запускатель (boot.sh) экспортирует пути, когда код
+# живёт на внешнем накопителе, и спорить с ним скрипту не о чем. Нет окружения — прежнее
+# поведение: каталог, из которого нас запустили, иначе литерал.
+if [ -z "$ENODIA_DIR" ]; then
+    ENODIA_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd); [ -d "$ENODIA_DIR" ] || ENODIA_DIR=/data/usr/app/enodia   # flash-lit: последний фолбэк, когда и $0 не дал каталога
+fi
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
 # утилиты conntrack в прошивке НЕТ ВООБЩЕ, и прежний `conntrack -F || true` был тихим no-op —
@@ -169,13 +174,17 @@ dns_up() {
     return 1
 }
 
-# A-записи домена из вывода busybox nslookup. Секция ответа начинается со строки `Name:` — всё,
-# что выше, это адрес САМОГО сервера, и брать его нельзя. `split()`/`index()` в busybox-awk нет,
-# поэтому IPv4-токен ищем перебором полей.
-dom_ips() {
-    nslookup "$1" 2>/dev/null | awk '/^Name:/{f=1}
-        f{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i}'
-}
+# A-записи домена спрашивает dns-lib.sh::ns_ips — ЕДИНСТВЕННЫЙ владелец разбора вывода busybox
+# nslookup (тот же вопрос задают slots.sh::cmd_route и проверялка «что победит» в devwatch.sh; три
+# копии разъехались бы на первом же новом формате вывода). ПОТОЛКА ОЖИДАНИЯ ТУТ НЕТ СОЗНАТЕЛЬНО:
+# оборванный резолв оставил бы правило мёртвым, а прогрев ради этого и существует.
+# Шим — прежний путь байт-в-байт, на случай частично доехавшего apply-scripts.
+if ! command -v ns_ips >/dev/null 2>&1; then
+    ns_ips() {
+        nslookup "$1" 2>/dev/null | awk '/^Name:/{f=1}
+            f{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i}'
+    }
+fi
 
 # Набор упёрся в потолок? Это самая тихая из причин промаха: dnsmasq просто перестаёт добавлять.
 # `ipset list -t` печатает ТОЛЬКО заголовок — полный `list` на десятках тысяч записей стоит секунд.
@@ -201,7 +210,7 @@ warm_one() {
     _wo_s="$1"; _wo_d="$2"; _wo_t=0
     while :; do
         _wo_any=0
-        for _wo_ip in $(dom_ips "$_wo_d"); do
+        for _wo_ip in $(ns_ips "$_wo_d"); do
             _wo_any=1
             ipset test "$_wo_s" "$_wo_ip" >/dev/null 2>&1 && return 0
         done
@@ -309,7 +318,7 @@ rebuild_bypass_set() {
     # звал heal, переигрывал boot) ⇒ набор не трогаем вовсе и накопленные адреса живут. Изменился —
     # честная пересборка, как и требует инвариант выше, а прогрев наполняет заново.
     # Статики (CIDR) у набора нет по построению: его наполняет ТОЛЬКО dnsmasq.
-    _rb_c="/tmp/.dom-bypass-cidr.$$"; _rb_d="/tmp/.dom-bypass-dom.$$"
+    _rb_c="/tmp/.enodia-dom-bypass-cidr.$$"; _rb_d="/tmp/.enodia-dom-bypass-dom.$$"
     : > "$_rb_c"; dom_list "$BYPASS_SET" > "$_rb_d" 2>/dev/null
     set_sync "$BYPASS_SET" "$_rb_c" "$_rb_d"
     rm -f "$_rb_c" "$_rb_d" 2>/dev/null
@@ -362,7 +371,7 @@ case "$1" in
     add)
         domain="$2"
         if [ -z "$domain" ]; then
-            printf "${RED}Укажи домен:${NC} domain.sh add chatgpt.com\n"
+            printf "${RED}Укажите домен:${NC} domain.sh add chatgpt.com\n"
             exit 1
         fi
         # Убираем www., http://, https://, всё лишнее
@@ -371,7 +380,7 @@ case "$1" in
         # Проверим в основном списке тоже (информационно)
         if grep -q "/$domain/" "$MAIN_FILE" 2>/dev/null; then
             printf "${BLUE}Кстати, %s уже есть в основном re-filter списке.${NC}\n" "$domain"
-            printf "${BLUE}Но всё равно добавлю в твой пользовательский — на всякий.${NC}\n"
+            printf "${BLUE}Но всё равно добавлю в ваш пользовательский — на всякий.${NC}\n"
         fi
         # Прогрев внутри set_rule: резолвим домен через системный резолвер (=dnsmasq), чтобы его
         # текущие IP попали в enodia_list, не дожидаясь запроса с клиента. Маркировка идёт по dst-IP
@@ -392,7 +401,7 @@ case "$1" in
     bypass|out)
         domain="$2"
         if [ -z "$domain" ]; then
-            printf "${RED}Укажи домен:${NC} domain.sh bypass mi.com\n"
+            printf "${RED}Укажите домен:${NC} domain.sh bypass mi.com\n"
             exit 1
         fi
         domain=$(echo "$domain" | sed -E 's|^https?://||; s|^www\.||; s|/.*$||')
@@ -414,7 +423,7 @@ case "$1" in
     # `|| [ -n "$_l" ]` обязателен: busybox `read` теряет последнюю строку без хвостового \n, а
     # текст сюда приезжает из формы/файла пользователя.
     add-many)
-        _n=0; _added="/tmp/.dom-many.$$"; : > "$_added"
+        _n=0; _added="/tmp/.enodia-dom-many.$$"; : > "$_added"
         ensure_sets
         while read -r _l || [ -n "$_l" ]; do
             _d=$(printf '%s' "$_l" | tr -d ' \t\r' | sed -E 's|^https?://||; s|^\*\.||; s|^www\.||; s|/.*$||')
@@ -456,7 +465,7 @@ case "$1" in
     block)
         domain="$2"
         if [ -z "$domain" ]; then
-            printf "${RED}Укажи домен:${NC} domain.sh block ads.example.com\n"
+            printf "${RED}Укажите домен:${NC} domain.sh block ads.example.com\n"
             exit 1
         fi
         domain=$(echo "$domain" | sed -E 's|^https?://||; s|^www\.||; s|/.*$||')
@@ -473,7 +482,7 @@ case "$1" in
     remove|rm|del)
         domain="$2"
         if [ -z "$domain" ]; then
-            printf "${RED}Укажи домен:${NC} domain.sh remove instagram.com\n"
+            printf "${RED}Укажите домен:${NC} domain.sh remove instagram.com\n"
             exit 1
         fi
         domain=$(echo "$domain" | sed -E 's|^https?://||; s|^www\.||; s|/.*$||')
@@ -501,7 +510,7 @@ case "$1" in
             if grep -q "/$domain/" "$MAIN_FILE" 2>/dev/null; then
                 printf "${YELLOW}Но он есть в основном re-filter — он туда автоматом${NC}\n"
                 printf "${YELLOW}возвращается при обновлении. Чтобы увести его мимо VPN,${NC}\n"
-                printf "${YELLOW}используй: domain.sh bypass %s${NC}\n" "$domain"
+                printf "${YELLOW}используйте: domain.sh bypass %s${NC}\n" "$domain"
             fi
         fi
         ;;
@@ -521,7 +530,7 @@ case "$1" in
             # отказ перезапускать) спасает только текущий сеанс — мина срабатывает на ребуте.
             # Поэтому строку выкидываем и НАЗЫВАЕМ (в stderr, его видно и в логе heal, и в панели),
             # а очищенную копию кладём обратно в персист — иначе мина вернётся на следующем буте.
-            _rs_t="/tmp/.dom-restore.$$"; : > "$_rs_t"; _rs_bad=0
+            _rs_t="/tmp/.enodia-dom-restore.$$"; : > "$_rs_t"; _rs_bad=0
             while IFS= read -r _rl || [ -n "$_rl" ]; do
                 case "$_rl" in
                     ipset=/*|address=/*)
@@ -577,7 +586,7 @@ case "$1" in
         ;;
 
     list|ls)
-        printf "${BLUE}Твои домены (через AWG):${NC}\n"
+        printf "${BLUE}Ваши домены (через AWG):${NC}\n"
         if [ -s "$CUSTOM_FILE" ]; then
             grep "^ipset=" "$CUSTOM_FILE" | sed -E 's|ipset=/([^/]+)/.*|  \1|'
             grep -E "^address=/[^/]+/0\.0\.0\.0$" "$CUSTOM_FILE" | sed -E 's|address=/([^/]+)/.*|  \1 (заблокирован)|'
@@ -603,7 +612,7 @@ case "$1" in
     search|find|grep)
         needle="$2"
         if [ -z "$needle" ]; then
-            printf "${RED}Укажи что искать:${NC} domain.sh search openai\n"
+            printf "${RED}Укажите что искать:${NC} domain.sh search openai\n"
             exit 1
         fi
         printf "${BLUE}Поиск '%s' в всех списках:${NC}\n" "$needle"
@@ -613,7 +622,7 @@ case "$1" in
         # и поиск ВСЕГДА возвращал пусто. Убрали --color. И берём вывод grep в
         # переменную: раньше 'grep | sed || echo "(нет)"' никогда не печатал "(нет)",
         # т.к. код выхода пайпа = код sed (0), даже когда grep ничего не нашёл.
-        echo "В твоём списке (enodia-custom.conf):"
+        echo "В вашем списке (enodia-custom.conf):"
         res=$(grep -i "$needle" "$CUSTOM_FILE" 2>/dev/null)
         if [ -n "$res" ]; then printf '%s\n' "$res" | sed 's/^/  /'; else echo "  (нет)"; fi
         echo ""
@@ -668,7 +677,7 @@ case "$1" in
   domain.sh add <домен>       — добавить домен в туннель
   domain.sh add-many          — пачка доменов в туннель из stdin (по домену на строку)
   domain.sh remove <домен>    — убрать домен из пользовательского списка
-  domain.sh list              — показать все твои добавления + статистику
+  domain.sh list              — показать все ваши добавления + статистику
   domain.sh search <строка>   — найти строку во всех списках
   domain.sh reload            — перезагрузить dnsmasq после ручной правки
 

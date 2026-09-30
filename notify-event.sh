@@ -24,11 +24,14 @@
 #   boot-ok / boot-fail                — heal.sh (после загрузки/ребута)
 #   switch-rollback / switch-failopen  — switch-vpn.sh (ручная смена страны)
 #   failover-ok / failover-fail        — switch-vpn.sh failover (авто-перебор резервов)
+#   failback / failback-server         — watchdog.sh (вернулись домой: протокол / сервер AmneziaWG)
 #   iplist-digest / iplist-fail        — iplist-update.sh (утренняя сводка / сбой)
 #   wan-down / wan-up                  — watchdog.sh (интернета нет ВООБЩЕ / аплинк вернулся:
 #                                        перебор VPN-серверов на это время подавлен)
 #   panel-wan-ip                       — web-ui.sh (провайдер сменил внешний адрес: ссылка на
 #                                        панель снаружи протухла, в письме — новая)
+#   Полный перечень — у events.sh: там у каждого ключа уровень (level_of) и ПОВОД письма (class_of),
+#   по которому человек выключает письма в панели. Новый ключ вписывают в ОБА case — C33 и C107.
 #
 # throttle-отметки лежат в /tmp (сбрасываются при ребуте — после загрузки
 # первое письмо любого класса пройдёт сразу, это желаемо: ребут = повод
@@ -41,12 +44,12 @@
 # там письмо уйдёт. А «boot-fail» из heal.sh может не уйти, пока watchdog
 # (≤2 мин) не сделает safety_off — он же продублирует своим письмом.
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 NOTIFY="$ENODIA_DIR/notify.sh"
 NOTIFY_OFF="$ENODIA_STATE/.notify-off"
 EVENTS="$ENODIA_DIR/events.sh"
-LOG=/tmp/notify-event.log
+LOG=/tmp/enodia-notify-event.log
 
 # Возраст throttle-отметки (clock-lib.sh). Голая разность «now - last» тут врала ровно тем сбоем,
 # ради которого throttle и существует: часы прыгают вперёд через ~13 мин после загрузки, и ВСЕ
@@ -91,13 +94,24 @@ if [ -f "$NOTIFY_OFF" ]; then
     exit 0
 fi
 
+# Повод выключен человеком (панель → Уведомления → «О чём писать»). Журнал уже записан выше — молчит только
+# почта. Класс ключа и формат выбора знает events.sh (`mail-ok`), здесь их нет. Выключено — ТОЛЬКО код 3: у
+# events.sh старше верба неизвестный верб = код 1, и смешанное обновление глушило бы все письма разом.
+if [ -f "$EVENTS" ]; then
+    sh "$EVENTS" mail-ok "$KEY" >/dev/null 2>&1
+    case "$?" in
+        3) log "notify-event: повод выключен в панели — пропуск '$SUBJECT' (key=$KEY)"; exit 0 ;;
+        4) log "notify-event: VPN выключен вручную — письмо о VPN не шлю '$SUBJECT' (key=$KEY)"; exit 0 ;;
+    esac
+fi
+
 # notify.sh может быть ещё не залит — не падаем. Судим по НАЛИЧИЮ файла (зовём через `sh`): по
 # прежнему `-x` снятый бит выполнения означал «почты нет» при полностью настроенном SMTP.
 [ -f "$NOTIFY" ] || { log "notify-event: нет $NOTIFY — пропуск '$SUBJECT'"; exit 0; }
 
 # Санитизируем ключ для имени файла-отметки (только безопасные символы)
 safe_key=$(printf '%s' "$KEY" | tr -c 'a-zA-Z0-9_-' '_')
-STAMP="/tmp/notify-event.$safe_key.stamp"
+STAMP="/tmp/enodia-notify-event.$safe_key.stamp"
 
 # Throttle: если с прошлой УСПЕШНОЙ отправки этого ключа прошло меньше
 # THROTTLE сек — молчим. busybox date +%s есть; отметка — содержимое файла.
@@ -116,9 +130,15 @@ fi
 # Отправляем. Отметку времени ставим ТОЛЬКО при успехе notify.sh, чтобы
 # временный сбой отправки (DNS/SMTP) не «съел» throttle-окно и письмо
 # повторилось при следующем событии того же класса.
-# (notify.sh выходит 0 и когда почта не настроена — это считаем «успехом»:
-#  слать нечего, throttle просто не даст спамить логом.)
-if sh "$NOTIFY" "$SUBJECT" "$BODY" >>"$LOG" 2>&1; then
+# ПОЧТА НЕ НАСТРОЕНА — код 3 у notify.sh, и это НЕ «отправлено». До 16.09.2026 notify.sh отвечал
+# тут нулём, и лог врал «отправлено» на каждое событие, пока письма не уходили вовсе (конфиг искали
+# не в том каталоге — см. шапку notify.sh). Отметку не ставим: слать было некому, глушить нечего.
+# Вызывателю это не ошибка (0): сторож и heal не должны реагировать на ненастроенную почту.
+sh "$NOTIFY" "$SUBJECT" "$BODY" >>"$LOG" 2>&1; _nrc=$?
+if [ "$_nrc" = 3 ]; then
+    log "notify-event: почта не настроена — письмо '$SUBJECT' не ушло (key=$safe_key)"
+    exit 0
+elif [ "$_nrc" = 0 ]; then
     echo "$now" > "$STAMP"
     log "notify-event: отправлено '$SUBJECT' (key=$safe_key)"
     exit 0

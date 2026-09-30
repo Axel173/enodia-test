@@ -36,9 +36,9 @@
 #                IPv6 (ULA/link-local) НЕ трогаем (2000::/3 = только глобал-юникаст). На стоке без
 #                IPv6-аплинка это no-op; у кого провайдер даёт IPv6 — перебивает стоковый lan→wan6 ACCEPT.
 #
-#   net-tune.sh apply|mtu|ipv6|detect|memlimit-env|memlimit-info
+#   net-tune.sh apply|mtu|mtu-flag|ipv6|detect|memlimit-env|memlimit-info   (mtu-flag — READ-ONLY: ручной MTU или пусто)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
@@ -92,10 +92,17 @@ memlimit_info() {
 	echo "total=${t:-0}"
 }
 
-apply_mtu() {
+# РУЧНОЙ MTU, КОТОРЫЙ ДЕЙСТВУЕТ: флаг есть и в допустимых 1280..1500 — печатаем, иначе ничего. Один ответ на подъём awg0 (apply_mtu)
+# и на экран сервера в панели (cgi-bin/action::get_config_info — «какой MTU получит этот конфиг»): своей копии проверки там нет.
+mtu_flag() {
 	m=$(cat "$ENODIA_STATE/.tun-mtu" 2>/dev/null | tr -cd '0-9')
 	[ -n "$m" ] || return 0
 	[ "$m" -ge 1280 ] 2>/dev/null && [ "$m" -le 1500 ] 2>/dev/null || return 0
+	printf '%s\n' "$m"
+}
+apply_mtu() {
+	m=$(mtu_flag)
+	[ -n "$m" ] || return 0
 	ip link show awg0 >/dev/null 2>&1 && ip link set awg0 mtu "$m" 2>/dev/null
 }
 
@@ -117,7 +124,7 @@ apply_ipv6() {
 # по нему панель контекстно подсказывает, актуален ли тумблер .ipv6-block или это no-op.
 detect_v6uplink() {
 	up=0
-	if ip -6 route show 2>/dev/null | grep -q '^default'; then
+	if ip -6 route show 2>/dev/null | grep -q '^default'; then   # not-wan: IPv6-аплинк, а не WAN-интерфейс/несущая — вопрос другой
 		up=1
 	elif ip addr show 2>/dev/null | grep -qE 'inet6 [23][0-9a-f]{3}:'; then
 		up=1
@@ -128,10 +135,17 @@ detect_v6uplink() {
 case "$1" in
 	apply)  apply_mtu; apply_ipv6 ;;
 	mtu)    apply_mtu ;;
+	mtu-flag) mtu_flag ;;
 	ipv6)   apply_ipv6 ;;
+	# Снесён ли запрет IPv6, который обязан стоять: 0 — стоит (или тумблер выключен), 3 — снесён, иное — не знаю («не смог проверить» ≠
+	# «снесено»). Спрашивает сторож при выключенном VPN: чужой reload иначе заметить не по чему (хвост 10 ревью dev233).
+	wired)
+		[ -f "$ENODIA_STATE/.ipv6-block" ] || exit 0
+		ip6tables -t filter -C FORWARD -d 2000::/3 -j DROP 2>/dev/null; _nwr=$?
+		case "$_nwr" in 0) exit 0 ;; 1) exit 3 ;; *) exit 2 ;; esac ;;
 	detect) detect_v6uplink ;;
 	# Оба верба READ-ONLY: их зовут из горячего пути подъёма несущей и из CGI панели.
 	memlimit-env)  memlimit_env ;;
 	memlimit-info) memlimit_info ;;
-	*)      echo "usage: net-tune.sh apply|mtu|ipv6|detect|memlimit-env|memlimit-info" ;;
+	*)      echo "usage: net-tune.sh apply|mtu|mtu-flag|ipv6|detect|memlimit-env|memlimit-info" ;;
 esac

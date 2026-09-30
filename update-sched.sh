@@ -24,6 +24,8 @@
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
+ENODIA_BOOT=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
+CRON_RUN="$ENODIA_BOOT/boot.sh"    # единственная цель cron-строк: код может уехать на накопитель
 CRON=/etc/crontabs/root
 
 # --- таблица задач ----------------------------------------------------------
@@ -32,7 +34,10 @@ CRON=/etc/crontabs/root
 # только руками, и молча начать ходить в интернет по чужой ссылке — не наше решение.
 job_valid() { case "$1" in lists|subs) return 0 ;; *) return 1 ;; esac; }
 job_mark()  { case "$1" in subs) echo "$ENODIA_STATE/.subs-interval" ;; *) echo "$ENODIA_STATE/.update-interval" ;; esac; }
-job_bin()   { case "$1" in subs) echo "$ENODIA_DIR/subs-update.sh" ;; *) echo "$ENODIA_DIR/iplist-update.sh" ;; esac; }
+# ИМЯ скрипта, а не путь: cron зовёт цель ЧЕРЕЗ бутстрап ($CRON_RUN), потому что код может
+# лежать на внешнем накопителе, и прямой $ENODIA_DIR/... указывал бы в пустоту (следит C58).
+# Имя же служит ключом СНЯТИЯ строки — под него попадает и прежняя форма с полным путём.
+job_script() { case "$1" in subs) echo "subs-update.sh" ;; *) echo "iplist-update.sh" ;; esac; }
 job_def()   { case "$1" in subs) echo off ;; *) echo daily ;; esac; }
 
 # интервал → cron-расписание («мин час дом мес дов»); пусто = off (строки нет).
@@ -70,13 +75,13 @@ restart_cron() {
 
 # write_cron <job> <interval> — снять ЛЮБУЮ прежнюю строку задачи и записать новую по интервалу.
 write_cron() {
-	_j="$1"; _iv=$(norm_iv "$_j" "$2"); _bin=$(job_bin "$_j")
+	_j="$1"; _iv=$(norm_iv "$_j" "$2"); _bin=$(job_script "$_j")
 	mkdir -p /etc/crontabs 2>/dev/null; touch "$CRON" 2>/dev/null
 	# чистая переустановка строки: удаляем любую (любой график/набор флагов), затем добавляем нужную.
 	sed -i "\|$_bin|d" "$CRON" 2>/dev/null
 	_s=$(sched_for "$_j" "$_iv")
 	if [ -n "$_s" ]; then
-		echo "$_s $_bin $(args_for "$_j" "$_iv") >/dev/null 2>&1" >> "$CRON"
+		echo "$_s $CRON_RUN $_bin $(args_for "$_j" "$_iv") >/dev/null 2>&1" >> "$CRON"
 	fi
 	restart_cron
 }
@@ -88,7 +93,7 @@ read_iv() {
 		norm_iv "$_j" "$(tr -cd 'a-z0-9' < "$_m" 2>/dev/null)"
 		return 0
 	fi
-	_l=$(grep "$(job_bin "$_j")" "$CRON" 2>/dev/null | head -1)
+	_l=$(grep "$(job_script "$_j")" "$CRON" 2>/dev/null | head -1)
 	case "$_l" in
 		'')                        job_def "$_j" ;;   # строки нет вовсе → дефолт задачи
 		"0 */6 "*|"20 */6 "*)      echo 6h ;;

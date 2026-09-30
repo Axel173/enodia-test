@@ -80,6 +80,9 @@
 #   apply-bypass.sh force-del-if <IFACE> — вернуть SSID/iface в раздельный режим
 #   apply-bypass.sh force-guest-on       — гостевая ЦЕЛИКОМ через VPN
 #   apply-bypass.sh force-guest-off      — гостевая обратно в раздельный режим
+#   apply-bypass.sh forget-if <СТРОКА>   — снять правило сети ПО СТРОКЕ хранилища (из обоих): сеть не в эфире,
+#                                          и интерфейса, который прислала бы панель, у неё нет
+#   apply-bypass.sh if-states            — для панели: что хранилище говорит о каждом живом интерфейсе
 #   apply-bypass.sh full-tunnel on|off   — ВЕСЬ трафик через VPN (глоб. catch-all)
 #   apply-bypass.sh port-add <src> <proto> <порты> <куда> — правило по портам
 #   apply-bypass.sh port-del <src> <proto> <порты>        — снять его
@@ -89,7 +92,7 @@
 #   apply-bypass.sh order            — только переиграть порядок цепочек в PREROUTING
 #   apply-bypass.sh list             — показать хранилище
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # «Какая сеть на каком wlN» — только отсюда (см. шапку про .bypass-ifaces).
 if [ -f "$ENODIA_DIR/wifi-lib.sh" ]; then . "$ENODIA_DIR/wifi-lib.sh"; fi
@@ -106,6 +109,10 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Правила по портам: какая строка хранилища действует и в каком порядке встаёт в цепочку — только
+# port-lib.sh (у хранилища три читателя, копии фильтра расходились). Шима нет намеренно: без файла
+# rebuild_ports оставляет прежнюю цепочку и говорит об этом, а port-add отказывает.
+if [ -f "$ENODIA_DIR/port-lib.sh" ]; then . "$ENODIA_DIR/port-lib.sh"; fi
 if ! command -v ct_flush >/dev/null 2>&1; then
     ct_flush()     { conntrack -F >/dev/null 2>&1 || true; }
     ct_flush_src() { [ -n "$1" ] && conntrack -D --src "$1" >/dev/null 2>&1; return 0; }
@@ -358,11 +365,13 @@ ensure_chain() {
 store_add() {   # $1 файл, $2 значение
     [ -z "$2" ] && return 0
     touch "$1"
-    grep -qxF "$2" "$1" 2>/dev/null || echo "$2" >> "$1"
+    # `--` и printf, а не echo: имя сети с ведущим «-» grep прочёл бы ОПЦИЕЙ (а store_del ниже на ошибке grep
+    # переписал бы хранилище ПУСТЫМ), echo — съел бы его как флаг.
+    grep -qxF -- "$2" "$1" 2>/dev/null || printf '%s\n' "$2" >> "$1"
 }
 store_del() {   # $1 файл, $2 значение
     [ -f "$1" ] || return 0
-    grep -vxF "$2" "$1" > "$1.tmp" 2>/dev/null
+    grep -vxF -- "$2" "$1" > "$1.tmp" 2>/dev/null
     mv "$1.tmp" "$1"
 }
 
@@ -458,16 +467,56 @@ migrate_if_store() {   # $1 = файл хранилища
     while IFS= read -r _ml || [ -n "$_ml" ]; do
         [ -n "$_ml" ] || continue
         _ms=$(wifi_ssid_of "$_ml") && { _ml="$_ms"; _mch=1; }
-        grep -qxF "$_ml" "$1.tmp" 2>/dev/null || printf '%s\n' "$_ml" >> "$1.tmp"
+        grep -qxF -- "$_ml" "$1.tmp" 2>/dev/null || printf '%s\n' "$_ml" >> "$1.tmp"
     done < "$1"
     if [ "$_mch" = 1 ]; then mv "$1.tmp" "$1"; else rm -f "$1.tmp"; fi
     return 0
+}
+# СЕМЬЯ «СЕТЬ МИМО VPN» ЗАНОВО ПО ХРАНИЛИЩУ: сперва legacy-имена интерфейсов → имена сетей, затем purge + add — хранилище
+# тут единственная истина (см. purge_if_rules). Зовут apply и forget-if: снятие строки сети, которой нет в эфире, раскрытием
+# по имени не снимет правило, оставшееся на её ПРЕЖНЕМ интерфейсе (сеть переименовали, wlN теперь у соседней) — а пересборка
+# снимет, потому что строки в хранилище больше нет (ревью шага 5b, круг 1).
+rebuild_if_rules() {
+    migrate_if_store "$STORE_IFS"
+    purge_if_rules
+    n_if=0
+    if [ -f "$STORE_IFS" ]; then
+        while IFS= read -r iface || [ -n "$iface" ]; do
+            [ -n "$iface" ] && rule_add_if "$iface" && n_if=$((n_if+1))
+        done < "$STORE_IFS"
+    fi
+    return 0
+}
+# Подцеплены ли наши правила вообще (переход PREROUTING → VPN_EXCLUDE ставит ensure_chain/apply). Нет — VPN выключен до ребута,
+# транспорт не выбран (heal пропускает apply), fw3 reload снёс всё до repair: правил сетей в ядре нет ни у одной сети.
+if_wired() { iptables -t mangle -S PREROUTING 2>/dev/null | grep -q -- "-j $EXCLUDE_CHAIN\$"; }
+# Правила обеих семей «сеть мимо / целиком в VPN» одной строкой на правило — для сравнения до и после.
+if_chain_rules() { iptables -t mangle -S "$EXCLUDE_CHAIN" 2>/dev/null; iptables -t mangle -S "$FORCE_CHAIN" 2>/dev/null; }
+# Изменилось ли то, что НАПРАВЛЯЕТ трафик: правило живого интерфейса (physdev) либо прочая метка/вырез (не `-j RETURN`, не
+# `-N`). Код 0 — да. Разница — строки, которые есть только в одном из снимков (`sort | uniq -u`).
+if_change_live() {
+    _icd=$( { printf '%s\n' "$1"; printf '%s\n' "$2"; } | sort | uniq -u )
+    [ -n "$_icd" ] || return 1
+    for _ici in $(printf '%s\n' "$_icd" | sed -n 's/.*--physdev-in \([A-Za-z0-9_.-]*\).*/\1/p'); do
+        [ -d "/sys/class/net/$_ici" ] && return 0
+    done
+    printf '%s\n' "$_icd" | grep -v -e '--physdev-in' -e ' -j RETURN' -e '^-N ' | grep -q .
 }
 guest_rule_add() {
     ip rule show | grep -q "from $GUEST_SUBNET lookup main" || \
         ip rule add from "$GUEST_SUBNET" lookup main pref $GUEST_PREF
 }
 guest_rule_del() { ip rule del from "$GUEST_SUBNET" lookup main pref $GUEST_PREF 2>/dev/null; }
+
+# Набор «не блокировать» блокировки по адресам (lists-lib.sh::collect_critical: списки вредоносных адресов и гео-«Блок»)
+# держит адреса серверов основного туннеля и выходов. Сменился сервер — набор пересобираем СРАЗУ: прежде новый VPS попадал
+# туда только на следующем обновлении списков (сутки-неделя), и сервер, оказавшийся в списке FireHOL, рвал туннель при
+# включённой блокировке. Блокировки по адресам нет (набора нет) — пересобирать нечего, и lists-update.sh не зовём вовсе.
+allow_sync() {
+    ipset list -n 2>/dev/null | grep -qx blocklist_allow || return 0
+    [ -f "$ENODIA_DIR/lists-update.sh" ] && sh "$ENODIA_DIR/lists-update.sh" allow-sync >/dev/null 2>&1
+    return 0
+}
 
 # --- endpoint активной несущей мимо VPN (анти-петля, см. шапку про .endpoint-bypass) ---
 # Replace-семантика: храним ОДИН IP (endpoint активной несущей). Зовётся из
@@ -498,6 +547,7 @@ endpoint_set() {   # $1 = IPv4 endpoint'а (пусто = снять)
         echo "[apply-bypass] endpoint '$new' не IPv4 — пропуск"; return 0; }
     echo "$new" > "$STORE_EP"
     rule_add_dst "$new"
+    allow_sync
     ct_flush_dst "$new"                              # сбросить уже зациклившиеся сессии к VPS
     echo "[apply-bypass] endpoint $new -> мимо VPN (анти-петля)"
 }
@@ -545,6 +595,7 @@ endpoint_slot_set() {   # $1 = id слота (2..4); $2 = IPv4 endpoint'а (пу
         rm -f "$store"; echo "[apply-bypass] endpoint слота №$_sid '$new' не IPv4 — пропуск"; return 0; }
     echo "$new" > "$store"
     rule_add_dst "$new"
+    allow_sync
     ct_flush_dst "$new"
     echo "[apply-bypass] endpoint слота №$_sid $new -> мимо VPN (анти-петля)"
 }
@@ -742,36 +793,12 @@ ensure_ports_chain() {
     ensure_prerouting_order
 }
 
-# Валидация полей (её же повторяет CGI, но скрипт обязан быть безопасен и из CLI:
-# в iptables уходит подстановка, мусор туда пускать нельзя).
-port_src_ok()   { [ "$1" = any ] || echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
+# Поля правила по портам (port_src_ok/port_proto_ok/port_list_ok/port_dir_ok, port_list_norm) — в
+# port-lib.sh: их же читают devwatch.sh и cgi-bin/data, копия здесь разошлась бы с ними.
 # Адрес НАЗНАЧЕНИЯ правила: одиночный IPv4 либо подсеть. Валидация в ДВИЖКЕ, а не только в CGI
 # (зеркало force-add-ip/keep-add-ip/port-add): в iptables и в ipset уходит подстановка, а мусор,
 # записанный в хранилище, потом молча выпадал бы из каждой пересборки — правило видно, эффекта нет.
 dst_ok()        { echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$'; }
-port_proto_ok() { case "$1" in udp|tcp|both) return 0 ;; *) return 1 ;; esac; }
-port_dir_ok()   { case "$1" in vpn|direct|block|s2|s3|s4) return 0 ;; *) return 1 ;; esac; }
-# Список портов: `all` или через запятую `N` / `N-M` (1..65535). Пробелы терпим —
-# человек вводит «3478-3480, 7600» с пробелом после запятой.
-port_list_ok() {
-    [ "$1" = all ] && return 0
-    [ -n "$1" ] || return 1
-    for _t in $(echo "$1" | tr ',' ' '); do
-        echo "$_t" | grep -Eq '^[0-9]{1,5}(-[0-9]{1,5})?$' || return 1
-        # диапазон проверяем ЧИСЛАМИ, а не только формой: 70000 или «500-100» iptables
-        # отвергнет, правило молча не встанет — и в панели останется строка без эффекта
-        # (ровно тот случай «правило вижу, работы нет», который мы всюду и вычищаем)
-        _a=${_t%-*}; _b=${_t#*-}
-        [ "$_a" -ge 1 ] && [ "$_a" -le 65535 ] || return 1
-        [ "$_b" -ge 1 ] && [ "$_b" -le 65535 ] || return 1
-        [ "$_a" -le "$_b" ] || return 1
-    done
-    return 0
-}
-# Нормализация: убрать пробелы (в хранилище поля разделяет TAB, пробел внутри поля
-# безвреден, но список должен быть машинно-одинаковым для ключа удаления).
-port_list_norm() { echo "$1" | tr -d ' \t\r'; }
-
 # Одно правило: $1 src, $2 proto (уже развёрнут в udp|tcp), $3 спецификация порта
 # (`all` = без --dport), $4 марка (пусто = только ACCEPT, т.е. напрямую; слово `block` =
 # не выпускать вовсе — с шестнадцатеричной маркой `0x…` оно не спутается).
@@ -806,6 +833,11 @@ rebuild_ports() {
         echo "[apply-bypass] порт-правила: нет"
         return 0
     fi
+    # Без разборщика строк цепочку НЕ трогаем: сброс с пустой пересборкой снял бы все правила по портам молча.
+    if ! command -v port_rules_in_order >/dev/null 2>&1; then
+        echo "[apply-bypass] порт-правила: нет port-lib.sh — прежняя цепочка оставлена"
+        return 1
+    fi
     ensure_ports_chain
     iptables -t mangle -F "$PORTS_CHAIN"
     # локалку — наружу из цепочки (иначе «весь UDP в VPN» утащит туда LAN-LAN:
@@ -816,13 +848,16 @@ rebuild_ports() {
     done
     iptables -t mangle -A "$PORTS_CHAIN" -d 255.255.255.255 -j RETURN
     _n=0; _tab=$(printf '\t')
-    # `done < файл` (не пайп) — цикл в текущем шелле, счётчик не теряется. Оборотная сторона:
+    # Строки — в ПОРЯДКЕ ЦЕПОЧКИ и только действующие (port-lib.sh::port_rules_in_order): сперва правила
+    # устройств, потом всего роутера. Тот же порядок и тот же фильтр читает devwatch.sh::load_port_rules
+    # («что победит» и строки «Что запрашивает») — потому он и живёт в одном месте.
+    # Цикл по here-doc (не пайп) — в текущем шелле, счётчик не теряется. Оборотная сторона:
     # переменные цикла ЖИВУТ в шелле вызывающего и на EOF обнуляются последним read. Поэтому
     # имена намеренно СВОИ (_l*): совпади они с $_src/$_dir из ветки port-add — та печатала бы
     # пустое «порт-правило:  udp 443 -> », а точечный conntrack по IP выродился бы в общий flush.
+    _lrows=$(port_rules_in_order "$STORE_PORTS")
     while IFS="$_tab" read -r _lsrc _lpro _lpts _ldir; do
         [ -n "$_ldir" ] || continue
-        port_src_ok "$_lsrc" && port_proto_ok "$_lpro" && port_list_ok "$_lpts" && port_dir_ok "$_ldir" || continue
         case "$_ldir" in
             vpn)      _mk=$FWMARK ;;
             s2|s3|s4) _mk="0x${_ldir#s}" ;;  # марка доп-выхода; ip rule под неё ставит mark-core
@@ -835,7 +870,9 @@ rebuild_ports() {
                 port_rule_add "$_lsrc" "$_pr" "$_pt" "$_mk" && _n=$((_n+1))
             done
         done
-    done < "$STORE_PORTS"
+    done <<EOF_PORTS
+$_lrows
+EOF_PORTS
     echo "[apply-bypass] порт-правила: $_n"
 }
 
@@ -955,7 +992,7 @@ rebuild_dev() {
     _en_slots=$(mark_slots)
     # `done < файл` (не пайп): цикл в текущем шелле, счётчики не теряются. Имена переменных СВОИ
     # (_d*), чтобы не затирать переменные вызывающей ветки (грабля из rebuild_ports).
-    _dtmp=/tmp/.dev-rules.$$
+    _dtmp=/tmp/.enodia-dev-rules.$$
     printf '%s\n' "$_drules" > "$_dtmp"
     while IFS="$TAB" read -r _dip _dset _ddir _dslot; do
         [ -n "$_dset" ] || continue
@@ -1001,11 +1038,24 @@ ports_conntrack() {
 
 # Снять строку из хранилища по КЛЮЧУ (src+proto+ports): направление в ключ не входит —
 # у одного и того же набора портов оно ровно одно, повторный add его ПЕРЕПИСЫВАЕТ
-# (иначе накопились бы два противоположных правила, и молча выигрывало бы верхнее).
-ports_store_del() {   # $1 src, $2 proto, $3 ports
+# (иначе накопились бы два противоположных правила). Порты сверяем НОРМАЛИЗОВАННЫМИ (port-lib.sh):
+# строку из бэкапа «443, 80» или «0443» панель показывает и снимает в нормализованной форме — сверка
+# фиксированной строкой такую не находила, и строка оставалась навсегда (ревью пачки 3, круг 2).
+# Остальное в строке не трогаем: поля сверяются как есть, а мусор снимается тем ключом, каким его показали.
+ports_store_del() {   # $1 src, $2 proto, $3 ports (нормализованный)
     [ -f "$STORE_PORTS" ] || return 0
-    _key="$1$(printf '\t')$2$(printf '\t')$3$(printf '\t')"
-    grep -vF "$_key" "$STORE_PORTS" > "$STORE_PORTS.tmp" 2>/dev/null
+    _dt=$(printf '\t')
+    : > "$STORE_PORTS.tmp"
+    while IFS= read -r _dl || [ -n "$_dl" ]; do
+        # Поля — тем же `IFS=<tab> read`, что у цепочки и CGI (port-lib.sh, cgi-bin/data): табуляция — пробельный символ IFS,
+        # двойной и ведущий таб там схлопываются. Позиционная нарезка видела в «any⇥udp⇥⇥443» другой ключ — строку, которую
+        # панель показала и снимала, «снятие» оставляло, а повторный add дописывал вторую (ревью пачки 3, круг 3).
+        IFS="$_dt" read -r _ds _dp _dx _dd <<EOF_DEL
+$_dl
+EOF_DEL
+        if [ "$_ds" = "$1" ] && [ "$_dp" = "$2" ] && [ "$(port_list_norm "$_dx")" = "$3" ]; then continue; fi
+        printf '%s\n' "$_dl" >> "$STORE_PORTS.tmp"
+    done < "$STORE_PORTS"
     mv "$STORE_PORTS.tmp" "$STORE_PORTS"
 }
 
@@ -1024,15 +1074,8 @@ apply_all() {
             [ -n "$dst" ] && rule_add_dst "$dst" && n_dst=$((n_dst+1))
         done < "$STORE_DST"
     fi
-    # Wi-Fi сети: сперва мигрируем legacy-имена интерфейсов в имена сетей, затем собираем семью
-    # правил ЗАНОВО (purge + add) — хранилище тут единственная истина, см. purge_if_rules.
-    migrate_if_store "$STORE_IFS"
-    purge_if_rules
-    if [ -f "$STORE_IFS" ]; then
-        while IFS= read -r iface || [ -n "$iface" ]; do
-            [ -n "$iface" ] && rule_add_if "$iface" && n_if=$((n_if+1))
-        done < "$STORE_IFS"
-    fi
+    # Wi-Fi сети: семья правил ЗАНОВО по хранилищу (rebuild_if_rules).
+    rebuild_if_rules
     # Одиночные адреса «в VPN». Сет живёт в RAM → на буте пуст: наполняем из хранилища и
     # пересобираем с нуля (у сета ОДИН хозяин — этот скрипт, значит его содержимое обязано
     # в точности равняться файлу; иначе снятый адрес остался бы в туннеле, ср. domain.sh).
@@ -1123,8 +1166,8 @@ case "$1" in
     del-if)    [ -z "$2" ] && { echo "нужен iface"; exit 1; }
         _ifk=$(if_store_key "$2"); store_del "$STORE_IFS" "$_ifk"; store_del "$STORE_IFS" "$2"
         rule_del_if "$_ifk"; rule_del_if "$2"; conntrack_flush; echo "сеть «$_ifk» убрана из хранилища" ;;
-    guest-on)  ensure_chain; touch "$STORE_GUEST"; guest_rule_add; conntrack_flush; echo "guest 192.168.33.0/24 -> мимо VPN (флаг + ip rule)" ;;
-    guest-off) rm -f "$STORE_GUEST"; guest_rule_del; conntrack_flush; echo "guest 192.168.33.0/24 -> обратно в VPN" ;;
+    guest-on)  ensure_chain; touch "$STORE_GUEST"; guest_rule_add; conntrack_flush; echo "гостевая сеть → мимо VPN" ;;
+    guest-off) rm -f "$STORE_GUEST"; guest_rule_del; conntrack_flush; echo "гостевая сеть → по правилам" ;;
     # --- «целиком через VPN» (force). Меняем хранилище -> пересобираем VPN_FORCE
     #     -> сбрасываем conntrack, чтобы применилось к текущим соединениям сразу.
     # Третий аргумент — ВЫХОД: пусто/0/main = основной туннель, s2|s3|s4 = доп-выход.
@@ -1154,9 +1197,47 @@ case "$1" in
     force-del-if)  [ -z "$2" ] && { echo "нужен iface"; exit 1; }
         _ifk=$(if_store_key "$2"); store_del "$STORE_FORCE_IFS" "$_ifk"; store_del "$STORE_FORCE_IFS" "$2"
         rebuild_force; conntrack_flush; echo "сеть «$_ifk» -> обычный режим" ;;
+    # ПРАВИЛО СЕТИ, КОТОРОЙ НЕТ В ЭФИРЕ (выключена в родной панели, переименована, legacy-имя интерфейса): у неё нет
+    # живого интерфейса, и del-if/force-del-if позвать не с чем — панель знает только СТРОКУ хранилища. Снимаем строку
+    # ТОЧНО (grep -x -F: в имени сети законны пробелы, в том числе ведущие, и символы регулярок) из обоих хранилищ, правила
+    # по её раскрытию — тем же rule_del_if и сборкой VPN_FORCE. Строки нет ни в одном — отказ: снимать нечего.
+    forget-if) [ -n "$2" ] || { echo "нужно имя сети"; exit 1; }
+        _fk=0
+        grep -qxF -- "$2" "$STORE_IFS" 2>/dev/null && _fk=1
+        grep -qxF -- "$2" "$STORE_FORCE_IFS" 2>/dev/null && _fk=1
+        [ "$_fk" = 1 ] || { echo "такого правила сети нет"; exit 1; }
+        store_del "$STORE_IFS" "$2"; store_del "$STORE_FORCE_IFS" "$2"
+        # Цепочки НЕ подцеплены (VPN выключен тумблером до ребута, транспорта нет — heal пропустил apply) — меняем только хранилище:
+        # пересборка VPN_FORCE завела бы наши цепочки в mangle роутера, который «работает как сток», и рвала бы соединения дома
+        # (ревью шага 5b, круг 3). Правила встанут вместе с остальными, когда их применят.
+        if if_wired; then
+            _fb=$(if_chain_rules); rebuild_if_rules; rebuild_force
+            # Сброс соединений ВСЕГО роутера — только если правило действительно что-то направляло: снятие строки сети, которой нет
+            # в эфире, меняет правила МЁРТВОГО интерфейса, и рвать ради этого сессии всего дома незачем (ревью шага 5b, круг 2).
+            # Меняются правила живого интерфейса (сеть переименовали, правило стояло на её прежнем wlN) или иные метки — сброс
+            # обязателен (NSS).
+            if_change_live "$_fb" "$(if_chain_rules)" && conntrack_flush
+        fi
+        echo "правило сети снято" ;;
+    # ЧТО ГОВОРИТ ХРАНИЛИЩЕ о каждом ЖИВОМ интерфейсе: «iface<TAB>bypass|force|both|пусто». Ядро (physdev в VPN_EXCLUDE /
+    # VPN_FORCE) панель читает сама; расхождение «сохранено ≠ стоит» — сеть переехала на другой wlN, fw3 reload снёс правила до
+    # repair, правило встало на одном радио из двух — и экран обязан это сказать, а не показать одно ядро (ревью шага 5b, круг 1).
+    # Ключ строки — тот же, которым пишет add-if (`if_store_key`: имя сети, legacy — имя интерфейса).
+    if-states)
+        # Первая строка — `@wired<TAB>1|0`: подцеплены ли правила вообще. Без этого «сохранено, а в ядре нет» после ребута с
+        # выключенным VPN читалось бы расхождением (ревью шага 5b, круг 3): там правил нет у ВСЕХ, и это не поломка.
+        if if_wired; then printf '@wired\t1\n'; else printf '@wired\t0\n'; fi
+        command -v wifi_live_ifaces >/dev/null 2>&1 || exit 0
+        for _si in $(wifi_live_ifaces); do
+            _sk=$(if_store_key "$_si"); _sb=""; _sf=""
+            { grep -qxF -- "$_sk" "$STORE_IFS" || grep -qxF -- "$_si" "$STORE_IFS"; } 2>/dev/null && _sb=1
+            { grep -qxF -- "$_sk" "$STORE_FORCE_IFS" || grep -qxF -- "$_si" "$STORE_FORCE_IFS"; } 2>/dev/null && _sf=1
+            if [ -n "$_sb" ] && [ -n "$_sf" ]; then _ss=both; elif [ -n "$_sb" ]; then _ss=bypass; elif [ -n "$_sf" ]; then _ss=force; else _ss=""; fi
+            printf '%s\t%s\n' "$_si" "$_ss"
+        done ;;
     # guest целиком в VPN взаимоисключим с guest мимо VPN — снимаем bypass-флаг
-    force-guest-on)  rm -f "$STORE_GUEST"; guest_rule_del; touch "$STORE_FORCE_GUEST"; rebuild_force; conntrack_flush; echo "guest -> ЦЕЛИКОМ через VPN" ;;
-    force-guest-off) rm -f "$STORE_FORCE_GUEST"; rebuild_force; conntrack_flush; echo "guest -> обычный режим (раздельный)" ;;
+    force-guest-on)  rm -f "$STORE_GUEST"; guest_rule_del; touch "$STORE_FORCE_GUEST"; rebuild_force; conntrack_flush; echo "гостевая сеть → целиком в VPN" ;;
+    force-guest-off) rm -f "$STORE_FORCE_GUEST"; rebuild_force; conntrack_flush; echo "гостевая сеть → по правилам" ;;
     full-tunnel)
         case "$2" in
             on)  touch "$FULLTUNNEL_FLAG"; rebuild_force; conntrack_flush; echo "FULL-TUNNEL ON: весь трафик через VPN (кроме локалки и вырезов)" ;;
@@ -1168,6 +1249,7 @@ case "$1" in
     #     оказались бы два правила, и молча выигрывало бы верхнее.
     port-add)
         [ -z "$5" ] && { echo "нужно: port-add <IP|any> <udp|tcp|both> <порты|all> <vpn|direct|block|s2|s3|s4>"; exit 1; }
+        command -v port_line_ok >/dev/null 2>&1 || { echo "нет port-lib.sh — обновите скрипты роутера"; exit 1; }
         _src="$2"; _pro="$3"; _pts=$(port_list_norm "$4"); _dir="$5"
         port_src_ok   "$_src" || { echo "src: нужен IPv4 или any"; exit 1; }
         port_proto_ok "$_pro" || { echo "proto: udp|tcp|both"; exit 1; }
@@ -1191,6 +1273,7 @@ case "$1" in
         echo "порт-правило: $_src $_pro $_pts -> $_dir" ;;
     port-del)
         [ -z "$4" ] && { echo "нужно: port-del <IP|any> <udp|tcp|both> <порты|all>"; exit 1; }
+        command -v port_list_norm >/dev/null 2>&1 || { echo "нет port-lib.sh — обновите скрипты роутера"; exit 1; }
         ports_store_del "$2" "$3" "$(port_list_norm "$4")"
         rebuild_ports; ports_conntrack "$2"
         echo "порт-правило снято: $2 $3 $4" ;;
@@ -1218,12 +1301,12 @@ case "$1" in
     desync-add-ip)
         [ -z "$2" ] && { echo "нужен IP"; exit 1; }
         echo "$2" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { echo "нужен IPv4"; exit 1; }
-        [ -f "$ZAPRET_SH" ] || { echo "нет zapret.sh — обнови скрипты"; exit 1; }
+        [ -f "$ZAPRET_SH" ] || { echo "нет zapret.sh — обновите скрипты"; exit 1; }
         # Гейт «есть чем десинкать» — В ДВИЖКЕ: без бинаря режим означал бы «просто мимо VPN»,
         # а панель показывала бы «в десинк». Отказываем с причиной ДО записи в хранилище.
         # Вывод движка десинка глушим: свою причину печатаем сами, а дублировать её в одной
         # строке ответа панели («…НЕТ бинаря… десинк недоступен…») незачем.
-        sh "$ZAPRET_SH" src-wire "$2" >/dev/null 2>&1 || { echo "десинк недоступен: нет nfqws (поставь Zapret в «Компонентах»)"; exit 1; }
+        sh "$ZAPRET_SH" src-wire "$2" >/dev/null 2>&1 || { echo "десинк недоступен: нет nfqws (поставьте Zapret в «Роутер → Компоненты»)"; exit 1; }
         force_store_del "$2"; rebuild_force >/dev/null
         store_del "$STORE_IPS" "$2"; store_del "$STORE_KEEP" "$2"; rebuild_keep >/dev/null
         ensure_chain; store_add "$STORE_DESYNC" "$2"; rule_add_ip "$2"
@@ -1284,7 +1367,7 @@ case "$1" in
         else echo "раздельный режим (split)"; fi
         ;;
     *)
-        echo "Использование: $0 {apply|dev-rebind|desync-add-ip IP|desync-del-ip IP|desync-list|desync-rebind|add-ip IP|del-ip IP|add-dst CIDR|del-dst CIDR|add-vpn-dst CIDR|del-vpn-dst CIDR|endpoint-set IP|endpoint-slot-set ID IP|add-if IFACE|del-if IFACE|guest-on|guest-off|force-add-ip IP [s2|s3|s4]|force-del-ip IP|force-rebind|force-add-if IFACE|force-del-if IFACE|force-guest-on|force-guest-off|full-tunnel on|off|port-add SRC PROTO PORTS vpn|direct|block|sN|port-del SRC PROTO PORTS|port-list|keep-add-ip IP|keep-del-ip IP|keep-list|order|list}"
+        echo "Использование: $0 {apply|dev-rebind|desync-add-ip IP|desync-del-ip IP|desync-list|desync-rebind|add-ip IP|del-ip IP|add-dst CIDR|del-dst CIDR|add-vpn-dst CIDR|del-vpn-dst CIDR|endpoint-set IP|endpoint-slot-set ID IP|add-if IFACE|del-if IFACE|guest-on|guest-off|force-add-ip IP [s2|s3|s4]|force-del-ip IP|force-rebind|force-add-if IFACE|force-del-if IFACE|force-guest-on|force-guest-off|forget-if СТРОКА|if-states|full-tunnel on|off|port-add SRC PROTO PORTS vpn|direct|block|sN|port-del SRC PROTO PORTS|port-list|keep-add-ip IP|keep-del-ip IP|keep-list|order|list}"
         exit 1
         ;;
 esac

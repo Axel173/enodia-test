@@ -1,23 +1,55 @@
 #!/bin/sh
 # cgi-bin/sysinfo — РАСШИРЕННАЯ информация о роутере для попапа «О роутере» (read-only).
-# Зовётся ТОЛЬКО при открытии попапа (on-demand), НЕ в горячем полле статуса — поэтому можно
-# позволить короткий 1-с sample CPU. Ничего в системе не меняет (снимок /tmp/.cpu-stat горячего
-# статуса НЕ трогает — считает свою дельту). Всё локально, без egress.
+# Полный ответ зовётся только при открытии экрана «О роутере» (on-demand), НЕ в горячем полле статуса — поэтому можно
+# позволить короткий 1-с sample CPU. Лёгкий (`?lite=1`, карточка раздела «Роутер», раз в минуту) замера не делает — ниже.
+# Ничего в системе не меняет (снимок /tmp/.enodia-cpu-stat горячего статуса НЕ трогает — считает свою дельту). Всё локально, без egress.
 #
 # Мотивация: тестер спросил «правильно ли панель показывает нагрузку ЦП и есть ли температуры».
 # Здесь собран честный %CPU (как top, не loadavg), температура SoC, память, флеш, conntrack,
 # частоты — с подсказками в самой панели, что каждое значение означает.
 # 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
-[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+# uhttpd НЕ ПЕРЕДАЁТ CGI своё окружение (замер на железе 01.09.2026 пробным CGI: все ENODIA_*
+# пусты), а в режиме «всё на накопителе» литералы указывают в пустоту — панель отвечала бы
+# «ничего не установлено» на живой системе, а ГЕЙТ ВТОРОГО ФАКТОРА ниже просто не находил бы
+# totp.sh и молча пропускал запрос. Каталог кода знаем бесплатно из $0, остальное разбирает
+# cgi-paths.sh: второй копии этого рассуждения в проекте быть не должно.
+_cgid=${0%/web/cgi-bin/*}; [ "$_cgid" = "$0" ] && _cgid=
+if [ -n "$_cgid" ] && [ -f "$_cgid/cgi-paths.sh" ]; then . "$_cgid/cgi-paths.sh"; fi
+if [ -f "$ENODIA_DIR/totp.sh" ]; then
+	TOTP_LIB=1; . "$ENODIA_DIR/totp.sh"
+	# СУДИМ ПО СПОСОБНОСТИ, А НЕ ПО НАЛИЧИЮ. totp.sh СТАРЕЕ формы входа сорсится успешно, но его
+	# гейт при выключенном 2FA пропускал всё — а uhttpd к этому моменту уже поднят БЕЗ `-c`, то
+	# есть панель отдавала бы данные и ДЕЙСТВИЯ без пароля. Признак эпохи — pw_verify (его же
+	# спрашивает cgi-bin/login).
+	command -v pw_verify >/dev/null 2>&1 || {
+		echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+		echo "Cache-Control: no-store"; echo ""
+		printf '{"ok":false,"need_login":true,"msg":"totp.sh старее формы входа (обновите панель)"}\n'; exit 0; }
+	totp_gate_deny
+else   # НЕТ totp.sh — ОТКАЗ, А НЕ ПРОПУСК: двери-Basic больше нет, пускать некому (разбор — в totp.sh, «Гейт»)
+	echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"; echo ""
+	printf '{"ok":false,"need_login":true,"msg":"totp.sh не установлен (обновите панель)"}\n'; exit 0
+fi
 echo "Content-Type: application/json; charset=utf-8"
 echo "Cache-Control: no-store"
 echo ""
 
-D=/data/usr/app/enodia
+D=${ENODIA_DIR:-/data/usr/app/enodia}
+B=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
 F=/usr/share/xiaoqiang/xiaoqiang_version
 if [ -f "$D/router-lib.sh" ]; then . "$D/router-lib.sh"; fi
+# «Частота → диапазон и канал» — у wifi-lib.sh (ту же карту читает экран сетей панели). Нет функции (прежняя копия
+# библиотеки) — радио без диапазона пропускаются: беднее, но без второй копии карты.
+if [ -f "$D/wifi-lib.sh" ]; then . "$D/wifi-lib.sh"; fi
+command -v wifi_mhz_band >/dev/null 2>&1 || wifi_mhz_band() { return 1; }
 
 num() { case "$1" in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
+# ?lite=1 — ЛЁГКИЙ ОТВЕТ для карточки раздела «Роутер» (шаг 6a переноса панели): время работы, платформа, ядра, температура
+# и раскладка — всё, чего нет в горячем статусе. Его зовут на КАЖДЫЙ показ раздела и раз в минуту, пока раздел открыт, поэтому
+# без секундного замера ЦП (загрузку уже несёт cgi-bin/status) и без обхода адаптеров и радио. Имена полей — те же, что у
+# полного ответа (`cpu.cores`, `temp.soc`): панель разбирает оба одним кодом, и роутер старше `lite` отдаёт ей полный.
+LITE=0; case "&$QUERY_STRING&" in *"&lite=1&"*) LITE=1 ;; esac
 jstr() { printf '%s' "$1" | tr -d '"\\' | tr -d '\r\n'; }
 
 # --- Система ------------------------------------------------------------------
@@ -29,7 +61,7 @@ ch=$(grep -E "option CHANNEL " "$F" 2>/dev/null | sed "s/.*'\(.*\)'.*/\1/")
 hw=$(grep -E "option HARDWARE " "$F" 2>/dev/null | sed "s/.*'\(.*\)'.*/\1/")
 kernel=$(uname -r 2>/dev/null)
 arch=$(uname -m 2>/dev/null)
-up=$(awk '{printf "%d",$1; exit}' /proc/uptime 2>/dev/null)
+up=$(awk '{printf "%d",$1; exit}' /proc/uptime 2>/dev/null)   # raw-uptime: число уезжает в JSON человеку, вердикта по нему тут нет
 
 # Платформа (SoC) и серийный номер — «Motherboard/DMI» по-аидовски. Имя платы из device-tree
 # (\0-терминировано), чистим вендор-хвост «/AP-…» и длинную приставку Qualcomm. Серийник — из
@@ -99,7 +131,8 @@ isa=${isa#, }
 # библиотека — случай, которого не бывает (router-lib.sh в REQUIRED-payload ПК и в манифесте
 # обновления). Поле JSON числовое, «не знаю» в нём выразить нечем ⇒ без библиотеки уедет 0 —
 # ЕДИНСТВЕННОЕ место, где ноль может быть не правдой, и лечится оно доставкой файла.
-busy=$(command -v cpu_busy_pct >/dev/null 2>&1 && cpu_busy_pct)
+busy=0
+[ "$LITE" = 1 ] || busy=$(command -v cpu_busy_pct >/dev/null 2>&1 && cpu_busy_pct)
 [ -n "$busy" ] || busy=0
 
 # --- Температура --------------------------------------------------------------
@@ -135,6 +168,18 @@ for z in /sys/class/thermal/thermal_zone*; do
 	done
 done
 
+# Лёгкий ответ кончается здесь. РАСКЛАДКА — ответ бутстрапа (`boot.sh paths`: data · bins · full · none), он владелец знания
+# «где сейчас код» (тот же довод, что у usb-offload.sh json); своего вывода по точкам монтирования тут нет. Бутстрапа нет
+# (установка старее его) — поле пустое, и панель судит по одному статусу.
+if [ "$LITE" = 1 ]; then
+	lmode=
+	[ -f "$B/boot.sh" ] && lmode=$(sh "$B/boot.sh" paths 2>/dev/null | sed -n 's/^mode=//p' | head -1)
+	case "$lmode" in data|bins|full|none) ;; *) lmode= ;; esac
+	printf '{"lite":1,"soc":"%s","arch":"%s","uptime":%s,"cpu":{"cores":%s},"temp":{"soc":%s},"mode":"%s"}\n' \
+		"$(jstr "$plat")" "$(jstr "$arch")" "$(num "$up")" "$(num "$cores")" "$(num "$soc")" "$lmode"
+	exit 0
+fi
+
 # --- Память -------------------------------------------------------------------
 ram_total=$(awk '/^MemTotal:/{printf "%d",$2/1024; exit}' /proc/meminfo 2>/dev/null)
 ram_free=$(awk '/^MemFree:/{printf "%d",$2/1024; exit}' /proc/meminfo 2>/dev/null)
@@ -154,11 +199,19 @@ ram_cache=$(awk '/^Cached:/{printf "%d",$2/1024; exit}' /proc/meminfo 2>/dev/nul
 # busybox-awk `%d` вдобавок 32-битный. Гард `$(NF-4)>0` — деления на ноль в awk даёт inf в JSON.
 # ТУ ЖЕ ФОРМУЛУ держит `cgi-bin/status` (бейдж в шапке) — правишь здесь, правь и там, иначе
 # соседние экраны снова назовут разные числа про одно и то же место.
-dl=$(df /data 2>/dev/null | tail -1)
-disk_total=$(echo "$dl" | awk 'NF>=5{printf "%.0f",$(NF-4)/1024}')
-disk_free=$(echo "$dl" | awk 'NF>=5{printf "%.0f",$(NF-2)/1024}')
-disk_used=$(echo "$dl" | awk 'NF>=5{printf "%.0f",($(NF-4)-$(NF-2))/1024}')
-disk_pct=$(echo "$dl" | awk 'NF>=5 && $(NF-4)>0{printf "%.0f%%",($(NF-4)-$(NF-2))*100/$(NF-4)}')
+# ТОМ — ПО ПУТИ каталога, не по литералу `/data` (на BE10000 это чужой том; следит C50).
+# Точку монтирования отдаём панели: подпись «Флеш /data» на роутере, где мы живём на
+# /data/usr, — это ровно та ложь, из-за которой чужие 4.7 МБ полгода читались как наши.
+# …и том этот — ФЛЕШ РОУТЕРА, а не «где лежит код»: в режиме «всё на накопителе» $D — флешка,
+# и экран «Система» показывал бы её 29 ГБ вместо 14 МБ /data. Якорь — резидентный бутстрап
+# (см. тот же разбор в cgi-bin/status), откат на $D — для установок старее бутстрапа.
+DF_AT="$B"; [ -d "$DF_AT" ] || DF_AT="$D"
+dl=$(df "$DF_AT" 2>/dev/null | tail -1)
+disk_mp=$(echo "$dl" | awk 'NF>=5 && $(NF-4)+0>0{print $NF}')
+disk_total=$(echo "$dl" | awk 'NF>=5 && $(NF-4)+0>0{printf "%.0f",$(NF-4)/1024}')
+disk_free=$(echo "$dl" | awk 'NF>=5 && $(NF-4)+0>0{printf "%.0f",$(NF-2)/1024}')
+disk_used=$(echo "$dl" | awk 'NF>=5 && $(NF-4)+0>0{printf "%.0f",($(NF-4)-$(NF-2))/1024}')
+disk_pct=$(echo "$dl" | awk 'NF>=5 && $(NF-4)+0>0{printf "%.0f%%",($(NF-4)-$(NF-2))*100/$(NF-4)}')
 
 # --- Сеть (conntrack) ---------------------------------------------------------
 ct=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)
@@ -171,7 +224,7 @@ ctmax=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)
 adapter_json() {
 	_role="$1"; _ifc="$2"
 	[ -n "$_ifc" ] && [ -d "/sys/class/net/$_ifc" ] || return 1
-	_op=$(cat "/sys/class/net/$_ifc/operstate" 2>/dev/null)
+	_op=$(cat "/sys/class/net/$_ifc/operstate" 2>/dev/null)   # not-wan: карточка адаптеров — состояние ЛЮБОГО интерфейса, вердикта про аплинк тут нет
 	_sp=$(cat "/sys/class/net/$_ifc/speed" 2>/dev/null); case "$_sp" in ''|*[!0-9-]*) _sp=0 ;; esac; [ "$_sp" -lt 0 ] 2>/dev/null && _sp=0
 	_mac=$(cat "/sys/class/net/$_ifc/address" 2>/dev/null)
 	_mtu=$(cat "/sys/class/net/$_ifc/mtu" 2>/dev/null); case "$_mtu" in ''|*[!0-9]*) _mtu=0 ;; esac
@@ -181,8 +234,12 @@ adapter_json() {
 	printf '{"role":"%s","name":"%s","link":"%s","speed":%s,"mac":"%s","ip":"%s","mtu":%s,"rx":%s,"tx":%s}' \
 		"$_role" "$(jstr "$_ifc")" "$(jstr "$_op")" "$_sp" "$(jstr "$_mac")" "$(jstr "$_ip4")" "$_mtu" "$_rx" "$_tx"
 }
-wan_if=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-tun_if=$(ip route show table 1000 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+# Имена WAN и несущей — у владельца (ip-lib.sh::wan_iface / carrier_iface, следит C81); шимы = прежние строки.
+if [ -f "$D/ip-lib.sh" ]; then . "$D/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+command -v carrier_iface >/dev/null 2>&1 || carrier_iface() { ip route show table 1000 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
+wan_if=$(wan_iface)
+tun_if=$(carrier_iface)
 net="["; nfirst=1
 lan_ifc=$(command -v lan_if >/dev/null 2>&1 && lan_if || echo br-lan)   # lan-lit: шим без router-lib.sh
 for pair in "wan $wan_if" "lan $lan_ifc" "vpn $tun_if"; do
@@ -213,11 +270,8 @@ for ifp in /sys/class/net/wl* /sys/class/net/ath* /sys/class/net/wlan*; do
 	[ -n "$wfreq" ] || continue
 	case "$wtxp" in ''|*[!0-9]*) wtxp=0 ;; esac
 	wmhz=$(awk -v f="$wfreq" 'BEGIN{printf "%d", f*1000+0.5}')
-	wband=""; wchan=0
-	if [ "$wmhz" -ge 2400 ] && [ "$wmhz" -lt 2500 ]; then wband="2.4"; wchan=$(( (wmhz-2407)/5 ))
-	elif [ "$wmhz" -ge 4900 ] && [ "$wmhz" -lt 5900 ]; then wband="5"; wchan=$(( (wmhz-5000)/5 ))
-	elif [ "$wmhz" -ge 5925 ]; then wband="6"; wchan=$(( (wmhz-5950)/5 )); fi
-	[ -n "$wband" ] || continue
+	wbc=$(wifi_mhz_band "$wmhz") || continue
+	wband=${wbc%% *}; wchan=${wbc#* }
 	case "$wstd" in *be*) wgen=7 ;; *ax*) wgen=6 ;; *ac*) wgen=5 ;; *n*) wgen=4 ;; *) wgen=1 ;; esac
 	wcw=$(iwpriv "$wi" get_chwidth 2>/dev/null | sed -n 's/.*get_chwidth:\([0-9]*\).*/\1/p')
 	case "$wcw" in 0) ww=20 ;; 1) ww=40 ;; 2) ww=80 ;; 3) ww=160 ;; 5) ww=320 ;; *) ww=0 ;; esac
@@ -249,11 +303,11 @@ END{
 }')
 [ -n "$wifi" ] || wifi="[]"
 
-printf '{"model":"%s","fw":"%s","hw":"%s","soc":"%s","serial":"%s","kernel":"%s","arch":"%s","uptime":%s,"cpu":{"cores":%s,"freq_cur":%s,"freq_max":%s,"freq_min":%s,"busy":%s,"model":"%s","isa":"%s","cpuarch":"%s","governor":"%s","load1":"%s","load5":"%s","load15":"%s"},"temp":{"soc":%s,"min":%s,"count":%s,"hi":%s,"crit":%s},"ram":{"total":%s,"free":%s,"avail":%s,"buffers":%s,"cached":%s},"flash":{"total":%s,"free":%s,"used":%s,"used_pct":"%s"},"conntrack":{"count":%s,"max":%s},"net":%s,"wifi":%s}\n' \
+printf '{"model":"%s","fw":"%s","hw":"%s","soc":"%s","serial":"%s","kernel":"%s","arch":"%s","uptime":%s,"cpu":{"cores":%s,"freq_cur":%s,"freq_max":%s,"freq_min":%s,"busy":%s,"model":"%s","isa":"%s","cpuarch":"%s","governor":"%s","load1":"%s","load5":"%s","load15":"%s"},"temp":{"soc":%s,"min":%s,"count":%s,"hi":%s,"crit":%s},"ram":{"total":%s,"free":%s,"avail":%s,"buffers":%s,"cached":%s},"flash":{"total":%s,"free":%s,"used":%s,"used_pct":"%s","mount":"%s"},"conntrack":{"count":%s,"max":%s},"net":%s,"wifi":%s}\n' \
 	"$(jstr "$model")" "$(jstr "$fw")" "$(jstr "$hw")" "$(jstr "$plat")" "$(jstr "$serial")" "$(jstr "$kernel")" "$(jstr "$arch")" "$(num "$up")" \
 	"$(num "$cores")" "$(num "$fcur")" "$(num "$fmax")" "$(num "$fmin")" "$(num "$busy")" "$(jstr "$cpu_model")" "$(jstr "$isa")" "$(jstr "$cpu_ar")" "$(jstr "$gov")" "${l1:-0}" "${l5:-0}" "${l15:-0}" \
 	"$(num "$soc")" "$(num "$tmin")" "$(num "$tcount")" "$(num "$thi")" "$(num "$tcrit")" \
 	"$(num "$ram_total")" "$(num "$ram_free")" "$(num "$ram_avail")" "$(num "$ram_buf")" "$(num "$ram_cache")" \
-	"$(num "$disk_total")" "$(num "$disk_free")" "$(num "$disk_used")" "${disk_pct:-?}" \
+	"$(num "$disk_total")" "$(num "$disk_free")" "$(num "$disk_used")" "${disk_pct:-?}" "$(jstr "${disk_mp:-/data}")" \
 	"$(num "$ct")" "$(num "$ctmax")" \
 	"${net:-[]}" "${wifi:-[]}"

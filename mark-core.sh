@@ -30,11 +30,36 @@ TABLE=1000
 UNWIRE=0
 [ "${1:-}" = unwire ] && UNWIRE=1
 
+# --- ВЫКЛЮЧЕНО ЧЕЛОВЕКОМ: ядра НЕ СТАВИМ ВОВСЕ ------------------------------------------------
+# `vpn-toggle.sh off` с 02.09.2026 — это СОСТОЯНИЕ (флаг на /data, переживает ребут). Гейт живёт
+# ЗДЕСЬ, а не у вызывателей, потому что вызывателей у ядра ПЯТЕРО (heal, groups.sh, geo.sh,
+# transport.sh switch, vpn-toggle repair) — держать проверку у каждого значит забыть её у
+# шестого. Замерено 02.09.2026: `groups.sh apply` и `geo.sh reapply` зовут mark-core, когда их
+# сет ещё без правила, — то есть на буте роутера С ГРУППАМИ выключенный VPN получил бы обратно
+# и метки, И `ip rule`, и тумблер бы врал. Тот же класс, что «две двери к метке iplist_set».
+# `unwire` НЕ гейтим НИКОГДА: снять правила при выключенном VPN — ровно то, чего человек хотел
+# (иначе `uninstall.sh` не смог бы убрать за собой на выключенном роутере).
+ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
+# …И КАТАЛОГ КОДА — ТОЖЕ ПЕРЕМЕННОЙ. Раньше в этом файле переменных путей не было вовсе, и
+# четыре места (ipt-lib, .panel-tls, server/port, slots.sh) читали ЛИТЕРАЛ ФЛЕША — «абсолютный,
+# чтобы пустая переменная не превратилась в /ipt-lib.sh». Замер на живом BE7000 02.09.2026 в
+# раскладке `full` (код и состояние на накопителе): литералов не существует, и ЯДРО МАРКИРОВКИ
+# молча теряло разом слот-цикл (доп-выходы без марок и без своего `ip rule`), гард порта TLS
+# панели, гард порта «доступа домой» и ОЖИДАНИЕ xtables-лока — при зелёном выводе «маркировка
+# применена». Окружение к этому моменту УЖЕ правильное: единственные, кто нас зовёт, — cron
+# через boot.sh и панель через cgi-paths.sh, а они экспортируют пути. Форма `${VAR:-литерал}`
+# оставляет прежнее поведение там, где кода на накопителе нет (следит C60).
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
+if [ "$UNWIRE" = 0 ] && [ -f "$ENODIA_STATE/.vpn-off" ]; then
+    echo "[mark-core] VPN выключен человеком (.vpn-off) — правил не ставлю (вернёт vpn-toggle.sh on)"
+    exit 0
+fi
+
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят чужим
 # кроном ⇒ без ожидания правило МОЛЧА не встаёт, а ядро кладёт их десятками за один прогон. Путь
-# АБСОЛЮТНЫЙ (как SLOTS_SH ниже): $ENODIA_DIR в этом скрипте не определён, и подстановка пустой
-# переменной молча читала бы /ipt-lib.sh. Нет файла — прежний путь байт-в-байт.
-if [ -f /data/usr/app/enodia/ipt-lib.sh ]; then . /data/usr/app/enodia/ipt-lib.sh; fi
+# ИЗ ПЕРЕМЕННОЙ (см. объявление выше): по литералу флеша в раскладке `full` файла нет, и
+# ожидание лока пропадало молча — правило не встаёт, а stderr у половины вызовов заглушен.
+if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 
 # --- reply-guard: НЕ метим трафик, адресованный САМОМУ роутеру --------------------
 # ГРАБЛЯ (найдено 08.07.2026 на железе Евгения). Маркировка ниже бьёт по dst в mangle
@@ -96,7 +121,8 @@ done
 # Путь АБСОЛЮТНЫЙ (как SLOTS_SH ниже): переменных путей в этом скрипте нет вовсе, и подстановка
 # пустой переменной молча читала бы /.panel-tls — гард не встал бы вовсе, а сообщение молчит.
 # Каталог — СОСТОЯНИЯ (enodia-state), не кода: персист пережил обновление и уехал туда.
-_ptls_port=$(cat /data/usr/app/enodia-state/.panel-tls 2>/dev/null | tr -cd '0-9')
+# Ведущие нули срезаем (форма порта — у web-ui.sh::port_norm): флаг прежней формы «08443» iptables читает как восьмеричное и отвергает.
+_ptls_port=$(cat "$ENODIA_STATE/.panel-tls" 2>/dev/null | tr -cd '0-9' | sed 's/^0*//')
 if [ -n "$_ptls_port" ]; then
     while iptables -t mangle -D OUTPUT -p tcp --sport "$_ptls_port" -j ACCEPT 2>/dev/null; do :; done
     if [ "$UNWIRE" = 0 ]; then
@@ -113,7 +139,7 @@ fi
 # «сервер не отвечает» при идеальном на вид файрволе. Узнаём свой ответ по ИСХОДНОМУ порту.
 # Гард живёт ЗДЕСЬ, а не в vpn-server.sh: mark-core пересобирает OUTPUT целиком, и гард,
 # поставленный снаружи, был бы смыт первым же переигрышем ядра.
-_vsrv_port=$(cat /data/usr/app/enodia-state/server/port 2>/dev/null | tr -cd '0-9')
+_vsrv_port=$(cat "$ENODIA_STATE/server/port" 2>/dev/null | tr -cd '0-9')
 if [ -n "$_vsrv_port" ]; then
     while iptables -t mangle -D OUTPUT -p udp --sport "$_vsrv_port" -j ACCEPT 2>/dev/null; do :; done
     if [ "$UNWIRE" = 0 ]; then
@@ -138,7 +164,7 @@ fi
 # zapret-слот марок НЕ получает (десинк на ПРЯМОМ пути:
 # ACCEPT+scoped NFQUEUE — забота Ф1/zapret.sh, не ядра). Снятие правил при del/disable —
 # slots.sh unwire (ставим только мы: логика «выше miwifi» живёт здесь и только здесь).
-SLOTS_SH=/data/usr/app/enodia/slots.sh
+SLOTS_SH="$ENODIA_DIR/slots.sh"
 # Гард `-f` и вызов через `sh`, а НЕ `-x` + прямой запуск: бит исполнения теряется (копирование,
 # частично доехавший apply-scripts, распаковка чужого архива), и тогда весь слот-цикл молча
 # пропускался бы — сеты `grp_vpn_s<N>`/`geo_vpn_s<N>` без марки, «выход №N» тихо мимо VPN при
@@ -180,7 +206,7 @@ if [ -f "$SLOTS_SH" ]; then
         ip rule del fwmark "0x$sid" table 1000 2>/dev/null || true
         [ "$UNWIRE" = 1 ] && { echo "[mark-core] слот №$sid: марки и ip rule сняты"; continue; }
         starget="100$sid"
-        if ! ip route show table "100$sid" 2>/dev/null | grep -q '^default'; then
+        if ! ip route show table "100$sid" 2>/dev/null | grep -q '^default'; then   # not-wan: несущая СЛОТА (table 100N), у неё свой владелец — slots.sh
             [ "$sfb" = main ] && starget=1000
         fi
         ip rule add fwmark "0x$sid" table "$starget" pref "9$sid"
@@ -254,5 +280,13 @@ if [ "$UNWIRE" = 1 ]; then
     exit 0
 fi
 ip rule add fwmark $FWMARK table $TABLE pref 99
+
+# ВЫКЛЮЧИЛИ, ПОКА МЫ СТАВИЛИ: гейт в начале файла пройден, а `vpn-toggle off` успел отработать (и снять `ip rule`) раньше, чем мы
+# их положили, — правила выходов и основного жили бы при выключенном VPN до ребута, и тумблер показывал бы «VPN: ON» (ревью ветки,
+# круг 2). Снимаем СВОИМ ЖЕ вербом `unwire` — второй копии «что снимать» тут нет.
+if [ -f "$ENODIA_STATE/.vpn-off" ]; then
+    echo "[mark-core] VPN выключили вручную, пока ставилась маркировка, — снимаю"
+    exec sh "$ENODIA_DIR/mark-core.sh" unwire
+fi
 
 echo "[mark-core] маркировка применена (table $TABLE, fwmark $FWMARK; default ставит транспорт)"

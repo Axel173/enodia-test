@@ -31,7 +31,7 @@
 #   transport-awg.sh failover  — перебор awg-резервов (делегат в switch-vpn.sh failover,
 #                                единый источник правды по перебору; см. ниже)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
@@ -42,6 +42,8 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Нет ipt-lib.sh с `ipt_top` (частичное обновление) ⇒ прежнее «первым в цепочку», байт-в-байт.
+command -v ipt_top >/dev/null 2>&1 || ipt_top() { _itc=$1; shift; iptables -C "$_itc" "$@" 2>/dev/null || iptables -I "$_itc" 1 "$@"; }
 command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null 2>&1 || true; }
 TABLE=1000
 IFACE=awg0
@@ -78,6 +80,11 @@ command -v age_since >/dev/null 2>&1 || age_since() {
     case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
     [ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
+# «VPN выключен вручную — несущую не берёт никто» (daemon-lib.sh: carrier_barred/carrier_run, разбор там). Нет библиотеки —
+# шимы дают прежний путь байт-в-байт.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
 
 log() { echo "[transport-awg] $*"; }
 notify_event() { [ -f "$NOTIFY_EVENT" ] && sh "$NOTIFY_EVENT" "$1" "$2" "$3" "$4" >/dev/null 2>&1; }
@@ -100,7 +107,7 @@ hs_age() {
     age_since "$hs"
 }
 
-carrier_up() { ip link show "$IFACE" 2>/dev/null | grep -q 'state UP\|UNKNOWN\|LOWER_UP'; }
+carrier_up() { ip link show "$IFACE" 2>/dev/null | grep -q 'state UP\|UNKNOWN\|LOWER_UP'; }   # not-wan: своя несущая (awg0/awgN), а не аплинк; про аплинк отвечает ip-lib.sh
 
 # ---- анти-петля: endpoint своего VPS мимо маркировки ----------------------
 # IP endpoint'а awg-сервера. Сначала у демона (awg show — уже резолвленный пир),
@@ -130,7 +137,9 @@ exclude_endpoint() {
 # doh_apply_dns — он перетирал 00-upstream.conf после failover'а и молча выключал DoH;
 # снят при ревью батча 4). VPN_DNS берём из активного awg.conf.
 restore_vpn_dns() {
-    doh_apply_dns tunnel && return 0    # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было
+    # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было. DOH_APPLY_NOTE — слово
+    # библиотеки о том, что резолвер пришлось увести МИМО ещё не везущей несущей (см. doh_apply_dns).
+    if doh_apply_dns tunnel; then [ -n "${DOH_APPLY_NOTE:-}" ] && log "DoH: $DOH_APPLY_NOTE"; return 0; fi
     vpn_dns=$(grep -E '^DNS[[:space:]]*=' "$ACTIVE_CONF" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
     [ -z "$vpn_dns" ] && vpn_dns=172.29.172.254
     mkdir -p /etc/dnsmasq.d
@@ -156,14 +165,50 @@ set_public_dns() {
 # iptables: цепочки apply-bypass, ENODIA_ZAPRET+NFQUEUE, FORWARD доп-выходов, PANEL_WAN, «доступ
 # домой». Мы вернём только СВОЮ несущую, поэтому просим канонический переигрыш — см. replay_fw3.
 FW3_WIPED=0
+# …И «ИНТЕРФЕЙС ЕСТЬ» НЕ ЗНАЧИТ «ОТ ТОГО СЕРВЕРА». awg0 живёт ТЁПЛЫМ РЕЗЕРВОМ: `down` плагина
+# снимает маршрутизацию, но интерфейс и демон оставляет — и всё это время конфиг могли сменить.
+# ЗАМЕР НА ЖЕЛЕЗЕ (BE7000, 02.09.2026): выключить VPN тумблером → выбрать в панели другой сервер
+# (панель обещает «включите VPN, и роутер пойдёт через этот сервер») → включить обратно. `.active`
+# и `awg.conf` — новые, а awg0 продолжал ходить на ПРЕЖНИЙ endpoint: `ensure_carrier` выходил на
+# первой строке, а `awg setconf` никто не звал. Человек уверен, что сменил страну; трафик идёт
+# в старую. Судим ПО ФАКТУ (ключ пира у демона против ключа в конфиге), а не по наличию линка;
+# `stage` к этому моменту уже разложил awg.conf/amnezia_for_awg.conf и УДАЛИЛ awg0.conf, поэтому
+# пересозданный интерфейс поднимется именно с новым сервером (цикла быть не может).
+# КЛЮЧ — base64, и он КОНЧАЕТСЯ «=»: отрезаем префикс `PublicKey =`, а не делим строку по «=». Прежний
+# `awk -F'= *'` отдавал 43 знака без хвостового «=» против 44 у демона ⇒ сверка не сходилась НИКОГДА, и
+# каждый подъём поверх тёплого резерва пересоздавал awg0 с `awg_setup` и firewall reload (замер на BE7000,
+# 27.09.2026: фолбэк «Выкл» на неизменный сервер — «awg0 поднят с ДРУГИМ сервером — пересоздаю»).
+carrier_matches_conf() {
+    _cmw=$(wg_bin); [ -n "$_cmw" ] || return 0          # сверять нечем — прежнее поведение
+    # Пиров бывает несколько, а порядок их у userspace-демона случаен (обход Go-map): «последний в файле ↔ первый у демона» давал
+    # ложное «другой сервер» и пересоздание с firewall reload (ревью 28.09.2026, круг 2) ⇒ КАЖДЫЙ пир демона обязан быть в конфиге.
+    _cmk=$(sed -n 's/^[[:space:]]*PublicKey[[:space:]]*=[[:space:]]*//p' "$ACTIVE_CONF" 2>/dev/null | sed "s/#.*//" | tr -d ' \t\r')
+    [ -n "$_cmk" ] || return 0                          # в конфиге нет ключа пира — не судим
+    _cml=$("$_cmw" show "$IFACE" peers 2>/dev/null | tr -d ' \t\r')
+    [ -n "$_cml" ] || return 0                          # демон ещё не сконфигурен — обычный путь
+    for _cmx in $_cml; do printf '%s\n' "$_cmk" | grep -qxF -e "$_cmx" || return 1; done
+    # Пир тот же — а СВОЙ ключ? Два клиента ОДНОГО сервера (два конфига с одним пиром) отличаются только им: без этой сверки
+    # тёплый awg0 на ключе A переживал переход на конфиг B, `.active` = B, а сессию держал A — и выход на A получал отказ
+    # «ключ занят основным», которого человек не видит (ревью 27.09.2026). Нет строки в конфиге или демон ключа не назвал —
+    # судим по пиру, как раньше: «сверить нечем» ≠ «разошлось», а расхождение стоит awg_setup с firewall reload.
+    _cmp=$(sed -n 's/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*//p' "$ACTIVE_CONF" 2>/dev/null | head -1 | sed "s/#.*//" | tr -d ' \t\r')
+    [ -n "$_cmp" ] || return 0
+    _cmq=$("$_cmw" show "$IFACE" private-key 2>/dev/null | head -1 | tr -d ' \t\r')
+    [ -n "$_cmq" ] || return 0
+    [ "$_cmp" = "$_cmq" ]
+}
 ensure_carrier() {
-    if ip link show "$IFACE" >/dev/null 2>&1; then return 0; fi
+    if ip link show "$IFACE" >/dev/null 2>&1; then
+        carrier_matches_conf && return 0
+        log "awg0 поднят с ДРУГИМ сервером (конфиг сменили, пока несущая была тёплым резервом) — пересоздаю"
+        ip link del "$IFACE" 2>/dev/null
+    fi
     for s in /etc/init.d/awg /etc/init.d/amneziawg /etc/init.d/amnezia; do
         [ -x "$s" ] && { "$s" start >/dev/null 2>&1; break; }
     done
     if ! ip link show "$IFACE" >/dev/null 2>&1 && [ -f "$AWG_SETUP" ]; then
         FW3_WIPED=1
-        ( cd "$ENODIA_DIR" && sh ./awg_setup.sh >/tmp/transport-awg-setup.log 2>&1 )
+        ( cd "$ENODIA_DIR" && sh ./awg_setup.sh >/tmp/enodia-transport-awg-setup.log 2>&1 )
     fi
     i=0; while [ $i -lt 15 ]; do
         ip link show "$IFACE" >/dev/null 2>&1 && return 0
@@ -177,12 +222,16 @@ ensure_carrier() {
 # своей копии списка тут быть не должно. Зовём ТОЛЬКО после записи .transport=awg: repair
 # читает этот флаг и иначе поднял бы несущую ПРЕЖНЕГО транспорта. Рекурсии нет — на
 # transport=awg repair ставит несущую инлайном, awg_setup.sh не трогает (awg0 уже поднят).
+# $1 = repair | rules. awg0 НЕ ПОДНЯЛСЯ, а reload уже случился (awg_setup кончается им и при
+# провале) ⇒ `rules` — тот же список без несущей: `repair` отказал бы на гарде «awg0 не поднят», и
+# снесённое ждало бы ребута. Владелец переигрыша — тот, кто снёс: так он случается при ЛЮБОМ
+# вызывателе `up` (откат `switch`, «Включить VPN», heal, сторож), а не у одного из них (ревью dev233).
 replay_fw3() {
     [ "$FW3_WIPED" = 1 ] || return 0
     FW3_WIPED=0
     [ -f "$ENODIA_DIR/vpn-toggle.sh" ] || return 0
-    log "awg_setup сделал firewall reload — переигрываю цепочки (vpn-toggle repair)"
-    sh "$ENODIA_DIR/vpn-toggle.sh" repair >/dev/null 2>&1 || true
+    log "awg_setup сделал firewall reload — переигрываю цепочки (vpn-toggle $1)"
+    sh "$ENODIA_DIR/vpn-toggle.sh" "$1" >/dev/null 2>&1 || true
 }
 
 # Наложить awg-несущую поверх mark-core: default dev awg0 + FORWARD awg0 + MASQUERADE
@@ -191,8 +240,8 @@ replay_fw3() {
 apply_awg_routing() {
     ip link set "$IFACE" up 2>/dev/null
     # FORWARD ACCEPT (fw3 policy FORWARD=DROP -> без этого LAN-трафик в awg0 дропается)
-    iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$IFACE" -j ACCEPT
-    iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$IFACE" -j ACCEPT
+    ipt_top FORWARD -o "$IFACE" -j ACCEPT
+    ipt_top FORWARD -i "$IFACE" -j ACCEPT
     # NAT для исходящего через awg0 (у tun2socks/xtun этого НЕ нужно — он терминирует)
     iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
     # СВАП дефолта в боевой таблице на awg0 (маркировку/ip rule mark-core НЕ трогаем)
@@ -223,8 +272,11 @@ slot_srcconf() { echo "$ENODIA_STATE/configs/$1.conf"; }   # исходный к
 slot_ifconf()  { echo "$ENODIA_BIN/awg$1.conf"; }        # сгенерированный stripped conf для setconf
 
 # pid'ы демона amneziawg-go ИМЕННО этого iface (по /proc/*/cmdline: busybox ps ненадёжен с флагами,
-# а демон зовётся с полным путём + iface-аргументом — матчим по нему, awg0/другие слоты не заденем).
-slot_daemon_pids() {   # $1 = iface (awgN)
+# а демон зовётся с полным путём + iface-аргументом — матчим по нему, соседей не заденем).
+# `killall` ЗАПРЕЩЁН: инстансов несколько — awg0 (несущая), awgN (доп-выходы), awgs0 («доступ
+# домой»). Копий этого перебора в проекте ЧЕТЫРЕ и они объявлены зеркалами (switch-vpn.sh,
+# vpn-server.sh, awg_setup.sh) — правя одну, держи их ОДИНАКОВЫМИ либо своди к одному владельцу.
+awg_daemon_pids() {   # $1 = iface (awg0 | awgN)
     for _p in /proc/[0-9]*; do
         [ -r "$_p/cmdline" ] || continue
         case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null) " in
@@ -232,13 +284,13 @@ slot_daemon_pids() {   # $1 = iface (awgN)
         esac
     done
 }
-# Погасить демон awgN (TERM -> добить KILL) + снять его stale UAPI-сокет. НЕ трогает awg0.
-slot_kill_daemon() {   # $1 = iface
+# Погасить демон ЭТОГО iface (TERM -> добить KILL) + снять его stale UAPI-сокет. Соседей не трогает.
+awg_kill_daemon() {   # $1 = iface
     _if="$1"
-    for _pid in $(slot_daemon_pids "$_if"); do kill "$_pid" 2>/dev/null; done
+    for _pid in $(awg_daemon_pids "$_if"); do kill "$_pid" 2>/dev/null; done
     _i=0
-    while [ -n "$(slot_daemon_pids "$_if")" ] && [ "$_i" -lt 8 ]; do
-        [ "$_i" = 3 ] && for _pid in $(slot_daemon_pids "$_if"); do kill -9 "$_pid" 2>/dev/null; done
+    while [ -n "$(awg_daemon_pids "$_if")" ] && [ "$_i" -lt 8 ]; do
+        [ "$_i" = 3 ] && for _pid in $(awg_daemon_pids "$_if"); do kill -9 "$_pid" 2>/dev/null; done
         sleep 1; _i=$((_i+1))
     done
     rm -f "/var/run/amneziawg/$_if.sock" "/var/run/wireguard/$_if.sock" 2>/dev/null
@@ -256,7 +308,11 @@ slot_gen_conf() {   # $1 = src_conf, $2 = dst iface-conf
     _src="$1"; _dst="$2"
     _addr=$(grep -E '^[[:space:]]*Address[[:space:]]*=' "$_src" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | cut -d',' -f1 | tr -d ' \t\r')
     _mtu=$(grep -E '^[[:space:]]*MTU[[:space:]]*=' "$_src" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
-    awk '!/^[[:space:]]*(Address|DNS|MTU|Table|PreUp|PostUp|PreDown|PostDown|SaveConfig)[[:space:]]*=/' "$_src" > "$_dst"
+    # ListenPort — тоже вон (в отличие от прочего он setconf'у ВАЛИДЕН): клиенту фиксированный порт не нужен, а у второго
+    # демона с тем же портом (основной awg0, другой выход, «доступ домой») порт уже занят — рукопожатия не будет НИКОГДА.
+    # Имя ключа — БЕЗ учёта регистра: парсер wg читает `listenport=` так же, как `ListenPort=`, и строчная запись проходила фильтр
+    # мимо (ревью 28.09.2026, круг 2). Зеркало — awg_setup.sh (генератор основного).
+    awk '{ t = tolower($0) } !(t ~ /^[[:space:]]*(address|dns|mtu|table|preup|postup|predown|postdown|saveconfig|listenport)[[:space:]]*=/)' "$_src" > "$_dst"
     sed -i '/^[[:space:]]*I[1-5][[:space:]]*=[[:space:]]*$/d' "$_dst" 2>/dev/null   # пустые I1..I5 валят setconf
     _epsrc=$(grep -E '^[[:space:]]*Endpoint[[:space:]]*=' "$_src" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
     _ephost=$(echo "$_epsrc" | sed 's/:[0-9]*$//')
@@ -269,7 +325,7 @@ slot_gen_conf() {   # $1 = src_conf, $2 = dst iface-conf
                # Без dns-lib.sh подставить IP нечем. Молчать тут НЕЛЬЗЯ: `awg setconf` резолвит
                # домен сам через запертый в туннель dnsmasq и, промахнувшись, отвергает конфиг
                # ЦЕЛИКОМ — awgN встанет пустым, а в логе не будет ни строчки о причине.
-               log "слот: нет $ENODIA_DIR/dns-lib.sh — Endpoint '$_ephost' останется ИМЕНЕМ; awg setconf может отвергнуть конфиг слота целиком (обнови скрипты)" >&2
+               log "слот: нет $ENODIA_DIR/dns-lib.sh — Endpoint '$_ephost' останется ИМЕНЕМ; awg setconf может отвергнуть конфиг слота целиком (обновите скрипты)" >&2
            elif ! is_ipv4 "$_ephost"; then
                _epip=$(resolve_ipv4 "$_ephost" 2>/dev/null)
                if [ -n "$_epip" ] && [ -n "$_epport" ]; then
@@ -282,25 +338,46 @@ slot_gen_conf() {   # $1 = src_conf, $2 = dst iface-conf
     printf '%s\t%s\n' "$_addr" "$_mtu"
 }
 
+# KEEPALIVE ВЫХОДУ ОБЯЗАТЕЛЕН — по нему сторож судит, жив ли выход. WireGuard обновляет рукопожатие, лишь когда через туннель
+# ИДУТ ПАКЕТЫ, а у выхода без трафика (привязок нет, устройство спит) их нет никогда: возраст рукопожатия растёт линейно, на
+# HS_DEAD сторож объявлял ЖИВОЙ выход мёртвым, гасил его и слал письмо «сервер не отвечает» — каждые пару минут по кругу (замер
+# на BE3600 тестера 10.09.2026: исправный awg0 вёл себя так же, его не судили лишь потому, что он был резервом). У нативных
+# `.conf` Amnezia строки PersistentKeepalive обычно нет вовсе. С keepalive пакет уходит каждые 25 с, ключи обновляются раз в
+# ~2 мин, и «рукопожатие старше HS_DEAD» снова значит «сервер не отвечает». Своё значение конфига уважаем, пока оно НЕ ДЛИННЕЕ
+# нашего: при keepalive 100–120 с рукопожатие без трафика стареет до 120 + keepalive ≥ HS_DEAD (180), и ложная «смерть»
+# возвращалась бы (ревью 27.09.2026) — такое опускаем до 25. amneziawg печатает значение диапазоном («25-35»): судим по
+# первому числу. Тот же предикат «keepalive годен» — у сторожа (watchdog.sh slot_health_sweep, SLOT_KA_MAX = это число).
+# Ставим В ЖИВОЙ ДЕМОН (`awg set`), а не в текст конфига: так и тёплый выход, поднятый старой версией без keepalive, получает
+# его на ближайшем slot-up (сторож зовёт его сам, когда keepalive не годен).
+SLOT_KEEPALIVE=25
+slot_keepalive() {   # $1 = iface
+    [ -x "$ENODIA_BIN/awg" ] || return 0
+    "$ENODIA_BIN/awg" show "$1" persistent-keepalive 2>/dev/null | awk -v cap="$SLOT_KEEPALIVE" '$2=="off" || $2+0>cap {print $1}' | while read -r _kp; do
+        [ -n "$_kp" ] && "$ENODIA_BIN/awg" set "$1" peer "$_kp" persistent-keepalive "$SLOT_KEEPALIVE" 2>/dev/null
+    done
+    return 0
+}
+
 # Поднять несущую awgN (id, cfg-name). Возврат 0 = awgN есть. Идемпотентно: живой iface = тёплый,
 # конфиг не пересобираем; отсутствует = генерим conf + стартуем демон + IP/MTU/up.
 slot_carrier_up() {   # $1 = id ; $2 = cfg
     _id="$1"; _cfg="$2"; _if=$(slot_iface "$_id"); _src=$(slot_srcconf "$_cfg"); _dst=$(slot_ifconf "$_id")
-    if ip link show "$_if" >/dev/null 2>&1; then ip link set "$_if" up 2>/dev/null; return 0; fi
+    if ip link show "$_if" >/dev/null 2>&1; then ip link set "$_if" up 2>/dev/null; slot_keepalive "$_if"; return 0; fi
     [ -f "$_src" ] || { log "слот №$_id: нет конфига $_src"; return 1; }
     [ -x "$ENODIA_BIN/amneziawg-go" ] && [ -x "$ENODIA_BIN/awg" ] || { log "слот №$_id: нет бинарей amneziawg-go/awg"; return 1; }
     _am=$(slot_gen_conf "$_src" "$_dst")
     _addr=$(printf '%s' "$_am" | cut -f1); _mtu=$(printf '%s' "$_am" | cut -f2)
     [ -n "$_addr" ] || { log "слот №$_id: в $_src нет Address — awgN был бы без IPv4, не поднимаю"; return 1; }
-    slot_kill_daemon "$_if"                     # добить возможный stale-демон/сокет ИМЕННО awgN
+    awg_kill_daemon "$_if"                      # добить возможный stale-демон/сокет ИМЕННО awgN
     # GOMEMLIMIT — см. разбор в шапке net-tune.sh (он единственный владелец значения). Слот такой
     # же демон, как awg0: без потолка его куча растёт по трафику, а на тесной модели их несколько.
     # grep по ФОРМЕ — гард на рассинхрон версий: старый net-tune.sh печатает на этот верб `usage: …`
     # в stdout, и оно стало бы первым аргументом env (демон не стартует). См. шапку net-tune.sh.
     env $(sh "$ENODIA_DIR/net-tune.sh" memlimit-env 2>/dev/null | grep -E '^GOMEMLIMIT=[0-9]+MiB$') "$ENODIA_BIN/amneziawg-go" "$_if" || { log "слот №$_id: amneziawg-go $_if не стартовал"; return 1; }
     _i=0; while ! ip link show "$_if" >/dev/null 2>&1 && [ "$_i" -lt 10 ]; do sleep 1; _i=$((_i+1)); done
-    ip link show "$_if" >/dev/null 2>&1 || { log "слот №$_id: $_if не появился"; slot_kill_daemon "$_if"; return 1; }
+    ip link show "$_if" >/dev/null 2>&1 || { log "слот №$_id: $_if не появился"; awg_kill_daemon "$_if"; return 1; }
     "$ENODIA_BIN/awg" setconf "$_if" "$_dst"
+    slot_keepalive "$_if"
     ip a add "$_addr" dev "$_if" 2>/dev/null
     ip link set dev "$_if" mtu "${_mtu:-$AWG_MTU_DEFAULT}" 2>/dev/null
     ip link set up "$_if"
@@ -325,8 +402,8 @@ slot_exclude_endpoint() {   # $1 = id
 slot_apply_routing() {   # $1 = id
     _id="$1"; _if=$(slot_iface "$_id"); _tab=$(slot_table "$_id")
     ip link set "$_if" up 2>/dev/null
-    iptables -C FORWARD -o "$_if" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$_if" -j ACCEPT
-    iptables -C FORWARD -i "$_if" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$_if" -j ACCEPT
+    ipt_top FORWARD -o "$_if" -j ACCEPT
+    ipt_top FORWARD -i "$_if" -j ACCEPT
     iptables -t nat -C POSTROUTING -o "$_if" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$_if" -j MASQUERADE
     ip route replace default dev "$_if" table "$_tab"
 }
@@ -343,6 +420,18 @@ cmd_slot_up() {   # $1 = id, $2 = cfg
     _id="$1"; _cfg="$2"
     case "$_id" in 2|3|4) ;; *) log "слот: id = 2..4"; return 1 ;; esac
     [ -n "$_cfg" ] && [ "$_cfg" != '-' ] || { log "слот №$_id: awg-выходу нужен конфиг (configs/<имя>.conf)"; return 1; }
+    # КЛЮЧ ЗАНЯТ — НЕ ПОДНИМАЕМ (последний рубеж; форма отказывает раньше — slots.sh add/set/enable). Сюда доходит то, что мимо
+    # формы: импорт бэкапа с чужого роутера, ручная правка `.slots`, перезалитый файл конфига. Поднятый выход на чужом ключе
+    # выбивал бы сессию у основного канала или соседа и гас бы сам. Судим по ФАКТУ (`live`: сессию занимает живой awg0, живой
+    # сосед или основной-AmneziaWG), а не по намерению: иначе снимался бы и РАБОТАЮЩИЙ выход, чей ключ лишь числится за
+    # выключенным соседом или за `awg.conf` при основном VLESS (ревью 27.09.2026). Отказ ПУСТОЙ: живую несущую выхода снимаем,
+    # трафик выхода идёт по его запасному пути; причину видит панель (`key_clash` выхода). Гард по наличию `-f` (C27): без
+    # slots.sh судить нечем — прежний путь.
+    if [ -f "$ENODIA_DIR/slots.sh" ] && _kb=$(sh "$ENODIA_DIR/slots.sh" key-holder "$_cfg" "$_id" live 2>/dev/null); then
+        log "слот №$_id: не поднимаю — $_kb"
+        ip link show "$(slot_iface "$_id")" >/dev/null 2>&1 && cmd_slot_down "$_id"
+        return 1
+    fi
     if ! slot_carrier_up "$_id" "$_cfg"; then
         log "слот №$_id: несущая awg не поднялась → выход живёт по fallback-политике (mark-core)"
         return 1
@@ -359,7 +448,7 @@ cmd_slot_down() {   # $1 = id
     _if=$(slot_iface "$_id")
     slot_remove_routing "$_id"
     [ -f "$APPLY_BYPASS" ] && sh "$APPLY_BYPASS" endpoint-slot-set "$_id" "" >/dev/null 2>&1   # снять анти-петлю слота
-    slot_kill_daemon "$_if"                     # гасим демон (владелец TUN) — TUN уходит следом
+    awg_kill_daemon "$_if"                      # гасим демон (владелец TUN) — TUN уходит следом
     ip link del "$_if" 2>/dev/null              # cleanup, если TUN пережил демон
     ct_flush
     log "слот №$_id: awg-несущая $_if снята"
@@ -368,15 +457,21 @@ cmd_slot_down() {   # $1 = id
 
 # ---- команды контракта ----------------------------------------------------
 cmd_up() {
+    # ЧАСЫ — ДО НЕСУЩЕЙ, и именно ЗДЕСЬ, а не только в heal: несущую поднимают и мимо него —
+    # панель (switch-vpn apply_routing), `vpn-toggle repair`, reup сторожа. С часами «на прошлом
+    # буте» сервер отбрасывает наше рукопожатие как повтор (clock-lib.sh, замер 05.09.2026); после
+    # первой удачи это один тест `[ -f ]` (отметка 1×/boot). Нет библиотеки — no-op.
+    if command -v clock_boot_sync >/dev/null 2>&1 && clock_boot_sync; then log "$CLOCK_MSG"; fi
     if ! ensure_carrier; then
         log "awg0 не поднялся — несущую не активирую"
+        replay_fw3 rules
         return 1
     fi
     exclude_endpoint        # анти-петля: endpoint мимо маркировки ДО постановки default->awg0
     apply_awg_routing
     restore_vpn_dns
     echo awg > "$TRANSPORT_FLAG"
-    replay_fw3              # только ПОСЛЕ записи флага: repair поднимает несущую по .transport
+    replay_fw3 repair       # только ПОСЛЕ записи флага: repair поднимает несущую по .transport
     # Ручная/оркестраторная смена транспорта = новый «эпизод» для авто-failover.
     rm -f /tmp/enodia-watchdog.xstate /tmp/enodia-failover-episode 2>/dev/null
     ct_flush
@@ -392,6 +487,26 @@ cmd_down() {
     rm -f /tmp/enodia-watchdog.xstate /tmp/enodia-failover-episode 2>/dev/null
     ct_flush
     log "AmneziaWG-несущая снята ($IFACE — тёплый резерв, трафик напрямую)."
+}
+
+# ХОЛОДНОЕ СНЯТИЕ — «выключили VPN целиком», а не сменили транспорт. Зовут ПОСЛЕ `down`.
+# Тёплый резерв оправдан ровно одним сценарием: awg ждёт, пока везёт другой транспорт, и тогда
+# кросс-возврат стоит один `setconf` вместо старта демона и рукопожатия. При снятом тумблере
+# (`.vpn-off`) этого сценария НЕТ: сторож с флагом выходит из тика, heal на буте awg0 не
+# поднимает даже резервом. Демон держался ради дороги, которая запрещена, и стоило это:
+#   * keepalive/handshake к VPS продолжали идти — на линии видно, что «выключенный» роутер
+#     разговаривает с сервером, и объяснить это человеку было нечем;
+#   * пул буферов amneziawg-go ядру НЕ возвращается (лечится только GOMEMLIMIT), а `down` его не
+#     сбрасывает, а ЗАМОРАЖИВАЕТ на достигнутом: на 176-МБ моделях это замеренные 40+ МБ впустую;
+#   * и главное — «выключено» означало РАЗНОЕ до ребута и после (на буте несущей уже нет).
+# Маршрут/NAT/DNS здесь не трогаем: их отпустил `down`, у холодного снятия ровно одна работа.
+cmd_cold() {
+    awg_kill_daemon "$IFACE"
+    # Демон — владелец TUN, интерфейс уходит следом. Остался ⇒ это зомби (демон умер раньше, чем
+    # мы пришли): нести он всё равно не может — `setconf` применять некому, — а `ensure_carrier`
+    # увидит «интерфейс есть» и НЕ пересоздаст его. Тогда `on` поднимет пустую несущую.
+    if ip link show "$IFACE" >/dev/null 2>&1; then ip link del "$IFACE" 2>/dev/null; fi
+    log "AmneziaWG-несущая погашена холодно ($IFACE снят вместе с демоном)."
 }
 
 cmd_health() {
@@ -427,19 +542,33 @@ cmd_status() {
     t=; [ -f "$TRANSPORT_FLAG" ] && t=$(cat "$TRANSPORT_FLAG" 2>/dev/null | tr -d ' \r\n')
     echo "--- transport-awg status ---"
     echo "активный транспорт (.transport): ${t:-(флаг пуст — транспорт не выбран)}"
-    echo "--- default в table $TABLE ---"; ip route show table "$TABLE" 2>/dev/null | grep default || echo "(нет default — прямой режим)"
+    echo "--- default в table $TABLE ---"; ip route show table "$TABLE" 2>/dev/null | grep default || echo "(нет default — прямой режим)"   # raw-print: сырой вывод человеку в `status`, вердикта тут нет
     echo "--- $IFACE ---"; ip link show "$IFACE" >/dev/null 2>&1 && echo "поднят (handshake $(hs_age)с назад)" || echo "нет"
     echo "--- FORWARD $IFACE ---"; iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null && echo "ACCEPT есть" || echo "нет"
 }
 
+# СНЯТИЕ ПОДНЯТОГО, если VPN выключили по ходу подъёма (carrier_run): то же, что делает `vpn-toggle off` с этим транспортом, —
+# отпустить маршрут и DNS и погасить демон (тёплый резерв при выключенном VPN не нужен).
+carrier_undo() { cmd_down; cmd_cold; }
+
 case "$1" in
-    up)       cmd_up ;;
+    # Вербы, которые БЕРУТ несущую, — через carrier_run (daemon-lib.sh): при выключенном вручную VPN отказ, а выключение, пришедшее
+    # по ходу, отпускает поднятое. Перебор серверов (failover) проверяет флаг и сам — на каждом кандидате (switch-vpn.sh).
+    up)       carrier_run carrier_undo cmd_up ;;
     down)     cmd_down ;;
+    cold)     cmd_cold ;;                 # «выключили VPN» — гасим демон, тёплый резерв не нужен
     status)   cmd_status ;;
     health)   cmd_health ;;
-    failover) cmd_failover ;;
-    dns)      restore_vpn_dns ;;   # переиграть DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns
-    slot-up)   cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф2): поднять awgN в table 100N
+    failover) carrier_run carrier_undo cmd_failover ;;
+    # DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns. При выключенном VPN туннельного DNS нет: адрес в awg0,
+    # которого нет, оставил бы без имён весь дом — ставим прямой, как `down`.
+    dns)      if carrier_barred; then set_public_dns; else restore_vpn_dns; fi ;;
+    slot-up)   carrier_run cmd_slot_down cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф2): поднять awgN в table 100N
     slot-down) cmd_slot_down "$2" ;;      # доп-выход: снять awgN (-> fallback-политика mark-core)
-    *) echo "usage: $0 up|down|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>"; exit 2 ;;
+    # ИМЯ НЕСУЩЕЙ СЛОТА — ТОЛЬКО ОТСЮДА. Спрашивает учёт трафика (traffic-acct.sh через
+    # transport.sh slot-iface): «сколько прошло через выход №N» считается по счётчикам ЕГО
+    # интерфейса, и третьей копии формулы «id -> awgN» в проекте быть не должно — она уже
+    # живёт в двух местах (здесь и slot_tun в slot-tun-lib.sh), и разъехались бы они молча.
+    slot-iface) slot_iface "$2" ;;
+    *) echo "usage: $0 up|down|cold|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-iface <id>"; exit 2 ;;
 esac

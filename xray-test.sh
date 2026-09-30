@@ -13,13 +13,22 @@
 # чтобы не затирать боевой /tmp/xray.log. Второй инстанс xray на 10812 не конфликтует с боевым
 # 10808. Изолированность: тест — throwaway, чистим за собой (cleanup по pidfile + trap).
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Тот же bin_path, что у боевого плагина (store-lib.sh): тест обязан гонять ТОТ ЖЕ бинарь,
 # который поднимется несущей, — иначе «сервер проверен» ничего не значит.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
+# Ожидание СТАРТА демона (daemon-lib.sh) — тот же владелец, что у боевого плагина: тест обязан
+# ждать бинарь СТОЛЬКО ЖЕ, сколько ждёт несущая, иначе «сервер не поднялся» приезжает от медленного
+# накопителя, а не от сервера (замер 448 КБ/с ⇒ 8-МБ xray читается 18 с при пороге 8).
+# Нет файла (частичный apply-scripts) — шим повторяет ПРЕЖНИЙ путь: фиксированный срок.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v daemon_wait_port >/dev/null 2>&1 || daemon_wait_port() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0; sleep 1; _dwi=$((_dwi+1)); done
+    netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0
+    DAEMON_WAIT_WHY="не появился за $3 с"; return 1; }
 XRAY=$(bin_path xray)
 # Канонический IP-литерал trace (ip-lib.sh): DNS-free, отвечает и на ядре 4.4, где hostname
 # api.ipify.org молча пустел (egress-тест ложно рапортовал «нет выхода»). Тут нужен ещё и
@@ -33,8 +42,10 @@ IP_PROBE_TRACE="${IP_PROBE_TRACE:-https://1.1.1.1/cdn-cgi/trace}"
 # соединений, как speedtest.net) DUR секунд через socks конфига → агрегатные Мбит/с. Общий каркас
 # temp-socks — один (DRY);
 # отличается лишь финальная проба. Egress-ветка байт-в-байт прежняя (проверенный путь не трогаем).
+# Режим — ЯВНЫМ словом первым аргументом: конфиг с именем `speed` иначе читался как режим, а номер порта — как имя (ревью
+# пачки 2, круг 3: такой конфиг «не найден» навсегда и уезжал в «удалить мёртвые»). Без слова — прежний вызов, egress.
 MODE=egress
-if [ "$1" = "speed" ]; then MODE=speed; shift; fi
+case "$1" in speed) MODE=speed; shift ;; egress) shift ;; esac
 name="$1"
 # Порт временного socks-инбаунда. По умолчанию 10812; вторым аргументом можно задать другой
 # (10812..10819). ЗАЧЕМ: панель гоняет ПАКЕТНЫЙ тест группы серверов ПАРАЛЛЕЛЬНО — каждый
@@ -49,25 +60,52 @@ STREAMS="$3"; case "$STREAMS" in ''|*[!0-9]*) STREAMS=4 ;; esac
 [ "$STREAMS" -lt 1 ] 2>/dev/null && STREAMS=1; [ "$STREAMS" -gt 8 ] 2>/dev/null && STREAMS=8
 DUR="$4"; case "$DUR" in ''|*[!0-9]*) DUR=12 ;; esac
 [ "$DUR" -lt 5 ] 2>/dev/null && DUR=5; [ "$DUR" -gt 30 ] 2>/dev/null && DUR=30
-TCONF=/tmp/xray-test.$TPORT.json
-TPID=/tmp/xray-test.$TPORT.pid
+TCONF=/tmp/enodia-xray-test.$TPORT.json
+TPID=/tmp/enodia-xray-test.$TPORT.pid
 TLOG=/tmp/xray-test.$TPORT.log
-TOUT=/tmp/xray-test.$TPORT.out
+TOUT=/tmp/enodia-xray-test.$TPORT.out
 TACC=/tmp/xray-test.$TPORT.access.log
 
+TLOCK=/tmp/enodia-xray-test.$TPORT.lock
+
 emit() { printf '%s\n' "$1"; }
+# ЗАМОК ПОРТА — СВОЙ У КАЖДОГО ПОРТА, И ДЕРЖИТ ЕГО ЖИВОЙ ПРОГОН. Прежде второй прогон на том же порту начинал с `cleanup` и
+# убивал xray первого: тот писал «недоступен» про живой сервер, а на выходе его ловушка гасила уже xray второго — два живых
+# сервера мёртвыми (ревью пачки 2, круг 2: одиночные проверки двух разных серверов идут на один порт по умолчанию). Теперь занятый
+# ЖИВЫМ держателем порт — отказ словами (`busy` — панель не пишет вердикт); держатель мёртв (CGI убит, прогон оборван) — замок наш.
+_lk=0
+# Живость держателя — владельцем `daemon-lib.sh::pid_runs` (NUL строки запуска → пробел: busybox без EXTRA_COMPAT видит в сыром
+# cmdline только argv[0], и живой прогон считался бы мёртвым). Замок без pid-файла — это держатель между `mkdir` и записью pid:
+# ждём его секунду, а не уводим. Увод мёртвого — ПЕРЕИМЕНОВАНИЕМ (атомарно: из двух одновременных уводов удаётся один), а не `rm`,
+# который снёс бы замок, только что взятый соседом (ревью пачки 2, круг 3).
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE "$2"; }
+lock_take() {
+	mkdir "$TLOCK" 2>/dev/null && { echo $$ > "$TLOCK/pid"; _lk=1; return 0; }
+	_lp=$(cat "$TLOCK/pid" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_lp" ] || { sleep 1; _lp=$(cat "$TLOCK/pid" 2>/dev/null | tr -cd '0-9'); }
+	if [ -n "$_lp" ] && pid_runs "$_lp" 'xray-test'; then return 1; fi
+	mv "$TLOCK" "$TLOCK.stale.$$" 2>/dev/null && rm -rf "$TLOCK.stale.$$" 2>/dev/null
+	mkdir "$TLOCK" 2>/dev/null && { echo $$ > "$TLOCK/pid"; _lk=1; return 0; }
+	return 1
+}
 cleanup() {
+	[ "$_lk" = 1 ] || return 0
 	[ -f "$TPID" ] && kill "$(cat "$TPID" 2>/dev/null)" 2>/dev/null
 	rm -f "$TPID" "$TCONF" "$TOUT" "$TOUT".* "$TACC" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+# Замок снимаем ПОСЛЕДНИМ и только свой: чужой (держатель жив) не наш, и снять его — ровно та гонка, от которой он.
+# Сигнал — выход после уборки: ловушка busybox на сигнале без `exit` вернула бы управление в середину скрипта.
+xt_done() { cleanup; [ "$_lk" = 1 ] && rm -rf "$TLOCK" 2>/dev/null; _lk=0; return 0; }
+trap xt_done EXIT
+trap 'xt_done; exit 1' INT TERM HUP PIPE
 
 [ -n "$name" ] || { emit '{"ok":false,"msg":"не задано имя конфига"}'; exit 0; }
 src="$ENODIA_STATE/xray-configs/$name.json"
 [ -x "$XRAY" ] || { emit '{"ok":false,"msg":"xray не установлен на роутере"}'; exit 0; }
 [ -s "$src" ]  || { emit '{"ok":false,"msg":"конфиг не найден"}'; exit 0; }
 
-cleanup   # снять возможный прошлый тест
+lock_take || { emit "{\"ok\":false,\"busy\":true,\"msg\":\"на временном порту $TPORT идёт другая проверка — повторите, когда она кончится\"}"; exit 0; }
+cleanup   # снять возможный прошлый тест (замок наш — значит, прежний держатель мёртв)
 
 # Копия конфига: socks-инбаунд 10808 -> временный $TPORT; лог-пути -> порт-уникальные *-test
 # (не трогаем боевой /tmp/xray.log И не пересекаемся с параллельными тест-инстансами на др. портах).
@@ -84,15 +122,13 @@ sed -e "s/\"port\"[[:space:]]*:[[:space:]]*10808/\"port\": $TPORT/" \
 : > "$TLOG" 2>/dev/null
 start-stop-daemon -S -b -m -p "$TPID" -x /bin/sh -- -c "exec '$XRAY' run -c '$TCONF' >>'$TLOG' 2>&1"
 
-# ждём, пока тестовый socks поднимется
-i=0; up=0
-while [ $i -lt 8 ]; do
-	netstat -ltn 2>/dev/null | grep -q "127.0.0.1:$TPORT" && { up=1; break; }
-	sleep 1; i=$((i+1))
-done
-if [ "$up" != 1 ]; then
+# Ждём тестовый socks, ПОКА ЖИВ ПРОЦЕСС (daemon-lib.sh). Прежний фиксированный срок делал
+# ровно ту ошибку, ради которой библиотека и заведена: на накопителе бинарь читается дольше,
+# чем мы ждали, и панель говорила «сервер не поднялся» про исправный сервер — с ПУСТЫМ логом,
+# потому что демону нечего было сказать. Пустой лог теперь замещаем причиной отказа.
+if ! daemon_wait_port "$TPID" xray 8 127.0.0.1 "$TPORT"; then
 	err=$(tail -n 4 "$TLOG" 2>/dev/null | tr -d '\r\033' | sed 's/\[[0-9;]*m//g' | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300)
-	emit "{\"ok\":false,\"msg\":\"xray не поднялся с этим конфигом: ${err:-нет вывода}\"}"
+	emit "{\"ok\":false,\"msg\":\"xray не поднялся с этим конфигом: ${err:-$DAEMON_WAIT_WHY}\"}"
 	exit 0
 fi
 

@@ -36,8 +36,8 @@
 #     (~10 часов) при живой строке — таблица помнит УШЕДШИХ. Поле отдаём как есть, решение
 #     «показывать ли» принимает панель: молча выбросить нельзя (сонный ТВ выглядит так же).
 #  8. `wifi_iface_list` отдаёт и интерфейсы, которых в системе НЕТ (конфиг третьего радио лежит,
-#     радио не поднято) ⇒ фильтруем по `/sys/class/net/<ifc>`, иначе на каждом свипе получаем
-#     ошибку драйвера по мёртвому имени.
+#     радио не поднято) ⇒ берём только живые (`wifi_live_ifaces`: те, что есть в `/sys/class/net`),
+#     иначе на каждом свипе получаем ошибку драйвера по мёртвому имени.
 #  9. Регистр MAC: `wlanconfig` печатает СТРОЧНЫМИ, как и `/tmp/dhcp.leases` (склейка бесплатна),
 #     а `iwinfo assoclist` — ПРОПИСНЫМИ. Если сюда когда-нибудь добавят iwinfo — только через
 #     `tr A-Z a-z`, иначе склейка молча даст ноль совпадений.
@@ -55,35 +55,23 @@
 
 ENODIA_DIR="${ENODIA_DIR:-/data/usr/app/enodia}"
 if [ -f "$ENODIA_DIR/wifi-lib.sh" ]; then . "$ENODIA_DIR/wifi-lib.sh"; fi
-# Шимы на случай доисторической установки без wifi-lib: без имени сети срез беднее, но живой.
+# lease-lib нужен ровно ради neigh_pairs (кто в сети без аренды) — см. ws_stream. Сорсим ТОЛЬКО
+# под `[ -f ]`: провалившийся `.` в busybox ash фатален, шелл выходит на месте.
+if [ -f "$ENODIA_DIR/lease-lib.sh" ]; then . "$ENODIA_DIR/lease-lib.sh"; fi
+# Шимы на случай доисторической установки без wifi-lib (или прежней её копии без «что в эфире»): без имени сети и
+# моста срез беднее, но живой. «Живые интерфейсы» (ловушка 8) и мост интерфейса — у библиотеки, своей копии здесь нет.
 command -v wifi_iface_list >/dev/null 2>&1 || wifi_iface_list() { ls -1 /sys/class/net 2>/dev/null | grep '^wl[0-9]'; }
 command -v wifi_ssid_of >/dev/null 2>&1 || wifi_ssid_of() { return 1; }
+command -v wifi_live_ifaces >/dev/null 2>&1 || wifi_live_ifaces() { ls -1 /sys/class/net 2>/dev/null | grep '^wl[0-9]'; }
+command -v wifi_bridge_of >/dev/null 2>&1 || wifi_bridge_of() { return 1; }
 
 LEASES=/tmp/dhcp.leases
-
-# Живые интерфейсы = пересечение «что знает wifi-lib» и «что есть в ядре» (ловушка 8).
-ws_ifaces() {
-    for _si in $(wifi_iface_list 2>/dev/null); do
-        [ -d "/sys/class/net/$_si" ] || continue
-        printf '%s\n' "$_si"
-    done
-}
-
-# Бридж интерфейса = сеть в терминах правил: гостевая и miot — ДРУГИЕ бриджи, не br-lan.
-ws_bridge_of() {
-    for _sb in /sys/class/net/br-*; do
-        [ -d "$_sb/brif/$1" ] || continue
-        printf '%s\n' "${_sb##*/}"
-        return 0
-    done
-    printf '%s\n' ""
-}
 
 # Сырой срез всех станций в TSV. Поля (в этом порядке):
 #   mac ifc net band chan tx rx max rssi snr nrx ntx assoc idle std width mode ssid
 # SSID — ПОСЛЕДНИМ полем и с вычищенными TAB: он единственный, где законны пробелы и юникод.
 ws_collect() {
-    for _sc in $(ws_ifaces); do
+    for _sc in $(wifi_live_ifaces); do
         # SSID уходит ОКРУЖЕНИЕМ, а не через -v: awk обрабатывает escape-последовательности в
         # значении -v, и имя сети с обратным слешем приехало бы искажённым. Присваивание ставим
         # ОТДЕЛЬНОЙ строкой с export: в конвейере `VAR=x cmd | awk` переменная достаётся только
@@ -91,7 +79,7 @@ ws_collect() {
         # Из SSID вычищаем ТОЛЬКО таб (он у нас разделитель полей). Перевод строки не трогаем:
         # его снимет сама подстановка, а замена его на пробел оставляла в имени сети ХВОСТОВОЙ
         # пробел — и «Xiaomi_1411_5G » перестало бы совпадать с именем из хранилищ правил.
-        WS_IFC="$_sc"; WS_SSID=$(wifi_ssid_of "$_sc" 2>/dev/null | tr '\t' ' '); WS_NET=$(ws_bridge_of "$_sc")
+        WS_IFC="$_sc"; WS_SSID=$(wifi_ssid_of "$_sc" 2>/dev/null | tr '\t' ' '); WS_NET=$(wifi_bridge_of "$_sc")
         export WS_IFC WS_SSID WS_NET
         wlanconfig "$_sc" list sta 2>/dev/null | awk '
         BEGIN { ifc = ENVIRON["WS_IFC"]; ssid = ENVIRON["WS_SSID"]; net = ENVIRON["WS_NET"]; n = 0 }
@@ -158,6 +146,10 @@ ws_emit() {
     awk -v FS='\t' '
     BEGIN { fmt = ENVIRON["WS_FMT"]; first = 1; n = 0; part = 0 }
     $0 == "###STA###" { part = 1; next }
+    $0 == "###NAMES###" { part = 2; next }
+    # Свои имена (dev-names.sh, `mac⇥имя`) — метка панели: список устройств и список станций обязаны звать устройство ОДНИМ
+    # именем, иначе в одном месте «Алиса», а в другом голый MAC.
+    part == 2 { if ($1 != "") al[tolower($1)] = $2; next }
     part == 0 {
         # /tmp/dhcp.leases: <expiry> <mac> <ip> <host> <clientid>. Имя «*» = аренда без имени.
         if (NF >= 4) { lip[tolower($2)] = $3; lho[tolower($2)] = ($4 == "*" ? "" : $4) }
@@ -168,7 +160,7 @@ ws_emit() {
         mac = $1; ifc = $2; net = $3; band = $4; chan = $5; tx = $6; rx = $7; mx = $8;
         rssi = $9; snr = $10; nrx = $11; ntx = $12; asc = $13; idle = $14; std = $15;
         width = $16; mode = $17; ssid = $18;
-        ip = lip[mac]; host = lho[mac];
+        ip = lip[mac]; host = lho[mac]; alias = al[mac];
         if (fmt == "tsv") {
             printf "%s\t%s\t%s\t%s\t%s\t%s\t%s/%s Mbps\tmax %s\t%s dBm\tSNR %s\t%sx%s\tstd %s\tw %s\tup %ss\tidle %ss\n", \
                 mac, (ip == "" ? "-" : ip), (host == "" ? "-" : host), ifc, (ssid == "" ? "-" : ssid), \
@@ -179,8 +171,8 @@ ws_emit() {
         # обязателен — сперва обратный слеш, иначе экранируем собственные вставки.
         gsub(/\\/, "\\\\", ssid); gsub(/"/, "\\\"", ssid);
         gsub(/\\/, "\\\\", host); gsub(/"/, "\\\"", host);
-        printf "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\",\"ifc\":\"%s\",\"ssid\":\"%s\",\"net\":\"%s\",\"band\":\"%s\",\"chan\":%s,\"tx\":%s,\"rx\":%s,\"max\":%s,\"rssi\":%s,\"snr\":%s,\"nrx\":%s,\"ntx\":%s,\"assoc\":%s,\"idle\":%s,\"std\":%s,\"width\":%s,\"mode\":\"%s\"}", \
-            (first ? "" : ","), mac, ip, host, ifc, ssid, net, band, chan, tx, rx, mx, rssi, \
+        printf "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"host\":\"%s\",\"alias\":\"%s\",\"ifc\":\"%s\",\"ssid\":\"%s\",\"net\":\"%s\",\"band\":\"%s\",\"chan\":%s,\"tx\":%s,\"rx\":%s,\"max\":%s,\"rssi\":%s,\"snr\":%s,\"nrx\":%s,\"ntx\":%s,\"assoc\":%s,\"idle\":%s,\"std\":%s,\"width\":%s,\"mode\":\"%s\"}", \
+            (first ? "" : ","), mac, ip, host, alias, ifc, ssid, net, band, chan, tx, rx, mx, rssi, \
             (snr == "" ? "null" : snr), nrx, ntx, asc, idle, std, width, mode;
         first = 0
     }
@@ -193,7 +185,22 @@ ws_emit() {
 # Срез станций берём из уже СНЯТОГО текста: второй прогон wlanconfig дал бы другой набор станций
 # (кто-то отвалился между вызовами), и счётчик разошёлся бы с содержимым.
 ws_stream() {
+    # СОСЕДИ (ARP) ИДУТ ПЕРВЫМИ, аренды следом и перезаписывают их. Аренды нет вовсе у устройства,
+    # которому адрес прописали на нём самом (телевизор, приставка, NAS): без этой строки станцию
+    # не к чему пришить — панель ведёт устройства ПО IP, и карточка «Как подключено по Wi-Fi» у
+    # такого клиента не появлялась вовсе. Порядок обязателен: у аренды есть ещё и ИМЯ, у ARP его
+    # нет и не будет, поэтому побеждать должна аренда. Формат подделываем под неё же
+    # (`exp mac ip host clientid`), имя — «*», как у аренды без имени. Разбор ARP — у владельца
+    # (lease-lib.sh::neigh_pairs), своей копии здесь нет.
+    if command -v neigh_pairs >/dev/null 2>&1; then
+        neigh_pairs 2>/dev/null | awk -v FS='\t' -v OFS='\t' '{print 0, $2, $1, "*", "-"}'
+    fi
     [ -f "$LEASES" ] && sed 's/[ 	][ 	]*/\t/g' "$LEASES" 2>/dev/null
+    # Свои имена устройств — отдельной частью потока, у ВЛАДЕЛЬЦА (`dev-names.sh list`, один запуск на срез): разбор персиста
+    # у него один, строки `mac⇥имя` приходят уже чистыми (MAC строчными, без кавычки, косой и управляющих байтов) — поэтому
+    # поле alias ниже не экранируется. Прямое чтение файла тут расходилось с cgi-bin/data (регистр MAC, повтор строки) и
+    # пропускало CR ручной правки в JSON (ревью 27.09.2026).
+    if [ -f "$ENODIA_DIR/dev-names.sh" ]; then printf '###NAMES###\n'; sh "$ENODIA_DIR/dev-names.sh" list 2>/dev/null; fi
     printf '###STA###\n'
     printf '%s\n' "$1"
 }

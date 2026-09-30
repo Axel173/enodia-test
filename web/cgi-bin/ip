@@ -29,12 +29,34 @@
 #      — неверное утверждение, а сам локальный адрес и так уезжает отдельным полем wan_local.
 # Возраст ответа отдаём полями *_age — панель подписывает им устаревшее значение.
 # 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
-[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+# uhttpd НЕ ПЕРЕДАЁТ CGI своё окружение (замер на железе 01.09.2026 пробным CGI: все ENODIA_*
+# пусты), а в режиме «всё на накопителе» литералы указывают в пустоту — панель отвечала бы
+# «ничего не установлено» на живой системе, а ГЕЙТ ВТОРОГО ФАКТОРА ниже просто не находил бы
+# totp.sh и молча пропускал запрос. Каталог кода знаем бесплатно из $0, остальное разбирает
+# cgi-paths.sh: второй копии этого рассуждения в проекте быть не должно.
+_cgid=${0%/web/cgi-bin/*}; [ "$_cgid" = "$0" ] && _cgid=
+if [ -n "$_cgid" ] && [ -f "$_cgid/cgi-paths.sh" ]; then . "$_cgid/cgi-paths.sh"; fi
+if [ -f "$ENODIA_DIR/totp.sh" ]; then
+	TOTP_LIB=1; . "$ENODIA_DIR/totp.sh"
+	# СУДИМ ПО СПОСОБНОСТИ, А НЕ ПО НАЛИЧИЮ. totp.sh СТАРЕЕ формы входа сорсится успешно, но его
+	# гейт при выключенном 2FA пропускал всё — а uhttpd к этому моменту уже поднят БЕЗ `-c`, то
+	# есть панель отдавала бы данные и ДЕЙСТВИЯ без пароля. Признак эпохи — pw_verify (его же
+	# спрашивает cgi-bin/login).
+	command -v pw_verify >/dev/null 2>&1 || {
+		echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+		echo "Cache-Control: no-store"; echo ""
+		printf '{"ok":false,"need_login":true,"msg":"totp.sh старее формы входа (обновите панель)"}\n'; exit 0; }
+	totp_gate_deny
+else   # НЕТ totp.sh — ОТКАЗ, А НЕ ПРОПУСК: двери-Basic больше нет, пускать некому (разбор — в totp.sh, «Гейт»)
+	echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"; echo ""
+	printf '{"ok":false,"need_login":true,"msg":"totp.sh не установлен (обновите панель)"}\n'; exit 0
+fi
 echo "Content-Type: application/json; charset=utf-8"
 echo "Cache-Control: no-store"
 echo ""
 
-D=/data/usr/app/enodia
+D=${ENODIA_DIR:-/data/usr/app/enodia}
 DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
 if [ -f "$D/ip-lib.sh" ]; then . "$D/ip-lib.sh"; fi    # probe_ext_ip / is_private_ip (единый примитив внешнего IP)
 # Возраст отметки — через age_since (clock-lib): кэш лежит в /tmp, то есть рождается ПОСЛЕ загрузки,
@@ -51,13 +73,15 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 # (у awg его нет) ⇒ карточка «IP-адреса» вечно показывала бы прочерк. То же от хвостового \r.
 t=$(cat "$DS/.transport" 2>/dev/null | tr -d ' \r\n'); [ -n "$t" ] || t=awg
 
-# URL пробы выхода — настраиваемый (панель «Настройки»), дефолт — IP-литерал trace (см. ip-lib.sh).
+# URL пробы выхода — настраиваемый (экран панели «Проверка серверов»), дефолт — IP-литерал trace (см. ip-lib.sh).
 # Валидируем строго: только https://хост[/путь] безопасного набора; иначе пусто → дефолт библиотеки.
 # НЕ для WAN (тот берём локально/bind'ом — см. шапку), только для «зарубежного» через VPN.
 EGRESS=$(grep '^egress_url=' "$DS/.prefs" 2>/dev/null | head -1 | cut -d= -f2-)
 echo "$EGRESS" | grep -qE '^https://[A-Za-z0-9._~-]+(/[A-Za-z0-9._~/-]*)?$' || EGRESS=""
 
-wan_if=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+# Имя WAN — у владельца (ip-lib.sh::wan_iface, сорсится выше; следит C81); шим = прежняя строка.
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+wan_if=$(wan_iface)
 wan_local=""
 [ -n "$wan_if" ] && wan_local=$(ip -4 addr show dev "$wan_if" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 
@@ -69,8 +93,12 @@ case "$t" in
 	hy2)  cfg=$(cat "$DS/.hy2-active" 2>/dev/null | tr -d ' \r\n') ;;
 	*)    cfg="-" ;;
 esac
-CACHE=/tmp/.awg-ipcache          # /tmp: сеть спрашиваем часто, флеш этого не заслужил; глоб
-                                 # `/tmp/.awg-*` уже в RAM_GLOBS uninstall.sh — своей строки не надо
+CACHE=/tmp/.enodia-ipcache       # /tmp: сеть спрашиваем часто, флеш этого не заслужил. Имя НЕСЁТ
+                                 # префикс: /tmp — общий namespace, и опираться, как раньше, на
+                                 # ЛЕГАСИ-маску `/tmp/.awg-*` нельзя (legacy-name: она же ниже) —
+                                 # она живёт лишь затем, чтобы
+                                 # подобрать следы ДОРЕБРЕНДИНГОВЫХ установок, и однажды уйдёт.
+                                 # Уборку даёт `/tmp/.enodia-*` в RAM_GLOBS uninstall.sh (следит C54).
 TTL=180
 KEY="$t|${cfg:--}|${wan_if:-?}"
 FORCE=0
@@ -108,7 +136,21 @@ if [ -n "$v_bind" ] && stale "$v_age"; then need_v=1; fi
 # (без детей возвращается сразу, отдельный гард не нужен).
 # tries=2 (4-й аргумент): пустой ответ добиваем вторым узлом trace. Здесь это уместно, а в health
 # транспортов — нет: там та же проба крутится в переборе конфигов (разбор в ip-lib.sh).
-TMP="/tmp/.awg-ipcache.$$"
+TMP="/tmp/.enodia-ipcache.$$"
+# ЗАБИРАЕМ ЗА УБИТЫМИ ПРЕДШЕСТВЕННИКАМИ. Свои временные файлы мы снимаем ниже, но CGI могут убить
+# на середине: пробы тут 7–9 с, а uhttpd рвёт затянувшийся запрос — и `.w`/`.v` остаются в ОЗУ
+# НАВСЕГДА (в /tmp их не чистит никто, кроме удаления). ЗАМЕРЕНО на AX3600 31.08.2026: четыре
+# таких файла от двух мёртвых pid за пять часов аптайма. Судим по ЖИВОСТИ ХОЗЯИНА (pid зашит в
+# имя), а НЕ по возрасту: параллельный запрос панели идёт своим pid'ом, и трогать его нельзя —
+# он как раз пишет туда результат. Заодно подбираем `.c` — ступень записи кэша, если `mv` не удался.
+trap 'rm -f "$TMP.w" "$TMP.v" "$TMP.c" 2>/dev/null' EXIT HUP INT TERM PIPE
+for _st in /tmp/.enodia-ipcache.*.w /tmp/.enodia-ipcache.*.v /tmp/.enodia-ipcache.*.c \
+           /tmp/.awg-ipcache.*.w /tmp/.awg-ipcache.*.v /tmp/.awg-ipcache.*.c; do   # legacy-name: остатки ДОРЕБРЕНДИНГОВОГО имени кэша — подобрать и забыть
+	[ -f "$_st" ] || continue
+	_sp=${_st%.*}; _sp=${_sp##*.}                       # <pid> из <...>.<pid>.<w|v|c>
+	case "$_sp" in ''|*[!0-9]*) continue ;; esac
+	[ -d "/proc/$_sp" ] || rm -f "$_st" 2>/dev/null
+done
 if [ "$need_w" = 1 ]; then ( probe_ext_ip "--interface $wan_if" 7 "" 2 > "$TMP.w" 2>/dev/null ) & fi
 if [ "$need_v" = 1 ]; then ( probe_ext_ip "$v_bind" "$v_to" "$EGRESS" 2 > "$TMP.v" 2>/dev/null ) & fi
 wait

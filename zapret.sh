@@ -58,7 +58,7 @@
 #   zapret.sh categories      — что выбрано «в десинк» в гео (key|label|адресов); выбор — в карточке «Гео»
 #   zapret.sh sweep-begin|sweep-apply <args>|sweep-end — браузер-свип стратегий (см. ниже)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
@@ -76,6 +76,10 @@ fi
 # Где лежит бинарь (store-lib.sh): без накопителя — прежний путь байт-в-байт. Шим на случай
 # установки без lib.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+# «VPN выключен вручную — несущую не берёт никто» (carrier_barred/carrier_run, разбор в daemon-lib.sh). Нет — прежний путь.
+command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
 # Возраст lock'а свипа — через age_since (clock-lib.sh): lock в /tmp рождается после загрузки, а часы
 # без RTC прыгают вперёд ⇒ голая разность делает идущий свип «протухшим», и apply затирает временную
 # стратегию посреди замера. Шим = прежнее поведение. [[watchdog-clock-step-false-death]]
@@ -123,25 +127,25 @@ SET_DOM=zapret_dom
 # v2fly: «что десинкать» задаёт тот же реестр, что «в VPN / мимо / блок».
 SET_GEO=geo_zapret
 ZAPRET_SETS="$SET $SET_CIDR $SET_DOM $SET_GEO"
-QNUM=212                               # номер NFQUEUE
-MARK=0x40000000                        # метка nfqws на своих реинъектах (DESYNC_MARK)
+QNUM=212                                            # номер NFQUEUE
+MARK=0x40000000                                     # метка nfqws на своих реинъектах (DESYNC_MARK)
 MARKM="$MARK/$MARK"
-NFQ_PID=/tmp/zapret-nfqws.pid
-NFQ_LOG=/tmp/zapret-nfqws.log
+NFQ_PID=/tmp/enodia-zapret-nfqws.pid
+NFQ_LOG=/tmp/enodia-zapret-nfqws.log
 ON_FLAG="$ENODIA_STATE/.zapret-on"
 ARGS_FILE="$ENODIA_STATE/.zapret-args"
 CATS_FILE="$ENODIA_STATE/.zapret-cats"
 TRANSPORT_FLAG="$ENODIA_STATE/.transport"
-DNS1=1.1.1.1                           # прямой резолвер (туннеля нет → upstream dnsmasq мимо VPN)
+DNS1=1.1.1.1                                        # прямой резолвер (туннеля нет → upstream dnsmasq мимо VPN)
 DNS2=8.8.8.8
 GH="$ENODIA_DIR/gh-update.sh"                       # апдейтер: gh-update.sh fetch-bin nfqws (панель-установка)
-INSTALL_STATE="$ENODIA_STATE/.zapret-install.state"   # прогресс фоновой install/remove (формат как proto-install)
-INSTALL_LOG="$ENODIA_STATE/.zapret-install.log"       # лог фоновой install/remove (фронт поллит последнюю строку)
+INSTALL_STATE="$ENODIA_STATE/.zapret-install.state" # прогресс фоновой install/remove (формат как proto-install)
+INSTALL_LOG="$ENODIA_STATE/.zapret-install.log"     # лог фоновой install/remove (фронт поллит последнюю строку)
 DNSMASQ_SNIPPET=/etc/dnsmasq.d/04-zapret.conf
-DNSMASQ_LIVE=/tmp/dnsmasq.d/04-zapret.conf # ЖИВАЯ копия того же сниппета (см. write_dnsmasq/del_dnsmasq)
-SWEEP_LOCK=/tmp/zapret-sweep.lock          # браузер-свип идёт (timestamp)
-SWEEP_BAK="$ENODIA_STATE/.zapret-args.sweepbak"  # бэкап исходной стратегии на время свипа
-SWEEP_TTL=150                               # свежесть lock (сек)
+DNSMASQ_LIVE=/tmp/dnsmasq.d/04-zapret.conf          # ЖИВАЯ копия того же сниппета (см. write_dnsmasq/del_dnsmasq)
+SWEEP_LOCK=/tmp/enodia-zapret-sweep.lock            # браузер-свип идёт (timestamp)
+SWEEP_BAK="$ENODIA_STATE/.zapret-args.sweepbak"     # бэкап исходной стратегии на время свипа
+SWEEP_TTL=150                                       # свежесть lock (сек)
 # connbytes: первые 8 пакетов соединения в оригинальном направлении (= рукопожатие). Ловит ДО
 # offload-акселерации потока → десинк работает при ВКЛЮЧЁННОМ ускорителе (грабля/находка спайка).
 CB="-m connbytes --connbytes-dir original --connbytes-mode packets --connbytes 1:8"
@@ -173,9 +177,14 @@ proc_alive() { p=$(cat "$1" 2>/dev/null | tr -d ' \r\n'); [ -n "$p" ] && kill -0
 # nfqws-демон и анти-петля ОБЩИЕ для двух потребителей: zapret-ТРАНСПОРТ (весь дом) и
 # zapret-СЛОТ(ы) (десинк рядом с VPN, Ф1). Гасить их можно, только когда НИ ОДИН не нужен.
 SLOTS_SH="$ENODIA_DIR/slots.sh"
-zt_transport_active() { [ "$(cat "$TRANSPORT_FLAG" 2>/dev/null | tr -d ' \r\n')" = zapret ]; }
+# ПОТРЕБИТЕЛИ ИЗ VPN (транспорт и выходы) при ВЫКЛЮЧЕННОМ вручную VPN nfqws НЕ держат: их сняло `off`, а в `.transport` и в реестре
+# выходов осталось лишь НАМЕРЕНИЕ. Считай мы его — последний снимаемый потребитель видел бы «нужен ещё кому-то» и оставлял nfqws
+# жить при выключенном VPN (zapret-транспорт вместе с zapret-выходом, два zapret-выхода), а reload и свип стратегии поднимали бы
+# его обратно (ревью ветки, круг 2). Устройства «целиком в десинк» — не VPN: их считаем всегда (по ФАКТУ в mangle).
+zt_transport_active() { ! carrier_barred && [ "$(cat "$TRANSPORT_FLAG" 2>/dev/null | tr -d ' \r\n')" = zapret ]; }
 # Есть ли ВКЛЮЧЁННЫЙ zapret-слот (опц. исключая id $1). list-enabled: id⇥transport⇥cfg⇥fallback.
 zt_any_slot_enabled() {
+    carrier_barred && return 1
     [ -f "$SLOTS_SH" ] || return 1
     sh "$SLOTS_SH" list-enabled 2>/dev/null | while IFS="$(printf '\t')" read -r _sid _st _sc _sf; do
         [ "$_st" = zapret ] || continue
@@ -256,7 +265,7 @@ migrate_cats() {
         log "категории перенесены в гео (действие «в десинк»):$_mv"
         # Сборку пула гоним ФОНОМ (может уйти в сеть за списками): десинк не должен ждать её,
         # правила на пустой сет уже стоят и подхватят адреса, как только гео их положит.
-        start-stop-daemon -S -b -m -p /tmp/zapret-migrate.pid -x /bin/sh -- "$GEO_SH" apply >/dev/null 2>&1 || true
+        start-stop-daemon -S -b -m -p /tmp/enodia-zapret-migrate.pid -x /bin/sh -- "$GEO_SH" apply >/dev/null 2>&1 || true
     else
         log "перенос категорий: совпадений в каталоге гео не нашлось (выбор сохранён в $CATS_MIG)"
     fi
@@ -421,7 +430,7 @@ zt_chain_gc() {
 # Проба — В СВОЕЙ временной цепочке (не в боевых): так неудачная попытка ничего не задевает, а
 # удачная не оставляет следа. Результат кэшируем на /tmp: за прогон нас зовут многократно, а
 # ответ меняется только с прошивкой.
-NFQ_CAP=/tmp/.zapret-nfq-cap
+NFQ_CAP=/tmp/.enodia-zapret-nfq-cap
 nfq_supported() {
     [ -f "$NFQ_CAP" ] && { [ "$(cat "$NFQ_CAP" 2>/dev/null)" = 1 ]; return $?; }
     # `-w` ОБЯЗАТЕЛЕН и на пробе: спрашивают нас из CGI панели и из тика сторожа, а в это же время
@@ -567,7 +576,7 @@ cmd_apply() {
         teardown
         return 0
     fi
-    [ -x "$NFQWS" ] || { log "НЕТ бинаря $NFQWS — установи (be7000.ps1 / панель «Протоколы»)"; return 1; }
+    [ -x "$NFQWS" ] || { log "НЕТ бинаря $NFQWS — поставьте Zapret в «Роутер → Компоненты»"; return 1; }
     ensure_fakes
     ensure_set
     del_dnsmasq          # снять легаси-сниппет вшитых категорий (см. комментарий у функции)
@@ -608,7 +617,7 @@ cmd_off() { rm -f "$ON_FLAG"; teardown; log "десинк ВЫКЛ (правил
 #            (как byedpi reup), 0 при успехе → watchdog остаётся на zapret; 1 → эскалация (но
 #            cmd_next zapret пуст → оркестратор уводит в прямой режим, НЕ на VPS).
 cmd_t_up() {
-    [ -x "$NFQWS" ] || { log "up: НЕТ бинаря $NFQWS — установи (панель «Протоколы» / be7000)"; return 1; }
+    [ -x "$NFQWS" ] || { log "up: НЕТ бинаря $NFQWS — поставьте Zapret в «Роутер → Компоненты»"; return 1; }
     # ГАРД ДО ЛЮБОГО ДЕЙСТВИЯ: отказ обязан быть ПУСТЫМ — ни ON_FLAG, ни DNS, ни .transport, иначе
     # оркестратор уже снял прежнюю несущую, а взамен встало «активно, но не работает» (разбор в
     # шапке nfq_supported). Порядок именно такой: сначала спросить, потом ломать.
@@ -652,10 +661,28 @@ cmd_t_failover() {
 # ОРКЕСТРАТОР (transport.sh slot-up/slot-down → _slot_dispatch). Контракт: 0 = сделано, 1 = сбой
 # (нет бинаря/битый id). Марок/таблиц у zapret-слота НЕТ — mark-core его сеты пропускает.
 zt_slot_sets() { echo "grp_vpn_s$1 geo_vpn_s$1"; }
+# СЕТ СЛОТА СОЗДАЁМ САМИ, ЕСЛИ ЕГО ЕЩЁ НЕТ. У zapret-ТРАНСПОРТА эта развилка решена давно
+# (`ensure_set` создаёт свои наборы пустыми — пустой ipset ничего не стоит, «кто первый создал»
+# не задано), а у СЛОТА её не было, и цена оказалась высокой: `slots.sh::slot_activate` зовёт
+# `slot-up` ДО `rebind_owners`, поэтому в момент включения выхода наборов ещё нет — их создают
+# groups.sh и geo.sh позже, а гео вообще фоном. Пропуская несуществующий набор, мы не ставили
+# правил вовсе, и переиграть было некому (сторож zapret-слоты пропускает НАМЕРЕННО: несущей у
+# них нет; `slots-up` бежит только на буте и в `vpn-toggle repair`). Симптом с железа: «создал
+# выход → привязал категорию → не работает до ребута» (разбор 07.09.2026).
+# ПАРАМЕТРЫ ОБЯЗАНЫ СОВПАДАТЬ С ВЛАДЕЛЬЦАМИ набора: наполнение идёт через `ipset swap` с
+# временным набором того же имени, а swap наборов разного типа ядро отвергает — и наполнение
+# молча не доехало бы. groups.sh: hashsize 1024 maxelem 65536; geo.sh: 4096 / 1000000.
+zt_ensure_slot_set() {
+    ipset list -n 2>/dev/null | grep -qx "$1" && return 0
+    case "$1" in
+        geo_vpn_s*) ipset create "$1" hash:net hashsize 4096 maxelem 1000000 2>/dev/null ;;
+        *)          ipset create "$1" hash:net hashsize 1024 maxelem 65536   2>/dev/null ;;
+    esac
+}
 cmd_slot_up() {   # <id> <config-игнор> — поднять zapret-десинк для сетов слота
     _id="$1"
     case "$_id" in 2|3|4) ;; *) log "slot-up: битый id '$_id'"; return 1 ;; esac
-    [ -x "$NFQWS" ] || { log "slot-up: НЕТ бинаря $NFQWS — установи (панель «Zapret»)"; return 1; }
+    [ -x "$NFQWS" ] || { log "slot-up: НЕТ бинаря $NFQWS — установите (панель «Zapret»)"; return 1; }
     # …и БИНАРЯ МАЛО — второй признак обязателен здесь ровно так же, как в cmd_t_up: nfqws едет
     # бутстрапом, поэтому на ядре без NFQUEUE (AX3600, 4.4) файл на месте, а очереди нет. Замерено
     # на импорте бэкапа 17.08: слот «zapret» приехал включённым, гард пропустил по `-x`, демон
@@ -666,21 +693,27 @@ cmd_slot_up() {   # <id> <config-игнор> — поднять zapret-деси�
         return 1
     }
     ensure_fakes
-    _wired=0
+    # ПРАВИЛА СТАВИМ ВСЕГДА, а наборы при необходимости создаём пустыми (см. zt_ensure_slot_set).
+    # Прежняя логика «есть набор — ставим, нет — пропускаем» выглядела бережной, а на деле давала
+    # ЕДИНСТВЕННЫЙ исход «выход включён, правил нет»: в момент включения наборов ещё не бывает
+    # никогда. Пустой набор ничего не заворачивает — правило на нём столь же безвредно, сколько
+    # и бесполезно, ровно до первой привязки; зато привязка начинает работать САМА, без ребута.
     for _s in $(zt_slot_sets "$_id"); do
-        ipset list -n 2>/dev/null | grep -qx "$_s" || continue   # сета ещё нет (нет привязок) → пропуск, врайринг переиграется при do_apply
+        zt_ensure_slot_set "$_s"
+        # СУДИМ ПО ФАКТУ, а не по коду create: набор мог не создаться (нет прав, занято чужим
+        # типом). Правило на несуществующий сет iptables отвергает — и молча, потому что stderr
+        # тут глушится: получилось бы ровно то, что чиним, только без следов в логе.
+        if ! ipset list -n 2>/dev/null | grep -qx "$_s"; then
+            log "слот №$_id: набор $_s не создан — правило не ставлю (десинк этого набора не заработает)"
+            continue
+        fi
         nfq_set_rules "$_s" add
-        _wired=1
     done
-    if [ "$_wired" = 1 ]; then
-        # Анти-петля и nfqws — только когда реально есть что десинкать (иначе холостой демон).
-        nfq_antiloop add
-        proc_alive "$NFQ_PID" || spawn_nfqws
-        ct_flush
-        log "слот №$_id: zapret-десинк рядом с VPN (сеты grp_vpn_s$_id/geo_vpn_s$_id; стратегия: $(desync_args))"
-    else
-        log "слот №$_id: сеты пусты (нет привязок) — десинк отложен до привязки группы"
-    fi
+    nfq_antiloop add
+    proc_alive "$NFQ_PID" || spawn_nfqws
+    ct_flush
+    log "слот №$_id: zapret-десинк рядом с VPN (сеты grp_vpn_s$_id/geo_vpn_s$_id; стратегия: $(desync_args))"
+    log "слот №$_id: правила стоят заранее — пока наборы пусты, десинк ничего не заворачивает и включится сам при первой привязке группы или гео-категории"
     return 0
 }
 cmd_slot_down() {   # <id> — снять zapret-десинк слота
@@ -709,7 +742,7 @@ cmd_slot_down() {   # <id> — снять zapret-десинк слота
 cmd_src_wire() {   # <ip>
     _sip=$(printf '%s' "$1" | tr -d ' \r\n')
     echo "$_sip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { log "src-wire: нужен IPv4"; return 1; }
-    [ -x "$NFQWS" ] || { log "src-wire: НЕТ бинаря $NFQWS — поставь Zapret в «Компонентах»"; return 1; }
+    [ -x "$NFQWS" ] || { log "src-wire: НЕТ бинаря $NFQWS — поставьте Zapret в «Роутер → Компоненты»"; return 1; }
     # Третий потребитель того же nfqws (устройство «целиком в десинк») — и ему бинаря так же мало.
     nfq_supported || {
         log "src-wire: сборка iptables на этом роутере не умеет NFQUEUE (нет libxt_NFQUEUE) — десинк по источнику невозможен"
@@ -761,12 +794,15 @@ cmd_src_clear() {
 # доустанавливается независимо. Бинарь nfqws с ПК (be7000) кладётся всегда, НО панель умеет до/переустановить
 # его сама: фоновая закачка через gh-update fetch-bin + прогресс в .zapret-install.{state,log}
 # (RUNNING/OK/FAIL), фронт поллит. НЕ трогает активную несущую (awg/xray/hy2/byedpi).
-iset_state() { echo "$1" > "$INSTALL_STATE"; }
+# Файл ПРОГРЕССА, который опрашивает панель, пишем АТОМАРНО (рядом + `mv`): `>` сперва обрезает, и опрос в это окно читал пусто —
+# «кончилось» до конца (разбор у packages.sh::set_state; следит C105).
+iset_state() { echo "$1" > "$INSTALL_STATE.new" && mv -f "$INSTALL_STATE.new" "$INSTALL_STATE"; }
 ilog() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$INSTALL_LOG"; }
 
-cmd_install() {
+cmd_install() {   # $1 = update — заменить стоящий nfqws свежей сборкой (решает движок компонентов по bin-status)
     : > "$INSTALL_LOG"; iset_state RUNNING
-    if [ -x "$NFQWS" ]; then
+    _zwas=0; [ -x "$NFQWS" ] && _zwas=1
+    if [ "$_zwas" = 1 ] && [ "$1" != update ]; then
         # Бинарь уже на месте — НЕ переигрываем правила (не дёргаем conntrack/dnsmasq зря); лишь
         # подстрахуем наличие фейков. Если десинк включён — он и так уже живёт.
         ensure_fakes
@@ -775,7 +811,7 @@ cmd_install() {
     # `-f`: апдейтер зовут через `sh "$GH"`, бит ему не нужен, а сообщение говорит про НАЛИЧИЕ.
     # С `-x` снятый бит давал «нет gh-update.sh» при живом файле — и установка nfqws из панели
     # отказывалась с диагнозом, который уводит чинить не то.
-    [ -f "$GH" ] || { iset_state FAIL; ilog "нет gh-update.sh — обнови скрипты/панель"; return 1; }
+    [ -f "$GH" ] || { iset_state FAIL; ilog "нет gh-update.sh — обновите скрипты"; echo "[zapret] FAIL: нет gh-update.sh — обновите скрипты"; return 1; }
     ilog "Скачиваю nfqws с GitHub (~0.13 МБ)…"
     # fetch-bin тянет bin/<арка>/nfqws.user из публичного repo (atomic .dl→mv + ELF-проверка).
     # Порог обрыва НЕ передаём: gh-update берёт его из bin-manifest.txt (90% реального размера),
@@ -790,11 +826,19 @@ cmd_install() {
         bin_prune nfqws
         NFQWS=$(bin_path nfqws)
         ensure_fakes
+        # ОБНОВЛЕНИЕ правил не переигрывает: живой nfqws продолжает исполнять прежнюю сборку (замена файла его не трогает), а
+        # переигрыш дёрнул бы conntrack и dnsmasq ради того, что заработает только после перезапуска демона.
+        if [ "$_zwas" = 1 ]; then iset_state OK; ilog "nfqws обновлён. Включённый десинк работает на прежней сборке до перезапуска (проще всего — перезагрузить роутер)"; return 0; fi
         [ -f "$ON_FLAG" ] && cmd_apply >> "$INSTALL_LOG" 2>&1
         iset_state OK; ilog "nfqws установлен. Десинк: $([ -f "$ON_FLAG" ] && echo ВКЛ || echo выключен)"
         return 0
     fi
-    iset_state FAIL; ilog "не удалось скачать nfqws (сеть / нет в публичном repo) — поставь с ПК (be7000)."
+    # ПРИЧИНА — словами закачки (последняя строка FAIL у fetch-bin: код GitHub, обрыв, целостность), а не догадкой «сеть / нет в
+    # repo»; и в stdout строкой «[zapret] FAIL:» — её берёт движок компонентов в «Последнюю операцию» (ревью шага 6c, круг 2).
+    # Прежний совет «поставь с ПК» устарел: ПК больше не возит бинари, ставит их только панель.
+    _zw=$(grep '^\[fetch-bin\] FAIL: ' "$INSTALL_LOG" 2>/dev/null | tail -n 1 | sed 's/^\[fetch-bin\] FAIL: //')
+    [ -n "$_zw" ] || _zw="не скачался nfqws — нет связи с GitHub (или кончилось место)"
+    iset_state FAIL; ilog "$_zw"; echo "[zapret] FAIL: $_zw"
     return 1
 }
 
@@ -953,6 +997,83 @@ cmd_sweep_end() {
     return 0
 }
 
+# ============================================================
+# ИМПОРТ ДЕСКТОПНОГО КОНФИГА (winws/Flowseal и подобные .bat/.cmd) → флаги nfqws.
+# Читает текст со STDIN. В stdout — ОДНА строка готовых аргументов (её кладёт в поле панель),
+# в stderr — отчёт человеку. Разделение потоков здесь принципиально: отчёт нужен глазам, а
+# строка — валидатору и файлу, и склеить их значило бы разбирать текст обратно.
+# ЧЕГО КОНВЕРТЕР НЕ ДЕЛАЕТ: он не «умный». Он снимает обёртку .bat, выкидывает то, чего у nfqws
+# нет вовсе, и НЕ пытается угадать замену — вместо этого называет выброшенное поимённо.
+cmd_import() {
+    _raw=$(cat 2>/dev/null)
+    [ -n "$_raw" ] || { echo "[import] пусто — вставьте текст конфига" >&2; return 1; }
+    # .bat переносит строки каретом (^) и CRLF; кавычки снимаем целиком — у флагов nfqws пробелов
+    # внутри значения не бывает, а наш валидатор кавычку не пропустит.
+    _flat=$(printf '%s' "$_raw" | tr -d '\r"' | sed 's/\^$//' | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g')
+    _out=""; _dropw=""; _dropl=""; _dropf=""; _dropb=""; _warn=""; _unk=""
+    # ГЛОББИНГ ВЫКЛЮЧАЕМ НА ВРЕМЯ РАЗБОРА. `for _w in $_flat` — это не только разбиение по
+    # пробелам, но и подстановка имён файлов: токен вроде `%BIN%*.bin` из чужого конфига
+    # раскрылся бы по содержимому текущего каталога, и в стратегию уехали бы имена файлов.
+    set -f
+    for _w in $_flat; do
+        case "$_w" in
+            # 1. winws-only: nfqws отвергает ВЕСЬ запуск, увидев их, — это не «лишний флаг», это отказ старта
+            --wf-tcp=*|--wf-udp=*|--wf-raw=*|--wf-l3=*|--ssid-filter=*|--nlm-filter=*) _dropw="$_dropw $_w"; continue ;;
+            # 2. файловые списки: у нас список — ipset в ядре, файлов нет вовсе
+            --hostlist=*|--hostlist-exclude=*|--hostlist-auto=*|--hostlist-auto-fail-threshold=*|--hostlist-auto-fail-time=*|--ipset=*|--ipset-exclude=*) _dropl="$_dropl $_w"; continue ;;
+            # 3. фейки: у нас РОВНО ДВА вшитых, и адресуются они токенами @tls/@quic, а не путём
+            --dpi-desync-fake-tls=*)  _out="$_out --dpi-desync-fake-tls=@tls";  continue ;;
+            --dpi-desync-fake-quic=*) _out="$_out --dpi-desync-fake-quic=@quic"; continue ;;
+            --dpi-desync-fake-*=*) _dropf="$_dropf $_w"; continue ;;
+            # 4. обёртка запуска: имя бинаря, путь, демонизация и номер очереди — наши
+            --daemon|--pidfile=*|--user=*|--uid=*|--qnum=*|--queue-num=*) continue ;;
+            "") continue ;;
+        esac
+        # 4б. У nfqws ВСЕ аргументы — флаги вида `--что-то[=значение]`. Всё остальное в строке
+        #     десктопного конфига — обёртка .bat: имя бинаря, путь, `start /min`, `@echo off` и
+        #     ЗАГОЛОВОК ОКНА (`start "zapret: general"`). Пропустить их «на всякий случай» нельзя:
+        #     nfqws отвергает запуск с посторонним словом, а поймано это было ЗАМЕРОМ — первый же
+        #     прогон конвертера на настоящем конфиге Flowseal вынес в стратегию «zapret: general».
+        case "$_w" in --*) ;; *) _dropb="$_dropb $_w"; continue ;; esac
+        # 5. фильтры портов: флаг сохраняем, но если он НЕ про 443 — предупреждаем. Наш крючок
+        #    NFQUEUE ловит только dport 443 (tcp+udp, connbytes 1:8), и секция на 80 или на
+        #    UDP-диапазон Discord не заработает ни при какой стратегии. Молчать об этом нельзя:
+        #    человек будет думать, что дело в стратегии, и перебирать её вечно.
+        case "$_w" in
+            # РОВНО 443, а не «упоминает 443»: у секции `--filter-tcp=80,443` половина здесь
+            # мертва, и молчать про неё — то же самое, что молчать про секцию целиком.
+            --filter-tcp=443|--filter-udp=443) ;;
+            --filter-tcp=*|--filter-udp=*) _warn="$_warn $_w" ;;
+        esac
+        # 6. всё остальное пропускаем, но то, что не пройдёт наш валидатор, называем отдельно —
+        #    иначе панель ответит «недопустимые символы» на строку, которую сама же и собрала.
+        case "$_w" in
+            *[!A-Za-z0-9+,.:/=_@-]*) _unk="$_unk $_w"; continue ;;
+        esac
+        _out="$_out $_w"
+    done
+    set +f
+    _out=$(printf '%s' "$_out" | sed 's/^ //; s/ $//')
+    # ОТЧЁТ — в stderr, по одной теме на строку.
+    [ -n "$_dropw" ] && echo "[import] выброшено (только для winws, nfqws не примет):$_dropw" >&2
+    [ -n "$_dropl" ] && echo "[import] выброшено (списки у нас в ядре, файловых нет):$_dropl" >&2
+    [ -n "$_dropf" ] && echo "[import] выброшено (свой файл фейка; у нас только @tls и @quic):$_dropf" >&2
+    [ -n "$_unk"  ] && echo "[import] выброшено (символы, которых не принимает поле стратегии):$_unk" >&2
+    [ -n "$_dropb" ] && echo "[import] выброшена обёртка запуска (не флаги nfqws):$_dropb" >&2
+    [ -n "$_warn" ] && echo "[import] ВНИМАНИЕ: эти секции здесь не заработают — перехват идёт только по порту 443:$_warn" >&2
+    if [ -z "$_out" ]; then
+        echo "[import] после чистки не осталось ни одного флага nfqws — похоже, это не конфиг zapret" >&2
+        return 1
+    fi
+    echo "[import] готово. Проверьте строку и нажмите «Сохранить» — сама по себе она не применяется" >&2
+    # РЕЗУЛЬТАТ ПОМЕЧЕН ТОКЕНОМ. `log()` в этом файле печатает в STDOUT (`echo "[zapret] …"`), и
+    # любая строка, залогированная до нас, оказалась бы в том же потоке. Вызыватель берёт строку
+    # по префиксу `ARGS:`, а не «первую непохожую на отчёт» — иначе он однажды сохранит в
+    # стратегию чужой лог.
+    printf 'ARGS:%s\n' "$_out"
+    return 0
+}
+
 case "$1" in
     # транспорт-контракт (зовёт transport.sh: switch/up/down/health/failover) — zapret как 5-й транспорт.
     # Прежних on|off здесь НЕТ: вкл/выкл идёт через оркестратор (up/down), чтобы .zapret-on и
@@ -961,12 +1082,16 @@ case "$1" in
     # transport_ready: незачем предлагать в панели транспорт, который здесь физически не встанет
     # (AX3600: iptables без libxt_NFQUEUE). Проба кэширована — вызовов много, ответ один.
     nfq-ok)    nfq_supported ;;
-    up)        cmd_t_up ;;
+    # Вербы, которые БЕРУТ несущую (весь дом через десинк или выход), — через carrier_run (daemon-lib.sh): при выключенном вручную VPN
+    # отказ, выключение по ходу отпускает поднятое. Десинк УСТРОЙСТВ (src-*) — не VPN и живёт при выключенном; reload и свип при нём
+    # служат только устройствам (см. zt_transport_active).
+    up)        carrier_run cmd_t_down cmd_t_up ;;
     down)      cmd_t_down ;;
+    cold)      : ;;                       # тёплого резерва нет: несущей у десинка нет вовсе (nfqws правит пакеты на форварде)
     health)    cmd_t_health ;;
-    failover)  cmd_t_failover ;;
+    failover)  carrier_run cmd_t_down cmd_t_failover ;;
     # zapret-СЛОТ (десинк рядом с VPN, Ф1) — зовёт оркестратор transport.sh slot-up/slot-down.
-    slot-up)   cmd_slot_up "$2" "$3" ;;
+    slot-up)   carrier_run cmd_slot_down cmd_slot_up "$2" "$3" ;;
     slot-down) cmd_slot_down "$2" ;;
     # десинк по ИСТОЧНИКУ (устройство целиком в десинк) — зовёт apply-bypass.sh, владелец списка.
     src-wire)   cmd_src_wire "$2" ;;
@@ -974,7 +1099,7 @@ case "$1" in
     src-clear)  cmd_src_clear ;;
     src-list)   cmd_src_list ;;   # что РЕАЛЬНО проводнено в mangle (машинно, по строке на IP)
     dns)       set_direct_dns ;;   # переиграть DNS (DoH toggle/смена резолвера) — прямой режим через doh_apply_dns
-    install)   cmd_install ;;
+    install)   cmd_install "$2" ;;
     remove)    cmd_remove ;;
     apply)     cmd_apply ;;
     rewire)    cmd_rewire ;;   # досборка правил под пулы источников (зовут lists-update.sh zapret-*)
@@ -982,11 +1107,12 @@ case "$1" in
     wired)     cmd_wired ;;   # машинно: есть ли ЖИВОЙ десинк (0 да · 1 нет · 2 = старая копия не знает верба)
     t-wired)   zt_transport_wired ;;   # машинно: проводка ГЛАВНОГО транспорта (не выхода, не устройства)
     reload)    cmd_reload ;;
+    import)    cmd_import ;;   # STDIN = десктопный конфиг → stdout: флаги nfqws, stderr: отчёт
     presets)   cmd_presets ;;
     defaults)  echo "$DEFAULT_ARGS" ;;
     categories) cmd_categories ;;
     sweep-begin) cmd_sweep_begin ;;
     sweep-apply) cmd_sweep_apply "$2" ;;
     sweep-end)   cmd_sweep_end ;;
-    *) echo "usage: $0 up|down|health|failover|nfq-ok|slot-up <id>|slot-down <id>|src-wire <ip>|src-unwire <ip>|src-clear|install|remove|apply|rewire|status|wired|t-wired|reload|presets|defaults|categories|sweep-begin|sweep-apply <args>|sweep-end"; exit 2 ;;
+    *) echo "usage: $0 up|down|cold|health|failover|nfq-ok|slot-up <id>|slot-down <id>|src-wire <ip>|src-unwire <ip>|src-clear|install [update]|remove|apply|rewire|status|wired|t-wired|reload|import|presets|defaults|categories|sweep-begin|sweep-apply <args>|sweep-end"; exit 2 ;;
 esac

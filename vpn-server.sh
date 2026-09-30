@@ -54,7 +54,7 @@
 #   json                      — ЕДИНЫЙ срез состояния для веб-панели
 #   endpoint-set [хост]       — адрес для клиентских конфигов вручную (DDNS); пусто = по WAN
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
@@ -65,25 +65,27 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Нет ipt-lib.sh с `ipt_top` (частичное обновление) ⇒ прежнее «первым в цепочку», байт-в-байт.
+command -v ipt_top >/dev/null 2>&1 || ipt_top() { _itc=$1; shift; iptables -C "$_itc" "$@" 2>/dev/null || iptables -I "$_itc" 1 "$@"; }
 if ! command -v ct_flush_src >/dev/null 2>&1; then
     ct_flush_src()  { [ -n "$1" ] && conntrack -D --src "$1" >/dev/null 2>&1; return 0; }
     ct_flush_dst()  { [ -n "$1" ] && conntrack -D -d "$1" >/dev/null 2>&1; return 0; }
 fi
 SRV="$ENODIA_STATE/server"
 IFACE=awgs0
-PEERS="$SRV/peers.tsv"          # id<TAB>имя_b64<TAB>priv<TAB>pub<TAB>psk<TAB>mode<TAB>lan<TAB>on
+PEERS="$SRV/peers.tsv"         # id<TAB>имя_b64<TAB>priv<TAB>pub<TAB>psk<TAB>mode<TAB>lan<TAB>on
 ON_FLAG="$SRV/.on"
 APPLY_BYPASS="$ENODIA_DIR/apply-bypass.sh"
-IFCONF=/tmp/$IFACE.conf         # конфиг для setconf — в RAM: несёт приватные ключи всех пиров
-WAN_HOOK=input_wan_rule         # штатный пустой хук fw3 (тот же, что у панели)
+IFCONF=/tmp/enodia-$IFACE.conf # конфиг для setconf — в RAM: несёт приватные ключи всех пиров
+WAN_HOOK=input_wan_rule        # штатный пустой хук fw3 (тот же, что у панели)
 WAN_CHAIN=VPNSRV_WAN
 IN_CHAIN=VPNSRV_IN
 FWD_CHAIN=VPNSRV_FWD
-PEER_MAX=8                      # пиры = последний октет 2..9
-MTU_PEER=1280                   # клиенту консервативно: его пакеты могут ехать ВТОРЫМ хопом в awg0
+PEER_MAX=8                     # пиры = последний октет 2..9
+MTU_PEER=1280                  # клиенту консервативно: его пакеты могут ехать ВТОРЫМ хопом в awg0
 MTU_IFACE=1420
 KEEPALIVE=25
-RATE_NEW=30                     # новых хендшейков в минуту с одного адреса
+RATE_NEW=30                    # новых хендшейков в минуту с одного адреса
 # Порты САМОГО РОУТЕРА, открытые пиру с «доступом в домашнюю сеть». Всё остальное на роутере
 # закрыто default-deny'ем в конце VPNSRV_IN, поэтому список = единственное место, где решается
 # «чем пир может управлять из туннеля»: 80 — штатная вебморда Xiaomi (человек, включивший доступ
@@ -139,9 +141,10 @@ peer_conntrack() {   # $1=id
 
 awg_bin() { if [ -x "$ENODIA_BIN/awg" ]; then echo "$ENODIA_BIN/awg"; else command -v awg; fi; }
 
-# WAN-интерфейс по дефолт-маршруту (пусто = WAN не настроен). Зеркало lists-lib.sh/web-ui.sh —
-# отдельной копии логики тут не заводим, но и либу не тянем: одна строка.
-wan_iface() { ip route show default 2>/dev/null | head -1 | sed -n 's/.* dev \([^ ]*\).*/\1/p'; }
+# WAN-интерфейс по дефолт-маршруту (пусто = WAN не настроен). Владелец — ip-lib.sh::wan_iface
+# (сорсится выше); здесь ШИМ на случай старой библиотеки, а не вторая копия: безусловное
+# определение перебивало бы библиотечное и давало ДРУГОЙ ответ (без гарда «дефолт смотрит в туннель»).
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
 wan_addr()  { ip -4 addr show dev "$(wan_iface)" 2>/dev/null | sed -n 's/.*inet \([0-9.]*\)\/.*/\1/p' | head -1; }
 
 subnet()    { cat "$SRV/subnet" 2>/dev/null || echo 10.77.0; }      # /24, без последнего октета
@@ -153,9 +156,9 @@ srv_port()  { cat "$SRV/port" 2>/dev/null | tr -cd '0-9'; }
 endpoint_host() { cat "$SRV/endpoint" 2>/dev/null | tr -d ' \t\r\n' || true; }
 
 # --- «ПО КАКОМУ АДРЕСУ НАС НАЙДУТ СНАРУЖИ» -------------------------------------------------
-EXT_CACHE=/tmp/.vpnsrv-ext      # строка 1 = внешний IPv4 (может быть пустой), строка 2 = отметка
-EXT_TTL=600                     # удачную пробу держим 10 мин: конфиг и QR открывают подряд
-EXT_TTL_BAD=120                 # неудачную — 2 мин: WAN мог подняться только что
+EXT_CACHE=/tmp/.enodia-vpnsrv-ext # строка 1 = внешний IPv4 (может быть пустой), строка 2 = отметка
+EXT_TTL=600                       # удачную пробу держим 10 мин: конфиг и QR открывают подряд
+EXT_TTL_BAD=120                   # неудачную — 2 мин: WAN мог подняться только что
 
 # Реальный внешний IPv4 — тот, что видит удалённая сторона. Пусто = проба не ответила.
 # `--interface` ОБЯЗАТЕЛЕН: при живом туннеле проба «как есть» уходит через VPS и вернула бы адрес
@@ -349,7 +352,11 @@ cmd_peer_mode() {
     _id="$1"; peer_exists "$_id" || { log "нет устройства №$_id"; return 1; }
     case "$2" in split|vpn|direct) ;; *) log "режим: split|vpn|direct"; return 1 ;; esac
     peer_set_field "$_id" 6 "$2"
-    peer_mode_apply "$_id" "$2"
+    # Выключенному устройству и при выключенном СЕРВЕРЕ режим только ЗАПОМИНАЕМ: применят его `peer-toggle on` и `srv_rules` на
+    # подъёме. Иначе смена режима дёргала бы apply-bypass — его ветки кончаются ГЛОБАЛЬНЫМ сбросом conntrack (рвали соединения всему
+    # дому ради адреса, которым никто не пользуется), а при снятом сервере адрес пира остался бы в персисте apply-bypass вопреки
+    # `cmd_down` и всплыл бы на чужом устройстве с тем же IP (ревью шага 3c-3, круг 2).
+    [ "$(peer_field "$_id" 8)" = on ] && srv_running && peer_mode_apply "$_id" "$2"
     log "устройство №$_id: режим $2"
 }
 
@@ -377,7 +384,7 @@ cmd_peer_toggle() {
     case "$2" in on|off) ;; *) log "нужно on|off"; return 1 ;; esac
     peer_set_field "$_id" 8 "$2"
     [ "$2" = off ] && peer_mode_apply "$_id" split
-    [ "$2" = on ] && peer_mode_apply "$_id" "$(peer_field "$_id" 6)"
+    [ "$2" = on ] && srv_running && peer_mode_apply "$_id" "$(peer_field "$_id" 6)"
     srv_running && { srv_setconf; srv_rules; }
     peer_conntrack "$_id"    # выключенный пир не должен доигрывать открытые сессии (см. peer_conntrack)
     log "устройство №$_id: $2"
@@ -490,7 +497,7 @@ srv_rules() {
     # «доступ в домашнюю сеть выключен» — ложь: пир открывает панель, SSH и всё остальное, что
     # слушает роутер (поймано на железе первым же подключением телефона).
     iptables -A "$IN_CHAIN" -i "$IFACE" -j DROP
-    iptables -C INPUT -j "$IN_CHAIN" 2>/dev/null || iptables -I INPUT 1 -j "$IN_CHAIN"
+    ipt_top INPUT -j "$IN_CHAIN"
 
     # 3) FORWARD. У fw3 policy DROP, а awgs0 не в зоне ⇒ без своих правил трафик пира не поедет
     #    никуда. Пир без доступа в дом не должен видеть домашние подсети — режем ПРИВАТКУ явным
@@ -505,7 +512,7 @@ srv_rules() {
         done
     done < "$PEERS"
     iptables -A "$FWD_CHAIN" -i "$IFACE" -j ACCEPT
-    iptables -C FORWARD -j "$FWD_CHAIN" 2>/dev/null || iptables -I FORWARD 1 -j "$FWD_CHAIN"
+    ipt_top FORWARD -j "$FWD_CHAIN"
 
     # 4) Прямой путь пира наружу: подсеть туннеля не в зоне fw3 ⇒ стоковый маскарад её не берёт.
     #    Путь «в VPN» маскарадит плагин несущей (-o awg0), тут только WAN.
@@ -563,7 +570,8 @@ cmd_up() {
 }
 
 cmd_down() {
-    rm -f "$ON_FLAG"
+    # …и отложенное деактивацией намерение (`.on-deact`, разбор у uninstall.sh): выключил человек — «включить обратно» его не вернёт.
+    rm -f "$ON_FLAG" "$SRV/.on-deact"
     srv_unrules
     # Режимы пиров — это адреса в персисте apply-bypass; сервер выключен, значит их там быть не
     # должно, иначе вырез/форс переживёт выключение и всплывёт на чужом устройстве с тем же IP.
@@ -622,7 +630,7 @@ cmd_json() {
     # Имя файла с ПИДом: срез зовёт панель, а вкладок у неё бывает две — на общем имени второй
     # опрос сносил бы файл из-под первого (`rm -f` в конце) и тот показывал бы нули вместо
     # рукопожатий. Дампу с ключами тут же ставим 600 (umask 077 в шапке).
-    _dump=/tmp/.vpnsrv-dump.$$
+    _dump=/tmp/.enodia-vpnsrv-dump.$$
     rm -f "$_dump"
     [ "$_run" = true ] && "$(awg_bin)" show "$IFACE" dump > "$_dump" 2>/dev/null
     _port=$(srv_port); [ -n "$_port" ] || _port=0
@@ -707,6 +715,21 @@ case "$1" in
     rules)       if srv_running; then srv_rules || exit 1
                  else log "несущая не поднята — правила не ставлю"; exit 1; fi ;;
     unrules)     srv_unrules ;;
+    # Снесены ли правила, которые обязаны стоять: 0 — стоят (или «доступ домой» выключен), 3 — снесены, иное — не знаю. Все три
+    # прыжка: порт наружу (хук fw3 reload пересоздаёт ПУСТЫМ), INPUT из туннеля, FORWARD. Спрашивает сторож при выключенном VPN
+    # (хвост 10 ревью dev233); чинит `up`. Несущей awgs0 нет — «не знаю»: reload снимает правила, а не интерфейс, а без несущей
+    # правил нет и после починки — «снесено» тут гнало бы сторожа чинить по кругу (каждая починка — сброс соединений).
+    wired)       [ -f "$ON_FLAG" ] || exit 0
+                 srv_running || exit 2
+                 command -v ipt_jump_state >/dev/null 2>&1 || exit 2
+                 _vwr=0
+                 for _vwj in "$WAN_HOOK $WAN_CHAIN" "INPUT $IN_CHAIN" "FORWARD $FWD_CHAIN"; do
+                     # shellcheck disable=SC2086
+                     ipt_jump_state $_vwj; _vwc=$?
+                     [ "$_vwc" = 2 ] && exit 2
+                     [ "$_vwc" = 1 ] && _vwr=3
+                 done
+                 exit "$_vwr" ;;
     peer-add)    cmd_peer_add "$2" ;;
     peer-del)    cmd_peer_del "$2" ;;
     peer-list)   cmd_peer_list ;;

@@ -69,15 +69,23 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+# Из пакета обновления (pkg-install.sh) наш вывод уходит в журнал экрана «Обновление» — escape-коды там мусор.
+if [ -n "$INSTALL_FROM_PKG" ]; then RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''; fi
 
 log()  { printf "${BLUE}[INFO]${NC}  %s\n" "$1"; }
 ok()   { printf "${GREEN}[ OK ]${NC}  %s\n" "$1"; }
 warn() { printf "${YELLOW}[WARN]${NC}  %s\n" "$1"; }
 err()  { printf "${RED}[FAIL]${NC}  %s\n" "$1" >&2; }
 
-ENODIA_DIR="/data/usr/app/enodia"
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
+# ЧЕТВЁРТЫЙ каталог — резидентный бутстрап (boot.sh + библиотеки поиска накопителя + заглушка).
+# Он и есть ЕДИНСТВЕННАЯ цель всех cron-строк: код может уехать на внешний накопитель целиком
+# (режим `full`), и тогда прямой путь `$ENODIA_DIR/heal.sh` указывает в пустоту. Cron про это
+# знать не должен, поэтому строку пишем через boot.sh — ВСЕГДА, в любом режиме (следит C58).
+ENODIA_BOOT=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
+CRON_RUN="$ENODIA_BOOT/boot.sh"
 # Где лежит бинарь и КУДА его класть (store-lib.sh). Установщику важны оба ответа: раскладка
 # payload обязана попасть туда же, где его ищет рантайм, иначе переустановка при включённом
 # внешнем накопителе положила бы свежий xray на /data, а bin_path продолжил бы отдавать СТАРЫЙ
@@ -87,6 +95,10 @@ if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 # установки, а ошибиться тут = дать человеку ссылку, по которой ничего не откроется.
 if [ -f "$ENODIA_DIR/router-lib.sh" ]; then . "$ENODIA_DIR/router-lib.sh"; fi
 command -v lan_if >/dev/null 2>&1 || lan_if() { echo br-lan; }   # lan-lit: шим без router-lib.sh
+# Имя WAN-интерфейса — у владельца (ip-lib.sh::wan_iface, следит C81): им биндится проба
+# интернета «в обход туннеля» ниже. Шим = прежняя строка на случай payload без библиотеки.
+if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
 command -v bin_path    >/dev/null 2>&1 || bin_path()    { printf '%s' "$ENODIA_BIN/$1"; }
 command -v bin_install >/dev/null 2>&1 || bin_install() { mv -f "$1" "$ENODIA_BIN/$2" && chmod +x "$ENODIA_BIN/$2"; }
 : "${BIN_DIR:=$ENODIA_DIR}"
@@ -156,7 +168,7 @@ _slot_carrier_in_use() {   # $1 = ключ транспорта (xray|hy2|byedpi
 # Обёртка _purge_bin со слот-гардом: пропускает снос, если транспорт несёт хотя бы один выход.
 _purge_alt_bin() {   # $1 = путь бинаря ; $2 = метка ; $3 = ключ транспорта
     if _slot_carrier_in_use "$3"; then
-        [ -f "$1" ] && warn "$2 оставлен: он несёт дополнительный выход (см. «Серверы → Дополнительные выходы»)."
+        [ -f "$1" ] && warn "$2 оставлен: он несёт дополнительный выход (см. «Соединение → Дополнительные выходы»)."
         return 0
     fi
     _purge_bin "$1" "$2"
@@ -194,7 +206,7 @@ _relinquish_if_active() {
 # «бинаря нет» — иначе чистка молча не находила бы то, что собирается снять.
 _alt_bin()   { case "$1" in xray) bin_path xray ;; hy2) bin_path hysteria ;; byedpi) bin_path byedpi ;; esac; }
 _alt_label() { case "$1" in xray) echo "Xray" ;; hy2) echo "Hysteria2" ;; byedpi) echo "ByeDPI" ;; esac; }
-_alt_pid()   { case "$1" in xray) echo /tmp/xray.pid ;; hy2) echo /tmp/hysteria.pid ;; byedpi) echo /tmp/byedpi.pid ;; esac; }
+_alt_pid()   { case "$1" in xray) echo /tmp/enodia-xray.pid ;; hy2) echo /tmp/enodia-hysteria.pid ;; byedpi) echo /tmp/enodia-byedpi.pid ;; esac; }
 purge_unselected_alt() {
     [ -n "$INSTALL_ALT" ] || return 0
     _keep=$(printf '%s' "$INSTALL_ALT" | tr ',' ' ')
@@ -232,9 +244,67 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 mkdir -p "$ENODIA_DIR" "$ENODIA_STATE" "$ENODIA_BIN"
+
+# ИМЕНА ПРОШЛОЙ ЭПОХИ В /tmp — ДО ПЕРВОГО ШАГА. Переустановка идёт ПОВЕРХ работающей системы:
+# демоны живы и держат пидфайлы под старыми именами, а код на диске уже новый и ищет новые
+# (разбор — в шапке ram-lib.sh). Сорсим свою копию — она приехала вместе с этим файлом.
+# В подоболочке: у этого файла `set -e`, а провалившийся `.` фатален и без него — перенос имён
+# не тот повод, чтобы установка не началась вовсе (тот же довод в boot.sh).
+if [ -f "$ENODIA_DIR/ram-lib.sh" ]; then ( . "$ENODIA_DIR/ram-lib.sh"; ram_migrate ) 2>/dev/null || true; fi
 chmod 700 "$ENODIA_STATE" 2>/dev/null || true
 chmod 755 "$ENODIA_BIN" 2>/dev/null || true
+# Суммы пакета (.pkg-sums) описывают набор, который поставил ПАКЕТ. Установка НЕ из пакета (руками по SSH поверх `--push`)
+# кладёт исходники с комментариями — сверка «Целостности» с прежними суммами сказала бы «всё расходится». Снимаем: без них
+# сверка идёт по суммам репо. Из пакета (INSTALL_FROM_PKG: обновление и установка с ПК) суммы только что положил pkg-install.sh.
+if [ -z "$INSTALL_FROM_PKG" ]; then rm -f "$ENODIA_DIR/.pkg-sums" 2>/dev/null || true; fi
+# Кэш манифеста бинарей в настройках (`.bin-manifest`, качался с GitHub) — до 30.09.2026: манифест теперь едет в подписанном
+# пакете кода и лежит в каталоге кода (разбор у gh-update.sh::BM_FILE). Прежний кэш больше никто не читает и не освежает.
+rm -f "$ENODIA_STATE/.bin-manifest" 2>/dev/null || true
+# …и то же самое ВГЛУБЬ. Двух chmod выше хватало ровно до появления накопителя: exFAT монтируется
+# с `dmask=0000`, оттуда 0777 приезжает `cp -rp`-ом на любую ФС, которая права хранит, — и на
+# ext4-флешку, и обратно на флеш роутера. На BE7000 02.09.2026 так стали 0777 каталоги `web` и
+# `web/cgi-bin`, а CGI оттуда uhttpd запускает ОТ ROOT (проба из-под `nobody` создала там файл).
+# Установщик бежит на каждом обновлении — значит это же и чинилка для тех, кто уже попробовал
+# накопитель. Политика режимов живёт в store-lib.sh (harden_perms), второй копии тут нет.
+# Гард по наличию: apply-scripts обновляет пофайлово, и новый install.sh рядом со старой
+# библиотекой — штатно достижимое состояние (тогда просто остаётся прежнее поведение).
+if command -v harden_perms >/dev/null 2>&1; then
+    harden_perms "$ENODIA_DIR" "$ENODIA_STATE" "$ENODIA_BIN"
+fi
 cd "$ENODIA_DIR"
+
+# …и та же роль чинилки — для ХРАНИЛИЩА xray-конфигов. Путь access-лога (`/tmp/xray-access.log`,
+# то есть ОЗУ, ~15 МБ/сут) генераторы больше не пишут, но конфиги живут на /data и переживают
+# обновление кода: у поставившихся раньше он лежит во ВСЕХ (замер 31.08.2026 — 137 штук), а
+# лечился только тот, который поднимают. Разовый прогон дешевле, чем правка на каждом подъёме.
+# Гард — по НАЛИЧИЮ файла, не по биту +x (chmod на exFAT = no-op, --push кладёт 644), и `|| true`
+# обязателен: выше set -e, а чистка хранилища не повод ронять установку.
+if [ -f "$ENODIA_DIR/xray-transport.sh" ]; then
+    sh "$ENODIA_DIR/xray-transport.sh" access-purge >/dev/null 2>&1 || true
+fi
+
+# ЯЗЫК ПАНЕЛИ ПО УМОЛЧАНИЮ — из env INSTALL_LANG (его шлёт мастер установки, ru|en).
+# Зачем: мастер двуязычен, и поставивший роутер английским мастером ждёт английскую панель.
+# Язык панели живёт РОВНО в одном месте — строке `lang=` в .prefs (её читают cgi-bin/data →
+# panel.js и nf-i18n.sh для писем), поэтому здесь мы лишь кладём НАЧАЛЬНОЕ значение.
+# ТОЛЬКО ЕСЛИ ЕГО ЕЩЁ НЕТ: на обновлении человек мог выбрать язык в самой панели, и
+# переустановка не имеет права его переучивать. Пусто или незнакомое — не пишем ничего:
+# у всех читателей отсутствие строки и так значит ru.
+case "$INSTALL_LANG" in
+    ru|en)
+        if ! grep -q '^lang=' "$ENODIA_STATE/.prefs" 2>/dev/null; then
+            # ДОПИСЫВАЕМ, а не переписываем — значит обязаны начать со СВОЕЙ строки. Файл без
+            # хвостового перевода строки склеил бы наш ключ с чужим (`theme=darklang=en`), и
+            # потерялась бы ЧУЖАЯ настройка, а не наша. Свой писатель (cgi-bin/action set_pref)
+            # хвост ставит всегда, но файл переживает бэкап, ручную правку и чужие версии.
+            # `$(...)` съедает хвостовой перевод строки ⇒ непустой ответ = последним байтом НЕ он.
+            if [ -s "$ENODIA_STATE/.prefs" ] && [ -n "$(tail -c 1 "$ENODIA_STATE/.prefs" 2>/dev/null)" ]; then
+                printf '\n' >> "$ENODIA_STATE/.prefs"
+            fi
+            printf 'lang=%s\n' "$INSTALL_LANG" >> "$ENODIA_STATE/.prefs"
+        fi
+        ;;
+esac
 
 # Что ставим — AmneziaWG / Xray / оба — по наличию конфигов (+ опц. env INSTALL_PROTO
 # от be7000.ps1). Это снимает ЖЁСТКОЕ требование awg.conf: возможна установка ТОЛЬКО
@@ -286,8 +356,8 @@ if [ "$PANEL_ONLY" = 1 ] && [ -f "$ENODIA_DIR/transport.sh" ]; then
 fi
 if [ "$PANEL_ONLY" = 0 ] && [ "$HAVE_AWG" = 0 ] && [ "$HAVE_XRAY" = 0 ] && [ "$HAVE_HY2" = 0 ] && [ "$HAVE_BYEDPI" = 0 ]; then
     err "Не найдено ни $AWG_CONF, ни xray-/hy2-конфигов, ни byedpi-бинаря."
-    err "Положи awg.conf (AmneziaWG) и/или альт-конфиг (Xray/Hysteria2) либо bin/byedpi.user и запусти снова."
-    err "Нужна установка без транспорта (только веб-панель) — запусти с INSTALL_PROTO=none."
+    err "Положите awg.conf (AmneziaWG) и/или альт-конфиг (Xray/Hysteria2) либо bin/byedpi.user и запустите снова."
+    err "Нужна установка без транспорта (только веб-панель) — запустите с INSTALL_PROTO=none."
     exit 1
 fi
 # Активный транспорт: awg (если awg.conf), иначе xray, иначе hy2, иначе byedpi. Переопределяется env INSTALL_PROTO.
@@ -327,9 +397,9 @@ if grep -qF "$LEGACY_DIR/" /etc/crontabs/root 2>/dev/null; then _legacy=1; fi
 if [ "$LEGACY_DIR" != "$ENODIA_DIR" ] && [ "$_legacy" = 1 ]; then
     err "На роутере стоит ПРЕЖНЯЯ версия — $LEGACY_DIR (каталог переехал при ребрендинге)."
     err "Две копии разом дерутся за iptables и cron, поэтому ставить поверх нельзя."
-    err "Сними прежнюю — панель: «Настройки» → «Удаление» → «Удалить всё»,"
+    err "Снимите прежнюю — панель: «Настройки» → «Удаление» → «Удалить всё»,"
     err "либо по SSH:  sh $LEGACY_DIR/uninstall.sh purge"
-    err "После этого запусти установку заново."
+    err "После этого запустите установку заново."
     exit 1
 fi
 
@@ -352,7 +422,7 @@ fi
 # «спасал» ровно там, где спасать не от чего. Мы проверяем ДОСТИЖИМОСТЬ, а не подлинность узла ⇒
 # `-k` тут не ослабление (тот же приём уже у закачек списков), а `ping -I` закрывает случай, когда
 # TCP/443 к 1.1.1.1 режет провайдер.
-WAN_IF=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+WAN_IF=$(wan_iface)   # владелец имени — ip-lib.sh (шим в шапке)
 if curl -fsSk --max-time 5 -o /dev/null https://1.1.1.1 2>/dev/null || \
    curl -fsSk --max-time 5 -o /dev/null https://www.gstatic.com/generate_204 2>/dev/null || \
    ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1; then
@@ -361,9 +431,14 @@ elif [ -n "$WAN_IF" ] && { curl -fsSk --max-time 5 --interface "$WAN_IF" -o /dev
                            ping -I "$WAN_IF" -c 1 -W 3 1.1.1.1 >/dev/null 2>&1; }; then
     warn "Интернет ЕСТЬ (проверено через $WAN_IF), но трафик роутера заворачивается в неработающий туннель"
     warn "— это следы прошлой установки. Продолжаю: установка их перезапишет."
+elif [ -n "$INSTALL_FROM_PKG" ]; then
+    # Из пакета (обновление с GitHub И установка с ПК — путь один) отказывать ПОЗДНО: файлы уже новые, и оборванный
+    # установщик оставил бы cron и бутстрап прежними. И незачем: пакету сеть не нужна — ПК привёз его в архиве.
+    warn "Нет интернета на роутере: панель встанет, но протоколы и списки ей качать будет неоткуда, пока не появится связь."
+    warn "Кабель на месте, а связи нет? Похоже на правила прошлой установки — снимите её (панель → «Удаление») и повторите."
 else
-    err "Нет интернета на роутере. Подключи WAN-кабель/проверь настройки."
-    err "Кабель на месте? Тогда сними прошлую установку (в панели «Удаление» либо enodia-setup.bat) и повтори:"
+    err "Нет интернета на роутере. Подключите WAN-кабель/проверьте настройки."
+    err "Кабель на месте? Тогда снимите прошлую установку (в панели «Удаление» либо enodia-setup.bat) и повторите:"
     err "её правила могли остаться и уводить трафик роутера в туннель, которого больше нет."
     exit 1
 fi
@@ -424,10 +499,10 @@ bin_arch_matches() {
         if [ -f "$_f" ]; then _probe="$_f"; break; fi
     done
     [ -n "$_probe" ] || return 0
-    _elf_machine "$_ref" /tmp/.arch-ref.$$ || return 0
-    _elf_machine "$_probe" /tmp/.arch-bin.$$ || return 0
-    if cmp -s /tmp/.arch-ref.$$ /tmp/.arch-bin.$$; then _rc=0; else _rc=1; fi
-    rm -f /tmp/.arch-ref.$$ /tmp/.arch-bin.$$
+    _elf_machine "$_ref" /tmp/.enodia-arch-ref.$$ || return 0
+    _elf_machine "$_probe" /tmp/.enodia-arch-bin.$$ || return 0
+    if cmp -s /tmp/.enodia-arch-ref.$$ /tmp/.enodia-arch-bin.$$; then _rc=0; else _rc=1; fi
+    rm -f /tmp/.enodia-arch-ref.$$ /tmp/.enodia-arch-bin.$$
     return $_rc
 }
 if ! bin_arch_matches; then
@@ -435,8 +510,8 @@ if ! bin_arch_matches; then
     err "Роутер: $(uname -m); в bin/ лежит набор под ДРУГУЮ арку."
     err "Ядро откажется их запускать (ENOEXEC), busybox напечатает «syntax error» вместо"
     err "версии, и туннель не поднимется. Наборы собраны под arm64 и armv7 — ПК-сторона"
-    err "(enodia.py) выбирает нужный сама; сюда, похоже, приехал не тот. Переустанови с ПК."
-    err "Пришли разработчику: uname -a; cat /proc/cpuinfo"
+    err "(enodia.py) выбирает нужный сама; сюда, похоже, приехал не тот. Переустановите с ПК."
+    err "Пришлите разработчику: uname -a; cat /proc/cpuinfo"
     exit 1
 fi
 
@@ -578,9 +653,9 @@ if [ "$HAVE_AWG" = 1 ] && { grep -qE '^(S3|S4)\s*=' "$AWG_CONF" || grep -qE '^H[
         warn "Конфиг AWG 2.0 (есть S3/S4 или диапазон H), но нет рабочих бинарников"
         warn "AmneziaWG. Вендорный awg_setup.sh их БОЛЬШЕ НЕ качает (старые версии с"
         warn "github ломали S3/S4) — он просто упадёт с exit 1, awg0 не поднимется."
-        warn "Собери бинарники по инструкции (Приложение Г) и положи в"
-        warn "$ENODIA_DIR/bin/{amneziawg-go.user,awg.user}, потом перезапусти этот скрипт."
-        warn "Альтернатива: добавь на VPS протокол AmneziaWG Legacy и используй его конфиг."
+        warn "Соберите бинарники по инструкции (Приложение Г) и положите в"
+        warn "$ENODIA_DIR/bin/{amneziawg-go.user,awg.user}, потом перезапустите этот скрипт."
+        warn "Альтернатива: добавьте на VPS протокол AmneziaWG Legacy и используйте его конфиг."
     fi
 fi
 
@@ -600,17 +675,17 @@ fi
 # когда человек выберет протокол.
 # ============================================================================
 FW3_WIPED=0     # выставит секция 1, если реально звали awg_setup.sh (он делает fw3 reload)
-if [ "$HAVE_AWG" = 1 ] && [ "$PANEL_ONLY" = 0 ]; then
+if [ "$HAVE_AWG" = 1 ] && [ "$PANEL_ONLY" = 0 ] && [ ! -f "$ENODIA_STATE/.vpn-off" ]; then
 log "Проверяю установщик AmneziaWG (awg_setup.sh, вендорится с бандлом)..."
 
-# awg_setup.sh теперь ВЕНДОРИТСЯ: лежит в репо и заливается установщиком вместе
-# с остальными скриптами (REQUIRED_FILES в enodia.py) ДО запуска этого
+# awg_setup.sh теперь ВЕНДОРИТСЯ: лежит в репо и едет в пакете кода вместе
+# с остальными скриптами (update-manifest.txt) ДО запуска этого
 # скрипта — github убран из критического пути установки. Если файла почему-то нет
 # (напр. ручной запуск install.sh без бандла) — это ошибка установки:
 # НЕ тянем с сети, просим перезалить (историч. источник — $INSTALL_SCRIPT_URL).
 if [ ! -f "$ENODIA_DIR/awg_setup.sh" ]; then
     err "awg_setup.sh не найден в $ENODIA_DIR — он поставляется с установщиком (вендорится)."
-    err "Перезалей файлы бандла. Историч. источник: $INSTALL_SCRIPT_URL"
+    err "Перезалейте файлы бандла. Историч. источник: $INSTALL_SCRIPT_URL"
     exit 1
 fi
 chmod +x "$ENODIA_DIR/awg_setup.sh"
@@ -633,7 +708,7 @@ if ! ip link show awg0 >/dev/null 2>&1; then
     FW3_WIPED=1
     sh "$ENODIA_DIR/awg_setup.sh" || {
         err "Установщик AWG завершился с ошибкой"
-        err "Открой $ENODIA_DIR/awg_setup.sh глазами, разберись с конфигом"
+        err "Откройте $ENODIA_DIR/awg_setup.sh глазами, разберитесь с конфигом"
         exit 1
     }
     ok "AmneziaWG установлен"
@@ -652,7 +727,7 @@ for i in $(seq 1 30); do
 done
 
 if ! ip link show awg0 >/dev/null 2>&1; then
-    err "awg0 не появился за 30 секунд. Проверь awg.conf, ключи и endpoint VPS."
+    err "awg0 не появился за 30 секунд. Проверьте awg.conf, ключи и endpoint VPS."
     err "Команда для диагностики: ip a; cat $ENODIA_STATE/awg_setup.log (если есть)"
     exit 1
 fi
@@ -675,6 +750,11 @@ fi
 if [ -n "$WG_CMD" ]; then
     "$WG_CMD" show awg0 2>/dev/null || warn "Не удалось получить wg show, но интерфейс есть"
 fi
+elif [ "$HAVE_AWG" = 1 ] && [ "$PANEL_ONLY" = 0 ]; then
+    # VPN ВЫКЛЮЧЕН ВРУЧНУЮ (переустановка поверх роутера с флагом): awg0 при флаге не рождается (awg_setup.sh отказывает сам —
+    # daemon-lib.sh::carrier_barred), и прежде установка обрывалась здесь «Установщик AWG завершился с ошибкой» (ревью ветки, круг 3).
+    # Поднимет «Включить VPN» — тем же путём, что после ребута.
+    log "VPN выключен вручную — awg0 не поднимаю (поднимется при включении VPN)"
 elif [ "$HAVE_AWG" = 1 ]; then
     # Сюда попадаем только панельным режимом (гейт выше): конфиг на флеше есть, а поднимать его
     # нечем и незачем. Говорим об этом ВСЛУХ — молчание читалось бы как «установщик не заметил
@@ -693,7 +773,7 @@ if ! command -v ipset >/dev/null 2>&1; then
         opkg update || warn "opkg update не удался, продолжаю"
         opkg install ipset || {
             err "Не удалось установить ipset через opkg."
-            err "Ставь вручную через Entware или ImmortalWrt репо."
+            err "Ставьте вручную через Entware или ImmortalWrt репо."
             exit 1
         }
     else
@@ -785,8 +865,8 @@ else
     [ -z "$VPN_DNS" ] && VPN_DNS="172.29.172.254"
     cat > "$DNS_OVERRIDE" <<EOF
 # DNS-сервер внутри VPN-туннеля (защита от подмен провайдером).
-# Адрес взят из awg.conf поля DNS=. Если у тебя другой — поправь здесь
-# и убедись что heal.sh использует тот же (переменная VPN_DNS).
+# Адрес взят из awg.conf поля DNS=. Если у вас другой — поправьте здесь
+# и убедитесь, что heal.sh использует тот же (переменная VPN_DNS).
 no-resolv
 server=$VPN_DNS
 EOF
@@ -827,7 +907,7 @@ log "  IP-пул (CIDR от opencck.org) наполняет iplist-update.sh, о
 if [ -f "$ENODIA_DIR/iplist-update.sh" ]; then
     log "Подгружаю CIDR от iplist.opencck.org..."
     chmod +x "$ENODIA_DIR/iplist-update.sh"
-    sh "$ENODIA_DIR/iplist-update.sh" || warn "iplist-update вернул ошибку — см. /tmp/iplist-update.log"
+    sh "$ENODIA_DIR/iplist-update.sh" || warn "iplist-update вернул ошибку — см. /tmp/enodia-iplist-update.log"
     if ipset list -n 2>/dev/null | grep -qx iplist_set; then
         # «Number of entries:» нет на ядре 4.4 → фолбэк на подсчёт строк-членов (см. ipset_count в lists-lib.sh).
         ipl_count=$(ipset list iplist_set 2>/dev/null | sed -n 's/^Number of entries:[[:space:]]*//p' | head -1)
@@ -908,11 +988,11 @@ else
         err "Несущая ($ACTIVE_PROTO) НЕ поднялась. VPN сейчас в ПРЯМОМ режиме (fail-open: интернет"
         err "работает, трафик идёт МИМО туннеля). Установка продолжается — см. логи демонов ниже."
         # Логи демонов — чтобы причина (сервер/sni/ключи/порт) была ВИДНА, а не пряталась.
-        for L in /tmp/hysteria.log /tmp/xray.log /tmp/hev.log; do
+        for L in /tmp/enodia-hysteria.log /tmp/xray.log /tmp/enodia-hev.log; do
             [ -s "$L" ] && { warn "--- последние строки $L ---"; tail -n 15 "$L"; }
         done
         warn "cron (heal/watchdog) будет зарегистрирован — несущую поднимут после ребута / при"
-        warn "восстановлении. Либо проверь конфиг в меню (Протокол) и повтори установку."
+        warn "восстановлении. Либо проверьте конфиг в меню (Протокол) и повторите установку."
     fi
 fi   # /PANEL_ONLY (конец секции 5: ядро маркировки + подъём несущей)
 
@@ -939,8 +1019,13 @@ fi
 # должна падать из-за переигрыша.
 if [ -f "$ENODIA_DIR/heal.sh" ]; then
     log "переигрываю персист подсистем (группы, гео, списки, десинк, доп-выходы)…"
-    sh "$ENODIA_DIR/heal.sh" replay >/dev/null 2>&1 || true
-    ok "Персист подсистем переигран (группы, гео, списки, DNS-hosts, десинк, доп-выходы)"
+    # ВЕРДИКТ — ПО КОДУ. Переигрыш отказывается, когда занят лок смены транспорта (код 3), и
+    # безусловное «переигран» было бы ровно тем враньём, ради которого этот шаг и заводили.
+    if sh "$ENODIA_DIR/heal.sh" replay >/dev/null 2>&1; then
+        ok "Персист подсистем переигран (группы, гео, списки, DNS-hosts, десинк, доп-выходы)"
+    else
+        warn "Персист подсистем НЕ переигран (шла смена транспорта или переигрыш не смог). Повторите: sh $ENODIA_BOOT/boot.sh heal.sh replay"
+    fi
 fi
 
 # ============================================================================
@@ -963,45 +1048,71 @@ fi
 mkdir -p /etc/crontabs
 touch /etc/crontabs/root
 
+# БУТСТРАП собираем ДО первой cron-строки: строка уже ссылается на него, и порядок «сперва
+# ссылка, потом файл» дал бы минуту, в которую cron зовёт несуществующий путь. Из чего бутстрап
+# состоит, знает САМ boot.sh (верб sync) — списка файлов у установщика нет и быть не должно.
+if [ -f "$ENODIA_DIR/boot.sh" ]; then
+    if sh "$ENODIA_DIR/boot.sh" sync "$ENODIA_DIR" >/dev/null 2>&1; then
+        ok "Бутстрап собран ($ENODIA_BOOT — его зовёт cron, он же ищет накопитель)"
+    else
+        warn "не собрался бутстрап в $ENODIA_BOOT — cron-строки будут ссылаться в пустоту"
+    fi
+else
+    warn "нет $ENODIA_DIR/boot.sh — неполный payload; cron-строки ссылаться некуда"
+fi
+
+# cron_put <расписание> <скрипт.sh> [аргументы] — ЕДИНСТВЕННАЯ форма cron-строки в установщике.
+# Строку СНАЧАЛА снимаем по ИМЕНИ СКРИПТА, потом пишем заново: так же снимается и ПРЕЖНЯЯ форма
+# (прямой `$ENODIA_DIR/heal.sh`), которая после переезда кода на накопитель указывала бы в
+# пустоту. Ключ снятия — имя, а не полный путь, ровно поэтому.
+# Код 0 = строку изменили (её не было или она была другой), 1 = уже была ровно такой.
+cron_put() {
+    _cp_s="$1"; _cp_t="$2"; shift 2
+    if [ $# -gt 0 ]; then
+        _cp_line="$_cp_s $CRON_RUN $_cp_t $* >/dev/null 2>&1"
+    else
+        _cp_line="$_cp_s $CRON_RUN $_cp_t >/dev/null 2>&1"
+    fi
+    if grep -qF "$_cp_line" /etc/crontabs/root 2>/dev/null; then _cp_new=; else _cp_new=1; fi
+    sed -i "\|$_cp_t|d" /etc/crontabs/root 2>/dev/null
+    echo "$_cp_line" >> /etc/crontabs/root
+    [ -n "$_cp_new" ]
+}
+
 if [ -f "$ENODIA_DIR/heal.sh" ]; then
     chmod +x "$ENODIA_DIR/heal.sh"
-    if ! grep -qF "$ENODIA_DIR/heal.sh" /etc/crontabs/root; then
-        echo "*/1 * * * * $ENODIA_DIR/heal.sh >/dev/null 2>&1" >> /etc/crontabs/root
-        ok "Cron-задача heal.sh зарегистрирована (каждую минуту)"
+    if cron_put "*/1 * * * *" heal.sh; then
+        ok "Cron-задача heal.sh зарегистрирована (каждую минуту, через бутстрап)"
     else
         ok "Cron-задача heal.sh уже на месте"
     fi
 else
     warn "$ENODIA_DIR/heal.sh не найден — автоматическое восстановление после ребута"
-    warn "работать НЕ будет. Залей heal.sh через WinSCP и перезапусти скрипт."
+    warn "работать НЕ будет. Залейте heal.sh через WinSCP и перезапустите скрипт."
 fi
 
-# iplist-update.sh — раз в сутки в 5:00, с --notify (утренняя сводка на почту:
+# iplist-update.sh — по расписанию (дефолт раз в сутки в 5:00, с --notify: утренняя сводка на почту —
 # кол-во CIDR + дельта + краткий статус VPN). Вызов из heal.sh идёт БЕЗ
 # флага — там о загрузке шлёт письмо сам heal, дайджест при каждом ребуте не нужен.
+# СТРОКУ ПИШЕТ ТОЛЬКО ЕЁ ВЛАДЕЛЕЦ — update-sched.sh (маркер .update-interval, выбор в панели). Прежде блок
+# сперва клал daily сам, а apply переписывал её обратно: строка моргала на каждой переустановке, сообщение
+# называло «ежедневно» расписание, которого строкой ниже уже не было (замер BE7000 30.09.2026: weekly), а
+# без маркера apply выводил интервал ИЗ ТОЛЬКО ЧТО ЗАПИСАННОЙ daily-строки — прежний выбор стирался.
+# apply без имени задачи переигрывает ОБЕ cron-строки владельца — списки и подписки (subs-update.sh; маркер
+# .subs-interval, дефолт off ⇒ на чистой установке строки не будет). Владельца нет или он отказал — daily сами.
 if [ -f "$ENODIA_DIR/iplist-update.sh" ]; then
     chmod +x "$ENODIA_DIR/iplist-update.sh"
-    IPLIST_CRON="0 5 * * * $ENODIA_DIR/iplist-update.sh --notify >/dev/null 2>&1"
-    if grep -qF "$ENODIA_DIR/iplist-update.sh --notify" /etc/crontabs/root; then
-        :  # актуальная строка уже на месте
-    elif grep -qF "$ENODIA_DIR/iplist-update.sh" /etc/crontabs/root; then
-        # старая строка без --notify (установка до июня 2026) — обновляем на месте
-        sed -i "\|$ENODIA_DIR/iplist-update.sh|d" /etc/crontabs/root
-        echo "$IPLIST_CRON" >> /etc/crontabs/root
-        ok "Cron-задача iplist-update обновлена (+--notify: утренняя сводка на почту)"
-    else
-        echo "$IPLIST_CRON" >> /etc/crontabs/root
-        ok "Cron-задача iplist-update зарегистрирована (5:00 ежедневно, со сводкой на почту)"
-    fi
-    # Периодичность обновления списков настраивается в панели (update-sched.sh владеет этой cron-строкой
-    # + маркером .update-interval). На ПЕРЕустановке блок выше хардкодит daily — apply переигрывает по
-    # маркеру, чтобы выбранное пользователем расписание не сбрасывалось. Нет маркера → daily (= как выше).
-    # apply без имени задачи переигрывает ОБЕ cron-строки владельца — списки и подписки
-    # (subs-update.sh; маркер .subs-interval, дефолт off ⇒ на чистой установке строки не будет).
+    _sched_ok=0
     if [ -f "$ENODIA_DIR/update-sched.sh" ]; then
         chmod +x "$ENODIA_DIR/update-sched.sh"
         [ -f "$ENODIA_DIR/subs-update.sh" ] && chmod +x "$ENODIA_DIR/subs-update.sh"
-        sh "$ENODIA_DIR/update-sched.sh" apply 2>/dev/null && ok "Расписание обновления списков: $(sh "$ENODIA_DIR/update-sched.sh" get 2>/dev/null) · подписок: $(sh "$ENODIA_DIR/update-sched.sh" get subs 2>/dev/null)"
+        if sh "$ENODIA_DIR/update-sched.sh" apply 2>/dev/null; then
+            _sched_ok=1
+            ok "Расписание обновления списков: $(sh "$ENODIA_DIR/update-sched.sh" get 2>/dev/null) · подписок: $(sh "$ENODIA_DIR/update-sched.sh" get subs 2>/dev/null)"
+        fi
+    fi
+    if [ "$_sched_ok" = 0 ] && cron_put "0 5 * * *" iplist-update.sh --notify; then
+        ok "Cron-задача iplist-update зарегистрирована (5:00 ежедневно, со сводкой на почту)"
     fi
 fi
 
@@ -1010,8 +1121,7 @@ fi
 # в установку июнь 2026 (раньше cron ставился вручную после заливки файла).
 if [ -f "$ENODIA_DIR/watchdog.sh" ]; then
     chmod +x "$ENODIA_DIR/watchdog.sh"
-    if ! grep -qF "$ENODIA_DIR/watchdog.sh" /etc/crontabs/root; then
-        echo "*/2 * * * * $ENODIA_DIR/watchdog.sh >/dev/null 2>&1" >> /etc/crontabs/root
+    if cron_put "*/2 * * * *" watchdog.sh; then
         ok "Cron-задача watchdog.sh зарегистрирована (каждые 2 минуты)"
     fi
 fi
@@ -1020,29 +1130,28 @@ fi
 # awg0/xtun+eth0 по дням на /data (RAM-счётчики обнуляются на ребуте/смене транспорта).
 if [ -f "$ENODIA_DIR/traffic-acct.sh" ]; then
     chmod +x "$ENODIA_DIR/traffic-acct.sh"
-    if ! grep -qF "$ENODIA_DIR/traffic-acct.sh" /etc/crontabs/root; then
-        echo "*/5 * * * * $ENODIA_DIR/traffic-acct.sh >/dev/null 2>&1" >> /etc/crontabs/root
+    if cron_put "*/5 * * * *" traffic-acct.sh; then
         ok "Cron-задача учёта трафика зарегистрирована (каждые 5 минут)"
     fi
 fi
 
-# web-ui.sh — веб-панель управления VPN (второй uhttpd на LAN:8088 под HTTP-Basic, НЕ
-# трогает стоковый nginx). Cron поднимает её каждые 5 минут: uhttpd.conf/web лежат на
+# web-ui.sh — веб-панель управления VPN (второй uhttpd на LAN:8088 со своей формой входа, НЕ
+# трогает стоковый nginx). Cron поднимает её каждые 5 минут: web/ и .panel-pass лежат на
 # /data (переживают ребут), pidfile в /tmp сбрасывается на boot → start поднимает заново
-# (идемпотентно: уже работает → ничего). Пароль (uhttpd.conf) задаёт установщик с ПК
-# (web-ui.sh setpass); пока он не задан — start молча выходит (панель не отдаётся без
-# пароля), а cron подхватит её сразу после задания пароля. CGI-скрипты web/cgi-bin/*
-# делаем исполняемыми (общий chmod ниже ловит только *.sh).
+# (идемпотентно: уже работает → ничего). Пароль (.panel-pass, владелец totp.sh) задаёт
+# установщик с ПК (web-ui.sh setpass); пока он не задан — start панель НЕ поднимает и говорит
+# об этом словами (панель без пароля не отдаётся), а cron подхватит её сразу после задания
+# пароля. CGI-скрипты web/cgi-bin/* делаем исполняемыми (общий chmod ниже ловит только *.sh).
 if [ -f "$ENODIA_DIR/web-ui.sh" ]; then
     chmod +x "$ENODIA_DIR/web-ui.sh"
     [ -d "$ENODIA_DIR/web/cgi-bin" ] && chmod +x "$ENODIA_DIR"/web/cgi-bin/* 2>/dev/null
     # htmlwrap — интерпретатор .html (заголовок no-cache для документа панели), тоже исполняемый
     [ -f "$ENODIA_DIR/web/htmlwrap" ] && chmod +x "$ENODIA_DIR/web/htmlwrap" 2>/dev/null
-    # totp.sh — второй фактор входа в панель: CGI его СОРСЯТ (гейт) и зовут из cgi-bin/2fa.
-    # Включается только из панели, свежая установка ведёт себя как раньше (2FA выключен).
+    # totp.sh — ВХОД в панель целиком: пароль (pw_*), сессии и второй фактор. С 03.09.2026 он не
+    # дополнение, а фундамент: `web-ui.sh start` без него панель НЕ ПОДНИМАЕТ, а все CGI отвечают
+    # 403. Сам второй фактор на свежей установке по-прежнему выключен — его включают в панели.
     [ -f "$ENODIA_DIR/totp.sh" ] && chmod +x "$ENODIA_DIR/totp.sh" 2>/dev/null
-    if ! grep -qF "$ENODIA_DIR/web-ui.sh" /etc/crontabs/root; then
-        echo "*/5 * * * * $ENODIA_DIR/web-ui.sh start >/dev/null 2>&1" >> /etc/crontabs/root
+    if cron_put "*/5 * * * *" web-ui.sh start; then
         ok "Cron-задача веб-панели зарегистрирована (каждые 5 минут, поднимает uhttpd:8088)"
     fi
     # Поднимаем ПРЯМО СЕЙЧАС, а не «когда-нибудь в ближайшие 5 минут». До этой строки панель
@@ -1095,10 +1204,11 @@ fi
 # висят в ОЗУ до ребута, а уборщик их не видит: он считает ФЛЕШ и путей из /tmp не берёт. Типовая
 # последовательность «снёс — поставил заново» оставляла их на каждом круге. Убираем здесь: мы —
 # первый, кто после purge заведомо запущен ИЗ ДРУГОГО файла.
-# ДВА ИМЕНИ: до ребрендинга снимальщик прыгал в /tmp/awg-uninstall.sh. Роутер, снятый ПРЕЖНЕЙ
+# ДВА ИМЕНИ: до ребрендинга снимальщик прыгал в /tmp/awg-uninstall.sh — legacy-name: он же в цикле
+# ниже. Роутер, снятый ПРЕЖНЕЙ
 # версией и поставленный этой, унёс бы старый остаток в вечность — а «убрали всё наше» относится
 # и к следу, который мы же оставили под прошлым именем.
-for _lft in /tmp/enodia-uninstall.sh /tmp/awg-uninstall.sh; do
+for _lft in /tmp/enodia-uninstall.sh /tmp/awg-uninstall.sh; do   # legacy-name: второе имя — след ДОРЕБРЕНДИНГОВОГО снимальщика, подбираем и забываем
     if [ -f "$_lft" ]; then
         rm -f "$_lft"
         ok "Убран остаток прошлого удаления ($_lft)"
@@ -1110,7 +1220,7 @@ done
 # трогаем», а уборщик его не видел вовсе. Отчёт нужен ровно до переустановки: она и есть ответ на
 # вопрос «что делать после неудачного удаления». Снимаем ЗДЕСЬ, а не расширением списка мусора: там
 # сумма категорий обязана сходиться с du по $ENODIA_DIR, и путь со стороны её бы разбалансировал.
-for _lft in /data/enodia-uninstall.log /data/awg-uninstall.log; do   # оба имени, см. выше
+for _lft in /data/usr/enodia-uninstall.log /data/enodia-uninstall.log /data/awg-uninstall.log; do   # legacy-name: текущий путь и оба прежних, см. выше
     if [ -f "$_lft" ]; then
         rm -f "$_lft"
         ok "Убран отчёт прошлого удаления ($_lft)"
@@ -1223,7 +1333,7 @@ if [ "$PANEL_ONLY" = 1 ]; then
         echo "роутер сейчас работает ровно как из коробки — наших правил в ядре нет."
     fi
     echo ""
-    echo "  1. Панель: http://$(ip -4 addr show "$(lan_if)" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}'):8088 (логин admin)"
+    echo "  1. Панель: http://$(ip -4 addr show "$(lan_if)" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}'):8088 (форма входа: логин admin, пароль — заданный)"
     echo "  2. Что дальше — прямо в браузере:"
     echo "       «Компоненты» — поставить нужные протоколы (качаются с GitHub)"
     echo "       «Серверы»    — добавить сервер (vless://, hy2://, awg-конфиг) и включить"
@@ -1235,10 +1345,10 @@ if [ "$PANEL_ONLY" = 1 ]; then
     echo "  4. Автозапуск, сторож и обновление — уже в cron; после ребута всё встаёт само."
     echo ""
     echo "========================================================================"
-    echo "Диагностика: sh $ENODIA_DIR/status.sh · логи: /tmp/enodia-startup.log"
+    echo "Диагностика: sh $ENODIA_BOOT/boot.sh status.sh · логи: /tmp/enodia-startup.log"
     echo "========================================================================"
 else
-echo "Что у тебя сейчас работает:"
+echo "Что у вас сейчас работает:"
 echo ""
 if [ "$ACTIVE_PROTO" = xray ] || [ "$ACTIVE_PROTO" = hy2 ] || [ "$ACTIVE_PROTO" = byedpi ]; then
     echo "  1. Активный транспорт: $ACTIVE_PROTO (TUN xtun). AmneziaWG не используется."
@@ -1246,7 +1356,7 @@ if [ "$ACTIVE_PROTO" = xray ] || [ "$ACTIVE_PROTO" = hy2 ] || [ "$ACTIVE_PROTO" 
     ip -br a show xtun 2>/dev/null || echo "     (xtun поднят через transport.sh up)"
 else
     echo "  1. AmneziaWG-туннель awg0 поднят:"
-    ip -br a show awg0 2>/dev/null || warn "awg0 не виден — проверь конфиг"
+    ip -br a show awg0 2>/dev/null || warn "awg0 не виден — проверьте конфиг"
 fi
 echo ""
 echo "  2. ipset $ENODIA_LIST_NAME готов принимать IP-адреса:"
@@ -1260,7 +1370,7 @@ enodia_list_n=$(ipset list "$ENODIA_LIST_NAME" 2>/dev/null | grep -c '^[0-9]' ||
 case "$enodia_list_n" in ''|*[!0-9]*) enodia_list_n=0 ;; esac
 echo "     Размер сейчас: $enodia_list_n записей"
 echo "     (он будет наполняться по мере того, как устройства будут открывать"
-echo "      сайты из списка. Открой YouTube — IP появятся.)"
+echo "      сайты из списка. Откройте YouTube — IP появятся.)"
 echo ""
 echo "  3. Маршрутизация через VPN работает по iplist_set (CIDR) +"
 echo "     ipset enodia_list (домены). Этого хватает для YouTube, OpenAI,"
@@ -1278,12 +1388,12 @@ echo ""
 echo "========================================================================"
 echo "ТЕСТ:"
 echo "========================================================================"
-echo "  - Через подключённое устройство открой https://2ip.ru — должен показать"
-echo "    IP твоего ПРОВАЙДЕРА (это значит, что обычный трафик идёт мимо VPN)."
-echo "  - Открой https://www.youtube.com и зайди в любое видео — должно играть"
+echo "  - Через подключённое устройство откройте https://2ip.ru — должен показать"
+echo "    IP вашего ПРОВАЙДЕРА (это значит, что обычный трафик идёт мимо VPN)."
+echo "  - Откройте https://www.youtube.com и зайдите в любое видео — должно играть"
 echo "    без тормозов. Чтобы проверить, что YouTube идёт через VPS:"
-echo "    в браузере открой https://www.youtube.com/about — снизу будет ваша"
-echo "    \"страна\" — она должна совпадать со страной твоего VPS."
+echo "    в браузере откройте https://www.youtube.com/about — снизу будет ваша"
+echo "    \"страна\" — она должна совпадать со страной вашего VPS."
 echo ""
 echo "  - Из консоли роутера: 'ipset list $ENODIA_LIST_NAME | head' — должны"
 echo "    появиться IP-адреса googlevideo.com и подобных."
@@ -1291,21 +1401,23 @@ echo ""
 echo "УПРАВЛЕНИЕ: удобнее всего с ПК через enodia-setup.bat (меню)."
 echo ""
 echo "В консоли роутера коротких команд awg/vpn/domain НЕТ (на стоке / это"
-echo "squashfs ro -> симлинки в /usr/bin не создаются). Зови по ПОЛНОМУ пути:"
-echo "  sh $ENODIA_DIR/status.sh           — полный статус AWG + ipset + правила"
-echo "  sh $ENODIA_DIR/status.sh test      — проверка популярных сайтов (через VPN или нет)"
-echo "  sh $ENODIA_DIR/switch-vpn.sh           — список доступных конфигов стран"
-echo "  sh $ENODIA_DIR/switch-vpn.sh germany   — переключиться на конфиг germany.conf"
-echo "  sh $ENODIA_DIR/switch-vpn.sh status    — текущий активный конфиг + страна"
-echo "  sh $ENODIA_DIR/domain.sh add chatgpt.com      — добавить домен в туннель"
-echo "  sh $ENODIA_DIR/domain.sh remove instagram.com — убрать домен из своего списка"
-echo "  sh $ENODIA_DIR/domain.sh list          — твои добавления + статистика"
-echo "  sh $ENODIA_DIR/domain.sh search openai — поиск по всем спискам"
+echo "squashfs ro -> симлинки в /usr/bin не создаются). Вызывайте ЧЕРЕЗ ЗАПУСКАТЕЛЬ:"
+echo "  sh $CRON_RUN status.sh           — полный статус AWG + ipset + правила"
+echo "  sh $CRON_RUN status.sh test      — проверка популярных сайтов (через VPN или нет)"
+echo "  sh $CRON_RUN switch-vpn.sh           — список доступных конфигов стран"
+echo "  sh $CRON_RUN switch-vpn.sh germany   — переключиться на конфиг germany.conf"
+echo "  sh $CRON_RUN switch-vpn.sh status    — текущий активный конфиг + страна"
+echo "  sh $CRON_RUN domain.sh add chatgpt.com      — добавить домен в туннель"
+echo "  sh $CRON_RUN domain.sh remove instagram.com — убрать домен из своего списка"
+echo "  sh $CRON_RUN domain.sh list          — ваши добавления + статистика"
+echo "  sh $CRON_RUN domain.sh search openai — поиск по всем спискам"
+echo "  (запускатель — единственный, кто экспортирует пути: код и состояние могут жить"
+echo "   на накопителе, и прямой путь тогда указывает в пустоту)"
 echo ""
 echo "ДОПОЛНИТЕЛЬНЫЕ КОНФИГИ (для смены страны):"
-echo "  Положи .conf файлы в $ENODIA_STATE/configs/"
+echo "  Положите .conf файлы в $ENODIA_STATE/configs/"
 echo "  Например: germany.conf, france.conf, netherlands.conf"
-echo "  Затем: sh $ENODIA_DIR/switch-vpn.sh germany   (или enodia-setup.bat -> 9)"
+echo "  Затем: sh $CRON_RUN switch-vpn.sh germany   (или enodia-setup.bat -> 9)"
 echo ""
 echo "НИЗКОУРОВНЕВЫЕ КОМАНДЫ (если что-то не работает):"
 echo "  $ENODIA_BIN/awg show awg0        — статус туннеля + handshake (wg тут НЕТ, есть awg)"
@@ -1313,8 +1425,8 @@ echo "  ipset list $ENODIA_LIST_NAME | head — что попало в спис�
 echo "  iptables -t mangle -L -v -n   — правила маркировки"
 echo "  ip rule                       — правила роутинга"
 echo "  ip route show table $ROUTE_TABLE  — таблица маршрутизации VPN"
-echo "  $ENODIA_DIR/iplist-update.sh     — обновить CIDR-список вручную"
+echo "  sh $CRON_RUN iplist-update.sh    — обновить CIDR-список вручную"
 echo ""
-echo "Если что-то не работает — смотри /tmp/enodia-startup.log после ребута."
+echo "Если что-то не работает — смотрите /tmp/enodia-startup.log после ребута."
 echo "========================================================================"
 fi   # /PANEL_ONLY (конец секции 8: финальный отчёт)

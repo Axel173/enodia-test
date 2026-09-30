@@ -20,8 +20,8 @@
 
 EXCLUDE_CHAIN="VPN_EXCLUDE"
 BYPASS_SET="xiaomi_bypass"
-LOG=/tmp/xiaomi-bypass.log
-ENODIA_DIR=/data/usr/app/enodia
+LOG=/tmp/enodia-xiaomi-bypass.log
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 утилиты conntrack в
 # прошивке нет, и прямой вызов был тихим no-op. Шим = прежнее поведение.
 if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi

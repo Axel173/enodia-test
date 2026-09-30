@@ -22,7 +22,7 @@ LISTS_DIR="$ENODIA_STATE/lists"             # ПЕРСИСТ на флеше: Р
 # ОЗУ (tmpfs) под ВСЁ тяжёлое: закачки, нормализация, дедуп, кэш-фолбэк, снимок block-категорий.
 # Флеш роутера ~20 МБ — сырьё блоклистов (StevenBlack/OISD/Hagezi = мегабайты) на /data НЕЛЬЗЯ:
 # переполняло флеш → падал DNS и туннель. Тяжёлое живёт здесь и стирается на ребуте (перекачиваем).
-LISTS_RAM="${LISTS_RAM:-/tmp/lists}"
+LISTS_RAM="${LISTS_RAM:-/tmp/enodia-lists}"
 # Кап размера ФЛЕШ-снимка tunnel-cidr (строк CIDR). Аномально крупный список (де-агрегированный
 # opencck data=ip4 = 220k отдельных IP вместо cidr4=3.5k подсетей) раздул бы 20-МБ флеш на мегабайты
 # → почти-полный флеш = падение DNS/туннеля. Свыше кап — снимок на флеш НЕ пишем (см. snap_write).
@@ -44,6 +44,13 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 	case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
 	[ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
+# Имя WAN-интерфейса и шлюз — у владельца (ip-lib.sh::wan_iface / wan_gateway, следит C81): по ним
+# собирается allowlist критичных адресов (collect_critical) и гард отката ipblock. Шимы = прежние
+# строки: без них частичная установка молча ПОТЕРЯЛА бы шлюз из allowlist'а, и DROP по списку мог
+# отрубить сам аплинк.
+if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+command -v wan_gateway >/dev/null 2>&1 || wan_gateway() { ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'; }
 command -v doh_ips >/dev/null 2>&1 || doh_ips() { _r=$(curl -s --connect-timeout 3 --max-time 15 $2 "https://1.1.1.1/dns-query?name=$1&type=A" -H 'accept: application/dns-json' 2>/dev/null); [ -n "$_r" ] || _r=$(curl -sk --connect-timeout 3 --max-time 15 $2 "https://1.1.1.1/dns-query?name=$1&type=A" -H 'accept: application/dns-json' 2>/dev/null); printf '%s' "$_r" | grep -o '"data":"[0-9.]*"' | cut -d'"' -f4; }
 
 # --- Реестр источников (TSV на /data) ----------------------------------------
@@ -70,9 +77,17 @@ ram_dir() {  # ram_dir <cat> → каталог ОЗУ категории (за�
 	printf '%s' "$_d"
 }
 reg_path()   { printf '%s/sources.tsv' "$(ls_dir "$1")"; }   # флеш: реестр (переживает ребут)
+# СКОЛЬКО ИСТОЧНИКОВ КАТЕГОРИИ ВКЛЮЧЕНО (колонка enabled = 1) — независимо от того, скачались ли они. Тот же признак, что у
+# прохода обновления (lists-update.sh _update_pass, счётчик nen): разводит «источники не ответили» (авария, пул поднимается
+# из снимка) и «человек выключил все» (решение: пул пуст НАМЕРЕННО). Спрашивает iplist-update.sh, чтобы не слать письмо
+# «источники недоступны, наполнится само» тому, кто их выключил (Роман, 06.09.2026). Нет реестра — пусто: судить не по чему.
+reg_nen() {
+	_rgp=$(reg_path "$1"); [ -f "$_rgp" ] || return 0
+	awk -F"$TAB" '$1 != "" && $3 == "1" { n++ } END { print n + 0 }' "$_rgp"
+}
 blob_path()  { printf '%s/blob/%s'  "$(ls_dir "$1")" "$2"; }  # флеш: контент file/text-источника (нет URL для перекачки)
 cache_path() { printf '%s/cache/%s' "$(ram_dir "$1")" "$2"; } # ОЗУ: фолбэк последней удачной закачки URL
-allow_path() { printf '%s/allow' "$(ls_dir "$1")"; }       # флеш: allowlist категории (домены-исключения)
+allow_path() { printf '%s/allow' "$(ls_dir "$1")"; }       # флеш: исключения категории (adblock — домены, ipblock — IPv4/CIDR)
 enable_path(){ printf '%s/.enabled' "$(ls_dir "$1")"; }    # флеш: мастер-флаг (adblock/ipblock off по умолч.)
 # Снимок последнего результата. tunnel-cidr — на ФЛЕШЕ (маршрутизация обязана пережить ребут ОФЛАЙН,
 # ~3000 CIDR = десятки КБ). adblock/ipblock — в ОЗУ (списки мегабайтные; на ребуте re-fetch, heal.sh 5.8).
@@ -160,7 +175,7 @@ _san() { printf '%s' "$1" | tr -d "$TAB\r\n"; }
 # строку). Тот же класс, что реестр слотов (`slots.sh`, лок-каталог + ПИД в черновике) — лечим так же:
 # атомарный mkdir-лок в ОЗУ + временный файл С ПИДом. Лок не взять (держатель жив дольше окна) —
 # работаем как раньше: потерять правку хуже, чем подождать, но насмерть вставать реестру нельзя.
-_reg_lock_dir() { printf '/tmp/.lists-reg.%s.lock' "$1"; }   # /tmp: ребут снимает лок сам
+_reg_lock_dir() { printf '/tmp/.enodia-lists-reg.%s.lock' "$1"; }   # /tmp: ребут снимает лок сам
 reg_lock_take() {  # reg_lock_take <cat> → 0 = взят (обязателен reg_lock_drop) | 1 = не удалось
 	_rl=$(_reg_lock_dir "$1"); _ri=0
 	while [ "$_ri" -lt 15 ]; do
@@ -341,39 +356,107 @@ strip_bogon() {  # strip_bogon [мин_маска] ; stdin (CIDR по строк
 # несущую/интернет/резолв (юзер: «а если в списки попадёт IP провайдера или VPS?»). Собираем их
 # на КАЖДЫЙ apply в ipset blocklist_allow → правило `--match-set blocklist_allow -j RETURN` ПЕРЕД
 # DROP (см. ensure_block_rules в lists-update.sh) → эти IP никогда не дропаются, даже если в списке.
-wan_iface() {  # имя WAN-интерфейса по дефолт-маршруту main (пусто = WAN не настроен); как wan_up в watchdog
-	ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
-}
-
-collect_critical() {  # stdout: критичные IP/CIDR (по строке) — НИКОГДА не блокировать/не дропать
+# Набор общий у ДВУХ блокировок по адресам: списков (ipblock) и гео-категорий «Блок» (geo.sh).
+#
+# ФОРМАТ СТРОКИ — «адрес<TAB>причина[<TAB>уточнение]» (шаг 5c переноса панели). Экран «Блокировка»
+# показывал только ЧИСЛО («4 адреса в обход»), а вопрос человека — КАКИЕ и почему; ответ обязан
+# дать тот, кто список собирает, а не панель своей догадкой. Причины: vps (сервер основного туннеля) ·
+# exit + номер выхода (сервер доп-выхода) · gw (шлюз провайдера) · wan (адрес роутера у провайдера) ·
+# dns (апстрим dnsmasq) · net + интерфейс (подключённая подсеть) · user (исключение, заданное человеком).
+# Потребителю набора нужно только первое поле (ensure_allow_set режет его сам).
+# ДВЕ ДЫРЫ, закрытые здесь же: доп-выходы (у каждого СВОЙ VPS, файл `.endpoint-bypass-s<id>`) в
+# набор не попадали вовсе — их сервер в списке FireHOL рвал выход; и исключений человека не было
+# совсем: ложное срабатывание чужого списка лечилось только выключением списка целиком.
+collect_critical() {  # stdout: «IP/CIDR<TAB>причина[<TAB>уточнение]» по строке — НИКОГДА не блокировать/не дропать
 	# endpoint активной несущей (VPS) — авто-файл apply-bypass (та же анти-петля, что для mangle).
-	[ -s "$ENODIA_STATE/.endpoint-bypass" ] && cat "$ENODIA_STATE/.endpoint-bypass" 2>/dev/null
+	[ -s "$ENODIA_STATE/.endpoint-bypass" ] && grep -E '^[0-9]' "$ENODIA_STATE/.endpoint-bypass" 2>/dev/null | sed "s/\$/${TAB}vps/"
+	# endpoint'ы доп-выходов (slots.sh, apply-bypass endpoint-slot-set) — у каждого свой сервер.
+	for _cs in 2 3 4; do
+		[ -s "$ENODIA_STATE/.endpoint-bypass-s$_cs" ] && grep -E '^[0-9]' "$ENODIA_STATE/.endpoint-bypass-s$_cs" 2>/dev/null | sed "s/\$/${TAB}exit${TAB}$_cs/"
+	done
+	# Имя WAN и шлюз — у владельца (ip-lib.sh); до 05.09.2026 тут жила своя копия wan_iface,
+	# и она НЕ исключала свои несущие — при дефолте main в туннеле «WAN-IP» был бы адресом awg0.
 	_wif=$(wan_iface)
 	if [ -n "$_wif" ]; then
 		# WAN-шлюз (via) + WAN-IP интерфейса.
-		ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'
-		ip -4 addr show dev "$_wif" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1
+		wan_gateway | grep -E '^[0-9]' | sed "s/\$/${TAB}gw/"
+		ip -4 addr show dev "$_wif" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | sed "s/\$/${TAB}wan/"
 	fi
-	# DNS-апстримы dnsmasq (server=IP в /etc/dnsmasq.d/*.conf; и публичные из safety_off) — только числовые.
-	grep -hE '^[[:space:]]*server=' /etc/dnsmasq.d/*.conf 2>/dev/null \
-		| sed 's/^[[:space:]]*server=//; s/#.*$//; s/[[:space:]]//g' | cut -d/ -f1 \
-		| grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
-	# Подключённые подсети (LAN br-lan/guest/miot + локальная сеть WAN) — proto kernel даёт network/mask.
-	ip -4 route show 2>/dev/null | awk '/proto kernel/ && $1 ~ /\//{print $1}'
+	# DNS-апстримы dnsmasq — числовые, из ОБОИХ каталогов (живой /tmp несёт сниппеты, которых в /etc нет: раздельный
+	# резолв рунета) и в обеих формах: `server=IP` и `server=/домен/IP` (адрес — после последней «/»). Петлевой адрес
+	# (локальный прокси шифрованного DNS, 127.0.0.1#5053) — сам роутер: списки его не несут (strip_bogon), и в «Защите
+	# сети» он был бы строкой-шумом; настоящие адреса тогда — у резолвера шифрованного DNS (ниже).
+	# Свои сниппеты блокировки (реклама, пул десинка, гео) — сотни тысяч строк address=/ipset=, апстримов там нет: экран
+	# «Блокировка» спрашивает этот список на каждый показ и опрос, и grep по ним шёл бы каждый раз.
+	for _ccd in /etc/dnsmasq.d /tmp/dnsmasq.d; do
+		for _ccf in "$_ccd"/*.conf; do
+			case "${_ccf##*/}" in 06-adblock.conf|07-zapret-dom.conf|1[0-9]-geo*.conf) continue ;; esac
+			[ -f "$_ccf" ] && grep -hE '^[[:space:]]*server=' "$_ccf" 2>/dev/null
+		done
+	done \
+		| sed 's/^[[:space:]]*server=//; s/[[:space:]]//g; s#.*/##; s/#.*$//' \
+		| grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' | grep -v '^127\.' | sed "s/\$/${TAB}dns/"
+	# ЧЕМ РЕЗОЛВИТ РОУТЕР СЕЙЧАС — у владельца ответа (doh-lib.sh::dns_now, своей копии не держим): его `addr=` знает и
+	# стоковые серверы провайдера из resolv.conf.auto (установка «только панель», своего апстрима нет), а при шифрованном
+	# DNS — адреса резолвера (doh_resolver_ips). В подоболочке — библиотека не должна затереть переменные вызывающего.
+	if [ -f "$ENODIA_DIR/doh-lib.sh" ]; then
+		( . "$ENODIA_DIR/doh-lib.sh" 2>/dev/null
+		  if command -v dns_now >/dev/null 2>&1; then
+			  _ccn=$(dns_now 2>/dev/null)
+			  printf '%s\n' "$_ccn" | sed -n 's/^addr=//p' | tr ' ,' '\n\n' | sed 's/#.*$//'
+			  printf '%s\n' "$_ccn" | grep -q '^src=doh' && doh_resolver_ips 2>/dev/null
+		  fi ) \
+			| tr ' ' '\n' | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' | grep -v '^127\.' | sed "s/\$/${TAB}dns/"
+	fi
+	# Подключённые подсети (LAN br-lan/guest/miot + локальная сеть WAN) — proto kernel даёт network/mask;
+	# интерфейс — третьим полем: «домашняя сеть» и «сеть провайдера» для человека разные вещи.
+	ip -4 route show 2>/dev/null | awk -v t="$TAB" '/proto kernel/ && $1 ~ /\//{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); print $1 t "net" t d}'   # not-wan: подсети НАШИХ мостов для allowlist, а не WAN
+	# Исключения человека (экран «Блокировка»): только IPv4/CIDR, проверены при записи (allow-set ipblock).
+	[ -s "$(allow_path ipblock)" ] && grep -E '^[0-9]' "$(allow_path ipblock)" 2>/dev/null | sed "s/\$/${TAB}user/"
+	return 0
 }
 
+# ПИСАТЕЛЕЙ НАБОРА ЧЕТВЕРО, и локи у них разные: проход обновления списков, сборка гео, сохранение исключений из
+# панели и allow-sync на смене сервера. Общее временное имя `_new` давало гонку: один уничтожал чужой черновик, а
+# swap того, кто собирал ПОЗЖЕ, мог вернуть в работу набор из прежнего чтения — без нового сервера, ради которого
+# allow-sync и звали. Поэтому: свой черновик (имя с пидом) И короткий лок на «прочитать → собрать → swap» — порядок
+# писателей = порядок чтений. Держатель умер (пид не жив) — лок снимается; ждём недолго, дальше — без лока (набор
+# «не блокировать» лучше собрать с риском гонки, чем не собрать вовсе).
+# Лок — общий ls_lock_take (владелец: держатель жив по /proc, лок без пида снимается по ВОЗРАСТУ), ждём его недолго.
+ALLOW_LOCK=/tmp/enodia-allowset.lock
+_nap() { if command -v usleep >/dev/null 2>&1; then usleep 100000; else sleep 1; fi; }
 ensure_allow_set() {  # создать/наполнить ipset blocklist_allow критичными IP (idемпотентно, атомарный swap)
+	_ea_got=0; _ea_n=0
+	while [ "$_ea_n" -lt 50 ]; do
+		if ls_lock_take "$ALLOW_LOCK" /dev/null; then _ea_got=1; break; fi
+		_nap; _ea_n=$((_ea_n + 1))
+	done
 	ipset list -n 2>/dev/null | grep -qx blocklist_allow || \
 		ipset create blocklist_allow hash:net hashsize 1024 maxelem 65536 2>/dev/null
-	ipset destroy blocklist_allow_new 2>/dev/null
-	ipset create blocklist_allow_new hash:net hashsize 1024 maxelem 65536 2>/dev/null
-	collect_critical | while IFS= read -r _ip; do
+	# Черновики УБИТЫХ писателей (OOM, SIGKILL — ловушки нет) копились бы в ядре до ребута: снимаем те, чей пид мёртв.
+	for _ea_o in $(ipset list -n 2>/dev/null | grep '^blocklist_allow_[0-9][0-9]*$'); do
+		[ -d "/proc/${_ea_o#blocklist_allow_}" ] || ipset destroy "$_ea_o" 2>/dev/null
+	done
+	_ea_t="blocklist_allow_$$"
+	ipset destroy "$_ea_t" 2>/dev/null
+	ipset create "$_ea_t" hash:net hashsize 1024 maxelem 65536 2>/dev/null
+	collect_critical | cut -f1 | while IFS= read -r _ip; do
 		case "$_ip" in ''|'#'*) continue ;; esac
-		ipset add blocklist_allow_new "$_ip" 2>/dev/null
+		ipset add "$_ea_t" "$_ip" 2>/dev/null
 	done
 	# swap даже пустого набора безопасен (пустой allow = нет исключений, но DROP всё равно под strip_bogon).
-	ipset swap blocklist_allow_new blocklist_allow 2>/dev/null
-	ipset destroy blocklist_allow_new 2>/dev/null
+	ipset swap "$_ea_t" blocklist_allow 2>/dev/null
+	ipset destroy "$_ea_t" 2>/dev/null
+	[ "$_ea_got" = 1 ] && ls_lock_drop "$ALLOW_LOCK"
+	return 0
+}
+
+# БЛОКИРОВКА ПО АДРЕСАМ СЕЙЧАС РАБОТАЕТ? — по цепочкам ядра, а не по существованию набора «не блокировать»: набор
+# переживает свои цепочки (гео-«Блок» снят, а ipblock набор не уничтожить, пока на него ссылалась цепочка гео), и
+# «набор есть» объявляло живой блокировку, которой в ядре нет: экран молчал про «ничего не блокируется», а снятое
+# исключение рвало соединения всего дома впустую.
+addr_block_live() {
+	iptables -C INPUT -j ENODIA_BLK 2>/dev/null || iptables -C INPUT -j ENODIA_GEOBLK 2>/dev/null
 }
 
 # --- Нормализация в «вид» --------------------------------------------------
@@ -463,7 +546,11 @@ ipset_count() {  # ipset_count <setname> → число членов (0 если
 	# «Number of entries:» печатают НЕ все ядра: на kernel 4.4 (AX3600/BE3600) ipset её
 	# НЕ выводит (только Size in memory/References/Members) → фолбэк на подсчёт строк-членов
 	# (у inet-наборов член начинается с цифры; заголовки — с буквы, сама «Number…» — с N).
-	_c=$(ipset list "$1" 2>/dev/null | sed -n 's/^Number of entries:[[:space:]]*//p' | head -1)
+	# Сперва — ТОЛЬКО заголовок (`-t`, есть в ipset 6.38 BE7000): его зовёт и лёгкий ответ категории (`state`), а тот идёт
+	# опросом раз в 2 с и пятью строками хаба «Источники списков» — полный дамп набора на 60 тыс. записей там лишний.
+	# Заголовок молчит (4.4 или ipset без `-t`) — строки-члены полного вывода: второй полный вывод ради той же строки заголовка
+	# ничего не дал бы — её нет ни там, ни тут.
+	_c=$(ipset list -t "$1" 2>/dev/null | sed -n 's/^Number of entries:[[:space:]]*//p' | head -1)
 	case "$_c" in ''|*[!0-9]*) _c=$(ipset list "$1" 2>/dev/null | grep -cE '^[0-9]') ;; esac
 	case "$_c" in ''|*[!0-9]*) _c=0 ;; esac
 	printf '%s' "$_c"
@@ -495,26 +582,61 @@ apply_ipset() {  # apply_ipset <setname> <file...> → печатает count | 
 dnsmasq_reload() { sh "$ENODIA_DIR/dns-merge.sh" reload 2>/dev/null \
 	|| /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 
-# apply_dnsmasq_block: сгенерить conf «address=/домен/0.0.0.0» из файла доменов, ВЫЧТЯ allowlist
-# (точное совпадение строки), одним проходом sed (100k доменов циклом sh были бы медленны).
-# Печатает число заблокированных доменов. Пустой источник → пустой conf (блокировки нет).
+# apply_dnsmasq_block: сгенерить conf «address=/домен/0.0.0.0» из файла доменов, ВЫЧТЯ исключения, одним проходом
+# (100k доменов циклом sh были бы медленны). Печатает число заблокированных доменов. Пустой источник → пустой conf.
+# ИСКЛЮЧЕНИЕ ДЕЙСТВУЕТ ВМЕСТЕ С ПОДДОМЕНАМИ — В ОБЕ СТОРОНЫ (шаг 5c; прежде вычиталось точное совпадение строки, а экран
+# обещал «вместе с поддоменами»):
+#   · строка списка — само исключение ИЛИ его поддомен (`ad.doubleclick.net` при исключении `doubleclick.net`) — не
+#     блокируется: `address=/дом/` у dnsmasq закрывает и все поддомены, поэтому оставленный поддомен держал бы закрытым
+#     то, что человек открыл;
+#   · исключение — ПОДДОМЕН закрытого родителя (`login.example.com` при `example.com` в списке): строки родителя не
+#     трогаем (он закрыт по делу), а для исключения пишем `server=/исключение/#` — «спрашивать обычные серверы». Замер
+#     BE7000 22.09.2026 (dnsmasq 2.86): более длинное имя побеждает `address=` родителя. Только там, где родитель закрыт
+#     на самом деле: лишняя строка перебила бы чужое правило зоны (раздельный резолв рунета для `mail.ru`).
+# busybox awk без index/split — только sub() (он возвращает число замен). FNR==NR ломается на ПУСТОМ первом файле ⇒
+# сюда приходим, только когда исключения есть.
 apply_dnsmasq_block() {  # apply_dnsmasq_block <conf> <domainsfile> <allowfile|''> → печатает count доменов
 	_conf="$1"; _dom="$2"; _allow="$3"
 	mkdir -p "$(dirname "$_conf")" 2>/dev/null
-	# Эффективный список = домены минус allowlist (точное совпадение строки).
-	_eff="$_dom"
+	_eff="$_dom"; _dpar=''
 	if [ -n "$_allow" ] && [ -s "$_allow" ]; then
-		grep -vxF -f "$_allow" "$_dom" 2>/dev/null > "$_dom.eff"; _eff="$_dom.eff"
+		awk 'FNR==NR { if ($0!="") a[$0]=1; next }
+		     { x=$0; while (1) { if (x in a) next; if (sub(/^[^.]*\./, "", x)==0) break } print }' "$_allow" "$_dom" > "$_dom.eff.$$"
+		_eff="$_dom.eff.$$"
+		# Исключения, чей родитель остался закрытым (по эффективному списку): только родители с точкой — «com» не домен.
+		_dpar="$_dom.par.$$"
+		awk 'FNR==NR { x=$0; while (sub(/^[^.]*\./, "", x)) { if (x ~ /\./) p[x]=p[x] " " $0 }; next }
+		     ($0 in p) { print p[$0] }' "$_allow" "$_eff" | tr ' ' '\n' | grep . | sort -u > "$_dpar"
+		# Родителя закрывает ещё и ЧУЖОЙ сниппет (гео-«Блок», своё имя с адресом): `server=/исключение/#` длиннее и его строки
+		# и открыл бы поддомен, а экран обещает, что закрытое гео исключения рекламы не откроют. Такие исключения — без строки.
+		if [ -s "$_dpar" ]; then
+			for _dof in "$(dirname "$_conf")"/*; do
+				[ "$_dof" = "$_conf" ] && continue; [ -f "$_dof" ] || continue
+				sed -n 's#^address=/\([^/]*\)/.*#\1#p' "$_dof" 2>/dev/null
+			done > "$_dom.oth.$$"
+			if [ -s "$_dom.oth.$$" ]; then
+				awk 'FNR==NR { o[$0]=1; next } { x=$0; k=1; while (sub(/^[^.]*\./, "", x)) if (x in o) { k=0; break }; if (k) print }' \
+					"$_dom.oth.$$" "$_dpar" > "$_dpar.k" && mv "$_dpar.k" "$_dpar"
+			fi
+			rm -f "$_dom.oth.$$"
+		fi
 	fi
 	# Блокируем ОБЕ семьи: A→0.0.0.0 И AAAA→:: . Только 0.0.0.0 НЕ режет IPv6 — dnsmasq
 	# форвардит AAAA и домен открывается по IPv6 (поймано на железе 2026-07-10). Два прохода
 	# sed (busybox `\n` в замене ненадёжен) → сперва все A-строки, потом все AAAA (порядок неважен).
-	{ sed 's|.*|address=/&/0.0.0.0|' "$_eff"; sed 's|.*|address=/&/::|' "$_eff"; } > "$_conf.new"
-	mv "$_conf.new" "$_conf"
-	rm -f "$_dom.eff" 2>/dev/null
+	# Черновик — со своим пидом (пишут сюда проход обновления и сохранение исключений, и общий `.new` обрезал бы чужой
+	# файл на полпути) и С ТОЧКОЙ ВПЕРЕДИ: каталог dnsmasq читается без маски, а файлы с точкой он пропускает. Иначе
+	# рестарт dnsmasq посреди записи (его зовут шесть мест) читал бы недописанное — а черновик убитого прогона жил бы до
+	# ребута и блокировал уже снятое.
+	_cnew="$(dirname "$_conf")/.$(basename "$_conf").new.$$"
+	{ sed 's|.*|address=/&/0.0.0.0|' "$_eff"; sed 's|.*|address=/&/::|' "$_eff"
+	  [ -n "$_dpar" ] && [ -s "$_dpar" ] && sed 's|.*|server=/&/#|' "$_dpar"; } > "$_cnew"
+	mv "$_cnew" "$_conf"
+	rm -f "$_dom.eff.$$" "$_dpar" 2>/dev/null
 	# Число ЗАБЛОКИРОВАННЫХ ДОМЕНОВ = число A-строк (не всех строк — их вдвое больше).
 	_n=$(grep -c '/0\.0\.0\.0$' "$_conf" 2>/dev/null); case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
-	dnsmasq_reload
+	# LISTS_NO_RELOAD — вызыватель перечитает dnsmasq сам (сборка гео: одна перезагрузка DNS сети на обе правки, а не две).
+	[ -n "$LISTS_NO_RELOAD" ] || dnsmasq_reload
 	printf '%s' "$_n"
 }
 
@@ -532,8 +654,9 @@ apply_dnsmasq_ipset() {  # apply_dnsmasq_ipset <conf> <domainsfile> <setname> [a
 	if [ -n "$_allow" ] && [ -s "$_allow" ]; then
 		grep -vxF -f "$_allow" "$_dom" 2>/dev/null > "$_dom.eff"; _eff="$_dom.eff"
 	fi
-	sed "s|.*|ipset=/&/$_dset|" "$_eff" > "$_conf.new"
-	mv "$_conf.new" "$_conf"
+	_cnew="$(dirname "$_conf")/.$(basename "$_conf").new.$$"   # черновик вне поля зрения dnsmasq (разбор у apply_dnsmasq_block)
+	sed "s|.*|ipset=/&/$_dset|" "$_eff" > "$_cnew"
+	mv "$_cnew" "$_conf"
 	rm -f "$_dom.eff" 2>/dev/null
 	_n=$(grep -c '^ipset=/' "$_conf" 2>/dev/null); case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
 	dnsmasq_reload

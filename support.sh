@@ -28,8 +28,10 @@
 # а не пароль. Два источника ключа (DRY, без флагов):
 #   * ключ ИЗ КОДА (ОСН.) — open-code декодирует ключ из base64-кода во временный $CODEKEY (RAM, 0600) →
 #                     `dbclient -i $CODEKEY`. ЕДИНЫЙ путь веб-панели, одинаково на приватной и широкой
-#                     сборке (разработчик тестирует РОВНО то же, что тестер). Ключ из RAM стирается сразу
-#                     после старта dbclient (прочитан на auth); на буте /tmp и так пуст.
+#                     сборке (разработчик тестирует РОВНО то же, что тестер). Ключ лежит в RAM ПОКА ЖИВА
+#                     СЕССИЯ (не «до старта dbclient», как было): без него невозможен переподъём после
+#                     разрыва (см. reup), а разрыв даёт любой ct_flush. Стирает cmd_down — руками, по
+#                     TTL из reap или ребутом (/tmp = RAM).
 #   * стоячий $KEY (ФОЛБЭК) — нет ключа из кода, но есть $KEY (0600) → `dbclient -i $KEY`. Только для
 #                     голого CLI `support.sh up` без кода (аварийный заход для себя); панель им НЕ ходит.
 #   Координаты релея (IP+порт, НЕ секрет) — в $RELAY_CONF (провижнятся кодом/set-relay).
@@ -42,16 +44,17 @@
 #   * NSS/ECM-offload: после mangle-guard нужен conntrack -D по потоку, иначе старый маршрут залипнет.
 #   * `-y -y` — не проверять host key релея (внешний хоп транзиентен; E2E к роутеру защищён его же
 #     ключом, который верифицирует ssh-клиент Axel'а). known_hosts на ramfs всё равно сбрасывается.
-#   * `timeout -t СЕК CMD` (старый синтаксис) — тут не нужен, дедуп по proc_alive.
+#   * `timeout -t СЕК CMD` (старый синтаксис) — срок сессии держит им сам dbclient (tunnel_spawn): сторожа после деактивации нет.
 #
 # Контракт (как у transport-*.sh — DRY):
 #   support.sh up [ttl]      — открыть доступ (ttl сек, деф. 1800, cap 7200); печатает статус
 #   support.sh down          — закрыть доступ (убить туннель, снять guard, стереть состояние)
 #   support.sh status        — JSON {active,port,expires_in,ttl} для панели
 #   support.sh reap          — экспайр/сборка мусора (зовёт watchdog.sh cron */2; сам себя гасит)
+#   support.sh reup          — переподнять упавший туннель, пока сессия жива (внутри reap; см. ниже)
 #   support.sh set-relay IP PORT [USER]  — записать координаты релея в $RELAY_CONF (деплой/тест)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
 # утилиты conntrack в прошивке НЕТ ВООБЩЕ, и прежний `conntrack -F || true` был тихим no-op —
@@ -61,19 +64,23 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Имя WAN-интерфейса — у владельца (ip-lib.sh::wan_iface, следит C81): его спрашивает гейт «WAN
+# жив?» ниже. Шим = прежняя строка на случай частичной установки.
+if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
 if ! command -v ct_flush_dst >/dev/null 2>&1; then
     ct_flush_dst()  { [ -n "$1" ] && conntrack -D -p tcp -d "$1" --dport "$2" >/dev/null 2>&1; return 0; }
 fi
-RELAY_CONF="$ENODIA_STATE/.support-relay"      # "IP PORT [USER]" — координаты релея (НЕ секрет)
-KEY="$ENODIA_STATE/.support-key"               # стоячий приватный ключ (0600), фолбэк для голого CLI `up`
-CODEKEY=/tmp/.support-code-key            # приватный ключ, доставленный «кодом поддержки» (RAM, 0600, транзитный)
-PIDFILE=/tmp/support-tunnel.pid
-LOG=/tmp/support.log
-ACTIVE=/tmp/.support-active                # рантайм: "PORT EXPIRE_EPOCH RELAY_IP RELAY_PORT" (RAM)
+RELAY_CONF="$ENODIA_STATE/.support-relay" # "IP PORT [USER]" — координаты релея (НЕ секрет)
+KEY="$ENODIA_STATE/.support-key"          # стоячий приватный ключ (0600), фолбэк для голого CLI `up`
+CODEKEY=/tmp/.enodia-support-code-key     # приватный ключ, доставленный «кодом поддержки» (RAM, 0600, транзитный)
+PIDFILE=/tmp/enodia-support-tunnel.pid
+LOG=/tmp/enodia-support.log
+ACTIVE=/tmp/.enodia-support-active        # рантайм: "PORT EXPIRE_EPOCH RELAY_IP RELAY_PORT" (RAM)
 FWMARK=0x1
 TABLE=1000
-TTL_DEF=1800                               # 30 мин по умолчанию
-TTL_CAP=7200                               # жёсткий потолок 2 ч
+TTL_DEF=1800                              # 30 мин по умолчанию
+TTL_CAP=7200                              # жёсткий потолок 2 ч
 PORT_LO=20000
 PORT_HI=39999
 
@@ -84,16 +91,11 @@ log() { echo "[$(date '+%H:%M:%S' 2>/dev/null)] $*" >> "$LOG" 2>/dev/null; }
 # раньше internal `p` затирал бы его (баг: в статус попадал PID вместо порта туннеля). Держим имя редким.
 proc_alive() { _ap=$(cat "$1" 2>/dev/null | tr -d ' \r\n'); [ -n "$_ap" ] && kill -0 "$_ap" 2>/dev/null; }
 
-# WAN жив? Зеркало wan_up() из watchdog.sh (там 6 строк; сорсить watchdog нельзя — он прогонит
-# весь тик, поэтому копия с пометкой DRY). Нет дефолта / carrier=0 → WAN мёртв, туннелю некуда идти.
-wan_up() {
-    _wif=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-    [ -n "$_wif" ] || return 1
-    if [ -r "/sys/class/net/$_wif/carrier" ]; then
-        [ "$(cat "/sys/class/net/$_wif/carrier" 2>/dev/null)" = "1" ] || return 1
-    fi
-    return 0
-}
+# WAN жив? Ответ ОДИН на проект — ip-lib.sh::wan_up (сорсится выше; следит C81). Зеркало сторожа
+# тут стояло с пометкой DRY: сорсить watchdog.sh нельзя (он прогонит весь тик), и копия честно
+# называла себя копией — а расходиться ей нельзя тем более, «жив ли аплинк» спрашивают ровно в
+# аварии. Ниже шим на случай старой библиотеки: нет дефолта / carrier=0 → туннелю некуда идти.
+command -v wan_up >/dev/null 2>&1 || wan_up() { _wu=$(wan_iface); [ -n "$_wu" ] || return 1; if [ -r "/sys/class/net/$_wu/carrier" ]; then [ "$(cat "/sys/class/net/$_wu/carrier" 2>/dev/null)" = "1" ] || return 1; fi; return 0; }
 
 # Прочитать координаты релея. Заполняет RELAY_IP/RELAY_PORT/RELAY_USER; 1 = не настроено/битое.
 load_relay() {
@@ -126,6 +128,14 @@ guard_off() {
     while iptables -t mangle -D OUTPUT -d "$_ip" -p tcp --dport "$_pt" -j ACCEPT 2>/dev/null; do :; done
     ct_flush_dst "$_ip" "$_pt"
 }
+# Гард НА МЕСТЕ? Отдельной проверкой, потому что зовёт её ТИК СТОРОЖА: `guard_on` идемпотентен,
+# но каждый раз пишет строку в лог и трогает conntrack — раз в две минуты это шум и работа впустую.
+# А проверять надо: `mark-core.sh` пересобирает mangle OUTPUT ЦЕЛИКОМ (switch транспорта, repair
+# после fw3 reload) и уносит наш ACCEPT вместе с чужими правилами — гард ставится ВНЕ ядра.
+guard_check() {
+    [ -n "$1" ] && [ -n "$2" ] || return 1
+    iptables -t mangle -C OUTPUT -d "$1" -p tcp --dport "$2" -j ACCEPT 2>/dev/null
+}
 
 # Случайный порт релея (busybox awk есть rand/srand; /dev/urandom без od не распарсить).
 rand_port() { awk "BEGIN{srand(); print $PORT_LO+int(rand()*($PORT_HI-$PORT_LO+1))}"; }
@@ -135,6 +145,54 @@ rand_port() { awk "BEGIN{srand(); print $PORT_LO+int(rand()*($PORT_HI-$PORT_LO+1
 # с нерабочим форвардом → ложный успех). Первичная защита от коллизии — широкий рандом-диапазон.
 eof_opt() {
     if dbclient 2>&1 | grep -q -- '-o '; then echo '-o ExitOnForwardFailure=yes'; fi
+}
+
+# Ключ для dbclient → $AUTH. Приоритет — ключ ИЗ КОДА, стоячий $KEY — фолбэк; 1 = креда нет вовсе.
+# ЗАЧЕМ функцией, а не строками в cmd_up: спрашивают ДВОЕ — открытие доступа и ПЕРЕПОДЪЁМ из
+# сторожа. У второго нет ни `$SUPPORT_KEY_FILE` (то env одного вызова open-code), ни человека,
+# который введёт код заново, — поэтому ключ из кода ищется и ПО ПУТИ ($CODEKEY), пока жива сессия.
+auth_opt() {
+    AUTH=""
+    if [ -n "$SUPPORT_KEY_FILE" ] && [ -r "$SUPPORT_KEY_FILE" ]; then AUTH="-i $SUPPORT_KEY_FILE"; return 0; fi
+    if [ -r "$CODEKEY" ]; then AUTH="-i $CODEKEY"; return 0; fi
+    if [ -r "$KEY" ]; then AUTH="-i $KEY"; return 0; fi
+    return 1
+}
+
+# Поднять dbclient В ФОНЕ и записать $ACTIVE. $1 = предпочтительный порт (пусто → случайный),
+# $2 = момент истечения (epoch), $3 = сколько попыток. Успех: 0 и $port = живой порт.
+# ЗАЧЕМ отдельной функцией: подъём нужен ДВУМ вызывателям с РАЗНОЙ политикой. Открытие доступа —
+# три попытки, порт каждый раз новый (коллизия на релее). Переподъём из сторожа — две попытки за
+# тик (тик не имеет права стоять девять секунд), и ПЕРВАЯ на ПРЕЖНЕМ порту: человек уже
+# подключается по нему, смена порта с его стороны неотличима от «доступ пропал».
+tunnel_spawn() {
+    _tsp="$1"; _tse="$2"; _tsn="$3"; case "$_tsn" in ''|*[!0-9]*) _tsn=1 ;; esac
+    _eo=$(eof_opt)
+    port=""; _tsi=0
+    while [ "$_tsi" -lt "$_tsn" ]; do
+        _tsi=$((_tsi+1))
+        # pt (НЕ p): proc_alive внутри трогает свою переменную — не путать с портом.
+        if [ "$_tsi" = 1 ] && [ -n "$_tsp" ]; then pt="$_tsp"; else pt=$(rand_port); fi
+        log "попытка $_tsi: порт $pt → dbclient -R 127.0.0.1:$pt:127.0.0.1:22 к $RELAY_USER@$RELAY_IP:$RELAY_PORT"
+        # sh -c 'exec … >>log' — переоткрыть stdio ПОСЛЕ демонизации (start-stop-daemon -b уводит в
+        # /dev/null), сохранив PID для pidfile (как spawn_hysteria). -y -y = не проверять host key релея.
+        # СРОК ДЕРЖИТ САМ ТУННЕЛЬ, А НЕ ТОЛЬКО СТОРОЖ (ревью шага 6d): `reap` зовёт тик сторожа, а после деактивации его cron-строки нет
+        # — сессия не истекала бы до ребута при обещании «закроется сам». busybox `timeout -t` запускает программу В ТОМ ЖЕ pid (свой
+        # сторож — дочерним процессом; замер BE7000 23.09.2026), поэтому пидфайл остаётся пидом dbclient. Нет `timeout -t` — как раньше.
+        _tsl=$(( _tse - $(date +%s) )); _tst=""
+        [ "$_tsl" -gt 0 ] && timeout -t 1 true >/dev/null 2>&1 && _tst="timeout -t $_tsl "
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- -c \
+            "exec ${_tst}dbclient -N -y -y -K 30 $_eo $AUTH -R 127.0.0.1:$pt:127.0.0.1:22 -p $RELAY_PORT $RELAY_USER@$RELAY_IP >>'$LOG' 2>&1"
+        sleep 3
+        if proc_alive "$PIDFILE"; then
+            port="$pt"
+            printf '%s %s %s %s\n' "$port" "$_tse" "$RELAY_IP" "$RELAY_PORT" > "$ACTIVE"
+            return 0
+        fi
+        log "попытка $_tsi: dbclient умер за 3с (порт занят / кред / сеть)"
+        start-stop-daemon -K -p "$PIDFILE" >/dev/null 2>&1; rm -f "$PIDFILE" 2>/dev/null
+    done
+    return 1
 }
 
 # Тихо снести прошлый экземпляр (идемпотентный up): убить демон, снять guard по записи ACTIVE.
@@ -154,52 +212,79 @@ cmd_up() {
 
     load_relay || { echo '{"active":0,"error":"relay-unset"}'; return 1; }
 
-    # Аутентификация ТОЛЬКО по ключу (dbclient без парольной auth). Приоритет — ключ ИЗ КОДА
-    # ($SUPPORT_KEY_FILE, доставлен open-code во временный $CODEKEY): единый путь для приватной и
-    # широкой сборки. Стоячий $KEY — фолбэк для голого CLI `up` без кода. Ни того ни другого → отказ.
-    AUTH=""
-    if [ -n "$SUPPORT_KEY_FILE" ] && [ -r "$SUPPORT_KEY_FILE" ]; then
-        AUTH="-i $SUPPORT_KEY_FILE"
-    elif [ -r "$KEY" ]; then
-        AUTH="-i $KEY"
-    else
+    # Аутентификация ТОЛЬКО по ключу (dbclient без парольной auth) — владелец ответа один, auth_opt.
+    auth_opt || {
         log "нет ключа из кода и нет $KEY — открыть доступ нечем"
         echo '{"active":0,"error":"no-credential"}'; return 1
-    fi
+    }
 
-    wan_up || { log "WAN мёртв — туннелю некуда идти"; echo '{"active":0,"error":"wan-down"}'; return 1; }
+    # Сессии не случилось — ключу из кода жить незачем (тот же довод, что у `tunnel-failed` ниже).
+    wan_up || { log "WAN мёртв — туннелю некуда идти"; rm -f "$CODEKEY" 2>/dev/null; echo '{"active":0,"error":"wan-down"}'; return 1; }
 
     : > "$LOG" 2>/dev/null || true
     teardown                          # снять прошлый экземпляр (идемпотентно)
     guard_on                          # прямой путь к релею ДО подъёма туннеля
 
-    EOF_OPT=$(eof_opt)
     expire=$(( $(date +%s) + ttl ))
-
-    port=""; ok=0
-    for attempt in 1 2 3; do
-        pt=$(rand_port)        # имя pt (НЕ p): proc_alive внутри трогает свою переменную — не путать с портом
-        log "попытка $attempt: порт $pt → dbclient -R 127.0.0.1:$pt:127.0.0.1:22 к $RELAY_USER@$RELAY_IP:$RELAY_PORT"
-        # sh -c 'exec … >>log' — переоткрыть stdio ПОСЛЕ демонизации (start-stop-daemon -b уводит в
-        # /dev/null), сохранив PID для pidfile (как spawn_hysteria). -y -y = не проверять host key релея.
-        start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- -c \
-            "exec dbclient -N -y -y -K 30 $EOF_OPT $AUTH -R 127.0.0.1:$pt:127.0.0.1:22 -p $RELAY_PORT $RELAY_USER@$RELAY_IP >>'$LOG' 2>&1"
-        sleep 3
-        if proc_alive "$PIDFILE"; then port="$pt"; ok=1; break; fi
-        log "попытка $attempt: dbclient умер за 3с (порт занят / кред / сеть) — новый порт"
-        start-stop-daemon -K -p "$PIDFILE" >/dev/null 2>&1; rm -f "$PIDFILE" 2>/dev/null
-    done
-    rm -f "$CODEKEY" 2>/dev/null    # ключ из кода прочитан dbclient'ом на старте — секрет из RAM долой
-
-    if [ "$ok" != 1 ]; then
+    # Ключ из кода ОСТАВЛЯЕМ в $CODEKEY на время сессии (RAM, 0600), а не стираем сразу после
+    # старта dbclient, как было. ЗАЧЕМ: соединение рвёт ЛЮБОЙ ct_flush (switch транспорта = два
+    # подряд), а `dbclient -N` переподключаться не умеет — переподъём из сторожа без ключа
+    # невозможен, и режим поддержки гас ровно на том действии, ради разбора которого его
+    # открывали (замерено вживую 01.09.2026). Секрет живёт не дольше сессии: его сносит cmd_down
+    # (в том числе по TTL из reap), а /tmp пуст после ребута.
+    if ! tunnel_spawn "" "$expire" 3; then
         guard_off "$RELAY_IP" "$RELAY_PORT"
+        # Сессии не случилось ⇒ ключу из кода жить незачем: держим его в RAM РОВНО пока есть что
+        # переподнимать. Иначе неудачная попытка оставляла бы секрет лежать до самого ребута.
+        rm -f "$CODEKEY" 2>/dev/null
         log "туннель не поднялся за 3 попытки — см. лог выше"
         echo '{"active":0,"error":"tunnel-failed"}'; return 1
     fi
 
-    printf '%s %s %s %s\n' "$port" "$expire" "$RELAY_IP" "$RELAY_PORT" > "$ACTIVE"
     log "ДОСТУП ОТКРЫТ: порт $port, истекает через ${ttl}с. Заходить: ssh -J $RELAY_USER@$RELAY_IP -p $port root@127.0.0.1"
     cmd_status
+}
+
+# ПЕРЕПОДЪЁМ упавшего туннеля, пока сессия не истекла. Зовёт тик сторожа (через reap).
+# ЗАЧЕМ. Доступ держится на ОДНОМ долгоживущем исходящем TCP, а его рвёт любой сброс conntrack:
+# `transport.sh switch` зовёт ct_flush ДВАЖДЫ (down старого + up нового), и на BE7000 это
+# `conntrack -F` — вся таблица. `dbclient -N` не переподключается вовсе, поэтому доступ гас
+# ровно на том действии, ради разбора которого его открывали. Гард маршрута тут не спасает: он
+# защищает МАРШРУТ (релей мимо маркировки), а рвётся СОЕДИНЕНИЕ — разные вопросы.
+# Судим по ФАКТУ (`proc_alive`), а не по флагу: живая запись $ACTIVE — это НАМЕРЕНИЕ человека
+# «доступ открыт до такого-то времени», а жив ли туннель, знает только процесс.
+# ДВЕ попытки за вызов, и вторая — СО СЛУЧАЙНЫМ портом. Одной было бы мало: прежний порт на релее
+# может быть ещё занят полумёртвым форвардом, и тик за тиком мы ломились бы в него вечно (ACTIVE
+# помнит только его). Три, как при открытии, тоже нельзя — тик сторожа не имеет права стоять
+# девять секунд. Первая попытка всегда на ПРЕЖНЕМ порту: по нему уже подключается человек.
+cmd_reup() {
+    [ -s "$ACTIVE" ] || return 0          # доступ не открыт — не наше дело (штатный no-op после ребута)
+    read -r _rp _re _rip _rpt _rr < "$ACTIVE"
+    case "$_re" in ''|*[!0-9]*) _re=0 ;; esac
+    _rnow=$(date +%s)
+    [ "$_rnow" -ge "$_re" ] && return 1   # TTL истёк — поднимать нечего, закрытие за reap
+    # Координаты релея берём ИЗ ЗАПИСИ: доступ открыт к ТОМУ релею, а .support-relay мог с тех
+    # пор поменяться (set-relay из панели). Записи нет полей — фолбэк на конфиг.
+    load_relay >/dev/null 2>&1 || true    # ради RELAY_USER (и координат, если в записи их нет)
+    [ -n "$RELAY_USER" ] || RELAY_USER=support
+    if [ -n "$_rip" ] && [ -n "$_rpt" ]; then RELAY_IP="$_rip"; RELAY_PORT="$_rpt"; fi
+    [ -n "$RELAY_IP" ] && [ -n "$RELAY_PORT" ] || { log "reup: координат релея нет ни в записи, ни в конфиге"; return 1; }
+    if proc_alive "$PIDFILE"; then
+        # Туннель жив — переподнимать нечего, но ГАРД мог унести mark-core (он пересобирает mangle
+        # OUTPUT целиком). Ставим молча и только когда правила действительно нет.
+        guard_check "$RELAY_IP" "$RELAY_PORT" || { log "гард к релею пропал (пересборка mangle) — ставлю заново"; guard_on; }
+        return 0
+    fi
+    wan_up || { log "reup: туннель мёртв, но и WAN мёртв — жду следующего тика"; return 1; }
+    auth_opt || { log "reup: туннель мёртв, а ключа для переподъёма нет (сессия открыта старым кодом?) — закрываю"; return 1; }
+    guard_on
+    if tunnel_spawn "$_rp" "$_re" 2; then
+        [ "$port" = "$_rp" ] && log "reup: доступ восстановлен на ТОМ ЖЕ порту $port" \
+                             || log "reup: прежний порт $_rp занят — доступ восстановлен на порту $port (человеку нужен новый)"
+        return 0
+    fi
+    log "reup: поднять не удалось — попробую на следующем тике (осталось $(( _re - _rnow ))с)"
+    return 1
 }
 
 cmd_down() {
@@ -214,6 +299,14 @@ cmd_down() {
 }
 
 cmd_status() {
+    # ИСТЁКШУЮ СЕССИЮ ЗАКРЫВАЕМ И ЗДЕСЬ, а не только тиком сторожа (`reap`): после «Отключить VPN» сторожа нет, и ключ релея из кода,
+    # запись и правило-гард лежали бы до ребута, а каждый опрос статуса форкал бы нас вечно (ревью шага 6d, круг 2). `reap` на
+    # истёкшей записи — тот же `down`, идемпотентен; при живом стороже это тот же шаг на минуту раньше.
+    if [ -s "$ACTIVE" ]; then
+        read -r _sp _se _sr < "$ACTIVE"
+        case "$_se" in ''|*[!0-9]*) _se=0 ;; esac
+        if [ "$(date +%s)" -ge "$_se" ]; then cmd_reap >/dev/null 2>&1; fi
+    fi
     # relay_set — настроен ли релей (панель гасит кнопку, если нет). need_cred — нужно ли поле
     # одноразового креда: есть стоячий ключ → 0 (просто кнопка), нет → 1 (per-session пароль).
     rset=0;  [ -s "$RELAY_CONF" ] && rset=1
@@ -222,6 +315,21 @@ cmd_status() {
         read -r port expire _gip _gpt _r < "$ACTIVE"
         now=$(date +%s); left=$(( expire - now )); [ "$left" -lt 0 ] && left=0
         printf '{"active":1,"port":%s,"expires_in":%s,"relay_set":%s,"need_cred":%s}\n' "$port" "$left" "$rset" "$ncred"
+    elif [ -s "$ACTIVE" ] && auth_opt; then
+        # СЕССИЯ ОТКРЫТА, А СОЕДИНЕНИЕ ОБОРВАНО — третье состояние, а не «выключено». Туннель рвёт любой сброс
+        # conntrack (смена транспорта), и до ближайшего тика сторожа (`reap` → `reup`, ≤2 мин) демона нет, а запись
+        # «доступ открыт до такого-то» жива. Отвечая `active:0`, панель показывала «выключен» с полем для кода —
+        # человек вставлял код заново поверх живой сессии, а шапка гасила «поддержка активна» при открытом доступе.
+        # Истёкшую запись и сессию без ключа сторож закроет сам — их не показываем открытыми.
+        read -r port expire _gip _gpt _r < "$ACTIVE"
+        case "$expire" in ''|*[!0-9]*) expire=0 ;; esac
+        case "$port" in ''|*[!0-9]*) port=0 ;; esac
+        now=$(date +%s); left=$(( expire - now ))
+        if [ "$left" -gt 0 ]; then
+            printf '{"active":0,"pending":1,"port":%s,"expires_in":%s,"relay_set":%s,"need_cred":%s}\n' "$port" "$left" "$rset" "$ncred"
+        else
+            printf '{"active":0,"relay_set":%s,"need_cred":%s}\n' "$rset" "$ncred"
+        fi
     else
         printf '{"active":0,"relay_set":%s,"need_cred":%s}\n' "$rset" "$ncred"
     fi
@@ -234,14 +342,25 @@ cmd_reap() {
     read -r port expire _gip _gpt _r < "$ACTIVE"
     now=$(date +%s)
     case "$expire" in ''|*[!0-9]*) expire=0 ;; esac
-    if ! proc_alive "$PIDFILE"; then
-        log "reap: демон мёртв при живой записи — чищу"
-        cmd_down >/dev/null; return 0
-    fi
+    # TTL — ПЕРВЫМ: истёкшую сессию закрываем, что бы ни было с демоном. Порядок был обратным, и
+    # это ровно та ошибка, из-за которой мёртвый демон хоронил ЖИВУЮ сессию: «демон мёртв» —
+    # не приговор доступу, а повод его переподнять (соединение рвёт любой ct_flush).
     if [ "$now" -ge "$expire" ]; then
         log "reap: TTL истёк (порт $port) — закрываю доступ"
         cmd_down >/dev/null; return 0
     fi
+    if ! proc_alive "$PIDFILE"; then
+        # Переподъём. Не вышло — запись НЕ трогаем: впереди ещё тики, а закрыть по TTL мы всегда
+        # успеем. Единственное исключение — нечем поднимать (нет ключа): тогда ждать нечего.
+        if cmd_reup; then return 0; fi
+        if ! auth_opt; then
+            log "reap: демон мёртв, переподнять нечем (ключа нет) — чищу"
+            cmd_down >/dev/null
+        fi
+        return 0
+    fi
+    # Туннель жив — проверим только гард (mark-core мог пересобрать mangle OUTPUT под нами).
+    cmd_reup >/dev/null 2>&1
     return 0
 }
 
@@ -293,7 +412,8 @@ case "$1" in
     down)      cmd_down ;;
     status)    cmd_status ;;
     reap)      cmd_reap ;;
+    reup)      cmd_reup ;;   # переподнять упавший туннель, пока сессия не истекла (зовёт reap из сторожа)
     set-relay) cmd_set_relay "$2" "$3" "$4" ;;
     open-code) cmd_open_code "$2" ;;   # base64-код поддержки на STDIN
-    *) echo "usage: $0 up [ttl]|down|status|reap|set-relay IP PORT [USER]|open-code [ttl] (base64<stdin)"; exit 2 ;;
+    *) echo "usage: $0 up [ttl]|down|status|reap|reup|set-relay IP PORT [USER]|open-code [ttl] (base64<stdin)"; exit 2 ;;
 esac

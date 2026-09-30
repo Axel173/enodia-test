@@ -38,7 +38,7 @@
 # сорсим из lists-lib.sh. Домен-нормализация (norm_geosite) и v2fly-резолвер живут тут (специфика
 # geosite-формата). Пересборка наборов — общий set-lib.sh (одна копия с groups.sh).
 #
-# ХРАНЕНИЕ. Кэш фетча каждого ключа — в ОЗУ (/tmp/geo/cache/<key>; на ребуте перекачаем). СНИМКИ
+# ХРАНЕНИЕ. Кэш фетча каждого ключа — в ОЗУ (/tmp/enodia-geo/cache/<key>; на ребуте перекачаем). СНИМКИ
 # агрегатов (CIDR-сеты + доменные dnsmasq-conf) — на ФЛЕШЕ (geo/.snap-*) с КАПОМ MAX_FLASH_CIDR:
 # маршрутизация обязана пережить ОФЛАЙН-ребут. На буте heal.sh зовёт reapply (офлайн из снимков) +
 # фоновый update (перекачка + свежесть апстрима).
@@ -69,7 +69,7 @@ command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null
 if [ -f "$ENODIA_DIR/lists-lib.sh" ]; then
 	. "$ENODIA_DIR/lists-lib.sh"
 else
-	echo "geo: нет $ENODIA_DIR/lists-lib.sh — обнови скрипты (gh-update apply-scripts)" >&2
+	echo "geo: нет $ENODIA_DIR/lists-lib.sh — обновите установку (панель → «Обновление» или переустановка с компьютера)" >&2
 	exit 1
 fi
 # Где лежит бинарь (store-lib.sh): с накопителем nfqws живёт НЕ в $ENODIA_DIR, и проверка по прежнему
@@ -78,14 +78,14 @@ fi
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
 
-GEO="$ENODIA_STATE/geo"                        # ПЕРСИСТ на флеше: реестр действий/провайдеров + снимки агрегатов
+GEO="$ENODIA_STATE/geo"       # ПЕРСИСТ на флеше: реестр действий/провайдеров + снимки агрегатов
 REG="$GEO/actions.tsv"
-PROV="$GEO/providers.tsv"                 # выбор провайдера на тип: type<TAB>pid (дормант — оставлен на возможный возврат)
-SHAS="$GEO/.shas"                         # SHA-пиновка фетча: repo_id<TAB>sha<TAB>upstream_iso (иммутабельный jsDelivr — убирает 12ч-эдж-лаг)
-RAM="/tmp/geo"                            # ОЗУ: кэш фетча + рабочие файлы + состояние обновления
+PROV="$GEO/providers.tsv"     # выбор провайдера на тип: type<TAB>pid (дормант — оставлен на возможный возврат)
+SHAS="$GEO/.shas"             # SHA-пиновка фетча: repo_id<TAB>sha<TAB>upstream_iso (иммутабельный jsDelivr — убирает 12ч-эдж-лаг)
+RAM="/tmp/enodia-geo"         # ОЗУ: кэш фетча + рабочие файлы + состояние обновления
 CACHE="$RAM/cache"
-GEO_LOCK="$RAM/.build.lock"               # сериализация сборки (apply/update/provider-set) — ls_lock_take
-GEO_DIRTY="$RAM/.build.dirty"             # «пока собирали, попросили ещё раз»; содержимое = запрошенный refetch (0|1)
+GEO_LOCK="$RAM/.build.lock"   # сериализация сборки (apply/update/provider-set) — ls_lock_take
+GEO_DIRTY="$RAM/.build.dirty" # «пока собирали, попросили ещё раз»; содержимое = запрошенный refetch (0|1)
 SET_VPN=geo_vpn
 SET_OUT=geo_out
 SET_BLK=geo_block
@@ -282,6 +282,18 @@ cat_kind() {
 		*) echo '' ;;
 	esac
 }
+# ПОДПИСЬ ключа — тем же паттерном (для `active`, который каталог не читает): лейблы каталога СЫРЫЕ, то есть
+# это имя категории без префикса источника (схема `catalog_lines` выше). Держим рядом с cat_type/cat_kind —
+# схема имён одна, и третья её копия в чужом месте разъехалась бы с этими двумя.
+cat_label() {
+	case "$1" in
+		v2fly-*) echo "${1#v2fly-}" ;;
+		rfip-*)  echo "${1#rfip-}" ;;
+		rfgs-*)  echo "${1#rfgs-}" ;;
+		rf-*)    echo "${1#rf-}" ;;
+		*)       echo "$1" ;;
+	esac
+}
 cat_url() {
 	case "$1" in
 		v2fly-*) echo "v2fly:${1#v2fly-}" ;;
@@ -388,7 +400,9 @@ snap_flash() {
 dns_reload() { sh "$ENODIA_DIR/dns-merge.sh" reload 2>/dev/null \
 	|| /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 
-ustate() { echo "$1" > "$RAM/.update.state" 2>/dev/null; }
+# Файл ПРОГРЕССА, который опрашивает панель, пишем АТОМАРНО (рядом + `mv`): `>` сперва обрезает, и опрос в это окно читал пусто —
+# «кончилось» до конца (разбор у packages.sh::set_state; следит C105).
+ustate() { { echo "$1" > "$RAM/.update.state.new" && mv -f "$RAM/.update.state.new" "$RAM/.update.state"; } 2>/dev/null; }
 # uprogress <обработано> <в очереди> — счётчик долгой распаковки дерева include (см. fetch_v2fly).
 # Пустые аргументы = «прогресса нет», файл убираем: панель тогда рисует обычное «обновляю…».
 uprogress() {
@@ -622,6 +636,23 @@ geo_block_teardown() {
 	iptables -D FORWARD -j ENODIA_GEOBLK 2>/dev/null
 	iptables -F ENODIA_GEOBLK 2>/dev/null
 	iptables -X ENODIA_GEOBLK 2>/dev/null
+	# Набор «не блокировать» общий с блокировкой списками (lists-update.sh): её цепочки нет — набор ничей, снимаем. Иначе
+	# он жил до ребута, и снятие ipblock его уничтожить не могло (набор держала ЭТА цепочка) — лишний хвост в ядре.
+	# Блокировка списками ВКЛЮЧЕНА, но её цепочки ещё нет (первое включение, бут: heal зовёт обе сборки параллельно) — набор
+	# НЕ её сирота: снятый в этом окне, он оставил бы её DROP без правила RETURN, то есть без защиты сервера и шлюза.
+	iptables -nL ENODIA_BLK >/dev/null 2>&1 || cat_enabled ipblock 2>/dev/null || ipset destroy blocklist_allow 2>/dev/null
+	return 0
+}
+
+# ИСКЛЮЧЕНИЯ РЕКЛАМЫ ЗАВИСЯТ ОТ ГЕО-«БЛОКА»: `server=/исключение/#` под закрытым родителем пишется, только если родителя не
+# закрывает ещё и гео (иначе строка длиннее и пробила бы его), — а решение принималось по сниппету гео НА МОМЕНТ применения
+# рекламы. Поставили «Блок» позже — исключение-поддомен пробивало его вопреки словам экрана; сняли «Блок» по совету экрана —
+# поддомен оставался закрытым рекламой до её следующего обновления (при расписании «Выкл» — до ребута). Переигрываем снимок
+# рекламы (он в ОЗУ, без закачки) ПОСЛЕ смены сниппета гео и без своей перезагрузки DNS — её делает сборка гео.
+adblock_resync() {
+	cat_enabled adblock 2>/dev/null && [ -s "$(allow_path adblock)" ] || return 0
+	[ -f "$ENODIA_DIR/lists-update.sh" ] && LISTS_NO_RELOAD=1 sh "$ENODIA_DIR/lists-update.sh" reapply adblock >/dev/null 2>&1
+	return 0
 }
 
 # --- доменные dnsmasq-conf (маршрут ipset=/ + блок address=) -------------------------
@@ -754,6 +785,7 @@ _build_pass() {
 	sort -u "$_db" > "$_db.s" 2>/dev/null && mv "$_db.s" "$_db"
 	sort -u "$_dd" > "$_dd.s" 2>/dev/null && mv "$_dd.s" "$_dd"
 	build_dns "$_dv" "$_do" "$_db" "$_dd"
+	adblock_resync
 	# ПЕРЕСЕЧЕНИЕ «в VPN» × «мимо» — считаем ЗДЕСЬ, пока агрегаты ещё не удалены, и кладём
 	# вердикт на флеш: панель обязана показывать факт с роутера, а не свою арифметику.
 	overlap_scan "$_vpn" "$SET_OUT" "$_dv" "$_do" > "$GEO/.overlap.new" 2>/dev/null \
@@ -821,7 +853,7 @@ do_reapply() {
 	[ -s "$SNAP_DSY" ] && { set_fill "$SET_DSY" "$SNAP_DSY"; _any=1; }
 	mkdir -p /tmp/dnsmasq.d 2>/dev/null
 	[ -s "$SNAP_DNS" ]    && { cp "$SNAP_DNS" "$DNSCONF" 2>/dev/null; _any=1; }
-	[ -s "$SNAP_DNSBLK" ] && { cp "$SNAP_DNSBLK" "$DNSBLK" 2>/dev/null; _any=1; }
+	[ -s "$SNAP_DNSBLK" ] && { cp "$SNAP_DNSBLK" "$DNSBLK" 2>/dev/null; _any=1; adblock_resync; }
 	# Слот-снимки (Ф1b): CIDR слота обратно в geo_vpn_s<N>. Врайринг (марка/NFQUEUE) — забота
 	# heal 5.13b (transport.sh slots-up идёт ПОСЛЕ geo-reapply — порядок уже правильный).
 	for _sn in 2 3 4; do
@@ -883,22 +915,16 @@ resolve_upstream() {
 }
 # Last-Modified зоны ipdeny → ISO. Приводим ЗДЕСЬ, а не в панели: `geoFreshLabel` режет дату как
 # `iso.slice(0,10)`, и RFC-1123 («Thu, 13 Aug 2026 …») превратился бы в «Thu, 13 A». Одна ветка
-# формата на весь проект — во фронте второй не заводим.
+# формата на весь проект — во фронте второй не заводим. САМ РАЗБОР RFC-1123 — у владельца
+# (clock-lib.sh::http_date_iso, единственный разборщик формата на роутер; до 05.09.2026 здесь жила
+# своя таблица месяцев — вторая копия того, что уже умел clock_http_date). Нет библиотеки —
+# свежести нет (панель покажет вкладку без даты): единственное, что теряется при частичной установке.
 ipdeny_iso() {
+	command -v http_date_iso >/dev/null 2>&1 || return 1
 	_lm=$(curl -sI --max-time 20 "$IPDENY/ru-aggregated.zone" 2>/dev/null \
-	      | grep -i '^last-modified:' | head -1 | sed 's/^[Ll]ast-[Mm]odified:[ ]*//' | tr -d '\r')
+	      | grep -i '^last-modified:' | head -1 | sed 's/^[Ll]ast-[Mm]odified:[ ]*//')
 	[ -n "$_lm" ] || return 1
-	# «Thu, 13 Aug 2026 10:21:06 GMT» → «2026-08-13T10:21:06Z»
-	set -- $_lm
-	_dd=$2; _mon=$3; _yy=$4; _tt=$5
-	case "$_mon" in
-		Jan) _mm=01 ;; Feb) _mm=02 ;; Mar) _mm=03 ;; Apr) _mm=04 ;; May) _mm=05 ;; Jun) _mm=06 ;;
-		Jul) _mm=07 ;; Aug) _mm=08 ;; Sep) _mm=09 ;; Oct) _mm=10 ;; Nov) _mm=11 ;; Dec) _mm=12 ;;
-		*) return 1 ;;
-	esac
-	case "$_yy" in [0-9][0-9][0-9][0-9]) ;; *) return 1 ;; esac
-	case "$_tt" in [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;; *) return 1 ;; esac
-	printf '%s-%s-%02dT%sZ\n' "$_yy" "$_mm" "$_dd" "$_tt"
+	http_date_iso "$_lm"
 }
 upstream_iso() { grep "^$1$TAB" "$SHAS" 2>/dev/null | head -1 | cut -f3; }   # дата апстрима репо (для панели)
 
@@ -939,8 +965,16 @@ overlap_scan() {   # $1=CIDR-агрегат «в VPN»  $2=набор «мимо
 }
 
 # --- JSON для панели ----------------------------------------------------------------
-emit_json() {
-	st=$(cat "$RAM/.update.state" 2>/dev/null | tr -d ' \r\n'); [ -n "$st" ] || st=IDLE
+# Состояние сборки — одна строка на оба ответа (`list` и `active`): прочитанное по-разному, оно назвало бы одну
+# сборку двумя словами.
+upd_state() {
+	_us=$(cat "$RAM/.update.state" 2>/dev/null | tr -d ' \r\n')
+	printf '%s' "${_us:-IDLE}"
+}
+# ГОЛОВА ОТВЕТА `list`: состояние сборки, счётчики сетов и признаки десинка. Печатает `{` и поля с хвостовой
+# запятой; дальше вызыватель дописывает своё.
+emit_head() {
+	st=$(upd_state)
 	# zapret: можно ли ВООБЩЕ десинкать на этом роутере. Панель прячет действие «в десинк», пока
 	# ответ нет — иначе оно выбиралось бы в пустоту. Прогрессивное раскрытие, как у доп-выходов.
 	# Признаков ДВА, и бинаря МАЛО: на ядре 4.4 (AX3600) nfqws стоит из бутстрапа, а NFQUEUE в
@@ -974,8 +1008,32 @@ emit_json() {
 		_pq=$(cut -f2 "$RAM/.update.progress" 2>/dev/null | tr -cd '0-9')
 		[ -n "$_pdone" ] || _pdone=0; [ -n "$_pq" ] || _pq=0
 	fi
-	printf '{"update_state":"%s","upd_done":%s,"upd_queue":%s,"now":%s,"set_vpn":%s,"set_out":%s,"set_blk":%s,"set_dsy":%s,"zapret":%s,"dns_route":%s,"dns_block":%s,' \
-		"$st" "$_pdone" "$_pq" "$(date +%s)" "$(ipset_count "$SET_VPN")" "$(ipset_count "$SET_OUT")" "$(ipset_count "$SET_BLK")" "$(ipset_count "$SET_DSY")" "$_zi" "$(dns_dom_count)" "$(dns_blk_count)"
+	# «МОЖЕТ ЛИ РОУТЕР ДЕСИНК» (_zi) И «РАБОТАЕТ ЛИ ДЕЙСТВИЕ „в десинк"» — РАЗНЫЕ ВОПРОСЫ, и до
+	# 09.09.2026 панель знала только первый. Правила этого действия ставит `zapret.sh cmd_apply`, а
+	# он при отсутствии `.zapret-on` делает teardown и выходит: при VPN-основном с zapret-ВЫХОДОМ
+	# выбор «Десинк» у категории не проводнялся вообще — правило выглядело живым и молчало
+	# (вопрос подписчика 07.09.2026). Отдаём второй признак отдельным полем, чтобы панель могла не
+	# предлагать действие, которого сейчас нет. Читаем ТОТ ЖЕ файл, что и владелец-гейт.
+	_zon=false; [ -f "$ENODIA_STATE/.zapret-on" ] && _zon=true
+	printf '{"update_state":"%s","upd_done":%s,"upd_queue":%s,"now":%s,"set_vpn":%s,"set_out":%s,"set_blk":%s,"set_dsy":%s,"zapret":%s,"zapret_on":%s,"dns_route":%s,"dns_block":%s,' \
+		"$st" "$_pdone" "$_pq" "$(date +%s)" "$(ipset_count "$SET_VPN")" "$(ipset_count "$SET_OUT")" "$(ipset_count "$SET_BLK")" "$(ipset_count "$SET_DSY")" "$_zi" "$_zon" "$(dns_dom_count)" "$(dns_blk_count)"
+}
+# Вердикт о взаимном перекрытии категорий — СЧИТАЕТ РОУТЕР (в момент сборки), панель только
+# показывает. Своей арифметики во фронте не заводить: ACCEPT-приоритет — свойство цепочек
+# mangle, а не интерфейса, и вторая его модель разъехалась бы с первой на первой же правке.
+# Файла нет (сборки после обновления ещё не было) — отдаём probed:0, и панель молчит, а не
+# рапортует «конфликтов нет»: это РАЗНЫЕ утверждения.
+emit_overlap() {
+	_ovl=$(cat "$GEO/.overlap" 2>/dev/null | head -1)
+	_ov_t=$(printf '%s' "$_ovl" | cut -f1); _ov_p=$(printf '%s' "$_ovl" | cut -f2)
+	_ov_h=$(printf '%s' "$_ovl" | cut -f3); _ov_d=$(printf '%s' "$_ovl" | cut -f4)
+	for _v in _ov_t _ov_p _ov_h _ov_d; do
+		eval "_vv=\$$_v"; case "$_vv" in ''|*[!0-9]*) eval "$_v=0" ;; esac
+	done
+	printf ',"overlap":{"total":%s,"probed":%s,"hits":%s,"domains":%s}' "$_ov_t" "$_ov_p" "$_ov_h" "$_ov_d"
+}
+emit_json() {
+	emit_head
 	_ramtot=$(awk '/^MemTotal:/{print $2*1024; exit}' /proc/meminfo 2>/dev/null)
 	case "$_ramtot" in ''|*[!0-9]*) _ramtot=0 ;; esac
 	printf '"ram":{"per_dom_b":498,"per_cidr_b":43,"total_b":%s},"items":[' "$_ramtot"
@@ -1005,23 +1063,49 @@ emit_json() {
 	printf ',"upstreams":{"v2fly":"%s","rfip":"%s","rfgs":"%s","ipdeny":"%s"}' \
 		"$(jesc "$(upstream_iso v2fly)")" "$(jesc "$(upstream_iso rfip)")" "$(jesc "$(upstream_iso rfgs)")" \
 		"$(jesc "$(upstream_iso ipdeny)")"
-	# Вердикт о взаимном перекрытии категорий — СЧИТАЕТ РОУТЕР (в момент сборки), панель только
-	# показывает. Своей арифметики во фронте не заводить: ACCEPT-приоритет — свойство цепочек
-	# mangle, а не интерфейса, и вторая его модель разъехалась бы с первой на первой же правке.
-	# Файла нет (сборки после обновления ещё не было) — отдаём probed:0, и панель молчит, а не
-	# рапортует «конфликтов нет»: это РАЗНЫЕ утверждения.
-	_ovl=$(cat "$GEO/.overlap" 2>/dev/null | head -1)
-	_ov_t=$(printf '%s' "$_ovl" | cut -f1); _ov_p=$(printf '%s' "$_ovl" | cut -f2)
-	_ov_h=$(printf '%s' "$_ovl" | cut -f3); _ov_d=$(printf '%s' "$_ovl" | cut -f4)
-	for _v in _ov_t _ov_p _ov_h _ov_d; do
-		eval "_vv=\$$_v"; case "$_vv" in ''|*[!0-9]*) eval "$_v=0" ;; esac
-	done
-	printf ',"overlap":{"total":%s,"probed":%s,"hits":%s,"domains":%s}' "$_ov_t" "$_ov_p" "$_ov_h" "$_ov_d"
+	emit_overlap
+	printf '}\n'
+}
+# ТОЛЬКО ВКЛЮЧЁННЫЕ КАТЕГОРИИ — для страницы «Маршрутизации», которая спрашивает их на КАЖДЫЙ показ раздела.
+# `list` для этого не годится: каталог — это ~1900 строк через циклы sh, замер на BE7000 — 1,5 с и 305 КБ,
+# а странице из них нужны три-пять. Реестр действий уже несёт всё, кроме подписи и типа, а их даёт ПРЕФИКС ключа
+# (cat_type/cat_kind/cat_label — тот же резолв, что у сборки), поэтому каталог не читаем вовсе. Форма элемента —
+# та же, что у `list` (без approx/desc, которые живут только в каталоге): у панели один разбор на оба ответа.
+# ГОЛОВА `list` СЮДА НЕ ИДЁТ, и это замер, а не экономия на спичках: её счётчики сетов — это `ipset list` со ВСЕМ
+# составом набора (на ядре 4.4 иначе не посчитать), а счётчики dnsmasq — grep по живому конфигу в 10 МБ при
+# включённой рекламе; с ней верб отвечал 1 с вместо десятков мс (BE7000, 18.09.2026). Странице они не нужны.
+# Ключ, чей префикс не знаем (реестр из будущей версии), пропускаем — вслепую его не назвать и не собрать.
+emit_active() {
+	printf '{"update_state":"%s","now":%s,"items":[' "$(upd_state)" "$(date +%s)"
+	_af=0
+	if [ -f "$REG" ]; then
+		# ПУСТОЕ ПОЛЕ — ЗАГЛУШКОЙ `-` ДО `read`: таб для `read` — пробельный разделитель, и два таба подряд он СКЛЕИВАЕТ —
+		# пустой счётчик сдвинул бы время в графу счётчика, а выход — во время (поймал стенд geo-active-test). awk поле
+		# не теряет; заглушку ниже сводит к нулю та же проверка, что и мусор. Он же дописывает перевод строки последней
+		# строке реестра — без него busybox `read` её бы потерял.
+		awk -F"$TAB" -v OFS="$TAB" '{ for(i=1;i<=5;i++) if($i=="") $i="-"; print }' "$REG" 2>/dev/null | \
+		while IFS="$TAB" read -r _ak _aa _ac _at _as _arest; do
+			case "$_aa" in vpn|bypass|block|desync) ;; *) continue ;; esac
+			# Ключ уходит в JSON без экранирования — пропускаем всё, что не из набора имён каталога.
+			case "$_ak" in ''|*[!A-Za-z0-9._!-]*) continue ;; esac
+			_aty=$(cat_type "$_ak"); [ -n "$_aty" ] || continue
+			case "$_ac" in ''|*[!0-9]*) _ac=0 ;; esac
+			case "$_at" in ''|*[!0-9]*) _at=0 ;; esac
+			case "$_as" in 2|3|4) ;; *) _as=0 ;; esac
+			[ "$_af" = 1 ] && printf ','
+			_af=1
+			printf '{"type":"%s","key":"%s","label":"%s","kind":"%s","action":"%s","count":%s,"ts":%s,"slot":%s}' \
+				"$_aty" "$_ak" "$(cat_label "$_ak")" "$(cat_kind "$_ak")" "$_aa" "$_ac" "$_at" "$_as"
+		done
+	fi
+	printf ']'
+	emit_overlap
 	printf '}\n'
 }
 
 case "$1" in
 	list) emit_json ;;
+	active) emit_active ;;
 	set)   # set <key> <vpn|bypass|block|desync|off> — записать выбор действия (мгновенно), сборку зовёт update/apply
 		[ -n "$(cat_url "$2")" ] || { echo "неизвестный ключ гео"; exit 1; }
 		case "$3" in vpn|bypass|block|desync|off) ;; *) echo "действие: vpn|bypass|block|desync|off"; exit 1 ;; esac
@@ -1044,7 +1128,7 @@ case "$1" in
 	       # Пишет ТОЛЬКО реестр (мгновенно, как set) — пересборку зовёт фронт следом (geo_apply).
 		[ -n "$(cat_url "$2")" ] || { echo "неизвестный ключ гео"; exit 1; }
 		case "$3" in 0|2|3|4) ;; *) echo "слот: 0|2|3|4"; exit 1 ;; esac
-		_ln=$(reg_get "$2"); [ -n "$_ln" ] || { echo "категория выключена — сначала выбери действие"; exit 1; }
+		_ln=$(reg_get "$2"); [ -n "$_ln" ] || { echo "категория выключена — сначала выберите действие"; exit 1; }
 		if [ "$3" != 0 ] && [ "$(printf '%s' "$_ln" | cut -f2)" != vpn ]; then
 			echo "доп-выход только для действия «в VPN»"; exit 1
 		fi
@@ -1054,6 +1138,32 @@ case "$1" in
 	apply)   do_build 0 ;;     # собрать из кэша (быстро; после смены действия)
 	update)  resolve_upstream; set_source_urls; v2fly_enumerate; do_build 1 ;;   # SHA+даты → пиновка URL → перечислить v2fly (rf=baked) → перекачать (пиновано) + собрать
 	reapply) do_reapply ;;     # офлайн из снимка (boot)
+	# Только ЦЕПОЧКА «Блока» после сноса правил (firewall reload) — зовёт починка правил (`vpn-toggle.sh repair|rules`). Наборы в
+	# ОЗУ reload переживают, марку и «мимо» возвращают mark-core и apply-bypass той же починки; `reapply` перезалил бы наборы и
+	# перезапустил dnsmasq на каждый reload. Признак «блок есть» — тот же снимок, по которому его ставит reapply.
+	# ПОД ЛОКОМ СБОРКИ: `geo_block_wire` — это flush цепочки и `-C || -I` прыжков, и параллельно с проходом сборки (он зовёт то же)
+	# оба `-C` могли промахнуться — ДВА прыжка в ENODIA_GEOBLK; тогда снятие «Блока» убирало один, `-X` не проходил, и цепочка с
+	# прыжком жила до ребута (ревью хвостов dev233). Лок занят ⇒ метим dirty (прежнее значение не понижаем — «1» = просили
+	# перекачку): держатель пройдёт ещё раз из кэша и проведёт цепочку сам — и после reload, пришедшего посреди его прохода.
+	wire)
+		[ -s "$SNAP_BLK" ] || exit 0
+		_gwd=$(cat "$GEO_DIRTY" 2>/dev/null | tr -d ' \r\n'); [ "$_gwd" = 1 ] || _gwd=0
+		ls_lock_take "$GEO_LOCK" "$GEO_DIRTY" "$_gwd" || exit 0
+		trap 'ls_lock_drop "$GEO_LOCK"' EXIT INT TERM
+		geo_block_wire
+		ls_lock_drop "$GEO_LOCK"; trap - EXIT INT TERM
+		exit 0 ;;
+	# Снесена ли цепочка «Блока», которая обязана стоять: 0 — стоит (или «Блока» нет), 3 — снесена, иное — не знаю (1 отдаёт любой
+	# общий отказ скрипта — «снесено» им быть не может). Признак «обязана» —
+	# ТОТ ЖЕ снимок, что у `wire`. Спрашивает сторож при выключенном VPN (хвост 10 ревью dev233).
+	wired)
+		[ -s "$SNAP_BLK" ] || exit 0
+		command -v ipt_jump_state >/dev/null 2>&1 || exit 2
+		ipt_jump_state INPUT ENODIA_GEOBLK; _gwi=$?
+		ipt_jump_state FORWARD ENODIA_GEOBLK; _gwf=$?
+		[ "$_gwi" = 2 ] || [ "$_gwf" = 2 ] && exit 2
+		[ "$_gwi" = 0 ] && [ "$_gwf" = 0 ] && exit 0
+		exit 3 ;;
 	enabled) geo_enabled && echo 1 || echo 0 ;;
 	provider)     provider_get "$2" ;;         # provider <type> → выбранный pid (дормант)
 	provider-set)                              # provider-set <type> <pid> → дормант (панель без дропдауна)
@@ -1064,7 +1174,7 @@ case "$1" in
 	freshness) resolve_upstream; echo ok ;;    # обновить $SHAS (sha+даты; панель зовёт async при открытии)
 	*)
 		echo "geo.sh — гео-категории (страны/сервисы/заблок-в-РФ → в VPN / мимо VPN / блок)"
-		echo "  list | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2|3|4> | apply | update | reapply | enabled"
+		echo "  list | active | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2|3|4> | apply | update | reapply | enabled"
 		echo "  desync-list"
 		echo "  provider <type> | provider-set <type> <pid> | freshness"
 		exit 1

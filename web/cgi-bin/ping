@@ -13,12 +13,34 @@
 #                     proto,active,ms,method}]} (для окна «Серверы и конфиги»).
 # Проба идёт НАПРЯМУЮ (endpoint VPS в main-таблице, не через туннель) — честная задержка.
 # 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
-[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+# uhttpd НЕ ПЕРЕДАЁТ CGI своё окружение (замер на железе 01.09.2026 пробным CGI: все ENODIA_*
+# пусты), а в режиме «всё на накопителе» литералы указывают в пустоту — панель отвечала бы
+# «ничего не установлено» на живой системе, а ГЕЙТ ВТОРОГО ФАКТОРА ниже просто не находил бы
+# totp.sh и молча пропускал запрос. Каталог кода знаем бесплатно из $0, остальное разбирает
+# cgi-paths.sh: второй копии этого рассуждения в проекте быть не должно.
+_cgid=${0%/web/cgi-bin/*}; [ "$_cgid" = "$0" ] && _cgid=
+if [ -n "$_cgid" ] && [ -f "$_cgid/cgi-paths.sh" ]; then . "$_cgid/cgi-paths.sh"; fi
+if [ -f "$ENODIA_DIR/totp.sh" ]; then
+	TOTP_LIB=1; . "$ENODIA_DIR/totp.sh"
+	# СУДИМ ПО СПОСОБНОСТИ, А НЕ ПО НАЛИЧИЮ. totp.sh СТАРЕЕ формы входа сорсится успешно, но его
+	# гейт при выключенном 2FA пропускал всё — а uhttpd к этому моменту уже поднят БЕЗ `-c`, то
+	# есть панель отдавала бы данные и ДЕЙСТВИЯ без пароля. Признак эпохи — pw_verify (его же
+	# спрашивает cgi-bin/login).
+	command -v pw_verify >/dev/null 2>&1 || {
+		echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+		echo "Cache-Control: no-store"; echo ""
+		printf '{"ok":false,"need_login":true,"msg":"totp.sh старее формы входа (обновите панель)"}\n'; exit 0; }
+	totp_gate_deny
+else   # НЕТ totp.sh — ОТКАЗ, А НЕ ПРОПУСК: двери-Basic больше нет, пускать некому (разбор — в totp.sh, «Гейт»)
+	echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"; echo ""
+	printf '{"ok":false,"need_login":true,"msg":"totp.sh не установлен (обновите панель)"}\n'; exit 0
+fi
 echo "Content-Type: application/json; charset=utf-8"
 echo "Cache-Control: no-store"
 echo ""
 
-D=/data/usr/app/enodia
+D=${ENODIA_DIR:-/data/usr/app/enodia}
 DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
 DB=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 
@@ -30,9 +52,11 @@ DB=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # так исключён (endpoint-bypass) — bind ему не мешает. Пусто → без bind (старое поведение).
 # WAN = dev ДЕФОЛТА MAIN-таблицы (туннельный дефолт живёт в table 1000 → сюда не попадёт), как в
 # cgi-bin/ip. Надёжнее `ip route get 8.8.8.8` (тот при спец-маршруте мог бы вернуть tun) и не даст
-# --interface забиндить пробу в САМ туннель (иначе ложно ~0мс). Явно исключаем tun-интерфейсы.
-WAN=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-case "$WAN" in awg0|xtun) WAN="" ;; esac
+# --interface забиндить пробу в САМ туннель (иначе ложно ~0мс). Свои несущие исключает владелец
+# ответа — ip-lib.sh::wan_iface (следит C81); шим = прежние строки.
+if [ -f "$D/ip-lib.sh" ]; then . "$D/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+WAN=$(wan_iface)
 
 # CDN-детект (Cloudflare). ЗАЧЕМ: сервер подписки за Cloudflare (напр. sweden.cloudpath.live
 # -> 172.65.160.81) отвечает на TCP-443 БЛИЖАЙШИМ edge-узлом CDN, а не origin-сервером →
@@ -113,7 +137,8 @@ case "$QUERY_STRING" in *tag=*) gtag=$(printf '%s' "$QUERY_STRING" | sed 's/.*ta
 case "$QUERY_STRING" in *one=*) gone=$(printf '%s' "$QUERY_STRING" | sed 's/.*one=//; s/&.*//') ;; esac
 case "$QUERY_STRING" in *tpt=*) gtpt=$(printf '%s' "$QUERY_STRING" | sed 's/.*tpt=//; s/&.*//') ;; esac
 echo "$gtag" | grep -qE '^[a-z0-9-]{1,16}$' || gtag=""
-echo "$gone" | grep -qE '^[A-Za-z0-9._-]{1,80}$' || gone=""
+# Форма имени — как у чтения и удаления конфига: потолок 80 уводил длинное имя в ветку шапки, и пинг отвечал про АКТИВНЫЙ сервер.
+echo "$gone" | grep -qE '^[A-Za-z0-9._-]+$' || gone=""
 case "$gtpt" in awg|xray|hy2) : ;; *) gtpt="" ;; esac
 
 if [ "$QUERY_STRING" = "all=1" ] || [ "${QUERY_STRING#*all=1}" != "$QUERY_STRING" ] || [ -n "$gtag" ] || [ -n "$gone" ]; then
@@ -192,7 +217,7 @@ host=$(clean "$host")
 # же реальном пробе (в пределах TTL). ?fresh=1 (ручной «проверить ещё раз») кэш игнорирует и пробит.
 # Клок роутера может врать до ntp, но дельта берётся по ОДНИМ часам; прыжок ntp → отрицательная/огромная
 # дельта → метка считается протухшей → честный проб (безопасный фолбэк).
-DEADF=/tmp/ping-active-dead
+DEADF=/tmp/enodia-ping-active-dead
 DEAD_TTL=25
 pfresh=0; case "$QUERY_STRING" in *fresh=1*) pfresh=1 ;; esac
 if [ "$pfresh" != 1 ] && [ -n "$host" ] && [ -f "$DEADF" ]; then

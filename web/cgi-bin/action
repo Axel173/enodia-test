@@ -1,6 +1,6 @@
 #!/bin/sh
 # cgi-bin/action — управляющие действия панели (Фаза 2). Зовётся ТОЛЬКО POST-ом из
-# самой панели (за HTTP-Basic). Каждое действие — это вызов СУЩЕСТВУЮЩЕГО безопасного
+# самой панели (за гейтом входа, totp.sh). Каждое действие — это вызов СУЩЕСТВУЮЩЕГО безопасного
 # скрипта; пользовательский ввод НИКОГДА не попадает в shell-команду (имя действия лишь
 # выбирает ветку case, а аргументы скрипта захардкожены). Сами скрипты держат fail-open
 # (safety_off при смерти VPS), так что «уронить интернет» действие не способно.
@@ -11,12 +11,34 @@
 #  - белый список действий; неизвестное -> отказ;
 #  - тело <= 32 КБ (запас под загрузку конфига base64-ом; обычные действия — сотни байт).
 #  - 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status; включён = знать пароль панели мало.
-[ -f /data/usr/app/enodia/totp.sh ] && { TOTP_LIB=1; . /data/usr/app/enodia/totp.sh; totp_gate_deny; }
+# uhttpd НЕ ПЕРЕДАЁТ CGI своё окружение (замер на железе 01.09.2026 пробным CGI: все ENODIA_*
+# пусты), а в режиме «всё на накопителе» литералы указывают в пустоту — панель отвечала бы
+# «ничего не установлено» на живой системе, а ГЕЙТ ВТОРОГО ФАКТОРА ниже просто не находил бы
+# totp.sh и молча пропускал запрос. Каталог кода знаем бесплатно из $0, остальное разбирает
+# cgi-paths.sh: второй копии этого рассуждения в проекте быть не должно.
+_cgid=${0%/web/cgi-bin/*}; [ "$_cgid" = "$0" ] && _cgid=
+if [ -n "$_cgid" ] && [ -f "$_cgid/cgi-paths.sh" ]; then . "$_cgid/cgi-paths.sh"; fi
+if [ -f "$ENODIA_DIR/totp.sh" ]; then
+	TOTP_LIB=1; . "$ENODIA_DIR/totp.sh"
+	# СУДИМ ПО СПОСОБНОСТИ, А НЕ ПО НАЛИЧИЮ. totp.sh СТАРЕЕ формы входа сорсится успешно, но его
+	# гейт при выключенном 2FA пропускал всё — а uhttpd к этому моменту уже поднят БЕЗ `-c`, то
+	# есть панель отдавала бы данные и ДЕЙСТВИЯ без пароля. Признак эпохи — pw_verify (его же
+	# спрашивает cgi-bin/login).
+	command -v pw_verify >/dev/null 2>&1 || {
+		echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+		echo "Cache-Control: no-store"; echo ""
+		printf '{"ok":false,"need_login":true,"msg":"totp.sh старее формы входа (обновите панель)"}\n'; exit 0; }
+	totp_gate_deny
+else   # НЕТ totp.sh — ОТКАЗ, А НЕ ПРОПУСК: двери-Basic больше нет, пускать некому (разбор — в totp.sh, «Гейт»)
+	echo "Status: 403 Forbidden"; echo "Content-Type: application/json; charset=utf-8"
+	echo "Cache-Control: no-store"; echo ""
+	printf '{"ok":false,"need_login":true,"msg":"totp.sh не установлен (обновите панель)"}\n'; exit 0
+fi
 echo "Content-Type: application/json; charset=utf-8"
 echo "Cache-Control: no-store"
 echo ""
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 TOKFILE=/tmp/enodia-panel-token
@@ -39,6 +61,8 @@ fail() { printf '{"ok":false,"code":1,"msg":"%s"}\n' "$1"; exit 0; }
 # ШИМ = ПРЕЖНЕЕ поведение этого файла: либа не доехала (старая установка) — ведём себя как раньше,
 # а не падаем. Гард `[ -f ]` обязателен: провалившийся `.` в busybox ash убивает шелл на месте.
 if [ -f "$ENODIA_DIR/json-lib.sh" ]; then . "$ENODIA_DIR/json-lib.sh"; fi
+# Данные (адрес из конфига) — jtxt; прежняя копия либы его не знает — через jesc, как в cgi-bin/data (без шима адрес приходил пустым).
+command -v jtxt >/dev/null 2>&1 || jtxt() { jesc "$1"; }
 command -v jesc >/dev/null 2>&1 || {
 	jtrim() { cat; }
 	jesc() { tr -d '\033\r' | sed 's/\[[0-9;]*m//g' | tr '\n\t' '  ' | cut -c1-"$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -73,6 +97,16 @@ hold_switch() {
 }
 drop_switch() { _rc=$?; [ "$SWITCH_LOCK_MINE" = 1 ] && rm -f "$SWITCH_LOCK" 2>/dev/null; return "$_rc"; }
 
+# ВЫКЛЮЧЕН ЛИ VPN ЧЕЛОВЕКОМ (`.vpn-off`, персист с 02.09.2026). Спрашивают ВЫБОРЫ СЕРВЕРА: они
+# единственные в этом файле, кто поднимает несущую ПОМИМО тумблера и смены транспорта.
+# ЗАЧЕМ (ревью 02.09.2026). Выключение переживает ребут, ядро маркировки гейтится флагом, heal
+# несущую не поднимает — а «активировать сервер» поднимало: демоны запускались, а у AmneziaWG
+# DNS всего дома уезжал В ТУННЕЛЬ (плагин пишет туннельный адрес и маршрут к нему), при том что
+# тумблер показывает ВЫКЛЮЧЕНО. Правильный ответ уже есть в этом же файле и написан для соседнего
+# случая — «трафик несёт другой транспорт ⇒ СТЕЙДЖИМ, а не переключаем»: выключенный VPN — тот же
+# случай, сейчас не несёт никто. Конфиг выбираем, несущую не трогаем, человек включает тумблером.
+vpn_is_off() { [ -f "$ENODIA_STATE/.vpn-off" ]; }
+
 [ "$REQUEST_METHOD" = "POST" ] || fail "только POST"
 
 len=${CONTENT_LENGTH:-0}
@@ -81,6 +115,23 @@ case "$len" in ''|*[!0-9]*) len=0 ;; esac
 body=$(head -c "$len")
 
 field() { echo "$body" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2-; }
+# «ЖИВ ЛИ ДЕСИНК» СПРАШИВАЕМ У ПЛАГИНА, А НЕ У ФАЙЛА. `.zapret-on` значит «zapret — несущая всего
+# дома»; nfqws же общий на ТРЁХ потребителей (транспорт · доп-выходы · устройства «целиком в
+# десинк»), и на zapret-ВЫХОДЕ файла нет. Пока гейты стояли на файле, панель на выходе писала
+# «применится при включении zapret» и НЕ перезапускала демон — тот крутил СТАРУЮ стратегию
+# (разбор 07.09.2026). Определение стоит ЗДЕСЬ, а не в ветке case: функция, объявленная внутри
+# ветки, существует только когда эта ветка выполнилась, — свип её бы не увидел.
+# rc=2 — старая копия zapret.sh на роутере не знает верба: падаем на прежний файл, то есть ведём
+# себя как раньше, а не отказываем. Та же идиома, что у `nfq-ok` в data.
+zt_wired() {
+	# БЫСТРЫЙ ПУТЬ БЕЗ ФОРКА: zapret-ТРАНСПОРТ — самый частый случай, а `.zapret-on` для него
+	# достаточен (у плагина тот же файл стоит вторым условием в `cmd_wired`). Свип зовёт этот
+	# гейт на КАЖДУЮ стратегию — два десятка форков подряд там лишние.
+	[ -f "$ENODIA_STATE/.zapret-on" ] && return 0
+	sh "$ENODIA_DIR/zapret.sh" wired >/dev/null 2>&1; _zw=$?
+	[ "$_zw" = 2 ] || return "$_zw"
+	return 1
+}
 # urldecode для значений из формы (%XX и '+'). Применяем к ПОЛЬЗОВАТЕЛЬСКИМ полям
 # (ip/cidr/domain/ifaces) ПЕРЕД строгой валидацией regex'ом — даже если декод
 # пропустит мусор, валидация его отобьёт; в shell-команду уходит только то, что
@@ -94,18 +145,51 @@ field() { echo "$body" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2-; }
 # Копия этой строки живёт в cgi-bin/backup (общего файла у двух CGI нет — см. шапку json-lib.sh);
 # побайтовое равенство копий стережёт C37.
 urldecode() { printf '%b' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/+/ /g; s/%\(..\)/\\x\1/g')"; }
+# ГАРД «ВСЯ СТРОКА ЦЕЛИКОМ» РАБОТАЕТ ТОЛЬКО НА ОДНОЙ СТРОКЕ, и это не теория: `grep -qE '^…$'`
+# судит ПОСТРОЧНО, поэтому значение с переводом строки ВНУТРИ проходит гард, если ему хватило
+# ПЕРВОЙ строки, — а перевод строки в теле POST приезжает как `%0A` и становится настоящим в
+# `urldecode` (поймано стендом local/layout-blob-cgi-test.sh на блобе раскладки). Отсекаем
+# многострочное значение ДО регулярки. `wc -l` считает ПЕРЕВОДЫ СТРОК: у однострочного значения
+# без хвостового `\n` их ноль.
+one_line() { [ "$(printf '%s' "$1" | wc -l)" -eq 0 ]; }
+# ВЫБРАН DoT, А ШИФРУЕТ DoH (doh-lib.sh::doh_proto_now: порт 853 этим путём не проходит, прокси переехал на DoH того же
+# резолвера) — хвост ответа DoH-вербов. Без него тост «протокол: dot» / «включён» врал бы, чем шифруется DNS. Решает
+# библиотека, здесь только слово; библиотека старше переезда — хвоста нет.
+dot_fb_tail() {
+	command -v doh_proto_now >/dev/null 2>&1 || return 0
+	[ "$(doh_proto)" = dot ] && [ "$(doh_proto_now)" = doh ] && printf '%s' '; DoT этим путём не проходит — пока шифрую по DoH, вернусь на DoT сам'
+	return 0
+}
+# ПРИЧИНА ОТКАЗА ДВИЖКА ПРАВИЛ СЕТЕЙ — последняя строка его вывода (выше неё служебные строки сборки цепочек). Без
+# перевода строки на входе jesc: он превращает `\n` в пробел, и причина уезжала бы с хвостовым пробелом мимо словаря.
+# ВЫЗОВ web-ui.sh С ВЫВОДОМ В ФАЙЛ, а не в трубу: действие, перезапускающее терминатор HTTPS, рвёт свой же запрос с HTTPS-вкладки,
+# uhttpd бьёт CGI, и вербы, пишущие в трубу мёртвому читателю, падали по SIGPIPE на полпути (ревью шага 7a, круг 3). Файл —
+# с постоянным именем (перезаписывается; сирота от убитого CGI не копится). Итог — в WUI_OUT, код — возвратом.
+wui_run() {
+	_wuf=/tmp/enodia-webui-act.out
+	sh "$ENODIA_DIR/web-ui.sh" "$@" > "$_wuf" 2>&1; _wur=$?
+	WUI_OUT=$(cat "$_wuf" 2>/dev/null); rm -f "$_wuf"
+	return "$_wur"
+}
+wf_why() { _wy=$(printf '%s\n' "$1" | tail -n 1); printf '%s' "${_wy:-не удалось}" | jesc 300; }
 tok=$(field token)
 act=$(field action)
 
 echo "$tok" | grep -qE '^[0-9a-f]+$' || fail "нет токена"
-{ [ -s "$TOKFILE" ] && [ "$tok" = "$(cat "$TOKFILE")" ]; } || fail "неверный токен (перезагрузи панель)"
+{ [ -s "$TOKFILE" ] && [ "$tok" = "$(cat "$TOKFILE")" ]; } || fail "неверный токен (перезагрузите панель)"
 
 # Запуск скрипта с ЗАХАРДкоженными аргументами, возврат JSON {ok,code,msg}.
 run() {
 	s="$1"; shift
 	raw=$(sh "$ENODIA_DIR/$s" "$@" 2>&1); code=$?
 	# Весь разбор текста — в jesc (ANSI, переводы строк/табы, эскейп, безопасная обрезка).
-	msg=$(printf '%s' "$raw" | jesc 1000)
+	# ПОТОЛОК — 2000, А НЕ 1000. Замер 08.09.2026: тост НЕУДАЧНОЙ смены сервера (пять шагов, две
+	# серии точек ожидания, откат, safety_off и «Что делать» из пяти строк) — около 1,25 КБ, то
+	# есть на 1000 он УЖЕ резался; у «Включить VPN» с отказом переигрыша — 868 байт. Обрезка тут
+	# стоит дорого вдвойне: `cut -c1-N` режет ПО БАЙТАМ (обрывок UTF-8), а оборванная фраза больше
+	# не совпадает с ключом словаря — и англоязычный получает весь тост по-русски (гард i18nStr
+	# «остался кириллический хвост ⇒ вернуть оригинал целиком»).
+	msg=$(printf '%s' "$raw" | jesc 2000)
 	printf '{"ok":%s,"code":%s,"msg":"%s"}\n' "$([ "$code" -eq 0 ] && echo true || echo false)" "$code" "$msg"
 	exit 0
 }
@@ -117,13 +201,24 @@ run() {
 # setsid (новая сессия) → процесс переживает завершение CGI/uhttpd. -m -p <pidfile>
 # ОБЯЗАТЕЛЬНЫ: без них -x /bin/sh матчит ВСЕ процессы sh и даёт ложное «already
 # running». Пид-файл чистим перед стартом (защита от устаревшего). Фолбэк — ( … & ).
-spawn_bg() {  # spawn_bg <pidfile> <argv для /bin/sh…>:  spawn_bg /tmp/x.pid scr.sh apply X  |  spawn_bg /tmp/x.pid -c "cmd"
+spawn_bg() {  # spawn_bg <pidfile> <argv для /bin/sh…>:  spawn_bg /tmp/enodia-x.pid scr.sh apply X  |  spawn_bg /tmp/enodia-x.pid -c "cmd"
 	pf="$1"; shift
 	rm -f "$pf" 2>/dev/null
 	if [ -x /sbin/start-stop-daemon ]; then
 		start-stop-daemon -S -b -m -p "$pf" -x /bin/sh -- "$@" >/dev/null 2>&1
+		# ПИДФАЙЛ ПИШЕТ ВНУК: `-b` в busybox — двойной fork, родитель выходит сразу, а `-m` кладёт pid уже потомок, позже. Опрос
+		# панели, пришедший в это окно, видел RUNNING без живого держателя — «прервано» / «не удалось» до начала операции (ревью
+		# шага 6c, круг 2). Ждём файл до 2 с: `usleep` — дробного `sleep` в этом busybox нет (замер BE7000).
+		# fixed-wait: ждём не старт демона, а запись пидфайла потомком start-stop-daemon — жизни процесса тут судить не по чему.
+		_sw=0
+		while [ ! -s "$pf" ] && [ "$_sw" -lt 20 ]; do
+			if command -v usleep >/dev/null 2>&1; then usleep 100000; else sleep 1; _sw=$((_sw+9)); fi
+			_sw=$((_sw+1))
+		done
 	else
-		( sh "$@" >/dev/null 2>&1 & )
+		# Фолбэк тоже пишет пидфайл: по нему «идёт ли» судят гарды кнопок (`upd-busy`, `packages.sh busy`), и без него на прошивке
+		# без start-stop-daemon они не срабатывали никогда (ревью шага 6c, круг 2).
+		( sh "$@" >/dev/null 2>&1 & echo $! > "$pf" )
 	fi
 }
 
@@ -136,13 +231,9 @@ spawn_bg() {  # spawn_bg <pidfile> <argv для /bin/sh…>:  spawn_bg /tmp/x.pi
 # Отказ ДОЛЖЕН приезжать синхронно: план считаем ДО фонового запуска, иначе причина оседает в
 # логе, а человек видит бодрое «запущено» и пустой прогресс.
 pkg_bg() {  # pkg_bg <ставим|-> <снимаем|-> <сообщение об успехе>
-	[ -f "$ENODIA_DIR/packages.sh" ] || fail "packages.sh не установлен (обнови скрипты с GitHub)"
-	pst=$(cat "$ENODIA_STATE/.proto-install.state" 2>/dev/null | tr -d ' \r\n')
-	# Лок — КАТАЛОГ (mkdir атомарен, без TOCTOU), поэтому проверка именно -d: с прежним `-f`
-	# гард не срабатывал НИКОГДА, и второй клик обнулял лог уже идущей установки.
-	# RUNNING без живого лока = осиротевший статус (ребут посреди операции) — не блокируем,
-	# иначе панель залипает навсегда.
-	[ "$pst" = RUNNING ] && [ -d /tmp/proto-install.lock ] && fail "установка компонентов уже идёт — дождись завершения"
+	[ -f "$ENODIA_DIR/packages.sh" ] || fail "packages.sh не установлен (обновите скрипты с GitHub)"
+	# «Идёт ли установка» спрашиваем У ДВИЖКА — единственного владельца ответа (packages.sh busy).
+	sh "$ENODIA_DIR/packages.sh" busy >/dev/null 2>&1 && fail "установка компонентов уже идёт — дождитесь её конца"
 	pplan=$(sh "$ENODIA_DIR/packages.sh" plan "$1" "$2" 2>/dev/null | grep '^{' | tail -1)
 	case "$pplan" in
 		*'"ok":true'*) : ;;
@@ -150,12 +241,17 @@ pkg_bg() {  # pkg_bg <ставим|-> <снимаем|-> <сообщение о�
 			# Причина — словами движка: сперва гард удаления, потом ошибка плана, иначе место.
 			pwhy=$(printf '%s' "$pplan" | sed -n 's/.*"why":"\([^"]*\)".*/\1/p')
 			[ -n "$pwhy" ] || pwhy=$(printf '%s' "$pplan" | sed -n 's/.*"errors":\["\([^"]*\)".*/\1/p')
-			[ -n "$pwhy" ] || pwhy="не хватает места на флеше — сними что-нибудь в карточке «Компоненты»"
+			[ -n "$pwhy" ] || pwhy="не хватает места на флеше — снимите что-нибудь в «Роутер → Компоненты»"
 			fail "$pwhy" ;;
 	esac
-	echo RUNNING > "$ENODIA_STATE/.proto-install.state"
+	# Атомарно (запись рядом + `mv`) — разбор у packages.sh::set_state: читатель обрезанного файла видит «IDLE».
+	echo RUNNING > "$ENODIA_STATE/.proto-install.state.new" && mv -f "$ENODIA_STATE/.proto-install.state.new" "$ENODIA_STATE/.proto-install.state"
 	: > "$ENODIA_STATE/.proto-install.log"
-	spawn_bg /tmp/proto-install.pid "$ENODIA_DIR/packages.sh" apply "$1" "$2"
+	# Третье поле — какие из «ставим» обновления, словами плана (`upd`): иначе до перезаписи движком карточка «Идёт установка»
+	# называла обновление «Поставить». Только имена связок — план печатает их сам, чужого в строку не пускаем.
+	pupd=$(printf '%s' "$pplan" | sed -n 's/.*"upd":"\([a-z0-9 ]*\)".*/\1/p' | tr ' ' ',')
+	printf '%s\t%s\t%s\n' "$1" "$2" "${pupd:--}" > "$ENODIA_STATE/.proto-install.plan"
+	spawn_bg /tmp/enodia-proto-install.pid "$ENODIA_DIR/packages.sh" apply "$1" "$2"
 	printf '{"ok":true,"code":0,"msg":"%s"}\n' "$3"
 	exit 0
 }
@@ -175,6 +271,7 @@ clampint() {
 # перекрыла.
 sub_host_public() { return 1; }
 sub_names_keep_other() { _snf="${2:-$ENODIA_STATE/.sub-names}"; [ -f "$_snf" ] && grep -v "^sub-$1-" "$_snf"; return 0; }
+sub_info_drop() { return 0; }   # без библиотеки счётчиков нет вовсе — и снимать нечего
 if [ -f "$ENODIA_DIR/subs-lib.sh" ]; then . "$ENODIA_DIR/subs-lib.sh"; fi
 
 # КТО ВЛАДЕЛ АДРЕСОМ В МОМЕНТ ЗАВЕДЕНИЯ ПРАВИЛА. Все правила проекта ключуются по IPv4, а адрес
@@ -215,7 +312,20 @@ _valid_lcat() { case "$1" in tunnel-cidr|tunnel-domains|bypass-ip|adblock|ipbloc
 # block_enable, но по смыслу это «включить опциональную категорию источников» — пулы десинка это не
 # блокировка, поэтому текст берём отсюда, а не хардкодим «Блокировка».
 _lcat_switchable() { case "$1" in adblock|ipblock|zapret-cidr|zapret-dom) return 0 ;; *) return 1 ;; esac; }
-_lcat_label() { case "$1" in zapret-cidr) echo "Пул десинка по IP" ;; zapret-dom) echo "Свой пул десинка по доменам" ;; *) echo "Блокировка" ;; esac; }
+# Ответ — фразой ЦЕЛИКОМ, а не «подпись + включён»: у «блокировки» и «пула» разный род, и склейка давала «Блокировка
+# включён» (замер на BE7000, шаг 5c); перевод панели к тому же берёт строку целиком. Включение ipblock идёт своим путём
+# (проверка связи) и сюда не попадает.
+_lcat_msg() {  # _lcat_msg <cat> on|off
+	case "$1:$2" in
+		zapret-cidr:on)  echo "Пул десинка по IP включён — идёт загрузка списков" ;;
+		zapret-cidr:off) echo "Пул десинка по IP выключен" ;;
+		zapret-dom:on)   echo "Свой пул десинка по доменам включён — идёт загрузка списков" ;;
+		zapret-dom:off)  echo "Свой пул десинка по доменам выключен" ;;
+		adblock:on)      echo "Блокировка рекламы включена — идёт загрузка списков" ;;
+		adblock:off)     echo "Блокировка рекламы выключена" ;;
+		*)               echo "Блокировка по адресам выключена" ;;
+	esac
+}
 # Нормализация введённого домена — ОДНО место на все пути (одиночное правило, пачка, любой клиент).
 # Режем схему/путь/www и ВЕДУЩУЮ маску «*.».
 # ПОЧЕМУ маска режется, а не поддерживается: она не нужна — dnsmasq в `ipset=/дом/сет` матчит домен
@@ -232,7 +342,7 @@ norm_domain() { printf '%s' "$1" | sed 's|^https\?://||; s|/.*$||; s/^\*\.//; s/
 # доменов прежним путём = две минуты синхронного CGI, тридцать обрывов DNS у ВСЕЙ сети и таймаут
 # запроса; человек видит «сбой», а роутер в это время всё ещё молотит.
 bulk_domains() {
-	_bt="/tmp/bulk-dom.$$"
+	_bt="/tmp/enodia-bulk-dom.$$"
 	tr ',; \t\r' '\n\n\n\n\n' > "$_bt"
 	_n=$(sh "$ENODIA_DIR/domain.sh" add-many < "$_bt" 2>/dev/null | tail -1)
 	case "$_n" in
@@ -264,18 +374,21 @@ case "$act" in
 	vpn_on)      run vpn-toggle.sh on ;;
 	vpn_off)     run vpn-toggle.sh off ;;
 	repair)      run vpn-toggle.sh repair ;;
-	switch_awg)    hold_switch; run transport.sh switch awg ;;
-	switch_xray)   hold_switch; run transport.sh switch xray ;;
-	switch_hy2)    hold_switch; run transport.sh switch hy2 ;;
-	switch_byedpi) hold_switch; run transport.sh switch byedpi ;;
+	# `--home` = ВЫБОР СДЕЛАЛ ЧЕЛОВЕК: панель — единственное место, где транспорт выбирают руками,
+	# поэтому именно отсюда записывается «домашний транспорт» (transport.sh switch … --home).
+	# Сторож зовёт тот же verb БЕЗ флага: иначе аварийный уход на резерв назначил бы домом резерв.
+	switch_awg)    hold_switch; run transport.sh switch awg --home ;;
+	switch_xray)   hold_switch; run transport.sh switch xray --home ;;
+	switch_hy2)    hold_switch; run transport.sh switch hy2 --home ;;
+	switch_byedpi) hold_switch; run transport.sh switch byedpi --home ;;
 	# zapret — 5-й транспорт (десинк направо БЕЗ VPS): switch гасит туннель, весь трафик
 	# напрямую, заблок-категории пробивает nfqws. Гард — бинарь должен быть установлен.
-	switch_zapret) [ -x "$(bin_path nfqws)" ] || fail "nfqws не установлен — поставь его в «Компонентах»"; hold_switch; run transport.sh switch zapret ;;
+	switch_zapret) [ -x "$(bin_path nfqws)" ] || fail "nfqws не установлен — поставьте его в «Компонентах»"; hold_switch; run transport.sh switch zapret --home ;;
 
 	# --- Перезагрузка роутера. Фоном с задержкой, чтобы CGI успел ответить панели до разрыва.
 	reboot)
-		spawn_bg /tmp/panel-reboot.pid -c "sleep 2; reboot"
-		printf '{"ok":true,"code":0,"msg":"Роутер перезагружается… панель вернётся через ~40-60 с (обнови страницу)."}\n'
+		spawn_bg /tmp/enodia-panel-reboot.pid -c "sleep 2; reboot"
+		printf '{"ok":true,"code":0,"msg":"Роутер перезагружается… панель вернётся через ~40-60 с (обновите страницу)."}\n'
 		exit 0 ;;
 
 	# --- SSH-КОНСОЛЬ (root). Полный доступ ПО ЯВНОМУ ВЫБОРУ пользователя: команда исполняется
@@ -287,12 +400,75 @@ case "$act" in
 	console)
 		cmd=$(urldecode "$(field cmd)")
 		[ -n "$cmd" ] || fail "пустая команда"
-		# busybox timeout здесь СТАРОГО синтаксиса: `timeout -t СЕК CMD` (новый `timeout СЕК CMD`
-		# падает «can't execute '60'»). Детектим по успеху -t; иначе без таймаута.
-		TO=""; if timeout -t 1 true >/dev/null 2>&1; then TO="timeout -t 60"; fi
-		out=$($TO sh -c "$cmd" 2>&1); code=$?
-		esc=$(printf '%s' "$out" | tr -d '\033\r' | sed 's/\[[0-9;]*m//g' | tr '\t' ' ' | head -c 100000 | jtrim | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n",$0}')
-		printf '{"ok":%s,"code":%s,"out":"%s"}\n' "$([ "$code" -eq 0 ] && echo true || echo false)" "$code" "$esc"
+		# ПОТОЛОК 60 СЕКУНД — ВСЕМУ ДЕРЕВУ, А НЕ ОДНОМУ `sh` (ревью шага 6d, замер BE7000 23.09.2026). `timeout -t` убивал лишь
+		# `sh -c`, а потомки (`ping`, `tail -f`, `sleep`) жили и держали трубу `$(…)` открытой: `ping -c 100` шёл 100 с и получал
+		# пометку «оборвана», а `tail -f` вешал CGI до потолка uhttpd (180 с) и жил сиротой. Поэтому вывод — в ФАЙЛ (труба не держит
+		# ответ), команда — фоном, и по сроку её гасят вместе с потомками (обход /proc по PPid). Отцепленное (`start-stop-daemon -b`)
+		# потомком init уже не числится и живёт — это законный запуск службы.
+		# Конец команды — по файлу кода, а не `kill -0`: завершившийся фоновый потомок до `wait` остаётся зомби, и `kill -0` отвечал бы
+		# «жив» — каждая команда ждала бы весь потолок.
+		cof=/tmp/enodia-console.$$
+		# `.rc` ловушка НЕ трогает: по нему сторож узнаёт, что команда кончилась, и стёртый раньше его взгляда он принимал за «идёт» —
+		# минуту крутил опрос и гасил дерево уже закончившейся команды вместе с её честным фоном (ревью шага 6d, круг 3). Его убирает сторож.
+		trap 'rm -f "$cof" "$cof.k" "$cof.cut"' EXIT HUP INT TERM PIPE
+		# Вывод — ПРЯМО В ФАЙЛ, без трубы: `head -c` в трубе копит вывод в своём буфере до выхода, а фон, оставленный командой без
+		# перенаправления (`sh x.sh &`), держит трубу и не даёт ему выйти — ответ приходил пустым (ревью шага 6d, круг 3). Потолок по
+		# объёму держит сторож ниже. stdio фона — в /dev/null: унаследованный stdout CGI держал бы ответ, пока жив фон.
+		( sh -c "$cmd" > "$cof" 2>&1; echo $? > "$cof.rc" ) </dev/null >/dev/null 2>&1 &
+		cpid=$!
+		# Шаг ожидания — 0,1 с (`usleep` у busybox есть; дробного `sleep` нет — замер BE7000), чтобы быстрая команда не ждала секунду.
+		lim=60; cstep=usleep; usleep 1 >/dev/null 2>&1 || cstep=sleep
+		cmax=$((lim*10)); [ "$cstep" = sleep ] && cmax=$lim
+		# СТОРОЖ ПОТОЛКА — ОТДЕЛЬНЫЙ ФОНОВЫЙ УЗЕЛ, а не цикл самого CGI: uhttpd, потеряв клиента (вкладку закрыли, не дождавшись), бьёт
+		# CGI SIGKILL, ловушка на нём не срабатывает, и команда без конца (`ping` без `-c`, `tcpdump`) жила до ребута (ревью шага 6d,
+		# круг 2). Сторож переживает CGI: по сроку ставит метку «оборвана» и гасит дерево, а если CGI уже мёртв — убирает и времянки.
+		# Метка — ДО сигналов: иначе группа, поймавшая TERM после `sh -c`, успевала бы записать код 143, и оборванная читалась бы упавшей сама.
+		# ПОТОЛОК ПО ОБЪЁМУ — тот же сторож, на каждом шаге: /tmp — это ОЗУ, и `yes` или `cat /dev/zero` за секунды забивали его, а страницы
+		# tmpfs OOM не освобождает — он убивал несущую и dnsmasq (ревью шага 6d, круг 2). Вывод перевалил за 100 КБ — дерево гасим (как
+		# SIGPIPE у `… | head`), меткой `.cut`, а не `.k`: оборвана не по сроку. Переполнение ограничено одним шагом (0,1 с) записи.
+		(
+			ci=0
+			while [ ! -s "$cof.rc" ] && [ "$ci" -lt "$cmax" ]; do
+				if [ "$cstep" = usleep ]; then usleep 100000; else sleep 1; fi
+				ci=$((ci+1))
+				[ "$(wc -c < "$cof" 2>/dev/null)" -gt 100000 ] 2>/dev/null && { : > "$cof.cut"; break; }
+			done
+			if [ ! -s "$cof.rc" ]; then
+				[ -e "$cof.cut" ] || : > "$cof.k"
+				ctree="$cpid"; cq="$cpid"
+				while [ -n "$cq" ]; do
+					cn=""
+					for cp in $cq; do
+						for cf in $(grep -l "^PPid:[[:space:]]*$cp\$" /proc/[0-9]*/status 2>/dev/null); do
+							cc=${cf#/proc/}; cc=${cc%/status}; cn="$cn $cc"
+						done
+					done
+					ctree="$ctree$cn"; cq=$cn
+				done
+				kill -TERM $ctree 2>/dev/null; sleep 1; kill -KILL $ctree 2>/dev/null
+			fi
+			# CGI жив — он прочтёт вывод и уберёт времянки сам; мёртв — убираем мы (запас на чтение живым CGI).
+			sleep 3; kill -0 $$ 2>/dev/null || rm -f "$cof" "$cof.rc" "$cof.k" "$cof.cut"
+		) </dev/null >/dev/null 2>&1 &
+		# CGI ждёт конца команды или вердикта сторожа; свой предел — с запасом, на случай если сторож сам не дожил.
+		ci=0; cwmax=$((cmax + cmax/10 + 30))
+		while [ ! -s "$cof.rc" ] && [ ! -e "$cof.k" ] && [ ! -e "$cof.cut" ] && [ "$ci" -lt "$cwmax" ]; do
+			if [ "$cstep" = usleep ]; then usleep 100000; else sleep 1; fi
+			ci=$((ci+1))
+		done
+		killed=false; [ -e "$cof.k" ] && killed=true
+		# Фон НЕ ждём (`wait`): код уже в файле, а зомби приберёт init вместе с нами. Обрезанную по объёму тоже не ждём: первые 100 КБ
+		# уже лежат и не меняются, а код у неё — от сигнала сторожа (нет файла кода = 143).
+		code=$(cat "$cof.rc" 2>/dev/null | tr -d ' \r\n'); case "$code" in ''|*[!0-9]*) code=143 ;; esac
+		[ "$killed" = true ] && code=143
+		# Управляющие байты (0x00–0x1F, кроме таба и перевода строки, и DEL) — вон: сырой в строке JSON ломает разбор ВСЕГО ответа, и
+		# панель читала выполненную команду как «нет связи» (тот же довод, что у `jtxt` в json-lib.sh). ESC уходит тем же `tr`, хвост
+		# ANSI-последовательности (`[0;32m`) снимает sed.
+		esc=$(head -c 100000 "$cof" | tr '\t' ' ' | tr -d '\000-\010\013-\037\177' | sed 's/\[[0-9;]*m//g' | jtrim | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n",$0}')
+		# ФАКТЫ, КОТОРЫХ ПАНЕЛЬ САМА НЕ ЗНАЕТ: вывод обрезан (потолок 100 КБ — в БАЙТАХ, `wc -c`), каков потолок и сработал ли он
+		# (`killed` — по факту, а не «код 143»: его команда может вернуть и сама).
+		cut=false; [ "$(wc -c < "$cof")" -gt 100000 ] && cut=true
+		printf '{"ok":%s,"code":%s,"cut":%s,"limit":%s,"killed":%s,"out":"%s"}\n' "$([ "$code" -eq 0 ] && echo true || echo false)" "$code" "$cut" "$lim" "$killed" "$esc"
 		exit 0 ;;
 
 	# --- РЕЖИМ ПОДДЕРЖКИ: временный обратный SSH-туннель разработчику (support.sh). Тестер жмёт
@@ -318,7 +494,7 @@ case "$act" in
 	support_off)
 		raw=$(sh "$ENODIA_DIR/support.sh" down 2>/dev/null)
 		out=$(printf '%s\n' "$raw" | grep '^{' | tail -n1)   # тот же гард — только JSON-строка (см. support_on)
-		printf '{"ok":true,"code":0,"status":%s}\n' "${out:-null}"
+		printf '{"ok":true,"code":0,"msg":"Доступ закрыт","status":%s}\n' "${out:-null}"
 		exit 0 ;;
 	# --- РЕЖИМ ПОДДЕРЖКИ через «код поддержки» (широкая сборка БЕЗ данных релея в билде). Тестер
 	# вставляет base64-код от разработчика (`BE7SUP1 IP PORT USER PASSWORD`). Код уходит в support.sh
@@ -331,7 +507,18 @@ case "$act" in
 		[ -n "$scode" ] || fail "пустой код поддержки"
 		raw=$(printf '%s' "$scode" | sh "$ENODIA_DIR/support.sh" open-code "$ttl" 2>/dev/null); rc=$?
 		out=$(printf '%s\n' "$raw" | grep '^{' | tail -n1)
-		printf '{"ok":%s,"code":%s,"status":%s}\n' "$([ "$rc" -eq 0 ] && echo true || echo false)" "$rc" "${out:-null}"
+		# ПРИЧИНА ОТКАЗА — СЛОВАМИ: support.sh отвечает кодом (`error`), а панель показывала на любой отказ «ошибка», и
+		# человек не мог отличить обрезанный при копировании код от мёртвого интернета. Коды — контракт support.sh.
+		case "$out" in
+			*'"active":1'*)       smsg="Доступ открыт" ;;
+			*'"empty-code"'*)     smsg="код поддержки пустой — вставьте его целиком" ;;
+			*'"bad-code"'*)       smsg="код поддержки не распознан — скопируйте его целиком, без обрезки" ;;
+			*'"bad-relay"'*)      smsg="в коде неверный адрес релея — попросите у разработчика новый код" ;;
+			*'"tunnel-failed"'*)  smsg="соединение с релеем не поднялось за три попытки — проверьте интернет и повторите" ;;
+			*'"wan-down"'*)       smsg="у роутера нет связи с провайдером — подключите интернет и повторите" ;;
+			*)                    smsg="не удалось открыть доступ" ;;
+		esac
+		printf '{"ok":%s,"code":%s,"msg":"%s","status":%s}\n' "$([ "$rc" -eq 0 ] && echo true || echo false)" "$rc" "$smsg" "${out:-null}"
 		exit 0 ;;
 	# --- НАСТРОЙКИ панели (.prefs, key=value). Ключ — строгий whitelist (в файл уходит только
 	# проверенное имя ключа), значение валидируется по типу ключа. Атомарная запись: переписать
@@ -347,6 +534,9 @@ case "$act" in
 			balancer)        case "$v" in 0|1) : ;; *) fail "значение 0 или 1" ;; esac ;;
 			theme)           case "$v" in auto|light|dark) : ;; *) fail "значение auto/light/dark" ;; esac ;;
 			lang)            case "$v" in ru|en) : ;; *) fail "значение ru/en" ;; esac ;;
+			# Что меряет живая скорость в шапке (через туннель · напрямую · всего) — ВИД, а не
+			# настройка, но храним тут же, рядом с темой: выбор едет за человеком на все устройства.
+			live_src)        case "$v" in tun|direct|all) : ;; *) fail "значение tun/direct/all" ;; esac ;;
 			*) fail "неизвестная настройка" ;;
 		esac
 		P="$ENODIA_STATE/.prefs"; tmp="$P.$$"
@@ -358,25 +548,27 @@ case "$act" in
 	# и проверяет фактический выход в интернет. Печатает свой JSON {ok,ip,ms|msg}. Имя — строгий
 	# whitelist (в shell не уходит ничего, кроме прошедшего regex имени файла конфига).
 	test_xray_server)
-		[ -f "$ENODIA_DIR/xray-test.sh" ] || fail "xray-test.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/xray-test.sh" ] || fail "xray-test.sh не установлен (обновите панель)"
 		[ -x "$(bin_path xray)" ]  || fail "xray не установлен"
 		name=$(urldecode "$(field name)")
-		echo "$name" | grep -qE '^[A-Za-z0-9._-]{1,80}$' || fail "плохое имя конфига"
+		# Форма имени — та же, что у чтения и удаления (`^[A-Za-z0-9_.-]+$`): прежний потолок 80 знаков отвечал «плохое имя» на
+		# экране конфига с длинным именем, и панель писала мёртвым живой сервер (ревью пачки 2, круг 2). Длину держит ФС.
+		echo "$name" | grep -qE '^[A-Za-z0-9._-]+$' || fail "плохое имя конфига"
 		[ -f "$ENODIA_STATE/xray-configs/$name.json" ] || fail "конфиг не найден"
 		# Необязательный порт временного socks: панель шлёт разные (10812..10819) для ПАРАЛЛЕЛЬНОГО
 		# теста группы серверов подписки. Строго валидируем (порт идёт в sed/netstat скрипта).
 		port=$(field port); case "$port" in 1081[2-9]) : ;; *) port=10812 ;; esac
-		sh "$ENODIA_DIR/xray-test.sh" "$name" "$port"
+		sh "$ENODIA_DIR/xray-test.sh" egress "$name" "$port"   # режим — явным словом: конфиг «speed» иначе читался как режим
 		exit 0 ;;
 
 	# --- ТЕСТ СКОРОСТИ xray-конфига: качает известный размер через socks конфига → Мбит/с.
 	# Тот же xray-test.sh в режиме speed (DRY). Жжёт реальный трафик (через VPS) → это РАЗОВОЕ
 	# действие по кнопке, не часть «проверить все». Многопоточно (streams/dur, скрипт капит).
 	speedtest_xray_server)
-		[ -f "$ENODIA_DIR/xray-test.sh" ] || fail "xray-test.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/xray-test.sh" ] || fail "xray-test.sh не установлен (обновите панель)"
 		[ -x "$(bin_path xray)" ]  || fail "xray не установлен"
 		name=$(urldecode "$(field name)")
-		echo "$name" | grep -qE '^[A-Za-z0-9._-]{1,80}$' || fail "плохое имя конфига"
+		echo "$name" | grep -qE '^[A-Za-z0-9._-]+$' || fail "плохое имя конфига"
 		[ -f "$ENODIA_STATE/xray-configs/$name.json" ] || fail "конфиг не найден"
 		port=$(field port); case "$port" in 1081[2-9]) : ;; *) port=10812 ;; esac
 		streams=$(field streams); case "$streams" in ''|*[!0-9]*) streams=4 ;; esac
@@ -384,38 +576,42 @@ case "$act" in
 		sh "$ENODIA_DIR/xray-test.sh" speed "$name" "$port" "$streams" "$dur"
 		exit 0 ;;
 
-	# --- Статические DNS-hosts (оверрайд домен→IP): dns-hosts.sh валидирует домен/IP и пишет
-	# живой conf + reload. add печатает «ok» или сообщение об ошибке (exit != 0). del безопасен.
+	# --- Свои имена (оверрайд домен→IP): dns-hosts.sh валидирует домен/IP и пишет живой conf + reload.
+	# add и del печатают «ok» или причину словами (exit != 0). ТОЛЬКО stdout и ТОЛЬКО последняя строка:
+	# stderr — это вывод `dnsmasq --test` (conf_test пишет его туда для лога), и склеенный с причиной переводом
+	# строки он ломал JSON ответа (`fail` кладёт строку как есть) — панель показывала «сбой: …JSON…» вместо
+	# «dnsmasq не принял такой адрес» (ревью шага 5a, круг 1). Причина — через jesc: её пишет скрипт.
 	dns_host_add)
-		[ -f "$ENODIA_DIR/dns-hosts.sh" ] || fail "dns-hosts.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/dns-hosts.sh" ] || fail "dns-hosts.sh не установлен (обновите панель)"
 		dom=$(urldecode "$(field domain)"); ip=$(urldecode "$(field ip)")
-		out=$(sh "$ENODIA_DIR/dns-hosts.sh" add "$dom" "$ip" 2>&1)
+		out=$(sh "$ENODIA_DIR/dns-hosts.sh" add "$dom" "$ip" 2>/dev/null | tail -n 1)
 		case "$out" in
-			ok) printf '{"ok":true,"code":0,"msg":"DNS-host добавлен"}\n' ;;
-			*)  fail "${out:-не удалось добавить}" ;;
+			ok) printf '{"ok":true,"code":0,"msg":"своё имя добавлено"}\n' ;;
+			*)  fail "$(printf '%s' "${out:-не удалось добавить}" | jesc 200)" ;;
 		esac
 		exit 0 ;;
 	dns_host_del)
-		[ -f "$ENODIA_DIR/dns-hosts.sh" ] || fail "dns-hosts.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/dns-hosts.sh" ] || fail "dns-hosts.sh не установлен (обновите панель)"
 		dom=$(urldecode "$(field domain)")
-		sh "$ENODIA_DIR/dns-hosts.sh" del "$dom" >/dev/null 2>&1
-		printf '{"ok":true,"code":0,"msg":"DNS-host удалён"}\n'; exit 0 ;;
+		out=$(sh "$ENODIA_DIR/dns-hosts.sh" del "$dom" 2>/dev/null | tail -n 1)
+		[ "$out" = ok ] || fail "$(printf '%s' "${out:-не удалось убрать}" | jesc 200)"
+		printf '{"ok":true,"code":0,"msg":"своё имя убрано"}\n'; exit 0 ;;
 
 	# --- Раздельный резолв рунета (.ru/.рф/.su напрямую через RF-резолвер). dns-split.sh пишет
 	# живой conf + reload dnsmasq. Только вкл/выкл (резолвер хардкод Яндекс — надёжный RF-дефолт).
 	split_runet_on)
-		[ -f "$ENODIA_DIR/dns-split.sh" ] || fail "dns-split.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/dns-split.sh" ] || fail "dns-split.sh не установлен (обновите панель)"
 		sh "$ENODIA_DIR/dns-split.sh" on >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"раздельный резолв рунета включён"}\n'; exit 0 ;;
 	split_runet_off)
-		[ -f "$ENODIA_DIR/dns-split.sh" ] || fail "dns-split.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/dns-split.sh" ] || fail "dns-split.sh не установлен (обновите панель)"
 		sh "$ENODIA_DIR/dns-split.sh" off >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"раздельный резолв рунета выключен"}\n'; exit 0 ;;
 
 	# --- Сеть/MTU: MTU туннеля AmneziaWG (awg0) + блок клиентского IPv6-интернета. net-tune.sh
 	# применяет флаги (.tun-mtu / .ipv6-block) и переигрывается heal.sh на буте.
 	set_tun_mtu)
-		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обновите панель)"
 		mtu=$(field mtu | tr -cd '0-9')
 		[ -n "$mtu" ] || fail "нет значения MTU"
 		{ [ "$mtu" -ge 1280 ] && [ "$mtu" -le 1500 ]; } 2>/dev/null || fail "MTU вне диапазона 1280..1500"
@@ -426,7 +622,7 @@ case "$act" in
 	# не меняется) ⇒ здесь только пишем флаг и честно говорим об этом в ответе; несущую сами не
 	# роняем — рвать соединения всему дому ради настройки нельзя.
 	set_go_memlimit)
-		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обновите панель)"
 		gv=$(field value | tr -cd 'a-z0-9')
 		case "$gv" in
 			auto)   rm -f "$ENODIA_STATE/.go-memlimit" 2>/dev/null; gm="автоматически" ;;
@@ -437,12 +633,12 @@ case "$act" in
 		esac
 		printf '{"ok":true,"code":0,"msg":"потолок памяти: %s — вступит в силу при следующем подъёме туннеля"}\n' "$gm"; exit 0 ;;
 	ipv6_block_on)
-		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обновите панель)"
 		: > "$ENODIA_STATE/.ipv6-block"
 		sh "$ENODIA_DIR/net-tune.sh" ipv6 >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"IPv6-интернет клиентам заблокирован"}\n'; exit 0 ;;
 	ipv6_block_off)
-		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/net-tune.sh" ] || fail "net-tune.sh не установлен (обновите панель)"
 		rm -f "$ENODIA_STATE/.ipv6-block" 2>/dev/null
 		sh "$ENODIA_DIR/net-tune.sh" ipv6 >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"IPv6-интернет клиентам разрешён"}\n'; exit 0 ;;
@@ -454,19 +650,41 @@ case "$act" in
 	# Пока бинарь не вендорен — тумблер персистится, но doh_enabled=false ⇒ реального эффекта нет
 	# (безопасно): карточка честно покажет «бинарь не установлен».
 	doh_on)
-		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
 		echo on > "$ENODIA_STATE/.doh-on"
+		# Включение — новое намерение: выбранный DoT пробуем заново, а не шифруем по DoH, куда его когда-то увела
+		# проверка ДРУГОГО пути (иначе хвост ответа говорил бы «DoT не проходит» о пути, который никто не проверял).
+		# Переезд был, а прокси жив (держал авто-режим) — он ещё на DoH: снять его правила и поднять под DoT.
+		if command -v doh_dot_forget >/dev/null 2>&1 && doh_dot_forget && doh_running; then
+			doh_resolver_mark del; doh_resolver_bypass del; doh_restart
+		fi
 		sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1   # переиграть DNS активного транспорта → локальный DoH-прокси + марка резолвера
+		# СУДИМ ПО ФАКТУ, а не по коду шага. DNS переходит на прокси только если проба резолва
+		# прошла (doh_apply_dns пробует и откатывается сам). Не перешёл — тумблер обязан вернуться
+		# в «выкл»: иначе человек остаётся с ЗЕЛЁНЫМ переключателем над сетью без имён. Ровно это
+		# случилось 31.08.2026 на AX3600 (прокси слушает порт и не отвечает ни на один запрос).
+		# Библиотека сеть уже вернула; наше дело — не соврать про состояние и снять НАМЕРЕНИЕ,
+		# потому что видим человека здесь только мы.
+		if doh_installed && ! grep -q "server=$(doh_upstream)" /etc/dnsmasq.d/00-upstream.conf 2>/dev/null; then
+			rm -f "$ENODIA_STATE/.doh-on"
+			# В ЦЕНТР УВЕДОМЛЕНИЙ, а не только тостом: тост живёт секунды, журнал действий —
+			# клиентский и умирает вместе с вкладкой, а узнать «почему у меня выключился
+			# шифрованный DNS» человек захочет позже. Единая точка события — notify-event.sh
+			# (он пишет журнал ДО почтовых гейтов, письмо уйдёт только если почта настроена).
+			# Фоном: notify-event ходит к SMTP, а CGI и так ждал пробу резолва ~12 с.
+			# Троттл час — повторные нажатия не должны спамить ни журнал, ни почту.
+			spawn_bg /tmp/enodia-doh-event.pid -c "sh '$ENODIA_DIR/notify-event.sh' doh-enable-failed 3600 'Шифрованный DNS не включился' 'Резолвер $(doh_resolver_name) не ответил на проверочный запрос. DNS возвращён на прежний путь, тумблер снят — сеть работает. Если это повторяется, шифрованный DNS на этом роутере лучше оставить выключенным.'"
+			fail "Шифрованный DNS не заработал: резолвер не ответил. Вернул прежний DNS, тумблер снят."
+		fi
 		if doh_installed; then
-			printf '{"ok":true,"code":0,"msg":"Шифрованный DNS включён (резолвер: %s)"}\n' "$(doh_resolver_name)"; exit 0
+			printf '{"ok":true,"code":0,"msg":"Шифрованный DNS включён (резолвер: %s)%s"}\n' "$(doh_resolver_name)" "$(dot_fb_tail)"; exit 0
 		fi
 		printf '{"ok":true,"code":0,"msg":"Включено, но бинарь DoH ещё не установлен — шифрование заработает после установки"}\n'; exit 0 ;;
 	doh_off)
-		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
-		doh_resolver_mark del; doh_resolver_bypass del   # снять форс-марку/RETURN :443 текущего резолвера
-		doh_stop                                          # погасить локальный прокси
+		doh_dns_bailout                                   # снять форс-марку/RETURN резолвера, погасить прокси, стереть флаг «уведён»
 		rm -f "$ENODIA_STATE/.doh-on" 2>/dev/null                  # ДО reapply: doh_apply_dns теперь вернёт 1 → прежний путь транспорта
 		sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
 		# В прямом режиме (zapret/byedpi/fail-open) reapply мог тут же поднять DoH ЗАНОВО по авто-режиму —
@@ -475,11 +693,53 @@ case "$act" in
 			printf '{"ok":true,"code":0,"msg":"Тумблер выключен; в прямом режиме DNS остаётся шифрованным (авто-режим)"}\n'; exit 0
 		fi
 		printf '{"ok":true,"code":0,"msg":"Шифрованный DNS выключен"}\n'; exit 0 ;;
+	# «ПОПРОБОВАТЬ СЕЙЧАС» — во время паузы ручного DoH (doh-lib.sh::doh_apply_fail: резолвер не ответил, DNS на прежнем пути,
+	# сторож повторит через DOH_BAIL_BACKOFF). Прежде экран советовал «выключите и включите тумблер», а включение, проваливая
+	# пробу, СНИМАЕТ тумблер (doh_on выше: новое намерение, которое не прошло проверку) — совет, выполненный при всё ещё
+	# мёртвом резолвере, стирал намерение, и роутер переставал пробовать вовсе. Здесь намерение не трогаем: перепроводка
+	# (`transport.sh dns` → doh_apply_dns) сама снимает паузу, а провал ставит её заново. Итог — по указателю dnsmasq.
+	doh_retry)
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
+		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		doh_enabled || fail "Шифрованный DNS выключен — пробовать нечего"
+		# ЧУЖАЯ ОПЕРАЦИЯ ИДЁТ — не вмешиваемся (ревью ветки, круги 1–2): кнопка видна ровно тогда, когда несущая под подозрением, то
+		# есть в окне failover. Лок смены держат смена транспорта, установка компонентов, перенос на накопитель, «Отключить VPN»;
+		# а тик сторожа и heal ведут несущую БЕЗ него — перебор резервов xray/hy2 идёт прямо в плагине, и наш лок его ПРЕРВАЛ бы
+		# («ручная смена важнее»): сторож счёл бы пул исчерпанным и ушёл в cross или FAILOPEN. Параллельный `transport.sh dns`
+		# прочёл бы ещё прежний `.transport`, и два doh_apply_dns ставили бы и снимали правила резолвера навстречу друг другу.
+		[ -e "$SWITCH_LOCK" ] && fail "Роутер занят другой операцией — попробуйте через минуту"
+		if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+		command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+		_drc() { command -v wd_tick_alive >/dev/null 2>&1 && { wd_tick_alive || heal_alive; }; }
+		_drc && fail "Роутер сейчас сам восстанавливает соединение — попробуйте через минуту"
+		doh_upstream_set && { printf '{"ok":true,"code":0,"msg":"Шифрованный DNS уже работает"}\n'; exit 0; }
+		# ЛОК И ПЕРЕПРОВОДКА — В ФОНОВОМ УЗЛЕ, а не в CGI (ревью ветки, круг 2): при мёртвом резолвере перепроводка идёт 30–60 с,
+		# и закрытая вкладка = SIGKILL от uhttpd, при котором trap молчит — лок оставался бы до SWITCH_STALE (30 мин), и всё это
+		# время сторож не чинил бы ничего. Узел снимает лок сам; CGI его только ждёт. Тик, успевший стартовать между сверкой и
+		# локом, ловим повторной сверкой уже под локом (новые тики лок чтут и выходят сами).
+		[ -e "$SWITCH_LOCK" ] && fail "Роутер занят другой операцией — попробуйте через минуту"
+		: > "$SWITCH_LOCK" 2>/dev/null || fail "не удалось взять лок смены транспорта"
+		if _drc; then rm -f "$SWITCH_LOCK" 2>/dev/null; fail "Роутер сейчас сам восстанавливает соединение — попробуйте через минуту"; fi
+		spawn_bg /tmp/enodia-doh-retry.pid -c ": doh-retry; trap 'rm -f \"$SWITCH_LOCK\"' EXIT HUP INT TERM PIPE; sh '$ENODIA_DIR/transport.sh' dns >/dev/null 2>&1"
+		_drp=$(cat /tmp/enodia-doh-retry.pid 2>/dev/null | tr -cd '0-9'); _drw=0
+		# Узел не поднялся (нет пидфайла и после запаса) — лок наш и снять его больше некому: иначе сторож стоял бы до SWITCH_STALE.
+		# fixed-wait: запас на запись пидфайла внуком start-stop-daemon под нагрузкой (spawn_bg ждёт 2 с), жизнь судить не по чему.
+		[ -n "$_drp" ] || { sleep 3; _drp=$(cat /tmp/enodia-doh-retry.pid 2>/dev/null | tr -cd '0-9'); }
+		[ -n "$_drp" ] || { rm -f "$SWITCH_LOCK" 2>/dev/null; fail "Не удалось запустить проверку — попробуйте ещё раз"; }
+		# Потолок ниже таймаута uhttpd (-t 180). fixed-wait: ждём не старт демона, а конец перепроводки — судим по жизни узла.
+		while [ "$_drw" -lt "${DOH_RETRY_WAIT:-150}" ] && pid_runs "$_drp" ': doh-retry;'; do sleep 1; _drw=$((_drw+1)); done
+		pid_runs "$_drp" ': doh-retry;' && { printf '{"ok":true,"code":0,"msg":"Проверка ещё идёт — итог появится на экране"}\n'; exit 0; }
+		if ! doh_upstream_set; then
+			# Срок — только если пауза и правда встала: провал при лежащем WAN её не ставит (doh_apply_fail), и сторож пробует сразу.
+			[ -f "$DOH_BAIL_STAMP" ] && fail "Резолвер снова не ответил — DNS остался на прежнем пути. Роутер попробует сам через $((DOH_BAIL_BACKOFF / 60)) мин."
+			fail "Резолвер снова не ответил — DNS остался на прежнем пути. Роутер попробует сам на ближайшей проверке сторожа."
+		fi
+		printf '{"ok":true,"code":0,"msg":"Шифрованный DNS снова работает (резолвер: %s)%s"}\n' "$(doh_resolver_name)" "$(dot_fb_tail)"; exit 0 ;;
 	# Авто-режим: включать DoH САМ, когда туннеля нет (zapret/byedpi/fail-open) — там dnsmasq иначе
 	# форвардит плейн UDP:53 и ISP может травить DNS. Дефолт вкл; функциональная проба в doh_apply_dns
 	# откатит на прежний DNS, если резолвер недостижим. [[doh-direct-modes-backlog]]
 	set_doh_auto)
-		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
 		v=$(field value | tr -cd 'a-z')
 		case "$v" in on|off) : ;; *) fail "ожидается on|off" ;; esac
@@ -493,7 +753,7 @@ case "$act" in
 		sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"Авто-DNS в прямых режимах включён"}\n'; exit 0 ;;
 	set_doh_resolver)
-		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
 		r=$(field resolver | tr -cd 'a-z0-9')
 		case " $(doh_resolver_list) " in *" $r "*) : ;; *) fail "неизвестный резолвер" ;; esac
@@ -502,7 +762,7 @@ case "$act" in
 		# --- СВОЙ резолвер: разобрать ввод и ПОСЧИТАТЬ ЯКОРЯ ДО единой правки состояния ---
 		# Разбор и валидация — в doh-lib (doh_custom_parse), здесь только длина: поле приходит из
 		# сети, и обрезать его до разбора дешевле, чем гонять регексп по мегабайту.
-		cu=""; cs=""; cips=""
+		cu=""; cs=""; cips=""; cdp=""
 		if [ "$r" = custom ]; then
 			# urldecode ОБЯЗАТЕЛЕН: панель шлёт значение через encodeURIComponent, и без декода
 			# сюда приходит `https%3A%2F%2F…` — строгий разбор такое отвергает ЦЕЛИКОМ, то есть
@@ -513,6 +773,7 @@ case "$act" in
 			[ -n "$cin" ] || fail "укажите адрес своего резолвера"
 			cp=$(doh_custom_parse "$cin") || fail "адрес не похож на резолвер: ждём https://хост/путь, tls://хост, имя или IP"
 			cu=$(printf '%s' "$cp" | cut -f1); cs=$(printf '%s' "$cp" | cut -f2); ch=$(printf '%s' "$cp" | cut -f3)
+			cdp=$(printf '%s' "$cp" | cut -f4)   # порт DoT из `tls://хост:порт` (пусто = 853); библиотека старше поля — пусто
 			# DoT предъявляет имя в SNI, и `-s` у dot-proxy обязателен ⇒ голый IP с ним несовместим.
 			# Говорим это ДО того, как что-то поменяли: иначе человек получил бы откат вместо ответа.
 			[ "$(doh_proto)" = dot ] && [ -z "$cs" ] && fail "для DoT нужно ИМЯ резолвера (у IP нечего предъявить в SNI) — введите имя или переключите протокол на DoH"
@@ -532,10 +793,12 @@ case "$act" in
 		# Прежний резолвер запоминаем ДО перезаписи: недостижимый новый откатим на него (проба ниже).
 		prev=$(doh_resolver_name); prevnid=$(cat "$ENODIA_STATE/.doh-nextdns-id" 2>/dev/null)
 		prevcu=$(cat "$ENODIA_STATE/.doh-custom-url" 2>/dev/null); prevcs=$(cat "$ENODIA_STATE/.doh-custom-sni" 2>/dev/null)
-		prevcips=$(cat "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null)
+		prevcips=$(cat "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null); prevcdp=$(cat "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null)
 		# Teardown :443-правил СТАРОГО резолвера ДО записи нового (guard знает лишь текущий резолвер —
 		# иначе марка/RETURN прежнего IP останутся висеть в mangle OUTPUT).
 		doh_resolver_mark del; doh_resolver_bypass del
+		# Вердикт «853 этим путём закрыт» был про ПРЕЖНИЙ резолвер: новый обязан сперва попробовать DoT.
+		command -v doh_dot_forget >/dev/null 2>&1 && doh_dot_forget
 		echo "$r" > "$ENODIA_STATE/.doh-resolver"
 		[ "$r" = nextdns ] && echo "$nid" > "$ENODIA_STATE/.doh-nextdns-id"
 		# Своё — тремя файлами разом: URL (DoH), имя (SNI для DoT; пусто у литерала) и якоря.
@@ -546,6 +809,7 @@ case "$act" in
 			echo "$cu" > "$ENODIA_STATE/.doh-custom-url"
 			echo "$cs" > "$ENODIA_STATE/.doh-custom-sni"
 			echo "$cips" > "$ENODIA_STATE/.doh-custom-ips"
+			if [ -n "$cdp" ]; then echo "$cdp" > "$ENODIA_STATE/.doh-custom-dot-port"; else rm -f "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null; fi
 		fi
 		# Под новый резолвер: DoH активен (тумблер ИЛИ авто держит DNS) → перезапустить прокси + переиграть
 		# DNS (добавит марку/RETURN :443 НОВОГО резолвера). Выключен → просто персист, применится при включении.
@@ -559,8 +823,14 @@ case "$act" in
 			# ловили «Try again» (та же грабля, что при включении тумблера, см. doh_apply_dns).
 			# 4 попытки, а не дефолтные 2: холодная сессия к новому резолверу бывает медленной
 			# (таймаут+перебор anycast-IP), а ложный откат выглядит как «резолвер не работает».
-			if ! doh_probe 4; then
+			# ПЕРВЫМ — указатель dnsmasq на прокси (у владельца, doh_upstream_set): ручной режим с 31.08 сам проверяет имена и при
+			# отказе откатывает DNS на путь плагина, и проба имён через ТОТ DNS проходит — «ок» при мёртвом новом резолвере, без
+			# возврата прежнего и с паузой 15 минут (ревью ветки fix/dot-tails, круг 2).
+			if ! doh_upstream_set || ! doh_probe 4; then
 				doh_resolver_mark del; doh_resolver_bypass del
+				# Переезд, если он случился на попытке НОВОГО резолвера, — вердикт о нём, а не о прежнем: забыть,
+				# иначе прежний резолвер вернулся бы на DoH с экраном «DoT не проходит», хотя его DoT работал.
+				command -v doh_dot_forget >/dev/null 2>&1 && doh_dot_forget
 				echo "$prev" > "$ENODIA_STATE/.doh-resolver"
 				if [ -n "$prevnid" ]; then echo "$prevnid" > "$ENODIA_STATE/.doh-nextdns-id"; else rm -f "$ENODIA_STATE/.doh-nextdns-id" 2>/dev/null; fi
 				# Своё возвращаем ЦЕЛИКОМ, включая якоря: прежний резолвер тоже мог быть своим, и
@@ -568,8 +838,9 @@ case "$act" in
 				if [ -n "$prevcu" ]; then
 					echo "$prevcu" > "$ENODIA_STATE/.doh-custom-url"; echo "$prevcs" > "$ENODIA_STATE/.doh-custom-sni"
 					echo "$prevcips" > "$ENODIA_STATE/.doh-custom-ips"
+					if [ -n "$prevcdp" ]; then echo "$prevcdp" > "$ENODIA_STATE/.doh-custom-dot-port"; else rm -f "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null; fi
 				else
-					rm -f "$ENODIA_STATE/.doh-custom-url" "$ENODIA_STATE/.doh-custom-sni" "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null
+					rm -f "$ENODIA_STATE/.doh-custom-url" "$ENODIA_STATE/.doh-custom-sni" "$ENODIA_STATE/.doh-custom-ips" "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null
 				fi
 				doh_restart
 				sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
@@ -579,27 +850,41 @@ case "$act" in
 				# Единственный, кто знает правду, — лог демона; ловим сигнатуру mbedTLS в свежем
 				# хвосте (лог мы только что переписали рестартом, старое сюда не попадёт).
 				why=""
-				grep -q 'BADCERT_CN_MISMATCH' /tmp/doh.log 2>/dev/null && \
+				grep -q 'BADCERT_CN_MISMATCH' /tmp/enodia-doh.log 2>/dev/null && \
 					why=" (сертификат резолвера не принят; у этого адреса такое бывает через раз — попробуйте протокол DoT)"
-				[ -z "$why" ] && grep -q 'BADCERT' /tmp/doh.log 2>/dev/null && \
+				[ -z "$why" ] && grep -q 'BADCERT' /tmp/enodia-doh.log 2>/dev/null && \
 					why=" (сертификат резолвера не прошёл проверку)"
 				# «возвращён custom» человеку ничего не говорит, когда прежний тоже был своим.
 				pname="$prev"; [ "$prev" = custom ] && pname="прежний адрес"
 				fail "резолвер $r не отвечает$why — возвращён $pname"
 			fi
 		fi
-		printf '{"ok":true,"code":0,"msg":"Резолвер DoH: %s"}\n' "$r"; exit 0 ;;
+		printf '{"ok":true,"code":0,"msg":"Резолвер DoH: %s%s"}\n' "$r" "$(dot_fb_tail)"; exit 0 ;;
 
 	# --- Протокол шифрованного DNS: doh (HTTPS/:443) | dot (TLS/:853, наш dot-proxy). Зеркало
 	# set_doh_resolver: teardown обоих портов (del в либе proto-agnostic), персист, при активном
 	# DNS — перезапуск под новый бинарь + функциональная проба с откатом на прежний протокол.
 	set_doh_proto)
-		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
 		v=$(field value | tr -cd 'a-z')
 		case "$v" in doh|dot) : ;; *) fail "ожидается doh|dot" ;; esac
 		prev=$(doh_proto)
-		[ "$v" = "$prev" ] && { printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s"}\n' "$v"; exit 0; }
+		if [ "$v" = "$prev" ]; then
+			# ПОВТОРНЫЙ ВЫБОР DoT, ПОКА РОУТЕР ШИФРУЕТ ПО DoH (переезд порта), — просьба «проверь DoT СЕЙЧАС», а не пустой клик:
+			# иначе человеку, починившему путь (сменил выход, провайдер открыл 853), оставалось ждать сверку сторожа до часа.
+			# Тот же ход, что у включения тумблера: забыть вердикт, поднять прокси под DoT, переиграть DNS — а решит проба
+			# имён в doh_apply_dns (не пошли — doh_dot_rescue переедет обратно, и хвост ответа это скажет).
+			if [ "$v" = dot ] && command -v doh_dot_forget >/dev/null 2>&1 && \
+			   { doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; } && doh_dot_forget; then
+				doh_resolver_mark del; doh_resolver_bypass del; doh_restart
+				sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
+				# ИТОГ — ПО ФАКТУ (указатель dnsmasq на прокси — у владельца, doh_upstream_set), а не бодрым «ок»: не пошли ни DoT, ни
+				# DoH — DNS откатан на прежний путь и стоит пауза, а тост говорил «Протокол шифрованного DNS: dot» (ревью ветки, круг 1).
+				doh_upstream_set || fail "Резолвер не ответил ни по DoT, ни по DoH — вернул прежний DNS. Роутер проверит снова сам."
+			fi
+			printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s%s"}\n' "$v" "$(dot_fb_tail)"; exit 0
+		fi
 		[ -x "$(doh_bin_for "$v")" ] || fail "бинарь для $v не установлен — нажмите «Установить» в карточке"
 		# Свой резолвер, введённый ГОЛЫМ IP,c DoT несовместим (в SNI нечего предъявить, а `-s`
 		# обязателен). Сказать это ДО переключения — иначе doh_start молча не поднимется, проба
@@ -608,12 +893,16 @@ case "$act" in
 			fail "у своего резолвера указан IP — для DoT нужно ИМЯ (или оставьте DoH)"
 		doh_resolver_mark del; doh_resolver_bypass del
 		echo "$v" > "$ENODIA_STATE/.doh-proto"
+		# Новый выбор человека — прежний вердикт о порте забыт: выбранный DoT сперва пробуем честно, а не
+		# продолжаем шифровать по DoH, куда его увела прошлая проверка (doh-lib.sh::doh_dot_fallback).
+		command -v doh_dot_forget >/dev/null 2>&1 && doh_dot_forget
 		if doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; then
 			doh_restart
 			sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
 			# Попыток больше дефолта: у DoT холодный старт стоит 3 с таймаута на IP + 3 с backoff,
 			# и одиночная проба ложно объявляла «протокол не заработал» (железо 2026-07-27).
-			if ! doh_probe 4; then
+			# Указатель на прокси — первым (разбор у set_doh_resolver: проба через откатанный DNS плагина проходит).
+			if ! doh_upstream_set || ! doh_probe 4; then
 				doh_resolver_mark del; doh_resolver_bypass del
 				echo "$prev" > "$ENODIA_STATE/.doh-proto"
 				doh_restart
@@ -621,7 +910,7 @@ case "$act" in
 				fail "протокол $v не заработал (резолвер не отвечает; :853 может резать провайдер) — возвращён $prev"
 			fi
 		fi
-		printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s"}\n' "$v"; exit 0 ;;
+		printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s%s"}\n' "$v" "$(dot_fb_tail)"; exit 0 ;;
 
 	# --- Доустановка бинарей DoH ПО ВОЗДУХУ. Установка с ПК несёт их в payload, но обновившиеся
 	# из панели (apply-scripts тянет только скрипты из манифеста) остаются без бинаря — карточка
@@ -640,32 +929,55 @@ case "$act" in
 	# ЧЕСТНЫЙ вердикт по факту: вербы печатают человеческий текст, поэтому итог перепроверяем
 	# вербом json, а не парсингом сообщения (текст переводится/меняется — состояние нет).
 	panel_tls_on)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
 		[ -x "$(bin_path panel-tls)" ] || fail "бинарь panel-tls не установлен — сперва «Установить»"
-		p=$(field port | tr -cd '0-9')
+		# Порт — СТРОГО цифры и без ведущих нулей (ревью шага 7a, круг 2): «08443» уходил в флаг и ломал JSON состояния (разбор у
+		# web-ui.sh::port_norm), а `tr -cd` молча делал из «8a443» порт 8443. Поле пусто — порт прежний.
+		p=$(field port)
 		if [ -n "$p" ]; then
-			[ "$p" -gt 0 ] 2>/dev/null && [ "$p" -lt 65536 ] || fail "порт вне диапазона 1..65535"
+			case "$p" in *[!0-9]*) fail "порт — число от 1 до 65535" ;; esac
+			p=$(printf '%s' "$p" | sed 's/^0*//')
+			case "$p" in ''|??????*) fail "порт — число от 1 до 65535" ;; esac
+			[ "$p" -le 65535 ] || fail "порт — число от 1 до 65535"
 		fi
-		out=$(sh "$ENODIA_DIR/web-ui.sh" tls-on $p 2>&1 | jesc 200)
+		# Исход — КОДОМ web-ui.sh и ФАКТОМ после (ревью шага 7a): отказ до записи флага (порт занят самой панелью или чужой
+		# службой) оставлял прежний живой терминатор, и сверка одного `tls_running` давала зелёный «HTTPS включён» на порт, который
+		# не сменился. Причина отказа — последней строкой вывода web-ui.sh (она и есть слова для человека).
+		# Был ли HTTPS включён ДО — от этого слова успеха: у выключенного порт не «перенесён», а HTTPS «включён на порту» (замер BE7000).
+		st0=$(sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep '^{' | tail -1)
+		was=0; case "$st0" in *'"tls_on":true'*) was=1 ;; esac
+		same=0; [ -n "$p" ] && case "$st0" in *'"tls_running":true'*"\"tls_port\":$p,"*) same=1 ;; esac
+		# Вывод — В ФАЙЛ, не в трубу (ревью шага 7a, круг 3): с HTTPS-вкладки перезапуск терминатора рвёт этот же запрос, uhttpd бьёт CGI,
+		# и web-ui.sh, пишущий в трубу мёртвому читателю, падал по SIGPIPE ДО `wan_rule_apply` — правило наружу оставалось на старом порту.
+		wui_run tls-on $p; rc=$?; out=$WUI_OUT
+		why=$(printf '%s\n' "$out" | grep -v '^вернул прежний порт' | tail -n 1 | jesc 200)
+		[ "$rc" = 0 ] || fail "$why"
 		st=$(sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep '^{' | tail -1)
-		case "$st" in *'"tls_running":true'*) : ;; *) fail "HTTPS не поднялся: $out" ;; esac
+		case "$st" in *'"tls_running":true'*) : ;; *) fail "HTTPS не поднялся: $why" ;; esac
+		if [ -n "$p" ]; then
+			case "$st" in *"\"tls_port\":$p,"*) : ;; *) fail "порт HTTPS не сменился" ;; esac
+			if [ "$same" = 1 ]; then printf '{"ok":true,"code":0,"msg":"HTTPS уже работает на порту %s"}\n' "$p"
+			elif [ "$was" = 1 ]; then printf '{"ok":true,"code":0,"msg":"HTTPS перенесён на порт %s"}\n' "$p"
+			else printf '{"ok":true,"code":0,"msg":"HTTPS включён на порту %s"}\n' "$p"; fi
+			exit 0
+		fi
 		printf '{"ok":true,"code":0,"msg":"HTTPS включён"}\n'; exit 0 ;;
 	# СМЕНА ПАРОЛЯ ПАНЕЛИ ИЗ САМОЙ ПАНЕЛИ. До сих пор единственным владельцем был `web-ui.sh
 	# setpass` — то есть SSH или ПК-установщик. Для типового «поставил родне/тестеру и настраиваю
 	# удалённо» это значило «сменить пароль нечем»: панель отдаётся только по Basic, а Basic
-	# меняется мимо панели. Текущий пароль тут спрашивать незачем — мы УЖЕ за Basic (и за 2FA,
-	# если она включена), человек ввёл его секунду назад; это ровно та же логика, по которой
-	# работает смена пароля в любой веб-панели.
+	# меняется мимо панели. Текущий пароль тут не спрашиваем: за гейтом входа мы уже стоим (пароль,
+	# а при включённом TOTP — ещё и код), и второй ввод проверял бы только память. Зато сессии
+	# ОСТАЛЬНЫХ устройств эта ветка теперь гасит — разбор там же, ниже.
 	# Пароль приходит base64 (в нём бывают & и %, а form-поле — плоское), в команду уходит уже
 	# декодированным и ПОСЛЕ проверки формы.
 	panel_pass)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
 		np=$(urldecode "$(field pass)" | base64 -d 2>/dev/null | tr -d '\r\n')
 		[ -n "$np" ] || fail "пустой пароль"
-		# Только печатаемый ASCII без пробелов: пароль уезжает в HTTP-Basic (base64 от
-		# «user:pass»), и кириллица там зависит от кодировки, которую выберет БРАУЗЕР — то есть
-		# человек рискует задать пароль, которым потом не войдёт. Нижняя граница 8 — панель
-		# бывает открыта наружу по HTTPS.
+		# Только печатаемый ASCII без пробелов: форма входа шлёт пароль base64 через btoa, а тот
+		# кириллицу не берёт, да и раскладка на телефоне подводит — человек рискует задать пароль,
+		# которым потом не войдёт. Правило ОДНО с ПК (PANEL_PW_RE в enodia.py). Нижняя граница 8 —
+		# панель бывает открыта наружу по HTTPS.
 		printf '%s' "$np" | grep -qE '^[!-~]{8,64}$' || fail "пароль: 8..64 символов, латиница/цифры/знаки, без пробелов"
 		# ПЕРВЫЙ судья — КОД ВОЗВРАТА setpass, и конвейер с jesc тут разорван нарочно: в нём
 		# `$?` принадлежал бы jesc, то есть ЛЮБОЙ отказ (нет бинаря uhttpd, пустой хэш, «No
@@ -676,45 +988,71 @@ case "$act" in
 		out=$(sh "$ENODIA_DIR/web-ui.sh" setpass "$np" --no-restart 2>&1); rc=$?
 		out=$(printf '%s' "$out" | jesc 200)
 		[ "$rc" = 0 ] || fail "пароль не записан: $out"
-		# ВТОРОЙ — факт: файл авторизации непуст. Сам по себе он ничего не доказывает (панель,
-		# которая нам сейчас отвечает, без него бы не стартовала — условие истинно и ДО смены),
-		# но ловит обрыв записи на полном флеше: `printf >` уже усёк файл, а дописать не смог.
-		# Без пароля uhttpd не поднимется, и молчаливый рестарт отрезал бы человека от панели.
-		[ -s "$ENODIA_DIR/web/uhttpd.conf" ] || fail "файл авторизации пуст — пароль НЕ записан: $out"
-		# Пароль uhttpd читает ОДИН РАЗ при старте (-c), поэтому нужен рестарт — но не отсюда:
-		# мы сами дочерний процесс этого uhttpd, и убив его сейчас, потеряли бы собственный ответ.
-		# Поэтому отвязанный шаг с паузой: ответ уходит в браузер, и только потом панель встаёт
-		# заново (та же идиома, что у purge в uninstall_run).
-		spawn_bg /tmp/panel-pass.pid -c "sleep 2; sh '$ENODIA_DIR/web-ui.sh' restart"
-		printf '{"ok":true,"code":0,"msg":"Пароль изменён. Панель перезапускается — браузер спросит новый пароль."}\n'
+		# ВТОРОЙ — факт: файл пароля непуст. Ловит обрыв записи на полном флеше (`printf >` усёк,
+		# дописать не смог): без пароля следующий вход невозможен, а чинится это только по SSH.
+		[ -s "$ENODIA_STATE/.panel-pass" ] || fail "файл пароля пуст — пароль НЕ записан: $out"
+		# Перезапуск НЕ нужен: cgi-bin/login читает файл на каждом входе (`--no-restart` выше — на
+		# случай uhttpd, поднятого ещё с Basic: его перезапустит cron-овский start, не мы — мы его
+		# потомок).
+		# СМЕНА ПАРОЛЯ ВЫГОНЯЕТ ОСТАЛЬНЫЕ УСТРОЙСТВА. Под HTTP-Basic так было по сути: браузер держал
+		# сам пароль, и старый переставал подходить. С сессиями пароль и доступ разошлись — кука живёт
+		# своей жизнью (с «Запомнить меня» это ГОД), и «меняю пароль, потому что боюсь, что его узнали»
+		# переставало работать ровно в том случае, ради которого пароль и меняют. Своё устройство
+		# оставляем: выкинуть себя тем же кликом — не безопасность, а сюрприз. Best-effort: не вышло —
+		# пароль всё равно уже сменён, и в ответе честная разница между «выгнали» и «не смогли».
+		_kept=false
+		if command -v totp_sess_keep_only >/dev/null 2>&1; then
+			totp_sess_keep_only "$(totp_cookie)" >/dev/null 2>&1 && _kept=true
+		fi
+		if [ "$_kept" = true ]; then
+			printf '{"ok":true,"code":0,"msg":"Пароль изменён. Остальные устройства вышли из панели — на них панель спросит новый."}\n'
+		else
+			printf '{"ok":true,"code":0,"msg":"Пароль изменён. При следующем входе панель спросит новый."}\n'
+		fi
 		exit 0 ;;
 	panel_tls_off)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
+		# Слова — по ФАКТУ (ревью шага 7a, круг 2, замер на BE7000): прежний ответ всегда говорил «доступ снаружи снят вместе с ним»,
+		# и при закрытом входе снаружи панель сообщала о действии, которого роутер не делал. Вердикт — по состоянию после.
+		w=0; sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep -q '"wan_on":true' && w=1
 		sh "$ENODIA_DIR/web-ui.sh" tls-off >/dev/null 2>&1
-		printf '{"ok":true,"code":0,"msg":"HTTPS выключен (доступ снаружи снят вместе с ним)"}\n'; exit 0 ;;
+		st=$(sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep '^{' | tail -1)
+		case "$st" in *'"tls_on":false'*'"tls_running":false'*) : ;; *) fail "HTTPS не выключился" ;; esac
+		if [ "$w" = 1 ]; then printf '{"ok":true,"code":0,"msg":"HTTPS выключен, вход снаружи закрыт вместе с ним"}\n'
+		else printf '{"ok":true,"code":0,"msg":"HTTPS выключен"}\n'; fi
+		exit 0 ;;
 	# Перевыпуск сертификата: нужен, если его выписали при неверных часах (RTC на роутере нет)
 	# либо сменился hostname. Рвёт текущие HTTPS-сессии — браузер переспросит про самоподписанный.
 	panel_tls_cert)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
-		out=$(sh "$ENODIA_DIR/web-ui.sh" tls-cert 2>&1 | jesc 200)
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
+		wui_run tls-cert; out=$(printf '%s\n' "$WUI_OUT" | tail -n 1 | jesc 200)
 		st=$(sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep '^{' | tail -1)
 		case "$st" in *'"cert":true'*) : ;; *) fail "сертификат не выписан: $out" ;; esac
+		# Сертификат есть, а терминатор с ним не встал — это не «перевыпущен» (ревью шага 7a, круг 2): HTTPS лежит.
+		case "$st" in *'"tls_on":true'*) case "$st" in *'"tls_running":true'*) : ;; *) fail "сертификат выписан, но HTTPS с ним не поднялся: $out" ;; esac ;; esac
 		printf '{"ok":true,"code":0,"msg":"Сертификат перевыпущен"}\n'; exit 0 ;;
 	# ОТКРЫТИЕ ПОРТА В ИНТЕРНЕТ. Гарды живут в web-ui.sh (без HTTPS не открываем вовсе), тут
 	# добавляем честный ответ про CGNAT: правило встанет, но снаружи не достучаться — молчать об
 	# этом нельзя, иначе человек будет искать поломку у себя.
 	panel_wan_on)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
-		out=$(sh "$ENODIA_DIR/web-ui.sh" wan-on 2>&1 | jesc 200)
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
+		wui_run wan-on
 		st=$(sh "$ENODIA_DIR/web-ui.sh" json 2>/dev/null | grep '^{' | tail -1)
-		case "$st" in *'"wan_rule":true'*) : ;; *) fail "$out" ;; esac
+		# ВЕРДИКТ — ПО СОСТОЯНИЮ, А НЕ ПО СКЛЕЙКЕ ВЫВОДА (ревью шага 7a, круг 3): флаг встал, а правило ждёт внешнего адреса (WAN не поднят) —
+		# это «включено, правило встанет само», а не красный отказ с CLI-текстом при включённом тумблере. Отказ — первой строкой web-ui.sh
+		# (остальные строки у него — подсказки для SSH: `wan-on --force`, пути), без хвостового двоеточия.
 		case "$st" in
-			*'"wan_kind":"private"'*) printf '{"ok":true,"code":0,"msg":"Правило поставлено, но WAN-адрес приватный (CGNAT) — снаружи не откроется"}\n' ;;
-			*) printf '{"ok":true,"code":0,"msg":"Доступ снаружи открыт"}\n' ;;
+			*'"wan_on":true'*) : ;;
+			*) fail "$(printf '%s\n' "$WUI_OUT" | head -n 1 | sed 's/:$//' | jesc 200)" ;;
+		esac
+		case "$st" in
+			*'"wan_rule":true'*'"wan_kind":"private"'*) printf '{"ok":true,"code":0,"msg":"Правило поставлено, но WAN-адрес приватный (CGNAT) — снаружи не откроется"}\n' ;;
+			*'"wan_rule":true'*) printf '{"ok":true,"code":0,"msg":"Доступ снаружи открыт"}\n' ;;
+			*) printf '{"ok":true,"code":0,"msg":"Вход снаружи включён, но правило пока не встало: у роутера нет внешнего адреса — поставит само, когда появится интернет"}\n' ;;
 		esac
 		exit 0 ;;
 	panel_wan_off)
-		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/web-ui.sh" ] || fail "web-ui.sh не установлен (обновите панель)"
 		sh "$ENODIA_DIR/web-ui.sh" wan-off >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"Доступ снаружи закрыт"}\n'; exit 0 ;;
 	# Доустановка panel-tls ПО ВОЗДУХУ — та же схема, что doh_fetch_bin: обновившиеся из панели
@@ -731,7 +1069,7 @@ case "$act" in
 	# base64 и в команду не подставляет (та же схема, что у слотов). Итог сверяем вербом json:
 	# вербы печатают человеческий текст, а он переводится — состояние надёжнее.
 	vpnsrv_on)
-		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обновите скрипты роутера)"
 		out=$(sh "$ENODIA_DIR/vpn-server.sh" up 2>&1 | jesc 300)
 		st=$(sh "$ENODIA_DIR/vpn-server.sh" json 2>/dev/null | grep '^{' | tail -1)
 		case "$st" in *'"running":true'*) ;; *) fail "сервер не поднялся: $out" ;; esac
@@ -743,11 +1081,11 @@ case "$act" in
 		esac
 		exit 0 ;;
 	vpnsrv_off)
-		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обновите скрипты роутера)"
 		sh "$ENODIA_DIR/vpn-server.sh" down >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"Доступ домой выключен"}\n'; exit 0 ;;
 	vpnsrv_peer_add)
-		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обновите скрипты роутера)"
 		name=$(urldecode "$(field name)")
 		[ -n "$name" ] || fail "нужно имя устройства"
 		raw=$(sh "$ENODIA_DIR/vpn-server.sh" peer-add "$name" 2>&1)
@@ -758,7 +1096,7 @@ case "$act" in
 		case "$nid" in 2|3|4|5|6|7|8|9) ;; *) fail "$(printf '%s' "$raw" | jesc 200)" ;; esac
 		printf '{"ok":true,"code":0,"id":%s,"ip":"%s","msg":"Устройство добавлено"}\n' "$nid" "$nip"; exit 0 ;;
 	vpnsrv_peer_del|vpnsrv_peer_mode|vpnsrv_peer_lan|vpnsrv_peer_toggle|vpnsrv_peer_rename|vpnsrv_peer_conf)
-		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обновите скрипты роутера)"
 		pid=$(field id); case "$pid" in 2|3|4|5|6|7|8|9) ;; *) fail "битый id устройства" ;; esac
 		case "$act" in
 			vpnsrv_peer_del)  run vpn-server.sh peer-del "$pid" ;;
@@ -780,7 +1118,7 @@ case "$act" in
 	# Адрес для клиентских конфигов вручную: DDNS-имя вместо голого IP (конфиг телефона тогда не
 	# протухает при смене WAN-адреса). Пустое значение = вернуться к автодетекту.
 	vpnsrv_endpoint)
-		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/vpn-server.sh" ] || fail "vpn-server.sh не установлен (обновите скрипты роутера)"
 		h=$(urldecode "$(field host)" | tr -d ' \t\r\n')
 		case "$h" in '') ;; *[!A-Za-z0-9.:_-]*) fail "в адресе есть недопустимые символы" ;; esac
 		run vpn-server.sh endpoint-set "$h" ;;
@@ -788,18 +1126,25 @@ case "$act" in
 	# --- Периодичность обновления списков источников (iplist + включённые adblock/ipblock). update-sched.sh
 	# владеет cron-строкой iplist-update.sh и маркером .update-interval (переживает ребут/переустановку).
 	set_update_interval)
-		[ -f "$ENODIA_DIR/update-sched.sh" ] || fail "update-sched.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/update-sched.sh" ] || fail "update-sched.sh не установлен (обновите панель)"
 		iv=$(field interval | tr -cd 'a-z0-9')
 		case "$iv" in off|6h|12h|daily|weekly) : ;; *) fail "неизвестный интервал" ;; esac
 		got=$(sh "$ENODIA_DIR/update-sched.sh" set "$iv" 2>/dev/null)
-		printf '{"ok":true,"code":0,"msg":"расписание обновления списков: %s"}\n' "$got"; exit 0 ;;
+		# Словами, а не значением маркера («6h», «weekly» — машинные): тост читает человек, и его переводит панель.
+		# «Выкл» — своей фразой: «Списки обновляются: по расписанию не обновляются» спорило само с собой.
+		case "$got" in
+			off) printf '{"ok":true,"code":0,"msg":"Автообновление списков выключено"}\n'; exit 0 ;;
+			6h) w="каждые 6 часов" ;; 12h) w="каждые 12 часов" ;;
+			weekly) w="по понедельникам в 05:00" ;; daily) w="каждый день в 05:00" ;; *) fail "расписание не записано" ;;
+		esac
+		printf '{"ok":true,"code":0,"msg":"Списки обновляются: %s"}\n' "$w"; exit 0 ;;
 
 	# --- Периодичность HEADLESS-обновления подписок (subs-update.sh update по cron). Отдельная
 	# задача того же владельца cron (update-sched.sh job `subs`), маркер .subs-interval. Дефолт
 	# off: подписка ходит по ЧУЖОЙ ссылке, включать это за пользователя молча — не наше решение.
 	set_subs_interval)
-		[ -f "$ENODIA_DIR/update-sched.sh" ] || fail "update-sched.sh не установлен (обнови панель)"
-		[ -f "$ENODIA_DIR/subs-update.sh" ] || fail "subs-update.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/update-sched.sh" ] || fail "update-sched.sh не установлен (обновите панель)"
+		[ -f "$ENODIA_DIR/subs-update.sh" ] || fail "subs-update.sh не установлен (обновите скрипты роутера)"
 		iv=$(field interval | tr -cd 'a-z0-9')
 		case "$iv" in off|6h|12h|daily|weekly) : ;; *) fail "неизвестный интервал" ;; esac
 		got=$(sh "$ENODIA_DIR/update-sched.sh" set subs "$iv" 2>/dev/null)
@@ -808,22 +1153,37 @@ case "$act" in
 	# зовёт ⟳ в списке серверов: правила «какой выход взять из пула» и «как назвать файл» живут
 	# в subs-update.sh, и вторая (браузерная) их копия тасовала серверы по файлам на каждом
 	# ручном обновлении. Необязательная метка = обновить ОДНУ подписку (кнопка ⟳ у неё), без
-	# метки = все (кнопка в «Настройках»). Фоном: разбор десятков серверов дольше таймаута CGI.
+	# метки = все (кнопка экрана «Подписки»). Фоном: разбор десятков серверов дольше таймаута CGI.
 	subs_update_now)
-		[ -f "$ENODIA_DIR/subs-update.sh" ] || fail "subs-update.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/subs-update.sh" ] || fail "subs-update.sh не установлен (обновите скрипты роутера)"
 		[ -s "$ENODIA_STATE/.subs" ] || fail "подписок нет — добавьте подписку в списке серверов"
 		tag=$(field tag)
 		if [ -n "$tag" ]; then
 			echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
 			TAB=$(printf '\t')
 			grep -q "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null || fail "подписка не найдена"
-			spawn_bg /tmp/subs-update-cgi.pid "$ENODIA_DIR/subs-update.sh" update "$tag"
+			spawn_bg /tmp/enodia-subs-update-cgi.pid "$ENODIA_DIR/subs-update.sh" update "$tag"
 		else
-			spawn_bg /tmp/subs-update-cgi.pid "$ENODIA_DIR/subs-update.sh" update
+			spawn_bg /tmp/enodia-subs-update-cgi.pid "$ENODIA_DIR/subs-update.sh" update
 		fi
 		printf '{"ok":true,"code":0,"msg":"обновляю подписки на роутере — результат появится через минуту"}\n'; exit 0 ;;
 
-	# --- Раскладка панели (порядок/свёрнутость секций + порядок подписок) → .panel-layout.
+	# --- Раскладка панели → .panel-layout: порядок и свёрнутость карточек «Обзора», ПОРЯДОК
+	# подписок, а с шага 2i редизайна ещё и СОСТАВ (`cardoff`) с ШИРИНОЙ (`cardw`) карточек.
+	# Блоб пишется ЦЕЛИКОМ и отдаётся обратно как есть — новое поле панели не требует правки
+	# здесь: роутер раскладку не разбирает, он её хранит. Меняется только потолок длины.
+	#
+	# ГАРД БЕЗ РЕГУЛЯРКИ, И ЭТО НЕ ВКУС. Прежний `grep -qE '^[…]{2,4096}$'` БУСИБОКС НЕ ПОНИМАЕТ
+	# ВОВСЕ: у его движка регулярок ПОТОЛОК ИНТЕРВАЛА 255 (RE_DUP_MAX), и `{2,4096}` — это
+	# `grep: bad regex: Invalid contents of {}`, код 2, то есть ОТКАЗ ВСЕГДА (замерено на живом
+	# BE7000 11.09.2026: 255 принимает, 256 уже нет; так же ведут себя sed и awk — следит C96).
+	# Цена была тихой и полной: раскладка не сохранялась НИКОГДА, файла `.panel-layout` на
+	# роутере не было, а панель молчала — `layoutSave` глотает отказ намеренно (тост посреди
+	# перетаскивания хуже). Персист «на роутере» оказался фикцией: всё держалось на localStorage,
+	# то есть ровно на том, от чего уходили.
+	# `tr -d` набором символов от этого потолка свободен: у него не регулярка, а НАБОР, и длину
+	# мы меряем отдельно — теми же двумя числами, но словами шелла. Пусто на выходе = все
+	# символы из белого списка.
 	# Персист НА РОУТЕРЕ (а не localStorage), чтобы раскладка ехала за юзером между устройствами.
 	# БЕЗОПАСНОСТЬ: блоб — JSON-массивы тегов/id ([A-Za-z0-9_.-], спец-тег __own__), пишется в файл
 	# и позже отдаётся cgi-bin/data verbatim ВНУТРЬ JSON-ответа. В shell-команду не уходит (только
@@ -831,10 +1191,24 @@ case "$act" in
 	# %-мусора после декода) + потолок длины → нельзя ни сломать наш JSON, ни протащить шелл-инъекцию.
 	save_layout)
 		data=$(urldecode "$(field data)")
-		printf '%s' "$data" | grep -qE '^[][{}",:_.A-Za-z0-9 -]{2,4096}$' || fail "плохой формат раскладки"
-		printf '%s' "$data" > "$ENODIA_STATE/.panel-layout.new" 2>/dev/null \
-			&& mv "$ENODIA_STATE/.panel-layout.new" "$ENODIA_STATE/.panel-layout" 2>/dev/null \
-			|| fail "не удалось сохранить раскладку"
+		# guard-begin: save_layout — метки читает стенд local/layout-blob-cgi-test.sh: он вынимает
+		# ЭТИ строки и исполняет ИХ, а не свою копию (копия однажды уже разошлась с оригиналом и
+		# была зелёной на гарде, который роутер отвергал целиком). Нет метки — стенд отказывает.
+		one_line "$data" || fail "плохой формат раскладки"
+		dlen=$(printf '%s' "$data" | wc -c)
+		[ "$dlen" -ge 2 ] && [ "$dlen" -le 4096 ] || fail "плохой формат раскладки"
+		[ -z "$(printf '%s' "$data" | tr -d '[]{}",:_.A-Za-z0-9 -')" ] || fail "плохой формат раскладки"
+		# guard-end: save_layout
+		# ВРЕМЯНКА — С ПИДОМ: писателей может быть ДВОЕ (панель на телефоне и на ноутбуке, у
+		# каждой свой процесс uhttpd), общего лока у них нет, и на общем имени один сделал бы
+		# `mv` НЕДОПИСАННОГО файла другого. В `.panel-layout` легла бы обрезанная строка, а
+		# дальше — тихо и навсегда: `cgi-bin/data` отдаёт её как есть, разбор у панели падает,
+		# и раскладка молча остаётся на localStorage. Тот же приём, что у `.sub-info.<pid>.new`;
+		# хвост `.new` опознаёт чистка (`clean.sh`, маска мусора).
+		_lnew="$ENODIA_STATE/.panel-layout.$$.new"
+		printf '%s' "$data" > "$_lnew" 2>/dev/null \
+			&& mv "$_lnew" "$ENODIA_STATE/.panel-layout" 2>/dev/null \
+			|| { rm -f "$_lnew" 2>/dev/null; fail "не удалось сохранить раскладку"; }
 		printf '{"ok":true}\n'; exit 0 ;;
 
 	# --- Десинк-аргументы ByeDPI (ciadpi) → .byedpi-args. БЕЗОПАСНОСТЬ: эти args идут
@@ -896,13 +1270,21 @@ EOF
 			# transport-byedpi.sh strip_unsupported). Предупреждаем, чтобы не было сюрприза.
 			case " $args " in *" -S "*|*--md5sig*) msg="$msg (флаг -S/md5sig ядром не поддержан — будет проигнорирован)" ;; esac
 		fi
-		if [ -n "$bsl" ]; then
+		if [ -n "$bsl" ] && vpn_is_off; then
+			# VPN выключен тумблером — выход снят вместе с ним, а плагин при флаге ciadpi не поднимет (carrier_run): «перезапуск не
+			# удался» было бы неправдой, как и у основной ветки ниже (ревью ветки, круг 3).
+			msg="$msg (VPN выключен — применится при его включении)"
+		elif [ -n "$bsl" ]; then
 			# slot-reload перезапускает ТОЛЬКО ciadpi выхода (hev/xtun/маршрут живы); выход выключен
 			# → плагин сам ответит no-op, стратегия применится при включении.
 			sh "$ENODIA_DIR/transport-byedpi.sh" slot-reload "$bsl" >/dev/null 2>&1 && msg="$msg, ciadpi выхода №$bsl перезапущен" || msg="$msg, но перезапуск ciadpi выхода не удался (см. журнал)"
 		else
 			cur=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
-			if [ "$cur" = byedpi ]; then
+			# VPN выключен тумблером — ByeDPI не несёт, и перезапускать нечего: плагин при флаге и сам откажет (daemon-lib.sh
+			# carrier_run), а «перезапуск не удался» было бы неправдой.
+			if [ "$cur" = byedpi ] && vpn_is_off; then
+				msg="$msg (VPN выключен — применится при его включении)"
+			elif [ "$cur" = byedpi ]; then
 				sh "$ENODIA_DIR/transport-byedpi.sh" reload >/dev/null 2>&1 && msg="$msg, ciadpi перезапущен" || msg="$msg, но перезапуск ciadpi не удался (см. статус)"
 			else
 				msg="$msg (применится при включении ByeDPI)"
@@ -924,11 +1306,21 @@ EOF
 		# так и не появился, и `transport_ready awg` оставался false.
 		# Включение самого транспорта — отдельный, ЯВНЫЙ жест в «Транспорт VPN» наверху панели.
 		_ct=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
-		if [ -n "$_ct" ] && [ "$_ct" != awg ]; then
+		if { [ -n "$_ct" ] && [ "$_ct" != awg ]; } || vpn_is_off; then
 			raw=$(sh "$ENODIA_DIR/switch-vpn.sh" stage "$name" 2>&1); code=$?
 			msg=$(printf '%s' "$raw" | jesc 600)
 			if [ "$code" -eq 0 ]; then
-				printf '{"ok":true,"code":0,"msg":"Конфиг %s выбран для AmneziaWG. Чтобы пойти через него, включи AmneziaWG в «Транспорт VPN» наверху панели."}\n' "$name"
+				# УСПЕХ СО СЛОВАМИ. Раскладка умеет закончиться нулём И предупреждением («имя
+				# активного конфига не записалось — считаем неизвестным»): конфиги легли, а
+				# `.active` пуст, и карточка не покажет сервер активным. Свой литерал выбрасывал
+				# этот текст целиком, и человек оставался с обещанием без оговорки (ревью 8).
+				_warn=$(printf '%s' "$raw" | grep -F '[warn]' | head -1 | jesc 300)
+				[ -n "$_warn" ] && _warn=" $_warn"
+				if vpn_is_off; then
+					printf '{"ok":true,"code":0,"msg":"Конфиг %s выбран. VPN сейчас выключен тумблером — включите его в шапке панели, и роутер пойдёт через этот сервер.%s"}\n' "$name" "$_warn"
+					exit 0
+				fi
+				printf '{"ok":true,"code":0,"msg":"Конфиг %s выбран для AmneziaWG. Чтобы пойти через него, включите AmneziaWG в «Транспорт VPN» наверху панели.%s"}\n' "$name" "$_warn"
 			else
 				printf '{"ok":false,"code":%s,"msg":"%s"}\n' "$code" "$msg"
 			fi
@@ -948,7 +1340,10 @@ EOF
 		cp "$ENODIA_STATE/xray-configs/$name.json" "$ENODIA_STATE/xray.json" 2>/dev/null \
 			&& chmod 600 "$ENODIA_STATE/xray.json" 2>/dev/null \
 			&& echo "$name" > "$ENODIA_STATE/.xray-active" || fail "не удалось активировать $name"
-		if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = xray ]; then
+		# `! vpn_is_off` — см. разбор у vpn_is_off: при выключенном тумблере конфиг СТЕЙДЖИМ
+		# (копия уже сделана выше), а несущую не поднимаем. Ветка «транспорт не активен» ниже
+		# уже говорит ровно это, поэтому второго текста не заводим.
+		if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = xray ] && ! vpn_is_off; then
 			# Вывод `up` НЕ глотаем. ЗАЧЕМ (жалоба тестера 13.08.2026 «минуту подключается»):
 			# подъём по ИМЕНИ может ждать резолва десятками секунд и печатает про это ровно
 			# здесь — «резолв server-host … попытка N не удалась». С `>/dev/null` этих строк не
@@ -970,6 +1365,10 @@ EOF
 			else
 				printf '{"ok":false,"code":%s,"msg":"Xray-конфиг %s активен, но несущая НЕ поднялась. %s"}\n' "$rc" "$name" "${why:-подробности в логе транспорта}"
 			fi
+		elif vpn_is_off; then
+			# ПОЧЕМУ не применилось — вопрос человека, и ответ у двух веток РАЗНЫЙ: «переключись
+			# на Xray» отправило бы туда, где Xray и так выбран, а нужен тумблер.
+			printf '{"ok":true,"code":0,"msg":"Xray-конфиг %s сохранён активным. VPN сейчас выключен тумблером — включите его в шапке панели, и роутер пойдёт через этот сервер."}\n' "$name"
 		else
 			printf '{"ok":true,"code":0,"msg":"Xray-конфиг %s сохранён активным (применится при переключении на Xray)"}\n' "$name"
 		fi
@@ -982,7 +1381,7 @@ EOF
 		cp "$ENODIA_STATE/hy2-configs/$name.yaml" "$ENODIA_STATE/hysteria.yaml" 2>/dev/null \
 			&& chmod 600 "$ENODIA_STATE/hysteria.yaml" 2>/dev/null \
 			&& echo "$name" > "$ENODIA_STATE/.hy2-active" || fail "не удалось активировать $name"
-		if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = hy2 ]; then
+		if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = hy2 ] && ! vpn_is_off; then
 			sh "$ENODIA_DIR/transport-hy2.sh" down >/dev/null 2>&1
 			raw=$(sh "$ENODIA_DIR/transport-hy2.sh" up 2>&1); rc=$?   # причину не глотаем — зеркало set_xray_server
 			why=$(printf '%s\n' "$raw" | grep -E 'резолв|зарезолвил|удал|встан' | tail -2 | jesc 200)
@@ -995,6 +1394,10 @@ EOF
 			else
 				printf '{"ok":false,"code":%s,"msg":"Hysteria2-конфиг %s активен, но несущая НЕ поднялась. %s"}\n' "$rc" "$name" "${why:-подробности в логе транспорта}"
 			fi
+		elif vpn_is_off; then
+			# ПОЧЕМУ не применилось — вопрос человека, и ответ у двух веток РАЗНЫЙ: «переключись
+			# на Hysteria2» отправило бы туда, где Hysteria2 и так выбран, а нужен тумблер.
+			printf '{"ok":true,"code":0,"msg":"Hysteria2-конфиг %s сохранён активным. VPN сейчас выключен тумблером — включите его в шапке панели, и роутер пойдёт через этот сервер."}\n' "$name"
 		else
 			printf '{"ok":true,"code":0,"msg":"Hysteria2-конфиг %s сохранён активным (применится при переключении на Hysteria2)"}\n' "$name"
 		fi
@@ -1010,7 +1413,7 @@ EOF
 		echo "$name" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя сервера"
 		[ -f "$ENODIA_STATE/configs/$name.conf" ] || fail "нет конфига $name"
 		active=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d ' \r\n')
-		[ "$name" = "$active" ] && fail "нельзя удалить активный конфиг ($name) — сначала переключись на другой"
+		[ "$name" = "$active" ] && fail "нельзя удалить активный конфиг ($name) — сначала переключитесь на другой"
 		rm -f "$ENODIA_STATE/configs/$name.conf" \
 			&& printf '{"ok":true,"code":0,"msg":"awg-конфиг %s удалён"}\n' "$name" \
 			|| fail "не удалось удалить $name"
@@ -1021,7 +1424,7 @@ EOF
 		[ -f "$ENODIA_STATE/xray-configs/$name.json" ] || fail "нет xray-конфига $name"
 		active=$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d ' \r\n')
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = xray ]; } \
-			&& fail "это активный конфиг при включённом Xray — сначала переключись на другой транспорт"
+			&& fail "это активный конфиг при включённом Xray — сначала переключитесь на другой транспорт"
 		rm -f "$ENODIA_STATE/xray-configs/$name.json"
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.xray-active"
 		printf '{"ok":true,"code":0,"msg":"xray-конфиг %s удалён"}\n' "$name"; exit 0 ;;
@@ -1031,10 +1434,76 @@ EOF
 		[ -f "$ENODIA_STATE/hy2-configs/$name.yaml" ] || fail "нет hy2-конфига $name"
 		active=$(cat "$ENODIA_STATE/.hy2-active" 2>/dev/null | tr -d ' \r\n')
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = hy2 ]; } \
-			&& fail "это активный конфиг при включённой Hysteria2 — сначала переключись на другой транспорт"
+			&& fail "это активный конфиг при включённой Hysteria2 — сначала переключитесь на другой транспорт"
 		rm -f "$ENODIA_STATE/hy2-configs/$name.yaml"
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.hy2-active"
 		printf '{"ok":true,"code":0,"msg":"hy2-конфиг %s удалён"}\n' "$name"; exit 0 ;;
+
+	# rename_config: ПЕРЕИМЕНОВАТЬ конфиг сервера (экран сервера в панели). Имя живёт не только в имени файла: активный
+	# (.active/.xray-active/.hy2-active), «дом» резерва AWG (.failover-home), откат смены (.last.bak.name) и выходы (.slots —
+	# через slots.sh rename-config, под ЕГО локом). Всё переписывается здесь, под локом смены сервера (его берут смена и сторож
+	# на переключении) и НЕ во время тика сторожа: перебор серверов резерва лок смены берёт не всегда, а сверяет имя активного в
+	# конце — переименование посреди перебора оставило бы активным не тот сервер. Несущую не трогаем: демоны читают рабочие копии
+	# (awg.conf / xray.json / hysteria.yaml; у выходов — по номеру слота), имя им не нужно.
+	# Порядок — сначала реестр выходов (его откатить проще всего), затем файл, затем «активный/дом/откат».
+	# СТАРОЕ имя — любое, какое роутер держит файлом (как у удаления): прежние версии давали «----------» и имена длиннее 80, и
+	# переименовывают прежде всего их. НОВОЕ — строже: с буквы или цифры (ведущая точка прячет файл от переборов `*.conf`), до 80.
+	# Оба — ОДНОЙ строкой (гард `^…$` судит построчно; разбор у one_line). НЕЛЬЗЯ: серверы подписки — по ВЛАДЕЛЬЦУ (тег из .subs,
+	# subs-lib.sh::sub_owner_tag), а не по префиксу: имя их файла — ключ идентичности `.sub-names`; «default» — имя установщика (им
+	# сеется .active, и он неявный «дом» резерва), в любом регистре: на exFAT/vfat «DEFAULT» и «default» — один файл. Смена ТОЛЬКО
+	# регистра — через временное имя: там же `mv` в самого себя ничего не делает, а проверка «уже есть» видела бы сам файл.
+	rename_config)
+		kind=$(field kind); old=$(urldecode "$(field name)"); new=$(urldecode "$(field new)")
+		case "$kind" in
+			awg)  dir="$ENODIA_STATE/configs";      ext=conf; af="$ENODIA_STATE/.active" ;;
+			xray) dir="$ENODIA_STATE/xray-configs"; ext=json; af="$ENODIA_STATE/.xray-active" ;;
+			hy2)  dir="$ENODIA_STATE/hy2-configs";  ext=yaml; af="$ENODIA_STATE/.hy2-active" ;;
+			*) fail "неизвестный тип конфига" ;;
+		esac
+		{ one_line "$old" && echo "$old" | grep -qE '^[A-Za-z0-9_.-]+$' && [ "$old" != . ] && [ "$old" != .. ]; } || fail "недопустимое имя конфига"
+		{ one_line "$new" && echo "$new" | grep -qE '^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$'; } \
+			|| fail "новое имя: латиница, цифры, точка, «_» и «-», до 80 знаков, первым — буква или цифра"
+		[ "$old" = "$new" ] && fail "имя не изменилось"
+		_rown=""
+		if command -v sub_owner_tag >/dev/null 2>&1; then _rown=$(sub_owner_tag "$old"); else case "$old" in sub-*) _rown=1 ;; esac; fi
+		[ -n "$_rown" ] && fail "имя сервера подписки задаёт подписка — переименовать его нельзя"
+		case "$new" in sub-*) fail "имена «sub-…» принадлежат подпискам — выберите другое" ;; esac
+		_rlo=$(printf '%s' "$old" | tr 'A-Z' 'a-z'); _rln=$(printf '%s' "$new" | tr 'A-Z' 'a-z')
+		{ [ "$_rlo" = default ] || [ "$_rln" = default ]; } && fail "«default» — служебное имя установщика: его нельзя ни дать, ни снять"
+		[ -f "$dir/$old.$ext" ] || fail "нет конфига $old"
+		# Смена только регистра: «уже есть» — лишь если в каталоге ДРУГОЙ файл с этим именем (на ФС без регистра его не будет).
+		if [ "$_rlo" = "$_rln" ]; then
+			ls -1 "$dir" 2>/dev/null | grep -Fxq "$new.$ext" && fail "конфиг «$new» уже есть — выберите другое имя"
+		else
+			[ -e "$dir/$new.$ext" ] && fail "конфиг «$new» уже есть — выберите другое имя"
+		fi
+		[ -e "$SWITCH_LOCK" ] && fail "идёт смена сервера — повторите через минуту"
+		_rwp=$(cat /tmp/enodia-watchdog.pid 2>/dev/null | tr -cd '0-9')
+		{ [ -e /tmp/enodia-watchdog.lock ] && [ -n "$_rwp" ] && [ -d "/proc/$_rwp" ]; } && fail "сторож сейчас проверяет туннель — повторите через минуту"
+		hold_switch
+		_rs=0
+		if [ -f "$ENODIA_DIR/slots.sh" ]; then
+			# Отказ реестра — ЕГО словами: «имя уже указано у выхода №N» — не «переписать не удалось», а причина не начинать; метка
+			# `[slots]` — для лога, не для человека (ревью пачки 2, круг 2).
+			_rs=$(sh "$ENODIA_DIR/slots.sh" rename-config "$kind" "$old" "$new" 2>&1) || fail "$(printf '%s' "$_rs" | tail -n 1 | sed 's/^\[slots\] //' | jesc 200)"
+			_rs=$(printf '%s' "$_rs" | tail -n 1 | tr -cd '0-9'); [ -n "$_rs" ] || _rs=0
+		fi
+		if [ "$_rlo" = "$_rln" ]; then
+			mv "$dir/$old.$ext" "$dir/.enodia-rn.$$" 2>/dev/null && { mv "$dir/.enodia-rn.$$" "$dir/$new.$ext" 2>/dev/null || { mv "$dir/.enodia-rn.$$" "$dir/$old.$ext" 2>/dev/null; false; }; }
+		else
+			mv "$dir/$old.$ext" "$dir/$new.$ext" 2>/dev/null
+		fi
+		if [ $? -ne 0 ]; then
+			[ "$_rs" -gt 0 ] && sh "$ENODIA_DIR/slots.sh" rename-config "$kind" "$new" "$old" >/dev/null 2>&1
+			fail "не удалось переименовать файл"
+		fi
+		_ra=$(cat "$af" 2>/dev/null | tr -d ' \r\n'); [ "$_ra" = "$old" ] && echo "$new" > "$af"
+		if [ "$kind" = awg ]; then
+			for _rf in .failover-home .last.bak.name; do
+				_rv=$(cat "$ENODIA_STATE/$_rf" 2>/dev/null | tr -d ' \r\n'); [ "$_rv" = "$old" ] && echo "$new" > "$ENODIA_STATE/$_rf"
+			done
+		fi
+		printf '{"ok":true,"code":0,"name":"%s","slots":%s,"msg":"конфиг «%s» переименован в «%s»"}\n' "$new" "$_rs" "$old" "$new"; exit 0 ;;
 
 	# --- Полный редактор конфига (гибрид «форма + сырой режим» в панели) ------------
 	# get_config_raw: отдаёт ВЕСЬ файл конфига base64-ом (вкл. секреты — uuid/ключи/пароль:
@@ -1051,6 +1520,34 @@ EOF
 		[ -f "$cfg" ] || fail "нет конфига $name"
 		b=$(base64 < "$cfg" | tr -d '\r\n')
 		printf '{"ok":true,"code":0,"content":"%s"}\n' "$b"; exit 0 ;;
+	# get_config_info: НЕСЕКРЕТНОЕ из конфига AmneziaWG для экрана сервера. Редактора у AWG нет (`awg setconf` отвергает конфиг
+	# целиком — полуправка оставила бы интерфейс без рукопожатия), но куда он ведёт и задан ли в нём MTU, человек видеть обязан:
+	# у нативного .conf строки MTU нет никогда, и действует общий (CLAUDE.md, «нативный .conf без MTU»). Ключи НЕ отдаём.
+	get_config_info)
+		kind=$(field kind); name=$(urldecode "$(field name)")
+		echo "$name" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя"
+		[ "$kind" = awg ] || fail "сведения — только у AmneziaWG (у Xray и Hysteria2 есть редактор)"
+		cfg="$ENODIA_STATE/configs/$name.conf"
+		[ -f "$cfg" ] || fail "нет конфига $name"
+		ep=$(sed -n 's/^[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*//p' "$cfg" | head -n 1 | tr -d '\r\n' | jtxt 200)
+		# MTU — ДЕЙСТВУЮЩИЙ, как его выставит awg_setup.sh: ручной из «Параметров сети» (net-tune.sh — владелец флага) поверх строки
+		# конфига, иначе строка конфига, иначе дефолт проекта 1376. Панель своей арифметики не держит (ревью пачки 2: панель ставила
+		# конфиг поверх ручного и брала «общий» из MTU ЖИВОГО awg0 — то есть от другого конфига).
+		mtu=$(sed -n 's/^[[:space:]]*MTU[[:space:]]*=[[:space:]]*//p' "$cfg" | head -n 1 | tr -cd '0-9' | cut -c1-5); msrc=config
+		# Вывод чужого скрипта — ФИЛЬТРОМ ПО ФОРМЕ (шапка net-tune.sh): копия старше верба печатает `usage: …` в stdout, и прежний
+		# `tr -cd 0-9` вынимал из «ipv6» шестёрку — «MTU 6, задан в «Параметрах сети»» (ревью пачки 2, круг 2).
+		_tm=""; _tmo=""; [ -f "$ENODIA_DIR/net-tune.sh" ] && _tmo=$(sh "$ENODIA_DIR/net-tune.sh" mtu-flag 2>/dev/null)
+		_tm=$(printf '%s\n' "$_tmo" | grep -E '^[0-9]{3,4}$' | head -n 1)
+		# Копия СТАРШЕ верба (usage вместо ответа) ручной MTU применяет, а сказать о нём не может: источник «не знаю», а не «конфиг» —
+		# иначе одна ложь («MTU 6») сменилась бы другой («задан в конфиге» при действующем ручном; ревью пачки 2, круг 3).
+		_tmu=0; case "$_tmo" in usage:*) _tmu=1 ;; esac
+		# «Параметры сети» действуют ТОЛЬКО на awg0 (net-tune.sh); выход (awgN) берёт строку конфига, иначе 1376 (transport-awg.sh).
+		# Конфиг, на котором стоит выход, получает и ЕГО число: иначе экран обещал бы выходу ручной MTU, которого у него нет.
+		xmtu=${mtu:-1376}; xsrc=config; [ -n "$mtu" ] || xsrc=default
+		xs=$(awk -F'\t' -v n="$name" '$3=="awg" && $4==n { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,')
+		if [ -n "$_tm" ]; then mtu=$_tm; msrc=tun; elif [ -z "$mtu" ]; then mtu=1376; msrc=default; fi
+		[ "$_tmu" = 1 ] && msrc=unknown
+		printf '{"ok":true,"code":0,"endpoint":"%s","mtu":%s,"mtu_src":"%s","exits":[%s],"exit_mtu":%s,"exit_mtu_src":"%s"}\n' "$ep" "$mtu" "$msrc" "$xs" "$xmtu" "$xsrc"; exit 0 ;;
 	# save_config_raw: пишет ПОЛНЫЙ конфиг (из формы — пересобран фронтом, или сырой текст).
 	# Валидация: xray → JSON через jsonfilter (на роутере есть) + наличие outbound-протокола;
 	# hy2 → наличие server:. Атомарно (.new+mv). Если конфиг активен и транспорт его несёт —
@@ -1063,14 +1560,14 @@ EOF
 			hy2)  cfg="$ENODIA_STATE/hy2-configs/$name.yaml";  live="$ENODIA_STATE/hysteria.yaml"; act="$ENODIA_STATE/.hy2-active";  tsh="transport-hy2.sh";  tname=hy2 ;;
 			*) fail "неизвестный тип (xray/hy2)" ;;
 		esac
-		[ -f "$cfg" ] || fail "нет конфига $name (сначала загрузи)"
+		[ -f "$cfg" ] || fail "нет конфига $name (сначала загрузите)"
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null | tr -d '\r')
 		[ -n "$content" ] || fail "пустой или битый конфиг (base64)"
 		printf '%s' "$content" > "$cfg.new" || { rm -f "$cfg.new"; fail "не удалось записать"; }
 		if [ "$kind" = xray ]; then
 			if command -v jsonfilter >/dev/null 2>&1; then
 				ov=$(jsonfilter -i "$cfg.new" -e '@.outbounds[*].protocol' 2>/dev/null)
-				[ -n "$ov" ] || { rm -f "$cfg.new"; fail "невалидный JSON (проверь скобки и запятые)"; }
+				[ -n "$ov" ] || { rm -f "$cfg.new"; fail "невалидный JSON (проверьте скобки и запятые)"; }
 				echo "$ov" | grep -qE 'vless|vmess|trojan|shadowsocks' || { rm -f "$cfg.new"; fail "нет outbound-протокола (vless/vmess/trojan/ss)"; }
 			else
 				grep -q '"outbounds"' "$cfg.new" || { rm -f "$cfg.new"; fail "нет outbounds в JSON"; }
@@ -1083,6 +1580,18 @@ EOF
 		active=$(cat "$act" 2>/dev/null | tr -d ' \r\n')
 		if [ "$name" = "$active" ]; then
 			cp "$cfg" "$live" 2>/dev/null && chmod 600 "$live"
+			# VPN выключен человеком — это СОСТОЯНИЕ (C67): конфиг сохранён и рабочая копия обновлена, а несущую не поднимаем — её
+			# поднимет «Включить VPN» уже с новым конфигом (как set_xray_server/set_hy2_server).
+			if vpn_is_off; then
+				# Обещать «применится при включении» можно, только если включение поднимет ЭТОТ транспорт: активный конфиг Xray при
+				# выбранном AWG включение не тронет (ревью пачки 2, круг 2).
+				if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = "$tname" ]; then
+					printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён — применится, когда включите VPN"}\n' "$name"
+				else
+					printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён"}\n' "$name"
+				fi
+				exit 0
+			fi
 			if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = "$tname" ]; then
 				# Между down и up несущей НЕТ: тик сторожа в это окно читает «health провалился» и
 				# уводит транспорт в cross-failover — правка конфига активного сервера сама себя
@@ -1130,7 +1639,7 @@ EOF
 		mkdir -p "$dir" 2>/dev/null
 		dst="$dir/$name.$ext"
 		if printf '%s' "$content" | tr -d '\r' > "$dst.new" && mv "$dst.new" "$dst" && chmod 600 "$dst"; then
-			printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён (%s) — активируй в списке серверов"}\n' "$name" "$kind"
+			printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён (%s) — активируйте в списке серверов"}\n' "$name" "$kind"
 		else
 			rm -f "$dst.new" 2>/dev/null
 			fail "не удалось записать файл"
@@ -1163,7 +1672,15 @@ EOF
 		echo "$url" | grep -qE '^https?://[^[:space:]]+$' || fail "не URL (нужен http(s)://…)"
 		sub_host_public "$url" || fail "URL ведёт на приватный/локальный адрес — так нельзя (SSRF)"
 		TAB=$(printf '\t')
-		label=$(printf '%s' "$label" | tr -d '\t\r\n'); [ -n "$label" ] || label="$tag"
+		# Управляющие байты метки — вон целиком, а не только TAB/CR/LF: `.subs` — TSV, но метку потом кладут в JSON четыре читателя
+		# (cgi-bin/list, status, data, subs-update.sh), и сырой байт ронял бы разбор всего ответа (ревью приёмки, круги 2–3). Читатели
+		# режут их и сами: записи, сделанные до этой версии, и восстановленные из бэкапа эту чистку не проходили.
+		label=$(printf '%s' "$label" | tr -d '\000-\037\177'); [ -n "$label" ] || label="$tag"
+		# СЧЁТЧИКИ ПРИНАДЛЕЖАТ ССЫЛКЕ, А НЕ ТЕГУ: сменили адрес подписки — прежний остаток и срок
+		# рассказывают о ЧУЖОМ провайдере, и до первой закачки панель показывала бы их как свои.
+		# Тот же тег с тем же адресом (идемпотентная перезаливка) отметки сохраняет.
+		_oldu=$([ -f "$ENODIA_STATE/.subs" ] && grep "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2)
+		[ "$_oldu" = "$url" ] || sub_info_drop "$tag"
 		{ [ -f "$ENODIA_STATE/.subs" ] && grep -v "^$tag$TAB" "$ENODIA_STATE/.subs"
 		  printf '%s\t%s\t%s\n' "$tag" "$url" "$label"; } > "$ENODIA_STATE/.subs.new" 2>/dev/null
 		mv "$ENODIA_STATE/.subs.new" "$ENODIA_STATE/.subs" && chmod 600 "$ENODIA_STATE/.subs" 2>/dev/null
@@ -1174,7 +1691,7 @@ EOF
 		tag=$(field tag)
 		label=$(urldecode "$(field label)")
 		echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
-		label=$(printf '%s' "$label" | tr -d '\t\r\n'); [ -n "$label" ] || fail "пустое имя"
+		label=$(printf '%s' "$label" | tr -d '\000-\037\177'); [ -n "$label" ] || fail "пустое имя"   # как у save_sub
 		[ -f "$ENODIA_STATE/.subs" ] || fail "подписка не найдена"
 		TAB=$(printf '\t')
 		url=$(grep "^$tag$TAB" "$ENODIA_STATE/.subs" | head -1 | cut -d"$TAB" -f2)
@@ -1193,6 +1710,10 @@ EOF
 		TAB=$(printf '\t')
 		[ -f "$ENODIA_STATE/.subs" ] && grep -q "^$tag$TAB" "$ENODIA_STATE/.subs" || fail "подписка не найдена"
 		label=$(grep "^$tag$TAB" "$ENODIA_STATE/.subs" | head -1 | cut -d"$TAB" -f3-); [ -n "$label" ] || label="$tag"
+		# Счётчики принадлежат ССЫЛКЕ (см. save_sub): сменили адрес — остаток и срок теперь
+		# рассказывают о чужом провайдере, и до первой закачки панель выдавала бы их за свои.
+		_oldu=$(grep "^$tag$TAB" "$ENODIA_STATE/.subs" | head -1 | cut -d"$TAB" -f2)
+		[ "$_oldu" = "$url" ] || sub_info_drop "$tag"
 		{ grep -v "^$tag$TAB" "$ENODIA_STATE/.subs"; printf '%s\t%s\t%s\n' "$tag" "$url" "$label"; } > "$ENODIA_STATE/.subs.new" 2>/dev/null
 		mv "$ENODIA_STATE/.subs.new" "$ENODIA_STATE/.subs" && chmod 600 "$ENODIA_STATE/.subs" 2>/dev/null
 		printf '{"ok":true,"code":0,"msg":"ссылка обновлена"}\n'; exit 0 ;;
@@ -1245,6 +1766,9 @@ EOF
 			sub_names_keep_other "$tag" "$ENODIA_STATE/.sub-picks" > "$ENODIA_STATE/.sub-picks.new" 2>/dev/null
 			mv "$ENODIA_STATE/.sub-picks.new" "$ENODIA_STATE/.sub-picks" 2>/dev/null
 		fi
+		# …и счётчики провайдера (.sub-info, владелец — subs-lib.sh): строка ключуется ТЕГОМ, а
+		# теги люди заводят повторно — осиротевшая запись отдала бы новой подписке чужой остаток.
+		sub_info_drop "$tag"
 		printf '{"ok":true,"code":0,"msg":"подписка удалена"}\n'; exit 0 ;;
 	# set_sub_names: настоящие имена серверов подписки (эмодзи/флаги/юникод — как в v2rayNG).
 	# В имя ФАЙЛА такое не кладём (спецсимволы ломают глоб/скрипты), поэтому сырой remark
@@ -1347,6 +1871,16 @@ EOF
 	# уезжают в подстановку iptables, мусор туда пускать нельзя).
 	port_add|port_del)
 		ip=$(urldecode "$(field ip)")
+		# СНЯТЬ можно любую строку, которую панель показала, — и ту, что ядро пропускает (`ok:false`: «UDP», «443,,80»,
+		# адрес не из четырёх чисел из бэкапа). Движок сверяет ключ строкой по файлу, в iptables ничего не подставляется,
+		# поэтому снятию хватает безопасного набора символов — того же, каким cgi-bin/data отдаёт строки. Строгая
+		# грамматика добавления здесь оставляла «не действует — снимите её» невыполнимым (ревью пачки 3, круг 2).
+		if [ "$act" = port_del ]; then
+			proto=$(field proto); ports=$(urldecode "$(field ports)" | tr -d ' \t\r')
+			case "$ip$proto$ports" in *[!0-9a-zA-Z.,-]*) fail "недопустимое правило" ;; esac
+			[ -n "$ip" ] && [ -n "$proto" ] && [ -n "$ports" ] || fail "недопустимое правило"
+			run apply-bypass.sh port-del "$ip" "$proto" "$ports"
+		fi
 		[ "$ip" = any ] || echo "$ip" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || fail "недопустимый IP"
 		proto=$(field proto)
 		echo "$proto" | grep -qE '^(udp|tcp|both)$' || fail "протокол: udp, tcp или оба"
@@ -1374,7 +1908,7 @@ EOF
 	dhcp_pin|dhcp_unpin)
 		ip=$(urldecode "$(field ip)")
 		echo "$ip" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || fail "недопустимый IP"
-		[ -f "$ENODIA_DIR/dhcp-static.sh" ] || fail "закрепление адресов недоступно (обнови скрипты с GitHub)"
+		[ -f "$ENODIA_DIR/dhcp-static.sh" ] || fail "закрепление адресов недоступно (обновите скрипты с GitHub)"
 		if [ "$act" = dhcp_pin ]; then run dhcp-static.sh add "$ip"; else run dhcp-static.sh del "$ip"; fi ;;
 
 	# --- Наблюдение за трафиком устройства («Что запрашивает устройство») -----
@@ -1386,11 +1920,11 @@ EOF
 	# файла CGI отдаёт ПУСТОЕ тело. Пустое тело фронт читает как «сбой запроса» — без причины на
 	# экране, хотя причина известна («скрипт не залит»).
 	devwatch_start)
-		[ -f "$ENODIA_DIR/devwatch.sh" ] || fail "devwatch.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/devwatch.sh" ] || fail "devwatch.sh не установлен (обновите скрипты роутера)"
 		secs=$(clampint "$(field secs)" 60 10 300)
 		sh "$ENODIA_DIR/devwatch.sh" start "$secs"; exit 0 ;;
 	devwatch_stop)
-		[ -f "$ENODIA_DIR/devwatch.sh" ] || fail "devwatch.sh не установлен (обнови скрипты роутера)"
+		[ -f "$ENODIA_DIR/devwatch.sh" ] || fail "devwatch.sh не установлен (обновите скрипты роутера)"
 		sh "$ENODIA_DIR/devwatch.sh" stop; exit 0 ;;
 	# --- Сайты/домены ---------------------------------------------------------
 	# ТРИ состояния одного домена, один хозяин (domain.sh): в VPN / мимо VPN / нет правила.
@@ -1449,7 +1983,13 @@ EOF
 		raw=$(printf '%s' "$content" | sh "$ENODIA_DIR/groups.sh" new "$dir" "$slot" "$name" 2>&1); code=$?
 		last=$(printf '%s' "$raw" | tail -n 1)
 		gid=$(printf '%s' "$last" | cut -f1); gn=$(printf '%s' "$last" | cut -f2)
-		case "$gid" in g[0-9]*) ;; *) fail "не удалось создать группу" ;; esac
+		# Отказ — СЛОВАМИ groups.sh («ни одного домена или адреса — группа не создана»): общее «не удалось» не говорило,
+		# что чинить. Своя строка — только если скрипт не сказал ничего (дрейф деплоя, падение).
+		case "$gid" in
+			g[0-9]*) ;;
+			*) [ "$code" -ne 0 ] && [ -n "$last" ] || last="не удалось создать группу"
+			   printf '{"ok":false,"code":1,"msg":"%s"}\n' "$(printf '%s' "$last" | jesc 300)"; exit 0 ;;
+		esac
 		case "$gn" in ''|*[!0-9]*) gn=0 ;; esac
 		printf '{"ok":%s,"code":%s,"id":"%s","n":%s}\n' \
 			"$([ "$code" -eq 0 ] && echo true || echo false)" "$code" "$gid" "$gn"
@@ -1476,6 +2016,17 @@ EOF
 				printf '{"ok":%s,"code":%s,"msg":"%s"}\n' "$([ "$code" -eq 0 ] && echo true || echo false)" "$code" "$msg"
 				exit 0 ;;
 		esac ;;
+
+	# --- Своё имя устройства (dev-names.sh) — метка панели по MAC ------------------------------------
+	# MAC и имя судит ВЛАДЕЛЕЦ, своей копии гарда здесь нет: MAC — `lease-lib.sh::mac_ok` по всей строке целиком (одна копия
+	# разбора на проект, любой регистр, перевод строки внутри — отказ), имя — санирует и меряет (таб и перевод строки — в
+	# пробел, кавычка и косая — вон, длина — отказом). Аргументы уходят владельцу в кавычках, мимо eval. Пустое имя = снять.
+	dev_name)
+		# urldecode обязателен: панель кодирует параметры, и двоеточие MAC приезжает как `%3A` — без него владелец отвергал
+		# ЛЮБОЙ настоящий MAC (поймано на BE7000 27.09.2026 первым же переименованием; стенд панели видел только, что ушло).
+		mac=$(urldecode "$(field mac)")
+		name=$(urldecode "$(field name)")
+		run dev-names.sh set "$mac" "$name" ;;
 
 	# --- Доп-выходы (слоты мульти-транспорта, slots.sh) -----------------------
 	# id — строгий 2|3|4; транспорт/fallback — whitelist; config — имя файла (^[A-Za-z0-9._-]+$)
@@ -1516,7 +2067,8 @@ EOF
 		run groups.sh add-bound "$sid" "$name" ;;
 
 	# --- Wi-Fi: режим SSID по его iface'ам (split / bypass / force) — 3 позиции,
-	# как у устройств. Каждый iface ВАЛИДИРУЕМ (^wl[0-9]+$) И проверяем hostapd-конфиг.
+	# как у устройств. Каждый iface ВАЛИДИРУЕМ (^wl[0-9]+$) И проверяем, что он ЕСТЬ В ЯДРЕ: hostapd-конф
+	# лежит и у выключенной сети (конф третьего радио на BE7000), и прежний гард пропускал мёртвое имя.
 	# Режимы взаимоисключающие: перед новым снимаем противоположные метки (add-if=мимо VPN
 	# в VPN_EXCLUDE, force-add-if=целиком в VPN в VPN_FORCE; apply-bypass идемпотентен).
 	# wifi_unbypass — легаси-алиас старого фронта (= wifi_split, «вернуть в VPN»).
@@ -1525,7 +2077,7 @@ EOF
 		any=0; doneifs=""
 		for ifc in $(echo "$raw" | tr ',' ' '); do
 			echo "$ifc" | grep -qE '^wl[0-9]+$' || continue
-			[ -f "/var/run/hostapd-$ifc.conf" ] || continue
+			[ -d "/sys/class/net/$ifc" ] || continue
 			case "$act" in
 				wifi_bypass) sh "$ENODIA_DIR/apply-bypass.sh" force-del-if "$ifc" >/dev/null 2>&1; sh "$ENODIA_DIR/apply-bypass.sh" add-if "$ifc" >/dev/null 2>&1 ;;
 				wifi_force)  sh "$ENODIA_DIR/apply-bypass.sh" del-if "$ifc" >/dev/null 2>&1; sh "$ENODIA_DIR/apply-bypass.sh" force-add-if "$ifc" >/dev/null 2>&1 ;;
@@ -1538,25 +2090,66 @@ EOF
 		# и голая строка была тихим no-op — режим Wi-Fi менялся только для НОВЫХ соединений.
 		ENODIA_DIR="$ENODIA_DIR"; if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 		if command -v ct_flush >/dev/null 2>&1; then ct_flush; else conntrack -F >/dev/null 2>&1; fi
-		w=$(case "$act" in wifi_bypass) echo "мимо VPN";; wifi_force) echo "целиком в VPN";; *) echo "раздельно";; esac)
-		printf '{"ok":true,"code":0,"msg":"Wi-Fi (%s): %s"}\n' "$w" "$doneifs"; exit 0 ;;
-	# Гостевая 192.168.33.0/24 — те же 3 режима. guest_unbypass — легаси-алиас (= guest_split).
-	guest_split|guest_unbypass) sh "$ENODIA_DIR/apply-bypass.sh" force-guest-off >/dev/null 2>&1; run apply-bypass.sh guest-off ;;
-	guest_bypass)               sh "$ENODIA_DIR/apply-bypass.sh" force-guest-off >/dev/null 2>&1; run apply-bypass.sh guest-on ;;
-	guest_force)                sh "$ENODIA_DIR/apply-bypass.sh" guest-off >/dev/null 2>&1; run apply-bypass.sh force-guest-on ;;
+		# Слова — те же, что у сегментов экрана сетей (и у гостевой в apply-bypass.sh): тост переводится целиком.
+		# Имена интерфейсов в тост не кладём — человек выбирал СЕТЬ, а не wlN.
+		w=$(case "$act" in wifi_bypass) echo "мимо VPN";; wifi_force) echo "целиком в VPN";; *) echo "по правилам";; esac)
+		printf '{"ok":true,"code":0,"msg":"Wi-Fi → %s"}\n' "$w"; exit 0 ;;
+	# Правило сети, которой НЕТ В ЭФИРЕ: интерфейса у неё нет, панель знает только строку хранилища (`offair` в
+	# section=wifi). Строку проверяет и снимает владелец хранилища (apply-bypass.sh forget-if: отказ, если её нет);
+	# здесь — только форма: одна строка, не пустая, не длиннее имени сети с запасом. Вывод движка в тост не идёт:
+	# сборка VPN_FORCE печатает свою служебную строку, и тост читался бы логом; отказ — последней строкой (причина).
+	wifi_forget)
+		key=$(urldecode "$(field key)")
+		[ -n "$key" ] || fail "нет имени сети"
+		one_line "$key" || fail "имя сети — одной строкой"
+		[ "${#key}" -le 200 ] || fail "слишком длинное имя сети"
+		out=$(sh "$ENODIA_DIR/apply-bypass.sh" forget-if "$key" 2>&1) || fail "$(wf_why "$out")"
+		printf '{"ok":true,"code":0,"msg":"правило сети снято"}\n'; exit 0 ;;
+	# Гостевая 192.168.33.0/24 — те же 3 режима. guest_unbypass — легаси-алиас (= guest_split). Тост — своими словами,
+	# как у сетей: весь вывод движка (`run`) нёс служебную строку сборки VPN_FORCE («[apply-bypass] force(в VPN): ip=0, …»)
+	# перед итогом, и тост читался логом. Отказ — последней строкой вывода (причина).
+	guest_split|guest_unbypass|guest_bypass|guest_force)
+		case "$act" in
+			guest_bypass) g1=force-guest-off; g2=guest-on;       w="мимо VPN" ;;
+			guest_force)  g1=guest-off;       g2=force-guest-on; w="целиком в VPN" ;;
+			*)            g1=force-guest-off; g2=guest-off;      w="по правилам" ;;
+		esac
+		sh "$ENODIA_DIR/apply-bypass.sh" "$g1" >/dev/null 2>&1
+		out=$(sh "$ENODIA_DIR/apply-bypass.sh" "$g2" 2>&1) || fail "$(wf_why "$out")"
+		printf '{"ok":true,"code":0,"msg":"гостевая сеть → %s"}\n' "$w"; exit 0 ;;
 
 	# --- Уведомления ----------------------------------------------------------
 	notify_on)  rm -f "$ENODIA_STATE/.notify-off"; printf '{"ok":true,"code":0,"msg":"Уведомления включены"}\n'; exit 0 ;;
 	notify_off) : > "$ENODIA_STATE/.notify-off"; printf '{"ok":true,"code":0,"msg":"Уведомления выключены"}\n'; exit 0 ;;
+	# «О чём писать»: письма по ПОВОДАМ. Классы и формат файла выбора знает events.sh — CGI в него не лезет, как и в журнал.
+	# Код 1 у events.sh — это usage СТАРОЙ копии (верба нет): «обновите», а не её английская строка в тосте. Свои отказы новый
+	# events.sh отдаёт другими кодами (2 · 4 · 5) и своими словами — сбой записи не читается как «старый роутер».
+	notify_mail)
+		[ -f "$ENODIA_DIR/events.sh" ] || fail "выбор писем недоступен — обновите скрипты роутера"
+		cls=$(field cls)
+		case "$(field on)" in 1) w=on ;; 0) w=off ;; *) fail "не понял выбор: нужно 1 или 0" ;; esac
+		out=$(sh "$ENODIA_DIR/events.sh" mail "$cls" "$w" 2>&1); rc=$?
+		[ "$rc" = 1 ] && fail "выбор писем по поводам недоступен — обновите скрипты роутера"
+		[ "$rc" = 0 ] || fail "$(printf '%s' "$out" | tail -n 1 | jesc 200)"
+		printf '{"ok":true,"code":0,"msg":"Выбор писем сохранён"}\n'; exit 0 ;;
 	notify_test)
-		[ -s "$ENODIA_STATE/notify.conf" ] || fail "почта не настроена (нет notify.conf) — задай в установщике с ПК"
-		grep -q '^SMTP_PASS=.' "$ENODIA_STATE/notify.conf" 2>/dev/null || fail "не заполнен SMTP_PASS — настрой почту в установщике"
+		# Почту настраивает сама панель (форма «Уведомления»), установщик с ПК её больше не трогает. Полнота — ВСЕ ЧЕТЫРЕ поля, что
+		# требует notify.sh: проверка одного пароля пропускала пустой логин или адрес, и notify.sh отвечал «не настроено» (код 3).
+		[ -s "$ENODIA_STATE/notify.conf" ] || fail "почта не настроена — заполните форму настройки почты и сохраните"
+		for _nk in SMTP_HOST SMTP_USER SMTP_PASS MAIL_TO; do
+			grep -q "^$_nk=." "$ENODIA_STATE/notify.conf" 2>/dev/null || fail "настройки почты неполные — нужны сервер, логин, пароль и адрес получателя"
+		done
 		# Тема — в форме «КОД: …»: ровно её `notify.sh` прогоняет через router_relabel и подставляет
 		# РЕАЛЬНУЮ модель. Без двоеточия тестер с AX3600 получал письмо «BE7000 web test» — проверка
 		# почты первым делом сообщала о чужом роутере.
 		raw=$(sh "$ENODIA_DIR/notify.sh" 'BE7000: web test' 'Panel test email - notifications work.' 2>&1); code=$?
 		if [ "$code" -eq 0 ]; then
-			printf '{"ok":true,"code":0,"msg":"Письмо отправлено (250 queued) — проверь почту и Спам"}\n'
+			printf '{"ok":true,"code":0,"msg":"Письмо отправлено (250 queued) — проверьте почту и Спам"}\n'
+		elif [ "$code" -eq 3 ]; then
+			# Конфиг выше найден и строки полей непусты, а notify.sh ответил «не настроено»: после `. notify.conf` значение
+			# всё же пусто (ручная правка вида `SMTP_USER=""`, повтор строки с пустым значением) либо разошёлся ENODIA_STATE.
+			# «SMTP отказ» тут был бы неправдой о сервере, «обновите систему» — неверным советом (ревью шага 3c-2, круг 2).
+			printf '{"ok":false,"code":3,"msg":"Письмо не ушло: настройки почты не читаются — пересохраните форму настройки почты"}\n'
 		else
 			m=$(printf '%s' "$raw" | jesc 400)
 			printf '{"ok":false,"code":%s,"msg":"SMTP отказ: %s"}\n' "$code" "$m"
@@ -1580,24 +2173,31 @@ EOF
 		# Шифрование: implicit (465, сразу TLS) / starttls (587/25, апгрейд) / auto (по порту в notify.sh).
 		case "$tls" in implicit|starttls) ;; *) tls=auto ;; esac
 		if [ -n "$pass" ]; then
-			echo "$pass" | grep -qE '^[A-Za-z0-9._@!#%^*+=:~-]+$' || fail "пароль: недопустимые символы (без пробелов/кавычек/шелл-знаков; экзотический — задай в установщике с ПК)"
+			# Установщик с ПК почту больше не настраивает — прежний совет «задай там» вёл в никуда.
+			echo "$pass" | grep -qE '^[A-Za-z0-9._@!#%^*+=:~-]+$' || fail "пароль: только латиница, цифры и знаки ._@!#%^*+=:~- — без пробелов и кавычек"
 		else
 			pass=$(sed -n 's/^SMTP_PASS=//p' "$ENODIA_STATE/notify.conf" 2>/dev/null | head -1)
-			[ -n "$pass" ] || fail "пароль пуст и прежнего нет — введи пароль приложения"
+			[ -n "$pass" ] || fail "пароль пуст и прежнего нет — введите пароль приложения"
 		fi
 		{ echo "# notify.conf — записан веб-панелью"; echo "SMTP_HOST=$host"; echo "SMTP_PORT=$port"; echo "SMTP_TLS=$tls";
 		  echo "SMTP_USER=$user"; echo "SMTP_PASS=$pass"; echo "MAIL_TO=$to"; } > "$ENODIA_STATE/notify.conf.new" \
 			&& mv "$ENODIA_STATE/notify.conf.new" "$ENODIA_STATE/notify.conf" && chmod 600 "$ENODIA_STATE/notify.conf" \
 			|| { rm -f "$ENODIA_STATE/notify.conf.new"; fail "не удалось записать notify.conf"; }
-		printf '{"ok":true,"code":0,"msg":"Почта сохранена (%s) — отправь тест-письмо"}\n' "$user"; exit 0 ;;
+		printf '{"ok":true,"code":0,"msg":"Почта сохранена (%s) — отправьте тест-письмо"}\n' "$user"; exit 0 ;;
 
 	# --- Центр уведомлений: журнал событий. Читается через data?section=events;
 	# здесь только две записи — отметка «прочитано» (одна на весь журнал) и очистка.
 	# Формат хранения знает events.sh, CGI в него не лезет.
 	events_read|events_clear)
-		[ -f "$ENODIA_DIR/events.sh" ] || fail "журнал событий недоступен — обнови скрипты роутера"
+		[ -f "$ENODIA_DIR/events.sh" ] || fail "журнал событий недоступен — обновите скрипты роутера"
 		case "$act" in
-			events_read)  sh "$ENODIA_DIR/events.sh" mark-read >/dev/null 2>&1; printf '{"ok":true,"code":0,"msg":"Отмечено прочитанным"}\n' ;;
+			# До какого события прочитано — отметка самого свежего ПОКАЗАННОГО (панель шаг 7b); нет поля — «до сейчас», как раньше.
+			# Сколько ОСТАЛОСЬ непрочитанным — ответом роутера: панель ставит колокольчику его, а не свой ноль (события с отметкой из
+			# будущего после отката часов остаются непрочитанными, и нарисованный ноль «рос» бы обратно каждый опрос).
+			events_read)  _et=$(field ts); case "$_et" in *[!0-9]*) _et= ;; esac
+			              case "$(sh "$ENODIA_DIR/events.sh" mark-read $_et 2>/dev/null)" in *'"ok":false'*) fail "не удалось отметить прочитанным" ;; esac
+			              _eu=$(sh "$ENODIA_DIR/events.sh" unread 2>/dev/null); case "$_eu" in ''|*[!0-9]*) _eu= ;; esac
+			              printf '{"ok":true,"code":0,"msg":"Отмечено прочитанным"%s}\n' "${_eu:+,\"unread\":$_eu}" ;;
 			events_clear) sh "$ENODIA_DIR/events.sh" clear     >/dev/null 2>&1; printf '{"ok":true,"code":0,"msg":"Журнал событий очищен"}\n' ;;
 		esac
 		exit 0 ;;
@@ -1618,46 +2218,11 @@ EOF
 	full_tunnel_on)  run apply-bypass.sh full-tunnel on ;;
 	full_tunnel_off) run apply-bypass.sh full-tunnel off ;;
 
-	# --- Списки IP: обновить сейчас / сменить источник / режим кастомного файла. -----
-	# iplist.conf переживает ребут; источник недоступен → маршрутизация НЕ падает.
-	iplist_update) run iplist-update.sh ;;
-	set_iplist_source)
-		src=$(field src); url=$(urldecode "$(field url)"); sites=$(urldecode "$(field sites)")
-		# Сохраняем кастом-режим (его правит отдельное действие), переписываем источник.
-		mode=$(sed -n 's/^IPLIST_CUSTOM_MODE=//p' "$ENODIA_STATE/iplist.conf" 2>/dev/null | head -1 | tr -d '"\\')
-		uline=""; sline=""
-		case "$src" in
-			all)   : ;;  # ни URL, ни sites — дефолт (весь cidr4 opencck)
-			sites) echo "$sites" | grep -qE '^[A-Za-z0-9 ._-]+$' || fail "сайты: домены через пробел"; sline="IPLIST_SITES=\"$sites\"" ;;
-			url)   echo "$url" | grep -qE '^https?://[A-Za-z0-9./?=&_:%@-]+$' || fail "URL: http(s):// и безопасные символы"; uline="IPLIST_URL=\"$url\"" ;;
-			*) fail "источник: all|sites|url" ;;
-		esac
-		{ echo "# iplist.conf — записан веб-панелью"; [ -n "$uline" ] && echo "$uline"; [ -n "$sline" ] && echo "$sline";
-		  [ -n "$mode" ] && echo "IPLIST_CUSTOM_MODE=\"$mode\""; } > "$ENODIA_STATE/iplist.conf.new" \
-			&& mv "$ENODIA_STATE/iplist.conf.new" "$ENODIA_STATE/iplist.conf" \
-			|| { rm -f "$ENODIA_STATE/iplist.conf.new"; fail "не удалось записать iplist.conf"; }
-		printf '{"ok":true,"code":0,"msg":"Источник списка IP: %s (применится при обновлении)"}\n' "$src"; exit 0 ;;
-	set_iplist_custom_mode)
-		mode=$(field mode)
-		case "$mode" in off|only|merge) ;; *) fail "режим: off|only|merge" ;; esac
-		# read-modify-write: сохраняем URL/SITES, меняем/убираем IPLIST_CUSTOM_MODE.
-		url=$(sed -n   's/^IPLIST_URL=//p'   "$ENODIA_STATE/iplist.conf" 2>/dev/null | head -1)
-		sites=$(sed -n 's/^IPLIST_SITES=//p' "$ENODIA_STATE/iplist.conf" 2>/dev/null | head -1)
-		{ echo "# iplist.conf — записан веб-панелью"; [ -n "$url" ] && echo "IPLIST_URL=$url"; [ -n "$sites" ] && echo "IPLIST_SITES=$sites";
-		  [ "$mode" != off ] && echo "IPLIST_CUSTOM_MODE=\"$mode\""; } > "$ENODIA_STATE/iplist.conf.new" \
-			&& mv "$ENODIA_STATE/iplist.conf.new" "$ENODIA_STATE/iplist.conf" \
-			|| { rm -f "$ENODIA_STATE/iplist.conf.new"; fail "не удалось записать iplist.conf"; }
-		printf '{"ok":true,"code":0,"msg":"Кастомный список: режим %s (обнови список, чтобы применить)"}\n' "$mode"; exit 0 ;;
-	upload_custom_iplist)
-		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null)
-		[ -n "$content" ] || fail "пустой или битый файл (base64)"
-		# Валидация: каждая непустая/некомментарий строка — IPv4 или CIDR.
-		bad=$(printf '%s' "$content" | tr -d '\r' | grep -vE '^[[:space:]]*(#.*)?$' | grep -vE '^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?[[:space:]]*$' | head -1)
-		[ -z "$bad" ] || fail "строка не IPv4/CIDR: $bad"
-		printf '%s' "$content" | tr -d '\r' > "$ENODIA_STATE/iplist.custom.new" && mv "$ENODIA_STATE/iplist.custom.new" "$ENODIA_STATE/iplist.custom" && chmod 600 "$ENODIA_STATE/iplist.custom" \
-			|| { rm -f "$ENODIA_STATE/iplist.custom.new"; fail "не удалось записать iplist.custom"; }
-		n=$(grep -cE '^[0-9]' "$ENODIA_STATE/iplist.custom" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
-		printf '{"ok":true,"code":0,"msg":"Кастомный список загружен (%s записей). Включи режим only/merge и обнови."}\n' "$n"; exit 0 ;;
+	# --- Списки IP: прежние вербы iplist_update / set_iplist_source / set_iplist_custom_mode /
+	# upload_custom_iplist СНЯТЫ (28.09.2026): панель их не зовёт с тех пор, как источники живут в менеджере
+	# списков (lists-update.sh, реестр tunnel-cidr). Писали они легаси-iplist.conf, который реестр читает ОДИН раз
+	# — при миграции (обещание «применится при обновлении» было ложным), и iplist.custom в обход менеджера: у
+	# источников свои вербы src_add_blob/src_edit_blob. Поверхность без единого вызывателя.
 
 	# NB: верб `proto_install` (фиксированные наборы `awg-xray` и т.п.) отсюда СНЯТ. Панель его не
 	# звала с тех пор, как наборы заменила карточка «Компоненты», а держать в CGI ветку, которая
@@ -1667,7 +2232,7 @@ EOF
 	# --- Компоненты à la carte (packages.sh): ОДИН план «поставить X, снять Y» одним прогоном.
 	# Почему не два действия install/remove: между прогонами роутер остаётся без транспорта, а на
 	# 20-МБ флеше замена (снять Xray → поставить Hysteria2) двумя заходами вообще не влезает.
-	# Прогресс и лок — ТЕ ЖЕ .proto-install.{state,log} + /tmp/proto-install.lock, что у смены
+	# Прогресс и лок — ТЕ ЖЕ .proto-install.{state,log} + /tmp/enodia-proto-install.lock, что у смены
 	# набора: фронт уже умеет их опрашивать, а «две установки разом» лок и придуман не пускать.
 	pkg_apply)
 		pins=$(field ins); pdel=$(field del)
@@ -1681,7 +2246,7 @@ EOF
 		case "$pins" in *[!a-z0-9,]*) fail "недопустимый список компонентов" ;; esac
 		case "$pdel" in *[!a-z0-9,]*) fail "недопустимый список компонентов" ;; esac
 		[ -n "$pins$pdel" ] || fail "план пуст — нечего применять"
-		pkg_bg "${pins:--}" "${pdel:--}" "Изменение компонентов запущено. Идёт удаление/скачивание — следи за прогрессом." ;;
+		pkg_bg "${pins:--}" "${pdel:--}" "Изменение компонентов запущено. Идёт удаление и скачивание — ход виден на экране «Компоненты»." ;;
 
 	# --- ЧИСТКА ФЛЕША (clean.sh — единственная истина «что считается мусором»).
 	# Синхронно, а не через pkg_bg: снос пары каталогов занимает доли секунды и НИЧЕГО не
@@ -1691,7 +2256,7 @@ EOF
 	# в sh, а «снимки» и «логи» — разной цены операции (снимок = страховка на мёртвый источник),
 	# поэтому подразумевать их по умолчанию нельзя.
 	disk_clean)
-		[ -f "$ENODIA_DIR/clean.sh" ] || fail "clean.sh не установлен (обнови скрипты с GitHub)"
+		[ -f "$ENODIA_DIR/clean.sh" ] || fail "clean.sh не установлен (обновите скрипты с GitHub)"
 		# ГРАБЛЯ (поймана кликом по живой панели): значение ОБЯЗАНО пройти urldecode. Общий
 		# фронтовый postAction() гонит параметры через encodeURIComponent, а тот кодирует
 		# запятую как %2C — `tr ',' ' '` разделителя не находит и весь список приезжает ОДНИМ
@@ -1716,8 +2281,8 @@ EOF
 	# Ответ отдаём словами ДВИЖКА (его stdout), а не своими: он один знает, какой бинарь не
 	# поехал и почему («не запускается с этой ФС» ≠ «не хватило места»), а вторая формулировка
 	# в CGI разошлась бы с первой на первой же правке.
-	store_enable|store_disable)
-		[ -f "$ENODIA_DIR/usb-offload.sh" ] || fail "usb-offload.sh не установлен (обнови скрипты с GitHub)"
+	store_enable|store_disable|store_forget)
+		[ -f "$ENODIA_DIR/usb-offload.sh" ] || fail "usb-offload.sh не установлен (обновите скрипты с GitHub)"
 		# Устройство приходит с фронта только у enable (выбор из списка воткнутого) и уходит
 		# АРГУМЕНТОМ в sh ⇒ жёсткий whitelist: только /dev/sdXN, ничего другого.
 		sdev=$(urldecode "$(field dev)")
@@ -1726,13 +2291,80 @@ EOF
 			/dev/sd[a-z]|/dev/sd[a-z][0-9]|/dev/sd[a-z][0-9][0-9]) : ;;
 			*) fail "неизвестное устройство" ;;
 		esac
-		if [ "$act" = store_enable ]; then sout=$(sh "$ENODIA_DIR/usb-offload.sh" enable $sdev 2>&1); src=$?
-		else sout=$(sh "$ENODIA_DIR/usb-offload.sh" disable 2>&1); src=$?; fi
+		# forget — выход из «включён, но не найден» (накопитель потерян насовсем): маркер снимается без
+		# переноса, итог с ЦЕНОЙ (что стало неустановленным) движок кладёт последней строкой.
+		case "$act" in
+			store_enable) sout=$(sh "$ENODIA_DIR/usb-offload.sh" enable $sdev 2>&1); src=$? ;;
+			store_forget) sout=$(sh "$ENODIA_DIR/usb-offload.sh" forget 2>&1); src=$? ;;
+			*)            sout=$(sh "$ENODIA_DIR/usb-offload.sh" disable 2>&1); src=$? ;;
+		esac
 		# Многострочный отчёт движка в JSON не влезает — берём последнюю содержательную строку:
 		# у обоих вербов там либо итог, либо причина отказа. Эскейп кавычек/бэкслешей — тем же
 		# выражением, что в run(): в тексте движка попадаются пути, а не только буквы.
 		smsg=$(printf '%s\n' "$sout" | grep -v '^ *$' | tail -1 | jesc 500)
 		[ -n "$smsg" ] || smsg="накопитель: готово"
+		[ "$src" = 0 ] || fail "$smsg"
+		printf '{"ok":true,"code":0,"msg":"%s"}\n' "$smsg"; exit 0 ;;
+
+	# --- РЕЖИМ РАСКЛАДКИ (usb-offload.sh mode data|bins|full).
+	# ЗАПУСК ОТВЯЗАННЫЙ, и это не «на всякий случай»: переезд кончается перезапуском панели с
+	# НОВОГО места (docroot uhttpd — это $ENODIA_DIR/web, а он переезжает), то есть наш родитель
+	# будет убит посреди запроса. Ответить обязаны ДО этого — как при purge.
+	# Отчёт движка кладём в лог: в фоне stdout уходит в /dev/null (start-stop-daemon -b), а
+	# разбирать «почему не переехало» по пустому месту невозможно.
+	store_mode)
+		[ -f "$ENODIA_DIR/usb-offload.sh" ] || fail "usb-offload.sh не установлен (обновите скрипты с GitHub)"
+		smd=$(field mode)
+		case "$smd" in data|bins|full) : ;; *) fail "неизвестный режим" ;; esac
+		sdev=$(urldecode "$(field dev)")
+		case "$sdev" in
+			"") : ;;
+			/dev/sd[a-z]|/dev/sd[a-z][0-9]|/dev/sd[a-z][0-9][0-9]) : ;;
+			*) fail "неизвестное устройство" ;;
+		esac
+		# Уже идёт? Судим по ЖИВОМУ процессу: pid-файл лежит в /tmp и переживает убитый движок,
+		# а «переключение уже идёт» навсегда — это кнопка, залипшая до ребута (приём pkg_bg).
+		# Ответ — у владельца (daemon-lib.sh::store_mode_alive); шим — прежнее «жив ли pid».
+		if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+		command -v store_mode_alive >/dev/null 2>&1 || store_mode_alive() {
+			smp=$(cat /tmp/enodia-store-mode.pid 2>/dev/null | tr -cd '0-9'); [ -n "$smp" ] && kill -0 "$smp" 2>/dev/null; }
+		store_mode_alive && fail "переключение раскладки уже идёт"
+		spawn_bg /tmp/enodia-store-mode.pid -c \
+			"sh '$ENODIA_DIR/usb-offload.sh' mode $smd $sdev > /tmp/enodia-store-mode.log 2>&1"
+		if [ "$smd" = full ]; then
+			printf '{"ok":true,"code":0,"msg":"Переезд на накопитель запущен. Панель ненадолго исчезнет и поднимется уже с накопителя."}\n'
+		else
+			printf '{"ok":true,"code":0,"msg":"Возврат на флеш роутера запущен. Панель ненадолго исчезнет и поднимется с флеша."}\n'
+		fi
+		exit 0 ;;
+
+	# --- ПОИМЁННАЯ РЕЗИДЕНТНОСТЬ («этот бинарь держать на роутере», usb-offload.sh place).
+	# Отдельное действие от store_enable/store_disable: те про накопитель ЦЕЛИКОМ, это про один
+	# бинарь. Зависимости, гард места и запрет «отпустить hev из-под закреплённого xray» живут в
+	# движке — здесь их копии нет.
+	store_place)
+		[ -f "$ENODIA_DIR/usb-offload.sh" ] || fail "usb-offload.sh не установлен (обновите скрипты с GitHub)"
+		# Оба значения уходят АРГУМЕНТАМИ в sh ⇒ санитайз по ФОРМЕ. Членство в списке «кого можно
+		# селить» тут НЕ проверяем: реестр живёт в store-lib.sh, и вторая его копия разошлась бы
+		# с первой на первом же новом протоколе — движок ответит отказом сам.
+		sbin=$(urldecode "$(field bin)")
+		sto=$(urldecode "$(field to)")
+		case "$sbin" in ''|*[!a-z0-9-]*) fail "неизвестный компонент" ;; esac
+		case "$sto" in router|store) ;; *) fail "неизвестное направление" ;; esac
+		# ПОТОКИ РАЗДЕЛЯЕМ, а не сливаем 2>&1: у движка есть путь, где отказ наступает ПОСЛЕ
+		# успешных строк («закрепление записано, но перенести не вышло»). На слитом потоке
+		# head -1 отдавал бы «Закреплено за роутером: …» — то есть панель показывала бы
+		# ПОЛОЖИТЕЛЬНУЮ фразу под красным тостом. Диагноз всегда в stderr, итог — в stdout.
+		_pe="/tmp/enodia-place-err.$$"
+		sout=$(sh "$ENODIA_DIR/usb-offload.sh" place "$sbin" "$sto" 2>"$_pe"); src=$?
+		serr=$(grep -v '^ *$' "$_pe" 2>/dev/null | head -1)
+		rm -f "$_pe" 2>/dev/null
+		# У УСПЕХА итог в ПОСЛЕДНЕЙ строке stdout («свободно на /data столько-то» — ровно то, ради
+		# чего кнопку жали). У ОТКАЗА — ПЕРВАЯ строка stderr: там диагноз с числами, вторая уже
+		# совет. Пустой stderr при ненулевом коде (движка нет, шелл упал) — падаем на stdout.
+		if [ "$src" = 0 ]; then smsg=$(printf '%s\n' "$sout" | grep -v '^ *$' | tail -1 | jesc 500)
+		else                    smsg=$(printf '%s\n' "${serr:-$sout}" | grep -v '^ *$' | head -1 | jesc 500); fi
+		[ -n "$smsg" ] || smsg="готово"
 		[ "$src" = 0 ] || fail "$smsg"
 		printf '{"ok":true,"code":0,"msg":"%s"}\n' "$smsg"; exit 0 ;;
 
@@ -1746,7 +2378,7 @@ EOF
 	#  3) ответ отдаём СРАЗУ и честно говорим, что панель сейчас исчезнет (при purge) — иначе
 	#     человек видит «сеть недоступна» и думает, что сломал роутер.
 	uninstall_run)
-		[ -f "$ENODIA_DIR/uninstall.sh" ] || fail "uninstall.sh не установлен (обнови скрипты с GitHub)"
+		[ -f "$ENODIA_DIR/uninstall.sh" ] || fail "uninstall.sh не установлен (обновите скрипты с GitHub)"
 		umode=$(field mode)
 		uphrase=$(urldecode "$(field phrase)")
 		case "$umode" in deactivate|purge) : ;; *) fail "неизвестный режим удаления" ;; esac
@@ -1759,34 +2391,67 @@ EOF
 		# RUNNING без ЖИВОГО процесса = осиротевший статус: файл лежит на флеше и переживает всё,
 		# поэтому одна прерванная попытка (ребут посреди деактивации) блокировала бы кнопку
 		# НАВСЕГДА, а другого способа снять VPN из панели нет. Тот же приём, что в pkg_bg выше.
+		# «ИДЁТ ЛИ» — ТЕМ ЖЕ ОТВЕТОМ, ЧТО У ПЛАНА (`uninstall.sh plan` → `running`): держатель — процесс ИМЕННО uninstall.sh. По одному
+		# «жив ли» pid, переиспользованный чужим демоном после обрыва, держал бы «удаление уже идёт», пока экран предлагает «Повторить».
 		if [ "$ust" = RUNNING ]; then
-			upid=$(cat /tmp/uninstall.pid 2>/dev/null | tr -d ' \r\n')
-			case "$upid" in ''|*[!0-9]*) upid="" ;; esac
-			[ -n "$upid" ] && kill -0 "$upid" 2>/dev/null && fail "удаление уже идёт"
+			if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+			command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+			command -v uninstall_alive >/dev/null 2>&1 || uninstall_alive() {
+				upid=$(cat /tmp/enodia-uninstall.pid 2>/dev/null | tr -cd '0-9'); pid_runs "$upid" 'uninstall\.sh (deactivate|purge)'; }
+			uninstall_alive && fail "удаление уже идёт"
 		fi
-		spawn_bg /tmp/uninstall.pid "$ENODIA_DIR/uninstall.sh" "$umode"
+		# Идёт установка или обновление кода — снимать нельзя (разбор у uninstall.sh::un_busy); причина — ДО запуска, словами: сам
+		# uninstall.sh откажет в фоне, и экран увидел бы лишь FAIL. Занят = код 0 И названа причина: старый uninstall.sh без верба
+		# `busy` отвечает usage с кодом 2, а пустой ответ с нулём (обрезанный файл) — не повод запирать «Удалить».
+		ubw=$(sh "$ENODIA_DIR/uninstall.sh" busy 2>/dev/null) && [ -n "$ubw" ] && fail "$ubw — дождитесь конца и повторите"
+		# «ИДЁТ» — ДО запуска и атомарно: в файле лежит вердикт ПРОШЛОГО снятия (он на флеше и переживает всё), и опрос
+		# экрана, пришедший раньше, чем сам скрипт перепишет строку, прочитал бы прежний OK как итог этого запуска (раньше
+		# панель гадала задержкой первого опроса). Запись — рядом + `mv` (C105).
+		echo RUNNING > "$ENODIA_STATE/.uninstall.state.new" && mv -f "$ENODIA_STATE/.uninstall.state.new" "$ENODIA_STATE/.uninstall.state"
+		# Режим — рядом с пидфайлом и тоже ДО запуска: план отдаёт его экрану, открытому посреди снятия (`mode`), — иначе тот не отличал
+		# отключение от полного удаления (разбор у uninstall.sh::cmd_plan).
+		echo "$umode" > /tmp/enodia-uninstall.mode.new && mv -f /tmp/enodia-uninstall.mode.new /tmp/enodia-uninstall.mode
+		spawn_bg /tmp/enodia-uninstall.pid "$ENODIA_DIR/uninstall.sh" "$umode"
 		if [ "$umode" = purge ]; then
-			printf '{"ok":true,"code":0,"msg":"Полное удаление запущено. Панель сейчас закроется — это нормально. Отчёт останется в /data/enodia-uninstall.log"}\n'
+			# Путь отчёта — тот, куда его пишет uninstall.sh (`REPORT`, на томе кода); прежний `/data/…` был литералом другого
+			# тома (на BE10000 — чужой cfg), и человек искал отчёт там, где его нет.
+			printf '{"ok":true,"code":0,"msg":"Полное удаление запущено. Панель сейчас закроется — это нормально. Отчёт останется в /data/usr/enodia-uninstall.log"}\n'
 		else
 			printf '{"ok":true,"code":0,"msg":"Деактивация запущена. VPN снимется, панель останется работать."}\n'
 		fi
 		exit 0 ;;
 
-	# --- Апдейтер с GitHub (Ф4). check — быстрая сетевая проверка версии (ничего не меняет).
-	# apply-scripts/rollback — на будущее (публичный репо пока отстаёт; downgrade-guard внутри).
-	gh_check)
-		[ -f "$ENODIA_DIR/gh-update.sh" ] || fail "gh-update.sh не установлен (обнови панель)"
-		run gh-update.sh check ;;
+	# --- Апдейтер с GitHub (Ф4). Проверку версии и сверку целостности экран «Обновление» спрашивает секциями data
+	# (gh_check / gh_verify: ответ — вердикт, ничего не меняет); здесь — то, что МЕНЯЕТ файлы: обновление и откат.
 	gh_apply_scripts)
 		[ -f "$ENODIA_DIR/gh-update.sh" ] || fail "gh-update.sh не установлен"
-		st=$(cat "$ENODIA_STATE/.gh-update.state" 2>/dev/null | tr -d ' \r\n')
-		[ "$st" = RUNNING ] && [ -f /tmp/gh-update.lock ] && fail "обновление уже идёт"
-		echo RUNNING > "$ENODIA_STATE/.gh-update.state"
-		spawn_bg /tmp/gh-update.pid -c "touch /tmp/gh-update.lock; sh '$ENODIA_DIR/gh-update.sh' self >'$ENODIA_STATE/.gh-update.log' 2>&1; sh '$ENODIA_DIR/gh-update.sh' apply-scripts >>'$ENODIA_STATE/.gh-update.log' 2>&1; echo DONE >'$ENODIA_STATE/.gh-update.state'; rm -f /tmp/gh-update.lock"
-		printf '{"ok":true,"code":0,"msg":"Обновление скриптов запущено (фоном). Потом примени: Починить правила или ребут."}\n'; exit 0 ;;
+		# «Идёт ли» — у апдейтера (живой держатель по пидфайлу фона): строка RUNNING, пережившая перезагрузку посреди
+		# обновления, иначе запирала бы кнопку навсегда. Старая копия верба не знает (код 2) — тогда не судим.
+		sh "$ENODIA_DIR/gh-update.sh" upd-busy >/dev/null 2>&1 && fail "обновление уже идёт"
+		# ИТОГ ПИШЕМ (OK | FAIL), а не «DONE»: экран «Обновление» показывает, чем кончилось, — прежний DONE ставился и на
+		# провале, и «последнее обновление — готово» было бы враньём. Запись атомарная (рядом + `mv`): читатель обрезанного
+		# файла видит «IDLE» (разбор у packages.sh::set_state). Лок в /tmp — примета «идёт» для дампа.
+		# Самообновления апдейтера (`self`) перед обновлением БОЛЬШЕ НЕТ: код едет одним подписанным пакетом, и его установщик
+		# берётся ИЗ ПАКЕТА, — прежний шаг и был тем «старый роутер обязан уметь завтрашнее», от которого уходили.
+		echo RUNNING > "$ENODIA_STATE/.gh-update.state.new" && mv -f "$ENODIA_STATE/.gh-update.state.new" "$ENODIA_STATE/.gh-update.state"
+		spawn_bg /tmp/enodia-gh-update.pid -c "touch /tmp/enodia-gh-update.lock; if sh '$ENODIA_DIR/gh-update.sh' apply >'$ENODIA_STATE/.gh-update.log' 2>&1; then s=OK; else s=FAIL; fi; echo \$s >'$ENODIA_STATE/.gh-update.state.new' && mv -f '$ENODIA_STATE/.gh-update.state.new' '$ENODIA_STATE/.gh-update.state'; rm -f /tmp/enodia-gh-update.lock"
+		printf '{"ok":true,"code":0,"msg":"Обновление запущено: пакет скачивается и проверяется подписью, потом ставится. Когда кончится — обновите страницу и примените правила: «Починить правила» или перезагрузка."}\n'; exit 0 ;;
 	gh_rollback)
 		[ -f "$ENODIA_DIR/gh-update.sh" ] || fail "gh-update.sh не установлен"
-		run gh-update.sh rollback ;;
+		# Откат ПОСРЕДИ обновления перемешал бы два набора файлов (вторая вкладка, страница, открытая до запуска) — гард тот же, что
+		# у кнопки обновления (ревью шага 6c, круг 1).
+		sh "$ENODIA_DIR/gh-update.sh" upd-busy >/dev/null 2>&1 && fail "идёт обновление — дождитесь его конца"
+		# ИТОГ И ЖУРНАЛ ОТКАТА — в те же файлы, что у обновления (RBOK | RBFAIL): экран «Обновление» показывает последнее действие, и
+		# после отката карточка иначе продолжала бы говорить «обновление — готово, панель уже новая» (ревью шага 6c, круг 1).
+		# ОТКАТ — ФОНОМ, как обновление: теперь это установка из снимка вместе с установщиком возвращённой версии (cron, бутстрап,
+		# переигрыш персиста), а это десятки секунд. Синхронный CGI uhttpd убил бы SIGKILL по потолку или уходу клиента — посреди
+		# замены файлов (грабля «uhttpd, потеряв клиента, бьёт CGI SIGKILL»). Держатель «занято» — фон по пидфайлу, состояние RBRUN.
+		# Строка начала — в журнал ДО отката: вторая вкладка во время RBRUN иначе показывала бы под «Идёт откат» хвост журнала прошлого
+		# обновления (ревью шага 6c, круг 3).
+		printf '%s\n' '[rollback] откат к последнему снимку начат' > "$ENODIA_STATE/.gh-update.log" 2>/dev/null
+		echo RBRUN > "$ENODIA_STATE/.gh-update.state.new" && mv -f "$ENODIA_STATE/.gh-update.state.new" "$ENODIA_STATE/.gh-update.state"
+		spawn_bg /tmp/enodia-gh-update.pid -c "touch /tmp/enodia-gh-update.lock; if sh '$ENODIA_DIR/gh-update.sh' rollback >>'$ENODIA_STATE/.gh-update.log' 2>&1; then s=RBOK; else s=RBFAIL; fi; echo \$s >'$ENODIA_STATE/.gh-update.state.new' && mv -f '$ENODIA_STATE/.gh-update.state.new' '$ENODIA_STATE/.gh-update.state'; rm -f /tmp/enodia-gh-update.lock"
+		printf '{"ok":true,"code":0,"msg":"Откат к последнему снимку запущен. Когда кончится — обновите страницу и примените правила: «Починить правила» или перезагрузка."}\n'; exit 0 ;;
 
 	# --- Браузер-свип ByeDPI: применяем стратегии ВЖИВУЮ к боевому ciadpi, а реальный браузер
 	# грузит ассеты заблок-сайтов через активный ByeDPI (честнее curl-теста — реальный путь hev/QUIC).
@@ -1797,14 +2462,17 @@ EOF
 	# у них РАЗНЫЙ и это принципиально: основной свип требует «byedpi = активный транспорт», а
 	# выход живёт своей несущей и при awg-основном, ему нужно лишь «выход включён».
 	byedpi_sweep_begin)
-		[ -f "$ENODIA_DIR/transport-byedpi.sh" ] || fail "transport-byedpi.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/transport-byedpi.sh" ] || fail "transport-byedpi.sh не установлен (обновите панель)"
 		bsw=$(field slot); case "$bsw" in 2|3|4) ;; *) bsw="" ;; esac
 		if [ -n "$bsw" ]; then
 			sh "$ENODIA_DIR/slots.sh" list-enabled 2>/dev/null | grep -q "^$bsw	byedpi	" \
 				|| fail "браузер-свип выхода возможен только когда выход ВКЛЮЧЁН"
 		else
-			[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = byedpi ] || fail "браузер-свип возможен только когда ByeDPI несёт трафик — включи ByeDPI вверху панели"
+			[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = byedpi ] || fail "браузер-свип возможен только когда ByeDPI несёт трафик — включите ByeDPI вверху панели"
 		fi
+		# VPN выключен тумблером — ByeDPI не несёт ни основным транспортом, ни выходом (их сняло «Отключить VPN»; в реестре лишь
+		# намерение), а плагин при флаге ciadpi не поднимет: свип мерил бы пустоту.
+		vpn_is_off && fail "браузер-свип возможен только когда ByeDPI несёт трафик — VPN сейчас выключен тумблером"
 		sh "$ENODIA_DIR/transport-byedpi.sh" sweep-begin "$bsw" >/dev/null 2>&1 \
 			&& printf '{"ok":true,"code":0,"msg":"свип начат"}\n' || fail "не удалось начать свип"
 		exit 0 ;;
@@ -1815,6 +2483,7 @@ EOF
 		else
 			[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = byedpi ] || fail "ByeDPI не активен — свип прерван"
 		fi
+		vpn_is_off && fail "VPN выключен — свип прерван"
 		args=$(urldecode "$(field args)")
 		args=$(printf '%s' "$args" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/ /g')
 		if [ -n "$args" ]; then
@@ -1838,7 +2507,7 @@ EOF
 	# charset флагов nfqws (+ @ для токенов фейков @tls/@quic), отсекая shell-метасимволы = защита
 	# от инъекции. reload перезапускает только nfqws.
 	zapret_off)
-		[ -f "$ENODIA_DIR/zapret.sh" ] || fail "zapret.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/zapret.sh" ] || fail "zapret.sh не установлен (обновите панель)"
 		[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = zapret ] || fail "Zapret не активен"
 		# Имя цели берётся из transport.sh list (НЕ пользовательский ввод — только whitelisted
 		# транспорты), но всё равно сверяем с белым списком: в shell-команду уходит лишь проверенное.
@@ -1850,7 +2519,23 @@ EOF
 		# кнопка про ДРУГОЕ: тумблер «Выключить VPN» снимает ПРОВОДКУ, сохраняя намерение, а здесь
 		# человек выключает Zapret СОВСЕМ — значит надо стереть и `.transport`, иначе heal поднимет
 		# его обратно на первом же буте. Две семантики, две ветки.
-		if [ -n "$tgt" ]; then
+		# «ДОМ» СНИМАЕМ, если им был zapret: человек выключает его СОВСЕМ, а сторож в режиме
+		# «резерв + возврат» тянул бы роутер обратно именно туда — против только что высказанной
+		# воли. И наоборот, цели `$tgt` дом НЕ назначаем: её выбрал КОД (первый готовый из list),
+		# а домашний транспорт — это осознанный выбор человека, иначе он станет случайным.
+		[ "$(cat "$ENODIA_STATE/.transport-home" 2>/dev/null | tr -d ' \r\n')" = zapret ] \
+			&& rm -f "$ENODIA_STATE/.transport-home" 2>/dev/null
+		if [ -n "$tgt" ] && [ -f "$ENODIA_STATE/.vpn-off" ]; then
+			# VPN ВЫКЛЮЧЕН ТУМБЛЕРОМ: выбор протокола здесь — не включение (кнопка «Выключить Zapret», а не «Включить VPN»).
+			# Несущей Zapret и так нет — её снял `off`; меняем только НАМЕРЕНИЕ (`.transport` вместе с `.zapret-on`, они ходят
+			# парой), а поднимет его «Включить VPN». Через switch нельзя: без `--home` он при флаге отказывает (автомат не
+			# отменяет выключение), а с `--home` включил бы VPN и назначил домом протокол, который выбрал КОД (28.09.2026).
+			echo "$tgt" > "$ENODIA_STATE/.transport"; rm -f "$ENODIA_STATE/.zapret-on" 2>/dev/null
+			# Имя протокола — человеческое, у оркестратора (вопрос перед этим звал его «AmneziaWG»); старая копия без верба — идентификатор.
+			tlbl=$(sh "$ENODIA_DIR/transport.sh" label "$tgt" 2>/dev/null | head -1)
+			case "$tlbl" in ''|*[!A-Za-z0-9]*) tlbl=$tgt ;; esac
+			printf '{"ok":true,"code":0,"msg":"Zapret выключен. VPN выключен тумблером — при включении поднимется %s."}\n' "$tlbl"; exit 0
+		elif [ -n "$tgt" ]; then
 			run transport.sh switch "$tgt"
 		else
 			# down zapret по контракту НЕ трогает .transport → панель (читает .transport) продолжала бы
@@ -1873,12 +2558,37 @@ EOF
 			printf '%s\n' "$args" > "$ENODIA_STATE/.zapret-args.new" && mv "$ENODIA_STATE/.zapret-args.new" "$ENODIA_STATE/.zapret-args" || fail "не удалось сохранить стратегию"
 			msg="Стратегия сохранена"
 		fi
-		if [ -f "$ENODIA_STATE/.zapret-on" ]; then
+		if zt_wired; then
 			sh "$ENODIA_DIR/zapret.sh" reload >/dev/null 2>&1 && msg="$msg, nfqws перезапущен" || msg="$msg, но перезапуск nfqws не удался (см. статус)"
 		else
-			msg="$msg (применится при включении zapret)"
+			msg="$msg (применится при включении десинка)"
 		fi
 		printf '{"ok":true,"code":0,"msg":"%s"}\n' "$msg"; exit 0 ;;
+
+	# ИМПОРТ ДЕСКТОПНОГО КОНФИГА. Ничего НЕ СОХРАНЯЕТ: отдаёт разобранную строку и отчёт, а
+	# кладёт её в поле панель — сохраняет человек кнопкой «Сохранить». Иначе вставка чужого
+	# конфига молча меняла бы живую стратегию, и «я только посмотреть» стоило бы связи.
+	zapret_import)
+		[ -f "$ENODIA_DIR/zapret.sh" ] || fail "zapret.sh не установлен (обновите скрипты роутера)"
+		cfg=$(urldecode "$(field cfg)")
+		[ -n "$cfg" ] || fail "пусто — вставьте текст конфига с десктопа"
+		# ДВА ПОТОКА ОДНОЙ КОМАНДЫ: верб печатает флаги в stdout, отчёт человеку — в stderr.
+		# Временных файлов не заводим (лишнее имя в /tmp = лишняя маска уборки): отчётные строки
+		# помечены префиксом [import], и разделение по нему однозначно.
+		raw=$(printf '%s' "$cfg" | sh "$ENODIA_DIR/zapret.sh" import 2>&1)
+		# Результат берём ПО ТОКЕНУ `ARGS:`, а не «первую строку без [import]»: `log()` плагина
+		# печатает в тот же stdout, и любая его строка иначе уехала бы в поле стратегии.
+		iargs=$(printf '%s\n' "$raw" | sed -n 's/^ARGS://p' | head -1)
+		irep=$(printf '%s\n' "$raw" | grep '^\[import\]' | jesc 1200)
+		[ -n "$iargs" ] || fail "разобрать не вышло: ${irep:-конфиг не похож на zapret}"
+		# ОБРЕЗКА ОБЯЗАНА БЫТЬ ГРОМКОЙ. Конвертированный конфиг Flowseal из шести секций — это около
+		# тысячи символов, и прежний потолок 700 отрезал бы хвост МОЛЧА: человек сохранил бы
+		# половину стратегии, не заметив. Потолок поднят, а если строка всё же длиннее — говорим об
+		# этом прямо, вместо того чтобы отдать огрызок как результат.
+		ilen=$(printf '%s' "$iargs" | wc -c | tr -d ' ')
+		[ "${ilen:-0}" -gt 4000 ] && irep="$irep · ВНИМАНИЕ: строка длиннее 4000 символов и обрезана — проверьте её целиком перед сохранением"
+		printf '{"ok":true,"code":0,"args":"%s","msg":"%s"}\n' "$(printf '%s' "$iargs" | jesc 4000)" "$irep"
+		exit 0 ;;
 
 	# NB: вербов `zapret_install`/`zapret_remove` здесь БОЛЬШЕ НЕТ. Ставит и снимает nfqws тот же
 	# движок (`pkg_apply` → packages.sh), а ВТОРАЯ точка входа в UI означала вторую дорогу мимо
@@ -1890,13 +2600,13 @@ EOF
 	# заблок-сайтов через настоящий форвард (честнее curl с роутера — тот мерил бы путь OUTPUT).
 	# Возможен только при включённом zapret. Цикл драйвит ФРОНТ (begin → apply×N → end).
 	zapret_sweep_begin)
-		[ -f "$ENODIA_DIR/zapret.sh" ] || fail "zapret.sh не установлен (обнови панель)"
-		[ -f "$ENODIA_STATE/.zapret-on" ] || fail "браузер-свип возможен только при включённом Zapret — включи вверху карточки"
+		[ -f "$ENODIA_DIR/zapret.sh" ] || fail "zapret.sh не установлен (обновите панель)"
+		zt_wired || fail "браузер-свип возможен только при живом десинке — включите Zapret вверху карточки или включите zapret-выход"
 		sh "$ENODIA_DIR/zapret.sh" sweep-begin >/dev/null 2>&1 \
 			&& printf '{"ok":true,"code":0,"msg":"свип начат"}\n' || fail "не удалось начать свип"
 		exit 0 ;;
 	zapret_sweep_apply)
-		[ -f "$ENODIA_STATE/.zapret-on" ] || fail "Zapret выключен — свип прерван"
+		zt_wired || fail "десинк выключен — свип прерван"
 		args=$(urldecode "$(field args)")
 		args=$(printf '%s' "$args" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/ /g')
 		if [ -n "$args" ]; then
@@ -1917,52 +2627,53 @@ EOF
 		url=$(urldecode "$(field url)"); fmt=$(field format); label=$(urldecode "$(field label)")
 		echo "$url" | grep -qE '^https?://[A-Za-z0-9./?=&_:%~@+-]+$' || fail "URL: http(s):// и безопасные символы"
 		case "$fmt" in auto|cidr|hosts|dnsmasq|adblock|domain) ;; *) fmt=auto ;; esac
-		label=$(printf '%s' "$label" | tr -d '\t\r\n"\\' | cut -c1-120)
+		# Управляющие символы — все: метка уходит в JSON списка источников как есть (jesc lists-update экранирует лишь \ и ").
+		label=$(printf '%s' "$label" | tr -d '\t\r\n"\\' | tr -d '\001-\037\177' | cut -c1-120)
 		sh "$ENODIA_DIR/lists-update.sh" add-url "$cat" "$url" "$fmt" "$label" >/dev/null 2>&1 || fail "не удалось добавить источник"
 		# Реконсиляция: сразу пересобрать артефакт под новый реестр (не ждать клиентский дебаунс —
 		# он теряется при уходе со страницы → реестр и применённое расходятся). Дедуп по pidfile.
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
 		printf '{"ok":true,"code":0,"msg":"Источник добавлен — применяю"}\n'; exit 0 ;;
 	src_add_blob)
 		cat=$(field cat); _valid_lcat "$cat" || fail "неизвестная категория"
 		btype=$(field btype); case "$btype" in file|text) ;; *) fail "тип: file|text" ;; esac
 		fmt=$(field format); case "$fmt" in auto|cidr|hosts|dnsmasq|adblock|domain) ;; *) fmt=auto ;; esac
-		label=$(urldecode "$(field label)"); label=$(printf '%s' "$label" | tr -d '\t\r\n"\\' | cut -c1-120)
+		label=$(urldecode "$(field label)"); label=$(printf '%s' "$label" | tr -d '\t\r\n"\\' | tr -d '\001-\037\177' | cut -c1-120)
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null)
 		[ -n "$content" ] || fail "пустой или битый файл (base64)"
-		tmp=/tmp/src-blob.$$; printf '%s' "$content" | tr -d '\r' > "$tmp"
+		tmp=/tmp/enodia-src-blob.$$; printf '%s' "$content" | tr -d '\r' > "$tmp"
 		id=$(sh "$ENODIA_DIR/lists-update.sh" add-blob "$cat" "$btype" "$fmt" "$label" "$tmp" 2>/dev/null); rm -f "$tmp"
 		[ -n "$id" ] || fail "не удалось добавить источник"
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция (см. src_add_url)
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция (см. src_add_url)
 		printf '{"ok":true,"code":0,"msg":"Источник добавлен — применяю"}\n'; exit 0 ;;
 	src_edit_blob)   # перезаписать содержимое существующего file/text-источника (правка «вставленного текста»)
 		cat=$(field cat); _valid_lcat "$cat" || fail "неизвестная категория"
 		id=$(field id); echo "$id" | grep -qE '^s[0-9]+$' || fail "плохой id"
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null)
 		[ -n "$content" ] || fail "пустой или битый текст (base64)"
-		tmp=/tmp/src-blob.$$; printf '%s' "$content" | tr -d '\r' > "$tmp"
+		tmp=/tmp/enodia-src-blob.$$; printf '%s' "$content" | tr -d '\r' > "$tmp"
 		sh "$ENODIA_DIR/lists-update.sh" set-blob "$cat" "$id" "$tmp" >/dev/null 2>&1; rc=$?; rm -f "$tmp"
 		[ "$rc" = 0 ] || fail "не удалось сохранить (URL-источник не редактируется здесь)"
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция под новый текст
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция под новый текст
 		printf '{"ok":true,"code":0,"msg":"Текст обновлён — применяю"}\n'; exit 0 ;;
 	src_del)
 		cat=$(field cat); _valid_lcat "$cat" || fail "неизвестная категория"
 		id=$(field id); echo "$id" | grep -qE '^s[0-9]+$' || fail "плохой id"
 		sh "$ENODIA_DIR/lists-update.sh" del "$cat" "$id" >/dev/null 2>&1
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция: очистить/пересобрать артефакт под пустой/усечённый реестр
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция: очистить/пересобрать артефакт под пустой/усечённый реестр
 		printf '{"ok":true,"code":0,"msg":"Источник удалён — применяю"}\n'; exit 0 ;;
 	src_toggle)
 		cat=$(field cat); _valid_lcat "$cat" || fail "неизвестная категория"
 		id=$(field id); echo "$id" | grep -qE '^s[0-9]+$' || fail "плохой id"
 		en=$(field en); case "$en" in 0|1) ;; *) fail "en: 0|1" ;; esac
 		sh "$ENODIA_DIR/lists-update.sh" toggle "$cat" "$id" "$en" >/dev/null 2>&1
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция под изменённый реестр
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"   # реконсиляция под изменённый реестр
 		printf '{"ok":true,"code":0,"msg":"Источник %s — применяю"}\n' "$([ "$en" = 1 ] && echo включён || echo выключен)"; exit 0 ;;
 	src_refresh)
 		cat=$(field cat); _valid_lcat "$cat" || fail "неизвестная категория"
-		[ -f "$ENODIA_DIR/lists-update.sh" ] || fail "lists-update.sh не установлен (обнови панель)"
-		spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
-		printf '{"ok":true,"code":0,"msg":"Обновление запущено (фоном) — следи за прогрессом"}\n'; exit 0 ;;
+		[ -f "$ENODIA_DIR/lists-update.sh" ] || fail "lists-update.sh не установлен (обновите панель)"
+		spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
+		printf '{"ok":true,"code":0,"msg":"Обновление запущено (фоном) — следите за прогрессом"}\n'; exit 0 ;;
 	# Блокировка: мастер-переключатель категории (adblock/ipblock). Вкл → сразу качаем/применяем фоном.
 	block_enable)
 		cat=$(field cat); _lcat_switchable "$cat" || fail "категория: adblock|ipblock|zapret-cidr|zapret-dom"
@@ -1970,22 +2681,43 @@ EOF
 		if [ "$on" = 1 ]; then
 			if [ "$cat" = ipblock ]; then
 				# ipblock: guarded-путь (safe-enable = вкл+применить+self-test с авто-откатом, слой 3).
-				# Фоном (переживает обрыв SSH). Панель следит за .guard.state через data?section=sources.
-				spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" safe-enable "$cat"
-				printf '{"ok":true,"code":0,"msg":"Включаю блокировку IP с проверкой связи — откачу автоматически, если оборвётся"}\n'; exit 0
+				# Фоном (переживает обрыв SSH). Панель следит за .guard.state через data?section=sources. НАЧАЛО проверки —
+				# синхронно (guard-begin): перечитанный сразу после ответа экран обязан увидеть APPLYING, а не прошлый итог;
+				# и вторая проверка поверх идущей не запускается.
+				# Отказ «уже идёт» — только на код 1: скрипт старше верба (частичное обновление) отвечает иным кодом, и тогда —
+				# прежний путь, а не ложная причина.
+				# Код 2 — прошлую проверку выключили, а она ещё доигрывает свой проход (закачку): вторая поверх неё не начинается.
+				sh "$ENODIA_DIR/lists-update.sh" guard-begin "$cat" >/dev/null 2>&1; _gb=$?
+				[ "$_gb" = 1 ] && fail "проверка связи уже идёт — дождитесь её итога"
+				[ "$_gb" = 2 ] && fail "прошлая проверка связи ещё завершается — включите через минуту"
+				spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" safe-enable "$cat"
+				printf '{"ok":true,"code":0,"msg":"Включаю блокировку по адресам с проверкой связи — откачу автоматически, если оборвётся"}\n'; exit 0
 			fi
 			sh "$ENODIA_DIR/lists-update.sh" enable "$cat" 1 >/dev/null 2>&1
-			spawn_bg "/tmp/lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
-			printf '{"ok":true,"code":0,"msg":"%s включён — идёт загрузка списков"}\n' "$(_lcat_label "$cat")"; exit 0
+			spawn_bg "/tmp/enodia-lists-$cat.pid" "$ENODIA_DIR/lists-update.sh" update "$cat"
+			printf '{"ok":true,"code":0,"msg":"%s"}\n' "$(_lcat_msg "$cat" on)"; exit 0
 		fi
 		sh "$ENODIA_DIR/lists-update.sh" enable "$cat" 0 >/dev/null 2>&1
-		printf '{"ok":true,"code":0,"msg":"%s выключен"}\n' "$(_lcat_label "$cat")"; exit 0 ;;
+		printf '{"ok":true,"code":0,"msg":"%s"}\n' "$(_lcat_msg "$cat" off)"; exit 0 ;;
+	# Исключения категории: ВЕСЬ список (верб заменяет файл). Числа — от движка (lists-update.sh allow_set): сколько
+	# записей стало, сколько строк не стало записью (не домен / не адрес IPv4) и КОГДА подействует (now — уже; later —
+	# после обновления списков; off — блокировка выключена). Прежний ответ «применится при обновлении» был правдой
+	# лишь наполовину и молчал про отброшенное: вставил адрес в исключения рекламы — он пропадал без следа.
 	block_allow)
 		cat=$(field cat); case "$cat" in adblock|ipblock) ;; *) fail "категория: adblock|ipblock" ;; esac
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null)
-		tmp=/tmp/allow.$$; printf '%s' "$content" | tr -d '\r' > "$tmp"
-		sh "$ENODIA_DIR/lists-update.sh" allow-set "$cat" "$tmp" >/dev/null 2>&1; rm -f "$tmp"
-		printf '{"ok":true,"code":0,"msg":"Белый список сохранён (применится при обновлении)"}\n'; exit 0 ;;
+		tmp=/tmp/enodia-allow.$$; printf '%s\n' "$content" | tr -d '\r' > "$tmp"
+		out=$(sh "$ENODIA_DIR/lists-update.sh" allow-set "$cat" "$tmp" 2>/dev/null | tail -1); rm -f "$tmp"
+		case "$out" in
+			*applied=reject*) [ "$cat" = ipblock ] && fail "в поле нет ни одного адреса IPv4 — прежний список не изменён"
+			                  fail "в поле нет ни одного домена — прежний список не изменён" ;;
+			kept=*) : ;;
+			*) fail "не удалось сохранить исключения" ;;
+		esac
+		kp=$(printf '%s' "$out" | sed -n 's/.*kept=\([0-9]*\).*/\1/p'); dr=$(printf '%s' "$out" | sed -n 's/.*dropped=\([0-9]*\).*/\1/p')
+		ap=$(printf '%s' "$out" | sed -n 's/.*applied=\([a-z]*\).*/\1/p')
+		case "$ap" in now|later|off) : ;; *) ap=later ;; esac
+		printf '{"ok":true,"code":0,"kept":%s,"dropped":%s,"applied":"%s","msg":"Исключения сохранены"}\n' "${kp:-0}" "${dr:-0}" "$ap"; exit 0 ;;
 	# Пакетное добавление доменов/подсетей (текст/файл base64 или URL) — через domain.sh/apply-bypass.sh.
 	bulk_domain)
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null); [ -n "$content" ] || fail "пусто"
@@ -1999,7 +2731,7 @@ EOF
 	# только ИСХОДНЫЙ адрес. sub_fetch закрывает всё это одним местом (гард на КАЖДОМ хопе).
 	bulk_domain_url)
 		url=$(urldecode "$(field url)"); echo "$url" | grep -qE '^https?://[A-Za-z0-9./?=&_:%~@+-]+$' || fail "URL: http(s):// и безопасные символы"
-		_bu="/tmp/bulk-url.$$"
+		_bu="/tmp/enodia-bulk-url.$$"
 		sub_fetch "$url" "$_bu" -f || { rm -f "$_bu" 2>/dev/null; fail "не удалось скачать список (недоступен, пустой или адрес запрещён)"; }
 		n=$(bulk_domains < "$_bu"); rm -f "$_bu" 2>/dev/null
 		printf '{"ok":true,"code":0,"msg":"Добавлено доменов в туннель: %s"}\n' "$n"; exit 0 ;;
@@ -2009,7 +2741,7 @@ EOF
 		printf '{"ok":true,"code":0,"msg":"Выведено мимо VPN: %s"}\n' "$n"; exit 0 ;;
 	bulk_dst_url)
 		url=$(urldecode "$(field url)"); echo "$url" | grep -qE '^https?://[A-Za-z0-9./?=&_:%~@+-]+$' || fail "URL: http(s):// и безопасные символы"
-		_bu="/tmp/bulk-url.$$"
+		_bu="/tmp/enodia-bulk-url.$$"
 		sub_fetch "$url" "$_bu" -f || { rm -f "$_bu" 2>/dev/null; fail "не удалось скачать список (недоступен, пустой или адрес запрещён)"; }
 		n=$(bulk_dsts < "$_bu"); rm -f "$_bu" 2>/dev/null
 		printf '{"ok":true,"code":0,"msg":"Выведено мимо VPN: %s"}\n' "$n"; exit 0 ;;
@@ -2025,7 +2757,7 @@ EOF
 		# key санируем charset'ом (в shell уходит только [a-z0-9-]); geo.sh set сам сверяет с каталогом.
 		echo "$key" | grep -qE '^[a-z0-9-]+$' || fail "недопустимый ключ"
 		case "$gact" in vpn|bypass|block|desync|off) ;; *) fail "действие: vpn|bypass|block|desync|off" ;; esac
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		run geo.sh set "$key" "$gact" ;;
 	geo_slot)
 		# Привязка гео-категории к доп-выходу (Ф1b, зеркало grp_slot): пишет ТОЛЬКО реестр —
@@ -2033,7 +2765,7 @@ EOF
 		key=$(field key); slot=$(field slot)
 		echo "$key" | grep -qE '^[a-z0-9-]+$' || fail "недопустимый ключ"
 		case "$slot" in 0|2|3|4) ;; *) fail "доп-выход: 0, 2, 3 или 4" ;; esac
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		run geo.sh slot "$key" "$slot" ;;
 	geo_preset)
 		# Чип-пресет на десинк-выходе (Ф1b): включить/выключить гео-категорию (v2fly-*) с привязкой
@@ -2044,23 +2776,23 @@ EOF
 		case "$key" in v2fly-youtube|v2fly-discord|v2fly-telegram) ;; *) fail "неизвестный пресет" ;; esac
 		case "$slot" in 2|3|4) ;; *) fail "битый выход" ;; esac
 		case "$on" in 0|1) ;; *) fail "нужно 0|1" ;; esac
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		if [ "$on" = 1 ]; then
 			sh "$ENODIA_DIR/geo.sh" set "$key" vpn >/dev/null 2>&1
 			sh "$ENODIA_DIR/geo.sh" slot "$key" "$slot" >/dev/null 2>&1
 		else
 			sh "$ENODIA_DIR/geo.sh" set "$key" off >/dev/null 2>&1
 		fi
-		spawn_bg /tmp/geo.pid "$ENODIA_DIR/geo.sh" apply
+		spawn_bg /tmp/enodia-geo.pid "$ENODIA_DIR/geo.sh" apply
 		printf '{"ok":true,"code":0,"msg":"%s"}\n' \
 			"$([ "$on" = 1 ] && echo 'Привязываю пресет к выходу (фоном)' || echo 'Отвязываю пресет (фоном)')"; exit 0 ;;
 	geo_apply)
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
-		spawn_bg /tmp/geo.pid "$ENODIA_DIR/geo.sh" apply
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
+		spawn_bg /tmp/enodia-geo.pid "$ENODIA_DIR/geo.sh" apply
 		printf '{"ok":true,"code":0,"msg":"Применяю гео-правила (фоном)"}\n'; exit 0 ;;
 	geo_update)
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
-		spawn_bg /tmp/geo.pid "$ENODIA_DIR/geo.sh" update
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
+		spawn_bg /tmp/enodia-geo.pid "$ENODIA_DIR/geo.sh" update
 		printf '{"ok":true,"code":0,"msg":"Обновление гео-списков запущено (фоном)"}\n'; exit 0 ;;
 	geo_provider)
 		# выбор провайдера на тип (service→rf-geosite|v2fly, country→ipdeny, blocked→rf-geoip).
@@ -2068,12 +2800,12 @@ EOF
 		ptype=$(field ptype); pid=$(field pid)
 		case "$ptype" in service|country|blocked) ;; *) fail "тип провайдера: service|country|blocked" ;; esac
 		echo "$pid" | grep -qE '^[a-z0-9-]+$' || fail "недопустимый провайдер"
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		run geo.sh provider-set "$ptype" "$pid" ;;
 	geo_freshness)
 		# фоновое обновление дат апстрим-коммитов (GitHub API) — панель зовёт при открытии модалки.
-		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обнови панель)"
-		spawn_bg /tmp/geo-fresh.pid "$ENODIA_DIR/geo.sh" freshness
+		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
+		spawn_bg /tmp/enodia-geo-fresh.pid "$ENODIA_DIR/geo.sh" freshness
 		printf '{"ok":true,"code":0,"msg":"Обновляю даты апстрима (фоном)"}\n'; exit 0 ;;
 
 	*)           fail "неизвестное действие" ;;

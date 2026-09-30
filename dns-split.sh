@@ -25,7 +25,7 @@
 #
 #   dns-split.sh on|off|apply|build|status|conflict
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 FLAG="$ENODIA_STATE/.split-runet"
 CONF=/tmp/dnsmasq.d/09-split-runet.conf

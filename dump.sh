@@ -4,9 +4,10 @@
 # потоком на stdout. Назначение: при «не работает / непонятно почему» снять
 # «всё и сразу» и разобрать самому либо приложить к обращению в чат сообщества.
 #
-# Зеркало пункта 37 меню be7000.ps1: ПК гонит этот скрипт на роутер через
-# 'base64 -d | sh' и складывает вывод в локальный файл enodia-diag-<дата>.txt
-# (поэтому скрипт самодостаточен и не зависит от того, установлен ли он уже).
+# ПК-сторона (`enodia-diag.py`, он же пункт «Диагностика» в enodia.py) несёт ЭТОТ файл в base64,
+# гонит его на роутер через 'base64 -d | sh' и складывает вывод в локальный enodia-diag-<дата>.txt
+# — поэтому скрипт самодостаточен и не зависит от того, установлен ли он уже. Правил его —
+# пересобери коллектор (`local/build-router-diag.py`), иначе тестер снимет дамп ПРОШЛОЙ версии.
 #
 # БЕЗОПАСНОСТЬ (дамп задуман как ШАРИНГ-артефакт — он НЕ должен слить секреты):
 #   1. НЕ читаем секретные файлы (awg.conf / configs/*.conf / awg0.conf /
@@ -26,13 +27,40 @@
 # Все команды защищены (2>/dev/null / || echo) — на голом/недонастроенном
 # роутере скрипт не падает, а честно показывает «нет / не поднят».
 
-ENODIA_DIR="/data/usr/app/enodia"
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
+# ...А ЕСЛИ ПО ЛИТЕРАЛАМ НИЧЕГО НЕТ — СПРОСИМ ВЛАДЕЛЬЦА. Нас зовут ТРИ разных места, и одно из
+# них — самодостаточный инструмент тестера (enodia-diag.py / enodia-clean.py): он исполняет нас
+# через `base64 -d | sh`, то есть БЕЗ единой переменной окружения. В режиме «всё на накопителе»
+# каталоги на флеше пусты, и артефакт описал бы НЕ ТУ систему: «нет VERSION», «каталог пуст»,
+# «транспорт не выбран» при живом туннеле. Спрашиваем бутстрап и только по ФАКТУ отсутствия —
+# у роутера с обычной раскладкой не тратится ни одного форка.
+ENODIA_BOOT=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
+if [ ! -f "$ENODIA_DIR/VERSION" ] && [ -f "$ENODIA_BOOT/boot.sh" ]; then
+    _bp=$(sh "$ENODIA_BOOT/boot.sh" paths 2>/dev/null)
+    _bd=$(printf '%s\n' "$_bp" | sed -n 's/^dir=//p' | tail -1)
+    _bs=$(printf '%s\n' "$_bp" | sed -n 's/^state=//p' | tail -1)
+    _bb=$(printf '%s\n' "$_bp" | sed -n 's/^bin=//p' | tail -1)
+    case "$_bd" in /*) ENODIA_DIR="$_bd" ;; esac
+    case "$_bs" in /*) ENODIA_STATE="$_bs" ;; esac
+    case "$_bb" in /*) ENODIA_BIN="$_bb" ;; esac
+    unset _bp _bd _bs _bb
+fi
+# …И ЭКСПОРТИРУЕМ НАЙДЕННОЕ: дамп зовёт наши скрипты (`transport.sh configured`, `watchdog.sh standing`),
+# а их `${ENODIA_DIR:-литерал}` без окружения читает ЛИТЕРАЛЫ флеша — в раскладке full это пустое
+# чужое состояние («транспорт не выбран», «дома» при живом резерве). Найдено независимым ревью.
+export ENODIA_DIR ENODIA_STATE ENODIA_BIN ENODIA_BOOT
 
 # Возраст отметки времени (clock-lib.sh) — дампу он нужен, чтобы не выдавать скачок часов за
 # «VPS не отвечает» и чтобы САМ факт скачка попадал в артефакт. Шим = прежнее поведение.
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
+# Имя WAN-интерфейса и шлюз — у владельца (ip-lib.sh::wan_iface / wan_gateway, следит C81): по ним
+# идут пробы прямого пути ниже. Шимы = прежние строки: дамп ОБЯЗАН работать и на поломанной
+# установке, где библиотеки нет, — это то, что присылают при разборе.
+if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+command -v wan_gateway >/dev/null 2>&1 || wan_gateway() { ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'; }
 # Ожидание xtables-лока (ipt-lib.sh) — нужно САМОМУ дампу: секции iptables ниже читают правила,
 # а при занятом локе чтение падает так же молча, как и запись.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
@@ -40,7 +68,11 @@ command -v age_since >/dev/null 2>&1 || age_since() {
     case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
     [ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
-command -v uptime_s >/dev/null 2>&1 || uptime_s() { awk '{print int($1)}' /proc/uptime 2>/dev/null; }
+command -v uptime_s >/dev/null 2>&1 || uptime_s() { _cl_u=$(awk '{print int($1)}' /proc/uptime 2>/dev/null); case "$_cl_u" in ''|*[!0-9]*) _cl_u=999999999 ;; esac; echo "$_cl_u"; }
+# 999999999 — это СЛОВО владельца «не прочитал /proc/uptime» (clock-lib.sh), и в дампе оно читалось
+# бы как настоящие 31 год аптайма. Перевод в слово — ОДИН на файл: было два разных, в 12 строках
+# друг от друга (ревью 5, 06.09.2026).
+dmp_uptime() { _du=$(uptime_s); [ "$_du" = 999999999 ] && _du="не прочитан"; echo "$_du"; }
 
 # --- маскировка «окружения»: имена сетей и имена клиентов ---------------------
 # Нужна с появлением архива (verb `archive`): в СВОЁМ выводе дамп имён не печатает, а вот
@@ -58,7 +90,7 @@ command -v uptime_s >/dev/null 2>&1 || uptime_s() { awk '{print int($1)}' /proc/
 # [SSID] схлопнул бы их в неразличимое «wl0 -> [SSID] / wl1 -> [SSID]», то есть убил бы
 # ровно ту секцию, ради которой её и завели (04.08: правило уехало на чужую сеть).
 # Одно имя = один номер на весь прогон ⇒ по архиву видно, ЧТО куда приземлилось.
-ENV_SED=/tmp/.diag-env.$$.sed
+ENV_SED=/tmp/.enodia-diag-env.$$.sed
 build_env_sed() {
     : > "$ENV_SED" 2>/dev/null || return 0
     # эскейп значения под BRE и под разделитель '#'
@@ -154,9 +186,17 @@ xqver() { grep -E "^[[:space:]]*option $1 " /usr/share/xiaoqiang/xiaoqiang_versi
 # `enodia-restore`, `ussl-dbg`, `xiaomi-bypass`. Логи-то в ОЗУ есть (их знает clean.sh), но в
 # диаг-архив они не попадали ⇒ при разборе чужой аварии не хватало ровно того лога, который
 # описывает восстановление из бэкапа. Проверку «RAM_LOGS ⊆ DUMP_LOGS» делает local/check-consistency.ps1.
-DUMP_LOGS="enodia-startup enodia-watchdog switch-vpn-setup transport-awg-setup iplist-update
-subs-update notify notify-event xray xray-access hev hysteria byedpi byedpi-test-run hytest
-zapret-nfqws doh panel-tls support enodia-dnsq enodia-restore ussl-dbg xiaomi-bypass"
+DUMP_LOGS="enodia-startup enodia-watchdog enodia-switch-vpn-setup enodia-transport-awg-setup
+enodia-iplist-update enodia-subs-update enodia-notify enodia-notify-event enodia-hev
+enodia-hysteria enodia-byedpi enodia-byedpi-test-run enodia-byedpi-fetch enodia-zapret-nfqws
+enodia-doh enodia-panel-tls enodia-support enodia-xiaomi-bypass enodia-dnsq enodia-restore
+enodia-store-mode xray xray-access hytest ussl-dbg
+switch-vpn-setup transport-awg-setup iplist-update subs-update notify notify-event hev hysteria
+byedpi byedpi-test-run zapret-nfqws doh panel-tls support xiaomi-bypass"
+# ХВОСТ — имена ДО 02.09.2026 (префикс `enodia-`), и он тут не ради симметрии со списком чистки:
+# демон, переживший обновление скриптов, пишет по СТАРОМУ пути до своего перезапуска, а дамп
+# снимают именно тогда, когда что-то сломалось, — то есть ровно в этот момент. `xray*` префикса
+# не получил намеренно: его путь лежит ВНУТРИ пользовательских конфигов на /data.
 
 # Пути НАШИХ непустых логов в ОЗУ, по одному в строке. Владелец перечня ОДИН — clean.sh
 # (верб ramlogs-list), DUMP_LOGS выше — фолбэк для роутера, куда clean.sh ещё не залит.
@@ -203,12 +243,40 @@ awk '/^MemTotal:/{t=$2}/^MemFree:/{f=$2}/^MemAvailable:/{a=$2}END{printf "RAM:  
 # AX3600: `Use%` = 31%, панель и status.sh = 35% про один и тот же /data). Дамп кладут в
 # отчёт рядом со скриншотом панели — два числа про одно место читаются как «одно из них врёт».
 # Владелец формулы «занято = total − available» — status.sh; отсюда df в КИЛОБАЙТАХ и
-# «%.1fM» руками. Гард `$(NF-4)>0` — от деления на ноль и от переноса длинного имени устройства.
-df /data 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)>0{printf "ПЗУ (/data):     %.1fM свободно из %.1fM (занято %.0f%%)\n", $(NF-2)/1024,$(NF-4)/1024,($(NF-4)-$(NF-2))*100/$(NF-4)}'
-echo "Uptime:          $(uptime 2>/dev/null)"
+# «%.1fM» руками. Гард `$(NF-4)+0>0` — от деления на ноль, от переноса длинного имени устройства
+# и от СТРОКИ-ЗАГОЛОВКА (её печатает df, когда пути нет; `+0` обязателен — см. store-lib.sh).
+# ТОМ спрашиваем ПО ПУТИ каталога и ИМ ЖЕ подписываем строку: `df /data` — литерал, а на
+# BE10000 (RC01) флеш поделён на ТРИ ubifs и `/data` там ЧУЖОЙ (стоковый cfg 4.7 МБ). Дамп с
+# чужим томом в шапке уводит разбор по ложному следу с первой же строки (следит C50).
+# ШИРИНА ПОЛЯ — 20, А НЕ 17. Шапка — колонка: у соседей («RAM:», «Uptime:») подпись занимает
+# 17 ЗНАКОВ. Но `%-Ns` у awk считает БАЙТЫ (та же грабля, что у `cut -c`), а «ПЗУ» — три
+# двухбайтовые буквы ⇒ на три байта больше. Имя тома длиннее поля колонку всё равно сдвинет:
+# это данные df, и врать про них ради ровного края мы не станем. Поэтому поле 19 + ЯВНЫЙ
+# пробел, а не 20: у коротких подписей колонка та же, а у длинной («Накопитель (/mnt/usb-…):»)
+# число не слипается с двоеточием — %-Ns при переполнении не добавляет ни одного пробела.
+# …И ЭТО ФЛЕШ РОУТЕРА, а не «том, где лежит код»: в режиме «всё на накопителе» $ENODIA_DIR
+# указывает на флешку, и строка «ПЗУ (/mnt/usb-…): 28.7G свободно» отвечала НЕ ПРО РОУТЕР —
+# при том что слово «ПЗУ» читается как «флеш роутера» и никак иначе. Про флеш дамп при этом
+# не говорил вовсе, хотя «чем занят флеш» — один из четырёх вопросов, ради которых его и шлют.
+# Якорь — бутстрап: он резидентен на /data ПО ОПРЕДЕЛЕНИЮ, а в обычной раскладке это тот же
+# том, что и код. Откат на $ENODIA_DIR — для установок старее бутстрапа.
+DUMP_FLASH="$ENODIA_BOOT"; [ -d "$DUMP_FLASH" ] || DUMP_FLASH="$ENODIA_DIR"
+df -k "$DUMP_FLASH" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{printf "%-19s %.1fM свободно из %.1fM (занято %.0f%%)\n", "ПЗУ (" $NF "):", $(NF-2)/1024,$(NF-4)/1024,($(NF-4)-$(NF-2))*100/$(NF-4)}'
+# Накопитель — ОТДЕЛЬНОЙ строкой и только когда код лежит НЕ на флеше: у роутера без флешки
+# лишней строки в шапке быть не должно (то же правило, что у карточки хранилища в панели).
+DUMP_CODE_MP=$(df -k "$ENODIA_DIR" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{print $NF}')
+DUMP_FLASH_MP=$(df -k "$DUMP_FLASH" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{print $NF}')
+if [ -n "$DUMP_CODE_MP" ] && [ "$DUMP_CODE_MP" != "$DUMP_FLASH_MP" ]; then
+    df -k "$ENODIA_DIR" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{printf "%-19s %.1fM свободно из %.1fM (занято %.0f%%)\n", "Накопитель (" $NF "):", $(NF-2)/1024,$(NF-4)/1024,($(NF-4)-$(NF-2))*100/$(NF-4)}'
+fi
+echo "Uptime:          $(uptime 2>/dev/null)"   # raw-uptime: busybox-апплет, печать человеку — вердикта по строке нет
 echo "Дата (роутер):   $(date 2>/dev/null)"
+# Сверка часов на буте (clock-lib.sh::clock_http_sync). Отвечает на «почему после ребута VPN на другом
+# сервере»: `step=N` = часы отставали на N с и сдвинуты; `step=0` = были верны; нет отметки =
+# сверка не прошла (нет WAN или источники молчат) — тогда рукопожатие мог отбросить сам сервер.
+echo "Часы на буте:    $(cat "${CLOCK_SYNC_MARK:-/tmp/enodia-clock.synced}" 2>/dev/null || echo 'сверки не было (нет отметки)') · сток ntp: $(cat /tmp/ntp.status 2>/dev/null || echo '—')"
 echo "Hostname:        $(cat /proc/sys/kernel/hostname 2>/dev/null)"
-echo "ENODIA_DIR:         $ENODIA_DIR"
+echo "ENODIA_DIR:      $ENODIA_DIR"
 # Версия НАШИХ скриптов. Без неё разбор чужого дампа начинается с угадывания «а что у него
 # вообще стоит»: по составу цепочек и по usage-строкам вербов это восстанавливается, но дорого
 # и ненадёжно, а у тестеров живут сборки месячной давности. VERSION кладёт в $ENODIA_DIR
@@ -251,7 +319,7 @@ if [ -x "$ENODIA_BIN/awg" ]; then
                      _dmp_raw=$(( $(date +%s) - hs ))   # clock-raw: сырая разность нужна как раз для сравнения с age_since
                      _dmp_age=$(age_since "$hs")
                      if [ "$_dmp_raw" != "$_dmp_age" ]; then
-                         echo "handshake: $_dmp_age сек назад (ЧАСЫ ШАГНУЛИ: сырая разность $_dmp_raw с при аптайме $(uptime_s) с)"
+                         echo "handshake: $_dmp_age сек назад (ЧАСЫ ШАГНУЛИ: сырая разность $_dmp_raw с при аптайме $(dmp_uptime) с)"
                      else
                          echo "handshake: $_dmp_age сек назад"
                      fi ;;
@@ -280,8 +348,14 @@ elif [ -f "$ENODIA_DIR/transport.sh" ]; then
 else
     echo "Файл .transport:  (пуст — transport.sh нет, установка до рефактора плагинов)"
 fi
-echo "Файл .active:     $(cat "$ENODIA_STATE/.active" 2>/dev/null || echo '?')"
-echo "Прочее: .zapret-on=$( [ -f "$ENODIA_STATE/.zapret-on" ] && echo да || echo нет )  .full-tunnel=$( [ -f "$ENODIA_STATE/.full-tunnel" ] && echo да || echo нет )"
+# ПУСТОЙ файл — это ответ «имя неизвестно» (так его пишет install_config, когда имени неоткуда
+# взять), и `|| echo '?'` его НЕ ловит: у пустого `cat` возвращает 0. Дамп — то, что присылают при
+# разборе, и обрезанная строка читалась бы как «дамп сломался».
+_dp_act=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d '\r')
+echo "Файл .active:     ${_dp_act:-?}"
+# `.vpn-off` — ПЕРВЫМ в строке: это ответ на самый частый вопрос разбора «почему ничего не
+# поднялось» (человек выключил VPN, а с 02.09.2026 выключение переживает ребут).
+echo "Прочее: .vpn-off=$( [ -f "$ENODIA_STATE/.vpn-off" ] && echo "ДА — VPN выключен человеком" || echo нет )  .zapret-on=$( [ -f "$ENODIA_STATE/.zapret-on" ] && echo да || echo нет )  .full-tunnel=$( [ -f "$ENODIA_STATE/.full-tunnel" ] && echo да || echo нет )"
 if [ -f "$ENODIA_DIR/transport.sh" ]; then
     sub "transport.sh active"
     sh "$ENODIA_DIR/transport.sh" active 2>/dev/null || echo "(active не отработал)"
@@ -293,8 +367,14 @@ if [ -f "$ENODIA_DIR/transport.sh" ]; then
     # Причину плагин пишет в СВОЙ лог (он ниже в дампе), на stdout не печатает ничего — поэтому
     # вердикт печатаем сами по коду возврата. Срез самой несущей дают плагинные `status` ниже.
     sub "transport.sh health (жива ли несущая активного транспорта)"
-    _rc=0; sh "$ENODIA_DIR/transport.sh" health >/dev/null 2>&1 || _rc=$?
-    if [ "$_rc" = 0 ]; then
+    # VPN выключен человеком — несущей НЕТ по его воле, и проба её не зовётся вовсе: у ByeDPI `health` переподнимает ciadpi и при
+    # флаге отказывает (daemon-lib.sh::carrier_run), а «НЕ ОК» читалось бы как поломка (ревью ветки, круг 3).
+    _rc=0
+    if [ -f "$ENODIA_STATE/.vpn-off" ]; then _rc=off
+    else sh "$ENODIA_DIR/transport.sh" health >/dev/null 2>&1 || _rc=$?; fi
+    if [ "$_rc" = off ]; then
+        echo "health: не проверялась — VPN выключен человеком, несущей нет по его воле"
+    elif [ "$_rc" = 0 ]; then
         echo "health: OK — несущая активного транспорта жива"
     else
         echo "health: НЕ ОК (код $_rc) — несущая просела ЛИБО активного транспорта нет (fail-open); причина в логе транспорта ниже"
@@ -314,6 +394,17 @@ if [ -f "$ENODIA_DIR/slots.sh" ]; then
     sh "$ENODIA_DIR/slots.sh" carriers 2>/dev/null || echo "(нет)"
     sub "слот-марки и таблицы (ip rule)"
     ip rule 2>/dev/null | grep -E 'fwmark 0x[2-4]' || echo "(слот-правил в ip rule нет)"
+    # УЧЁТ ПО ВЫХОДАМ — сюда же, а не в «ресурсы»: разбирают его вместе с самими выходами
+    # («карточка показывает не то»), и ответ на это ровно два файла: СЫРОЙ последний замер
+    # (первая строка — несущая и WAN, ниже по строке на выход: "s<id> <iface> <rx> <tx>") и
+    # СЕГОДНЯШНЯЯ строка посуточной истории (поля $7..$12 — те же выходы по номерам).
+    # Строки выхода НЕТ = «считать нечем»: у zapret-выхода своей несущей не бывает вовсе, а у
+    # выключенного её уже нет — и это ОТВЕТ, а не пропажа.
+    sub "учёт трафика по выходам (сырой замер + сегодня)"
+    if [ -f "$ENODIA_STATE/.traffic-last" ]; then cat "$ENODIA_STATE/.traffic-last"
+    else echo "(.traffic-last нет — учёт ещё не тикал)"; fi
+    awk -v d="$(date +%F 2>/dev/null)" '$2==d{print "сегодня: "$0; f=1} END{if(!f)print "(сегодняшней строки в .traffic-daily ещё нет)"}' \
+        "$ENODIA_STATE/.traffic-daily" 2>/dev/null || echo "(.traffic-daily нет)"
 else
     echo "(slots.sh нет — установка до мульти-транспорта)"
 fi
@@ -347,17 +438,29 @@ fi
 sec "ШИФРОВАННЫЙ DNS (DoH/DoT — прокси на 127.0.0.1:5053)"
 # Тумблер — ЗНАЧЕНИЕ файла ("on"), а не факт его наличия: `.doh-on` остаётся на диске и после
 # выключения (та же семантика, что у doh_enabled в doh-lib.sh — второй трактовки не заводим).
-echo "Тумблер (.doh-on): $( [ "$(cat "$ENODIA_STATE/.doh-on" 2>/dev/null)" = on ] && echo вкл || echo выкл )   авто в прямых режимах: $( [ "$(cat "$ENODIA_STATE/.doh-auto" 2>/dev/null)" = off ] && echo запрещён || echo разрешён )$( [ -f /tmp/.doh-auto-on ] && echo ' (СЕЙЧАС активен)' )"
+echo "Тумблер (.doh-on): $( [ "$(cat "$ENODIA_STATE/.doh-on" 2>/dev/null)" = on ] && echo вкл || echo выкл )   авто в прямых режимах: $( [ "$(cat "$ENODIA_STATE/.doh-auto" 2>/dev/null)" = off ] && echo запрещён || echo разрешён )$( [ -f /tmp/.enodia-doh-auto-on ] && echo ' (СЕЙЧАС активен)' )"
 echo "Протокол: $(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null || echo doh)   резолвер: $(cat "$ENODIA_STATE/.doh-resolver" 2>/dev/null || echo '(деф. cloudflare)')"
+# «Уведён мимо несущей» — иначе по дампу не отличить «резолвер через WAN» от штатного (флаг ставят
+# сторож на SUSPECT и up-путь несущей при провале пробы; пауза возврата — после провала возврата).
+[ -f /tmp/.enodia-doh-untunneled.stamp ] && echo "Резолвер УВЕДЁН МИМО несущей (RETURN вместо марки), уведён $(age_since "$(cat /tmp/.enodia-doh-untunneled.stamp 2>/dev/null | tr -cd '0-9')") с назад"
+_drs=$(cat /tmp/enodia-doh-retunnel.stamp 2>/dev/null | tr -cd '0-9')
+[ -n "$_drs" ] && echo "Возврат в несущую ПРОВАЛИЛСЯ (резолвер через неё не отвечает) $(age_since "$_drs") с назад — пауза до повтора"
+# ВЫБРАН DoT, А ШИФРУЕТ DoH — спрашиваем владельца (doh-lib.sh::doh_health_state), а не файл: переезд значит что-то
+# только при установленной программе DoH, и «протокол: dot» строкой выше без этой строки спорил бы со списком
+# процессов ниже (там https_dns_proxy). Подоболочка: библиотека сорсится без побочек, но дампу её имена ни к чему.
+_dhs=$( [ -f "$ENODIA_DIR/doh-lib.sh" ] && . "$ENODIA_DIR/doh-lib.sh" && command -v doh_health_state >/dev/null 2>&1 && doh_health_state )
+case "$_dhs" in *dotfb=1*)
+    echo "Выбран DoT, а шифрует DoH: порт 853 текущим путём не проходил — переехал $(printf '%s\n' "$_dhs" | sed -n 's/^dotfb_age=//p') с назад, повтор DoT через $(printf '%s\n' "$_dhs" | sed -n 's/^dotfb_retry=//p') с (-1 = неизвестно)" ;;
+esac
 ps 2>/dev/null | grep -E '[h]ttps_dns_proxy|[d]ot-proxy' | head -4 || echo "(прокси шифрованного DNS не запущен)"
 # Живость АВТО-режима: демон бежит ≠ резолвер отвечает. Ровно этот разрыв съел вечер 09.08.2026 —
 # https_dns_proxy жив, лог полон «curl request failed», а по дампу DoH выглядел здоровым. Печатаем
 # карантин (его ставит doh_health_tick после отката) и СВОДКУ ЛОГА: строка «сколько провалов» тут
-# отвечает на «почему ничего не открывается» быстрее, чем чтение 200 КБ /tmp/doh.log глазами.
-_dhc=$(cat /tmp/.doh-auto-cooldown 2>/dev/null | tr -cd '0-9')
+# отвечает на «почему ничего не открывается» быстрее, чем чтение 200 КБ /tmp/enodia-doh.log глазами.
+_dhc=$(cat /tmp/.enodia-doh-auto-cooldown 2>/dev/null | tr -cd '0-9')
 _dhl=$(( ${_dhc:-0} - $(date +%s) ))
 [ "$_dhl" -gt 0 ] && echo "Авто-режим В КАРАНТИНЕ после отката: ещё $(( _dhl / 60 )) мин (резолвер не отвечал)"
-[ -s /tmp/doh.log ] && echo "Лог прокси: $(wc -c < /tmp/doh.log) Б, провалов резолва: $(grep -c 'curl request failed' /tmp/doh.log 2>/dev/null || true)"
+[ -s /tmp/enodia-doh.log ] && echo "Лог прокси: $(wc -c < /tmp/enodia-doh.log) Б, провалов резолва: $(grep -c 'curl request failed' /tmp/enodia-doh.log 2>/dev/null || true)"
 
 sec "МАРШРУТИЗАЦИЯ (fwmark / таблицы / прямой путь)"
 sub "ip rule"
@@ -366,10 +469,11 @@ sub "ip route show table 1000 (VPN-таблица — несущая)"
 ip route show table 1000 2>/dev/null || echo "(таблица 1000 пуста)"
 sub "default route (main) + WAN-интерфейс"
 ip route show default 2>/dev/null
-# WAN-интерфейс и шлюз берём ИЗ дефолта main (не хардкод) — нужны для проб прямого пути ниже.
-WANDEV=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-WANGW=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')
-echo "WAN dev: ${WANDEV:-'(дефолта в main НЕТ — прямой egress мёртв!)'}   шлюз: ${WANGW:-?}"
+# WAN-интерфейс и шлюз — у владельца (ip-lib.sh): дефолт main, свои несущие WAN-ом не считаются
+# (дефолт в awg0/xtun ⇒ пусто — прямой egress и правда мёртв; сырой маршрут напечатан строкой выше).
+WANDEV=$(wan_iface)
+WANGW=$(wan_gateway)
+echo "WAN dev: ${WANDEV:-'(дефолта в main НЕТ либо он смотрит в туннель — прямой egress мёртв!)'}   шлюз: ${WANGW:-?}"
 sub "ip route get 8.8.8.8 (обычно маркируется в туннель)"
 ip route get 8.8.8.8 2>/dev/null
 sub "ip route get 77.88.55.242 (ya.ru — РУНЕТ, должен идти ПРЯМО через main/WAN)"
@@ -507,6 +611,33 @@ ip -6 route show default 2>/dev/null || echo "(v6-дефолта нет — v6-�
 sub "uci dhcp.lan (ra/dhcpv6 — анонсирует ли роутер v6 в LAN)"
 uci show dhcp.lan 2>/dev/null | grep -E '\.ra=|\.dhcpv6=|\.ra_' || echo "(ra/dhcpv6 в uci не задано)"
 
+sec "КЛИЕНТЫ ЛОКАЛЬНОЙ СЕТИ (аренды + кто реально в сети)"
+# ЗАЧЕМ ОТДЕЛЬНАЯ СЕКЦИЯ. Жалоба «устройства нет в списке панели» разбиралась по SSH руками
+# (04.09.2026, телевизор тестера со статическим адресом): список устройств растёт из аренд, а
+# аренды у клиента со статикой, прописанной НА НЁМ САМОМ, не бывает вовсе. Дамп обязан отвечать
+# на этот вопрос сам — иначе каждый такой случай стоит сессии удалённого доступа.
+sub "аренды dnsmasq (/tmp/dhcp.leases)"
+if [ -f /tmp/dhcp.leases ]; then
+    printf 'строк: %s\n' "$(grep -c . /tmp/dhcp.leases 2>/dev/null || echo 0)"
+    awk '{print $3"\t"$2"\t"$4}' /tmp/dhcp.leases 2>/dev/null | sort -n
+else
+    echo "(файла нет — dnsmasq ещё не выдавал адресов в эту загрузку)"
+fi
+sub "кто в сети СЕЙЧАС (ARP на клиентских мостах)"
+if [ -f "$ENODIA_DIR/lease-lib.sh" ]; then . "$ENODIA_DIR/lease-lib.sh"; fi
+if command -v neigh_pairs >/dev/null 2>&1; then
+    neigh_pairs | sort -n
+    sub "в сети, но БЕЗ АРЕНДЫ (адрес задан на самом устройстве)"
+    # Печатаем разностью, а не «глазами»: именно эти строки список устройств не показывал вовсе
+    # до 04.09.2026, и именно их не хватало, когда человек говорит «телевизора в панели нет».
+    _dnb=$(neigh_pairs | while IFS='	' read -r _ni _nm; do
+        awk -v w="$_ni" '$3==w{f=1} END{exit f?0:1}' /tmp/dhcp.leases 2>/dev/null || printf '%s\t%s\n' "$_ni" "$_nm"
+    done)
+    [ -n "$_dnb" ] && printf '%s\n' "$_dnb" || echo "(таких нет — у всех клиентов есть аренда)"
+else
+    echo "(нет lease-lib.sh — обновите установку)"
+fi
+
 sec "DNS (dnsmasq)"
 # КАТАЛОГОВ ДВА (грабля проекта): /etc — персист, /tmp — живой, init копирует /etc→/tmp
 # аддитивно и без чистки. Показывать один — значит не заметить ровно ту половину расхождения,
@@ -643,8 +774,9 @@ sub "/etc/resolv.conf"
 cat /etc/resolv.conf 2>/dev/null
 
 sec "СОСТОЯНИЕ (persist-файлы в ENODIA_STATE — несекретные)"
-echo "Активный конфиг (.active): $(cat "$ENODIA_STATE/.active" 2>/dev/null || echo '?')"
-for f in .failover-mode .failover-home .full-tunnel .bypass-ips .bypass-dst \
+_dp_act2=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d '\r')   # пустой файл = «неизвестно», см. выше
+echo "Активный конфиг (.active): ${_dp_act2:-?}"
+for f in .vpn-off .failover-mode .failover-home .full-tunnel .bypass-ips .bypass-dst \
          .bypass-ifaces .bypass-guest .fullvpn-ips .fullvpn-ifaces \
          .fullvpn-guest .iplist.count; do
     showf "$ENODIA_STATE/$f"
@@ -675,6 +807,59 @@ fi
 sub "iplist.conf (источник списка IP — несекретно)"
 showf "$ENODIA_STATE/iplist.conf"
 
+sec "ВХОД В ПАНЕЛЬ (форма входа, сессии, пауза после неудач)"
+# ЗАЧЕМ ЭТА СЕКЦИЯ. С 03.09.2026 вход держит НАШ код, а не uhttpd: хэш пароля в .panel-pass, сессии
+# в .totp-sessions, пауза после неудач — в /tmp. Дамп присылают ровно тогда, когда «панель не
+# пускает» / «просит какой-то код», а ответить на это прежними секциями было НЕЧЕМ. Сетевых проб
+# здесь нет намеренно (web-ui.sh status при открытом WAN лезет за внешним адресом) — только факты
+# с роутера. Срез второго фактора спрашиваем у ВЛАДЕЛЬЦА (totp.sh), своей копии тут не заводим.
+if [ -f "$ENODIA_DIR/totp.sh" ]; then
+    echo "totp.sh status: $(sh "$ENODIA_DIR/totp.sh" status 2>&1 | grep '^{' | tail -1)"
+else
+    echo "(нет totp.sh — установка старее формы входа)"
+fi
+# СХЕМА ХЭША — не украшение: `openssl passwd -6` есть не на всякой прошивке (замер 03.09.2026:
+# BE7000 1.1.1l — есть, AX3600 1.0.2q — НЕТ, и пароль там лежит MD5-crypt `$1$`). Роутер бывает
+# выставлен наружу, и «чем именно закрыт вход» обязано быть видно. Печатаем ТОЛЬКО префикс схемы,
+# сам хэш не читаем никогда.
+_dmp_sch=$(cut -d'$' -f2 "$ENODIA_STATE/.panel-pass" 2>/dev/null | head -1)
+if [ -n "$_dmp_sch" ]; then _dmp_sch="\$$_dmp_sch\$"; else _dmp_sch="(пароля нет — панель не поднимется)"; fi
+echo "Схема хэша пароля: $_dmp_sch  (openssl прошивки: $(openssl version 2>/dev/null | cut -d' ' -f1-2))"
+# СРОКИ ВХОДОВ И ОТМЕТКА ЧАСОВ. Новый режим отказа звучит как «вошёл после ребута — минут через
+# десять выкинуло»: RTC нет, часы на буте врут и прыгают вперёд, а метка «истекает» абсолютная.
+# Чинит это totp_sess_clock_fix, и диагностируется оно ровно этими двумя строками: сколько каждой
+# сессии осталось жить и с какой базы считали. Хэши сессий НЕ печатаем — это ключи от панели.
+sub "Входы в панель (сколько осталось жить)"
+# ОДНА awk-программа В ОДНУ СТРОКУ и БЕЗ strftime: у busybox её нет вовсе, а перевод строки внутри
+# кавычек программу рвёт («unterminated string») — первая редакция этой секции не работала НИ
+# ОДНОЙ веткой и уже уехала в enodia-diag.py. Даты не печатаем: важен ОСТАТОК, а «вошли когда» и
+# так видно в панели. Хэши сессий не печатаем никогда — это ключи от панели.
+if [ -s "$ENODIA_STATE/.totp-sessions" ]; then
+	# Часы, а не только сутки: со снятой галочкой «Запомнить меня» сессия живёт 12 часов, и
+	# «осталось 0 суток» неотличимо от протухшей строки — а это штатный режим, а не поломка.
+	# clock-raw: остаток жизни считаем ГОЛОЙ разностью — метка сессии АБСОЛЮТНАЯ и рождается не
+	# «после загрузки», так что age_since тут неприменим. В первые ~13 минут после ребута цифра
+	# завышена на величину будущего скачка часов; рядом печатается отметка, по которой это видно.
+	awk -F'\t' -v n="$(date +%s)" '{ lv=$6+0; if(lv<1) lv=2; d=$2-n; if (d <= 0) printf "уровень %s · ИСТЕКЛА · %s\n", lv, substr($4,1,40); else if (d < 172800) printf "уровень %s · осталось %s ч · %s\n", lv, int(d/3600), substr($4,1,40); else printf "уровень %s · осталось %s суток · %s\n", lv, int(d/86400), substr($4,1,40) }' "$ENODIA_STATE/.totp-sessions" 2>/dev/null
+else echo "(входов нет)"; fi
+echo "Отметка часов (/tmp/.enodia-clock-base): $(cat /tmp/.enodia-clock-base 2>/dev/null || echo "нет — ещё не бежал web-ui.sh start")  сейчас=$(date +%s) аптайм=$(dmp_uptime)"
+# Файл паузы — ПО СТРОКЕ НА ИСТОЧНИК: "адрес неудач разблокировка отметка". Печатаем блоком, а не
+# в одну строку: строк бывает несколько, и слипшиеся они нечитаемы. За panel-tls источник у всех
+# один (адрес терминатора) — по этому и видно, пришли снаружи или из локалки.
+sub "Пауза после неудач (/tmp/.enodia-totp-fail: адрес · неудач · разблокировка · отметка)"
+if [ -s /tmp/.enodia-totp-fail ]; then cat /tmp/.enodia-totp-fail 2>/dev/null; else echo "(пусто — счётчик чист)"; fi
+echo "Флаги: .panel-tls=$( [ -f "$ENODIA_STATE/.panel-tls" ] && echo да || echo нет )  .panel-wan=$( [ -f "$ENODIA_STATE/.panel-wan" ] && echo да || echo нет )"
+sub "Строка запуска uhttpd панели"
+# ` -c ` в ней = панель ЕЩЁ под HTTP-Basic: либо обновление доехало не целиком (новые CGI + старый
+# web-ui.sh), либо cron-овский start после обновления ещё не бежал. Заодно видно docroot — в
+# раскладке `full` он не на флеше, и «панель не отдаёт наши файлы» объясняется прямо здесь.
+_dmp_wpid=$(cat /tmp/enodia-uhttpd-web.pid 2>/dev/null)
+if [ -n "$_dmp_wpid" ] && [ -d "/proc/$_dmp_wpid" ]; then
+    tr '\0' ' ' < "/proc/$_dmp_wpid/cmdline" 2>/dev/null; echo
+else
+    echo "(uhttpd панели не запущен — pid-файл /tmp/enodia-uhttpd-web.pid пуст или процесса нет)"
+fi
+
 sec "СЕКРЕТНЫЕ ФАЙЛЫ — ТОЛЬКО НАЛИЧИЕ / ПРАВА (содержимое НЕ читаем)"
 echo "(режим / владелец / размер / имя)"
 showmeta "$ENODIA_STATE/awg.conf"
@@ -684,21 +869,124 @@ showmeta "$ENODIA_STATE/notify.conf"
 showmeta "$ENODIA_STATE/.subs"
 showmeta "$ENODIA_STATE/.sub-names"
 showmeta "$ENODIA_STATE/.sub-picks"
+# Вход в панель: только режим/размер. Содержимое — ключи от панели (хэш пароля вскрывают офлайн,
+# .totp-recovery = коды восстановления, .totp-sessions = живые сессии), и в дамп оно не едет.
+# Здесь важен сам ФАКТ: нет .panel-pass ⇒ панель не поднимется вовсе, а «войти» будет нечем.
+showmeta "$ENODIA_STATE/.panel-pass"
+showmeta "$ENODIA_STATE/.totp"
+showmeta "$ENODIA_STATE/.totp-recovery"
+showmeta "$ENODIA_STATE/.totp-sessions"
 if [ -d "$ENODIA_STATE/configs" ]; then
     for c in "$ENODIA_STATE"/configs/*.conf; do [ -e "$c" ] && showmeta "$c"; done
 fi
 
+sec "ПИСЬМА: ВЫКЛЮЧАТЕЛЬ И ПОВОДЫ"
+# «Почему письмо не пришло» — первый вопрос дампа про почту: выключены ли письма целиком (.notify-off) и какие поводы
+# выключены человеком («О чём писать»). Поводы и их файл знает events.sh — спрашиваем его, своей копии разбора нет.
+# Старый events.sh верба не знает — так и сказано. Хвост лога отправок — в логах (enodia-notify-event).
+if [ -f "$ENODIA_STATE/.notify-off" ]; then echo "письма: выключены целиком (.notify-off)"; else echo "письма: включены"; fi
+_dmp_cls=$( [ -f "$ENODIA_DIR/events.sh" ] && sh "$ENODIA_DIR/events.sh" classes 2>/dev/null | tr '\n' ' ')
+echo "поводы: ${_dmp_cls:-(events.sh не ответил вербом classes — установка старше шага 7b)}"
+
 sec "ЛОКИ / СТЕЙТ В /tmp"
-for l in enodia-heal.lock enodia-switching.lock enodia-watchdog.lock enodia-watchdog.state; do
+# enodia-heal-kick.tries — сколько раз сторож будил heal ради пересоздания awg0. Строка отвечает
+# на «почему awg0 не возвращается»: дойдя до потолка, сторож будит heal раз в час, а не раз в две
+# минуты, и молчание в логе — это НЕ поломка сторожа (см. HEAL_KICK_TRIES в watchdog.sh).
+# СОСЕДИ ОБЯЗАТЕЛЬНЫ: по одному счётчику пробуждений «почему VPN не поднимается» не собрать —
+# нужны причина последнего прогона heal, вердикт сторожа, эпизод перебора и «видели ли awg0 живым»
+# (по ним отличается «упало» от «не поднималось ни разу»). Ревью 3, 06.09.2026.
+# enodia-heal.skipped — «был прогон heal, но он вышел по switching-локу»: именно этот файл решает,
+# советует ли письмо «проверь cron» — без него разбор не объяснит, почему диагноз был таким.
+# enodia-domwarm.stamp — троттл прогрева доменных правил (общий у heal и сторожа): дамп ОБЯЗАН
+# отвечать на «почему доменное правило мертво», а без отметки видно только «прогрев не бежал».
+# enodia-proto-install.lock — идёт смена набора протоколов: объясняет, почему подсистемы в этот
+# момент вели себя тихо. enodia-byedpi-sweep.lock — идёт браузерный свип стратегий, и пока он
+# свеж, сторож в byedpi НЕ вмешивается: без строки разбор не поймёт, почему тик молчал.
+# enodia-subs-update.lock и enodia-gh-update.lock — «обновление подписок/скриптов ИДЁТ»: по ним
+# CGI панели отказывает во втором запуске, и без строки разбор читает отказ как поломку кнопки.
+# Первые нашла проверка C84 (файл-состояние в /tmp, о котором договорились два скрипта); у
+# gh-update акторы в ОДНОМ файле (форграунд против фоновой задачи), его дописали руками.
+# .enodia-carrier-up.stamp — «когда несущая последний раз везла» (пишет clock-lib, читают сторож
+# для boot-grace и doh-lib); .enodia-support-active — открыт ли удалённый доступ. Точка в начале
+# имени прятала их от первой редакции C84, а решения по ним принимают трое (ревью 5).
+# enodia-pkg-install.lock — идёт установка кода из пакета (pkg-install.sh): по нему отказывают смена
+# раскладки и вторая установка — без строки разбор читает «отказано» как поломку кнопки.
+for l in enodia-heal.lock enodia-heal.reason enodia-heal.skipped enodia-heal-kick.tries enodia-heal-kick.stamp \
+         enodia-heal-kick.said enodia-heal-kick.mailed enodia-heal-kick.cfg enodia-switching.lock enodia-watchdog.lock enodia-watchdog.pid \
+         enodia-watchdog.state enodia-watchdog.xstate enodia-failover.stamp enodia-failover.backoff \
+         enodia-failover-episode enodia-awg0.seen enodia-awg0.firstup \
+         enodia-domwarm.stamp enodia-proto-install.lock enodia-byedpi-sweep.lock \
+         enodia-subs-update.lock enodia-gh-update.lock enodia-pkg-install.lock enodia-uninstall.mode \
+         enodia-wanout.count enodia-wanout.event enodia-wanout.sweep \
+         .enodia-carrier-up.stamp .enodia-support-active; do
     if [ -e "/tmp/$l" ]; then
-        echo "/tmp/$l: есть$( [ -s "/tmp/$l" ] && echo " -> $(cat "/tmp/$l" 2>/dev/null)" )"
+        # mkdir-ЛОК — КАТАЛОГ, и `cat` по нему пуст: держатель лежит внутри, в `<lock>/pid`
+        # (так делают packages.sh, proto-install.sh и subs-update.sh). Без этой ветки строка
+        # выходила «есть -> » и теряла единственное, ради чего лок в разборе и смотрят (ревью 5).
+        if [ -d "/tmp/$l" ]; then
+            echo "/tmp/$l: есть (каталог-лок)$( [ -s "/tmp/$l/pid" ] && echo " -> держит pid $(cat "/tmp/$l/pid" 2>/dev/null)" )"
+        else
+            echo "/tmp/$l: есть$( [ -s "/tmp/$l" ] && echo " -> $(cat "/tmp/$l" 2>/dev/null)" )"
+        fi
     else
         echo "/tmp/$l: нет"
     fi
 done
+# ВЕРДИКТ ВЛАДЕЛЬЦА рядом с его сырьём: «дом / резерв / прямой и вернётся ли» — тот же ответ, что видит
+# шапка панели. Собирать его заново по файлам выше разбор не должен (своя сборка разошлась бы с тиком).
+# Гард — по строке верба, как в cgi-bin/status: старая копия сторожа на `standing` прогнала бы тик.
+if [ -f "$ENODIA_DIR/watchdog.sh" ] && grep -q '^\[ "\$1" = standing \]' "$ENODIA_DIR/watchdog.sh"; then
+    echo "вердикт сторожа (watchdog.sh standing): $(sh "$ENODIA_DIR/watchdog.sh" standing 2>/dev/null | tr '\n' ' ')"
+else
+    echo "вердикт сторожа: верба standing нет (старая копия watchdog.sh)"
+fi
 
 sec "CRON (автозапуск — без него после ребута не поднимется)"
 cat /etc/crontabs/root 2>/dev/null || echo "(crontab пуст?!)"
+
+sec "РАСКЛАДКА (в каком режиме стоит система и откуда идёт cron)"
+# ЗАЧЕМ ЭТА СЕКЦИЯ. Дамп присылают, когда «что-то не работает», а раскладок теперь три: всё на
+# флеше роутера (data), бинари на накопителе (bins) и ВСЁ на накопителе (full). В последней
+# случае каталог кода — не /data/usr/app/enodia, и без этой строки разбирающий будет искать
+# файлы там, где их нет, а «cron пуст» прочитает как «установка сломана».
+# Спрашиваем ВЛАДЕЛЬЦА (boot.sh paths/status) — своей копии рассуждения «где сейчас код» дамп
+# держать не вправе: она разошлась бы с бутстрапом ровно тогда, когда важнее всего.
+# Сам $ENODIA_BOOT объявлен В ШАПКЕ — там же, где разбор путей: две копии объявления разъехались
+# бы ровно так, как это уже случалось с каталогом кода.
+if [ -f "$ENODIA_BOOT/boot.sh" ]; then
+    sh "$ENODIA_BOOT/boot.sh" status 2>&1
+    # Хук вставки на ходу: /etc/hotplug.d — ramfs, и его отсутствие после ребута нормально
+    # ровно до первого тика cron. Пустая строка тут означает «тика ещё не было».
+    [ -f /etc/hotplug.d/block/99-enodia-usb ] && echo "hotplug-хук: на месте" || echo "hotplug-хук: нет (до первого тика cron это норма)"
+else
+    echo "(бутстрапа нет — установка старее фичи режимов; код на флеше роутера)"
+fi
+# «ВКЛЮЧЁН, НО НЕ НАЙДЕН» — ОТДЕЛЬНОЙ СТРОКОЙ, и это не дубль строки выше. Бутстрап говорит о
+# накопителе только в раскладке `full` (там без него не найти сам код). В раскладке `bins`
+# resolve успешен — код на флеше, — и строка выше честно скажет «бинари на накопителе», хотя
+# накопителя сейчас нет и ни xray, ни hysteria не поднимутся. Разбирающий прочитает это как
+# «бинари на месте» и пойдёт искать причину не там. Ответ у вопроса ОДИН владелец
+# (store-lib.sh::store_state) — печатаем его, своей копии условия дамп не держит.
+if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
+if command -v store_state >/dev/null 2>&1; then
+    case "$(store_state)" in
+        ok)   echo "Хранилище: включено и доступно ($(store_root))" ;;
+        lost) echo "Хранилище: ВКЛЮЧЕНО, НО НЕ НАЙДЕНО — бинари протоколов с него не запустятся" ;;
+        *)    echo "Хранилище: не используется" ;;
+    esac
+else
+    echo "Хранилище: (store-lib.sh старее фичи — состояние неизвестно)"
+fi
+# ПРАВА НА НАШИ КАТАЛОГИ — В ДАМП. Замер 02.09.2026 (BE7000): после круга exFAT → флеш → ext4
+# каталоги `enodia`, `web` и `web/cgi-bin` оказались 0777, и проба из-под `nobody` СОЗДАЛА файл
+# в cgi-bin — а CGI оттуда uhttpd запускает ОТ ROOT. Права приезжают с ФС, которая их не хранит,
+# и на той, которая хранит, становятся настоящими; чинит это `store-lib.sh::harden_perms` на
+# установке и после каждого переезда. Но дамп обязан УМЕТЬ ЭТО ПОКАЗАТЬ: без строки ниже
+# разбирающий не отличит «права восстановлены» от «мы просто не смотрели».
+sub "права на каталоги (0777 = приехало с exFAT, лечится переустановкой скриптов)"
+for _pd in "$ENODIA_DIR" "$ENODIA_DIR/web" "$ENODIA_DIR/web/cgi-bin" "$ENODIA_STATE" "$ENODIA_BIN"; do
+    showmeta "$_pd"
+done
 
 sec "БИНАРНИКИ + ВЕРСИИ (что реально установлено и ГДЕ лежит)"
 # Секция знала ДВА бинаря из десяти и искала их по ЖЁСТКОМУ пути в $ENODIA_DIR. Два следствия,
@@ -714,11 +1002,24 @@ sec "БИНАРНИКИ + ВЕРСИИ (что реально установле
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path  >/dev/null 2>&1 || bin_path()  { printf '%s' "$ENODIA_BIN/$1"; }
 command -v bin_where >/dev/null 2>&1 || bin_where() { [ -x "$ENODIA_BIN/$1" ] && printf 'router'; }
+# «В каком КАТАЛОГЕ» и «на каком ТОМЕ» — РАЗНЫЕ ответы, и дамп читает человек: в раскладке
+# «всё на накопителе» каталог бинарей и ЕСТЬ накопитель, а bin_where честно говорит «router»
+# про файл на флешке. Печатаем ТОМ. Шим на старую библиотеку: «не на накопителе» = как было.
+command -v bin_on_store >/dev/null 2>&1 || bin_on_store() { return 1; }
+# Закрепление — ВТОРОЙ ответ на «почему он лежит именно тут». Без него дамп с включённым
+# накопителем показывает «xray · роутер» и не объясняет НИЧЕГО: читатель решает, что переезд
+# сломался, и лечит здоровое. Шим на старую библиотеку: «не закреплён».
+command -v bin_pinned >/dev/null 2>&1 || bin_pinned() { return 1; }
 DMP_BINS="amneziawg-go awg xray hysteria hev byedpi nfqws https-dns-proxy dot-proxy panel-tls"
+# СВЕЖА ЛИ СБОРКА — вопрос с одним владельцем (gh-update.sh bin-status: sha стоящего против манифеста, без сети). Без него
+# дамп отвечал «какая версия кода», но не «какая сборка бинаря»: жалоба «DoT уводит на DoH» на dot-proxy до 1.2 и после
+# выглядела одинаково. Прежний апдейтер верба не знает — тогда колонки нет, а не выдуманный ответ.
+_dmp_bst=""; [ -f "$ENODIA_DIR/gh-update.sh" ] && _dmp_bst=$(sh "$ENODIA_DIR/gh-update.sh" bin-status $DMP_BINS 2>/dev/null)
 _dmp_any=0
 for _b in $DMP_BINS; do
     _w=$(bin_where "$_b")
     [ -n "$_w" ] || continue
+    if bin_on_store "$_b"; then _w=store; fi
     _dmp_any=1
     _p=$(bin_path "$_b")
     # Размер и дата — из ls самого файла: по ним видно и «доехал ли целиком» (обрыв закачки), и
@@ -726,11 +1027,37 @@ for _b in $DMP_BINS; do
     # ШИРИНУ printf задаём только ASCII-полям: busybox считает её В БАЙТАХ, и «накопитель» (20 Б)
     # с «роутер» (12 Б) разъехались бы колонкой при одинаковой длине на экране. Место жительства —
     # ПОСЛЕДНИМ полем: рваный хвост не виден, рваная середина ломает всю таблицу.
+    # Сборка — словами владельца: свежая / устарела (стоит → доступна) / сверить не с чем; «работает прежняя» — файл заменили
+    # под живым демоном. Хвостом строки: как и место жительства, поле кириллическое и переменной длины.
+    _bst=$(printf '%s\n' "$_dmp_bst" | awk -F'\t' -v n="$_b" '$1 == n {
+        s = ($2 == "current") ? "свежая " $3 : ($2 == "outdated") ? "УСТАРЕЛА " ($3 == "" ? "?" : $3) " → " $4 : ($2 == "unknown") ? "сборка не сверена" : ""
+        if ($5 == "old") s = s " · РАБОТАЕТ ПРЕЖНЯЯ до перезапуска"
+        if (s != "") print " · " s; exit }')
     printf '%-16s %s  %s\n' "$_b" \
         "$(ls -l "$_p" 2>/dev/null | awk '{printf "%10s байт  %s %s %s", $5, $6, $7, $8}')" \
-        "$( [ "$_w" = store ] && echo '· накопитель' || echo '· роутер' )"
+        "$( [ "$_w" = store ] && echo '· накопитель' || echo '· роутер' )$( bin_pinned "$_b" && echo ' · закреплён' )$_bst"
 done
 [ "$_dmp_any" = 1 ] || echo "(бинарников нет — установка «только панель» без бутстрапа либо payload не доехал)"
+# СКОЛЬКО ЖДЁМ СТАРТА — тот же вопрос, что «где лежит бинарь», только с другой стороны: с
+# накопителя демон читается секундами, и «не успел» приезжает в лог как «не поднялся» (разбор
+# 01.09.2026: 448 КБ/с ⇒ 8-МБ xray читается 18 с). Спрашиваем ВЛАДЕЛЬЦА (daemon-lib.sh), а не
+# пересказываем числа своей копией — она разъедется.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+if command -v daemon_wait_secs >/dev/null 2>&1; then
+    printf 'ждём старта: xray %s с · hysteria %s с · byedpi %s с · hev %s с (daemon-lib.sh; потолок по носителю, за трупом не ждём вовсе)\n' \
+        "$(daemon_wait_secs xray 8)" "$(daemon_wait_secs hysteria 25)" "$(daemon_wait_secs byedpi 8)" "$(daemon_wait_secs hev 6)"
+else
+    echo "ждём старта: daemon-lib.sh не загружен (старая установка) — фиксированные 8 с независимо от носителя"
+fi
+# ЛОК РАССТАНОВКИ. Живёт секунды (перенос) — в норме его тут нет вовсе. А вот ОСИРОТЕВШИЙ лок
+# (движок убили на середине) виден только здесь: снаружи он выглядит как «кнопка накопителя
+# отвечает „занят другой операцией“ и не проходит никогда», и без этой строки разбирать такое
+# нечем. Держателя называем по pid: если процесс мёртв, движок снимет лок сам на следующем
+# заходе, и это тоже видно.
+if [ -d /tmp/enodia-usb.lock ]; then
+    _dlp=$(cat /tmp/enodia-usb.lock/pid 2>/dev/null)
+    echo "лок расстановки бинарей ЗАНЯТ: pid ${_dlp:-?} ($([ -n "$_dlp" ] && [ -d "/proc/$_dlp" ] && echo 'держатель жив' || echo 'ДЕРЖАТЕЛЬ МЁРТВ — снимется на следующем заходе'))"
+fi
 # `--version` спрашиваем ТОЛЬКО у тех, про кого замерено, что они его понимают: у остальных флаг
 # уводит демон в работу (hev/nfqws читают argv как конфиг) или печатает usage — в дампе это мусор,
 # а в худшем случае запущенный процесс. Версии прочих даёт панель из bin-manifest.txt.
@@ -741,10 +1068,24 @@ done
 
 sec "РЕСУРСЫ (RAM / диск / размер логов)"
 awk '/^MemTotal:/{t=$2}/^MemFree:/{f=$2}/^MemAvailable:/{a=$2}END{printf "RAM: %d МБ свободно из %d МБ (доступно %s)\n", f/1024, t/1024, (a==""?"?":sprintf("%d МБ", a/1024))}' /proc/meminfo 2>/dev/null
-for m in /data /tmp; do
+# НАШ том — по ПУТИ каталога (на BE10000 `/data` чужой), плюс /tmp = ОЗУ.
+# ГАРД ЧИСЛОВОЙ (`+0`). `df` по НЕСУЩЕСТВУЮЩЕМУ пути печатает в stdout один ЗАГОЛОВОК, и
+# `tail -1` отдаёт его как строку данных ($NF="on", $(NF-4)="Used"). Прежний `$(NF-4)>0`
+# его НЕ отсекал: у awk сравнение нечислового поля с числом идёт как СТРОКОВОЕ, а
+# "Used" > "0" истинно (замерено на busybox awk 1.25.1 31.08.2026) — отсюда «Флеш on» в
+# панели и «Division by zero» в дампе. `+0` принуждает поле к числу.
+_ourdf=$(df -k "$ENODIA_DIR" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{print $NF" "$1}')
+_ourmp=${_ourdf% *}; _ourdev=${_ourdf#* }
+for m in "${_ourmp:-/data}" /tmp; do
     # Та же формула, что в шапке дампа и у владельца (status.sh): `Use%` у df не берём.
-    df "$m" 2>/dev/null | tail -1 | awk -v mp="$m" 'NF>=5 && $(NF-4)>0{printf "Диск %s: %.1fM своб из %.1fM (занято %.0f%%)\n", mp, $(NF-2)/1024, $(NF-4)/1024, ($(NF-4)-$(NF-2))*100/$(NF-4)}'
+    df "$m" 2>/dev/null | tail -1 | awk -v mp="$m" 'NF>=5 && $(NF-4)+0>0{printf "Диск %s: %.1fM своб из %.1fM (занято %.0f%%)\n", mp, $(NF-2)/1024, $(NF-4)/1024, ($(NF-4)-$(NF-2))*100/$(NF-4)}'
 done
+# ВСЕ настоящие тома флеша одной таблицей. Зачем: на BE10000 их ТРИ (cfg 4.7 / user 18.6 /
+# plugin 29 МБ), и вопрос «сколько свободно» имеет три разных ответа — разбор чужого дампа
+# начинался с гадания, о каком из них речь. Дубли (один ubifs в /data, /etc, /ini)
+# схлопываем ПО УСТРОЙСТВУ, ro-образы (avail=0) и tmpfs не показываем вовсе.
+sub "тома флеша (* — тот, на котором живём мы)"
+df -k 2>/dev/null | awk -v od="${_ourdev:-none}" 'NR>1 && NF>=5 && $(NF-4)+0>0 && $(NF-2)+0>0 && $1!="tmpfs" && $1!="devtmpfs" && $1!="none" { if (seen[$1]++) next; printf "%s %s: %.1fM своб из %.1fM (%s)\n", ($1==od?"*":" "), $NF, $(NF-2)/1024, $(NF-4)/1024, $1 }'
 our_ramlogs | while read -r _lp; do ls -l "$_lp" 2>/dev/null; done \
   | awk '{s+=$5}END{if(NR>0)printf "Логи /tmp (НАШИ): %d КБ в %d файлах\n",(s+1023)/1024,NR; else print "Логи /tmp (НАШИ): нет"}'
 echo "NB: /tmp — это ОЗУ (tmpfs), занятое там вычитается из свободной памяти. Считаем ТОЛЬКО свои"
@@ -759,7 +1100,7 @@ echo "    логи: рядом лежат стоковые логи Xiaomi, и �
 # syslog) и кандидатов на чистку с
 # размерами — и при этом НИЧЕГО НЕ УДАЛЯЕТ. Дамп обязан быть read-only; безаргументный режим
 # clean.sh чистит по-настоящему, и звать его отсюда нельзя.
-sub "чем занят флеш /data (clean.sh dryrun — только показывает, не удаляет)"
+sub "чем занят наш том флеша (clean.sh dryrun — только показывает, не удаляет)"
 if [ -f "$ENODIA_DIR/clean.sh" ]; then
     sh "$ENODIA_DIR/clean.sh" dryrun 2>/dev/null || echo "(clean.sh dryrun не отработал)"
 else
@@ -868,7 +1209,7 @@ OUR_TAIL=3000           # строк из каждого нашего лога (
 cmd_archive() {
     ts=$(date +%Y%m%d-%H%M%S 2>/dev/null); case "$ts" in ''|*[!0-9-]*) ts=diag ;; esac
     base="enodia-diag-$ts"
-    td="/tmp/.diag-$$"
+    td="/tmp/.enodia-diag-$$"
     trap 'rm -rf "$td" "$ENV_SED"' EXIT HUP INT TERM PIPE
     rm -rf "$td"; mkdir -p "$td/$base/logs" "$td/$base/system" 2>/dev/null || return 1
 

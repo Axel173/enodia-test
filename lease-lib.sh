@@ -42,11 +42,28 @@
 # neighbor печатают строчными, а панель Xiaomi и человек — заглавными, и строки перестали бы
 # совпадать сами с собой).
 
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
+ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 LEASE_FILE="${LEASE_FILE:-/tmp/dhcp.leases}"
-LEASE_OWNER_FILE="${LEASE_OWNER_FILE:-${ENODIA_DIR:-/data/usr/app/enodia}/.ip-owner}"
+# СНИМОК — СОСТОЯНИЕ, живёт в $ENODIA_STATE (каталог кода заменяется обновлением целиком, C46).
+# Вложенная форма `${ENODIA_DIR:-…}/.ip-owner` при переезде 30.08.2026 ускользнула от проверки, и
+# снимок жил в коде до 05.09.2026; старую копию подбираем один раз (без неё старые правила
+# потеряли бы память «для какого устройства заводили» до следующего пересохранения).
+LEASE_OWNER_FILE="${LEASE_OWNER_FILE:-$ENODIA_STATE/.ip-owner}"
+if [ ! -f "$LEASE_OWNER_FILE" ] && [ -f "$ENODIA_DIR/.ip-owner" ] && [ -d "$ENODIA_STATE" ]; then   # migrate: см. mv ниже
+    mv "$ENODIA_DIR/.ip-owner" "$LEASE_OWNER_FILE" 2>/dev/null || true   # migrate: код → состояние, один раз
+fi
 LEASE_OWNER_MAX=300          # кольцо: строка ~50 Б, потолок держит файл в пределах 15 КБ на 20-МБ флеше
+# «Часы настоящие?» — у владельца (clock-lib.sh::clock_sane, следит C82): отметку времени владельца
+# адреса ставим только настоящими часами. Шим той же строки — на случай payload без библиотеки.
+if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
+command -v clock_sane >/dev/null 2>&1 || clock_sane() { _csn=${1:-$(date +%s 2>/dev/null)}; case "$_csn" in ''|*[!0-9]*) return 1 ;; esac; [ "$_csn" -gt 1700000000 ] 2>/dev/null && [ "$_csn" -lt 4102444800 ] 2>/dev/null; }
 
-_lmac_norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n'; }
+# РАЗБОР MAC — ОДНА КОПИЯ на проект (строчными, без пробелов; и «похоже ли это на MAC»). Держали её трое: здесь, в
+# dhcp-static.sh (`norm_mac`/`mac_ok`) и в новом dev-names.sh; у двух последних теперь шим одной строкой.
+mac_norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n'; }
+mac_ok()   { printf '%s' "$1" | grep -qE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
+_lmac_norm() { mac_norm "$1"; }
 
 # --- аренды dnsmasq: <expiry> <mac> <ip> <host> <clientid> -------------------------------
 lease_mac_of()  { [ -n "$1" ] || return 1; awk -v w="$1" '$3==w{print $2; exit}' "$LEASE_FILE" 2>/dev/null; }
@@ -72,6 +89,21 @@ lease_ip_of_mac() {
 neigh_mac_of() {
     [ -n "$1" ] || return 1
     ip neigh show 2>/dev/null | awk -v w="$1" '$1==w && /lladdr/ && $NF!="FAILED" && $NF!="INCOMPLETE"{print $5; exit}'
+}
+
+# КТО СЕЙЧАС В СЕТИ, КОГДА АРЕНДЫ НЕТ ВООБЩЕ — `ip⇥mac` построчно, только клиентские сети.
+# Адрес бывает задан НА САМОМ устройстве (телевизор по кабелю, NAS, камера): аренды у такого нет
+# и не будет, и до этой функции его не видел никто — ни список устройств панели, ни склейка
+# Wi-Fi-станций. Потребителей ДВА (web/cgi-bin/data и wifi-stats.sh), поэтому разбор живёт ЗДЕСЬ:
+# вторая копия разъехалась бы с первой же прошивкой, где формат строки другой.
+# Формат `ip neigh` (замер BE7000 04.09.2026): `<ip> dev <ifc> lladdr <mac> [router|proxy] <STATE>`
+#   * состояние — ПОСЛЕДНЕЕ поле, а не шестое: между MAC и им вклинивается флаг `router`;
+#   * запись без lladdr («<ip> dev br-lan  FAILED») — это неудачная проба, а не устройство;
+#   * IPv4 отбираем регуляркой: busybox-awk без index()/split(), а IPv6-соседей вдвое больше.
+# Клиентская сеть = мост (br-lan/br-guest/br-miot — тот же критерий, что у ip_is_local), КРОМЕ
+# br-docker: там контейнеры самого роутера, а не устройства человека.
+neigh_pairs() {
+    ip neigh show 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4=="lladdr" && $3 ~ /^br-/ && $3!="br-docker" && $NF!="FAILED" && $NF!="INCOMPLETE"{print $1"\t"tolower($5)}'
 }
 
 # Владелец адреса СЕЙЧАС. Порядок источников: аренда (там же имя), затем neighbor.
@@ -108,11 +140,14 @@ ip_is_local() {
     # они отвечают здесь же, не читая файлов. `lo` — адрес САМОГО роутера (`ip route get` печатает
     # `local … dev lo`): он местный, и правило на нём бессмысленно по другой причине, чужой сетью
     # его звать нельзя. Берём ПЕРВУЮ строку: у `ip route get` за ней идёт `cache`-хвост.
-    _ldev=$(ip route get "$1" 2>/dev/null | sed -n '1s/.* dev \([^ ]*\).*/\1/p')
+    _ldev=$(ip route get "$1" 2>/dev/null | sed -n '1s/.* dev \([^ ]*\).*/\1/p')   # not-wan: спрашиваем МОСТ клиента, а не WAN — владелец (ip-lib.sh) тут ни при чём
     case "$_ldev" in br-*|awgs0|lo) return 0 ;; esac
     # Не мост — но, возможно, пир «доступа домой»: при ВЫКЛЮЧЕННОМ сервере несущей awgs0 нет
     # вовсе, и адрес пира по маршруту неотличим от чужого (проверено: уходит в WAN через шлюз).
-    _lsub=$(cat "${ENODIA_DIR:-/data/usr/app/enodia}/server/subnet" 2>/dev/null)
+    # Подсеть пишет vpn-server.sh в $ENODIA_STATE/server/subnet; до 05.09.2026 читали из каталога
+    # КОДА (вложенная форма `${ENODIA_DIR:-…}/` ускользнула от C46 при переезде состояния 30.08) —
+    # то есть своя подсеть «доступа домой» тут не действовала никогда, работал только дефолт.
+    _lsub=$(cat "$ENODIA_STATE/server/subnet" 2>/dev/null)
     [ -n "$_lsub" ] || _lsub=10.77.0
     case "$1" in "$_lsub".*) return 0 ;; esac
     return 1
@@ -133,7 +168,7 @@ owner_note() {
     [ -n "$1" ] || return 1
     _lom=$(ip_owner_now "$1") || return 1
     _loh=$(lease_host_of "$1")
-    _lot=$(date +%s 2>/dev/null); [ "${_lot:-0}" -gt 1700000000 ] 2>/dev/null || _lot=0
+    _lot=$(date +%s 2>/dev/null); clock_sane "$_lot" || _lot=0   # порог — у clock-lib.sh (C82)
     _lof=$(dirname "$LEASE_OWNER_FILE")
     [ -d "$_lof" ] || return 1
     _lotmp="$LEASE_OWNER_FILE.tmp.$$"

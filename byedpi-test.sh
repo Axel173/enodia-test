@@ -43,7 +43,7 @@
 #   byedpi-test.sh state       — текущее состояние (IDLE|RUNNING n/N|DONE|ERR|STOPPED)
 #   byedpi-test.sh config      — эффективные настройки + доступные цели (JSON)
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Тот же bin_path, что у боевого плагина (store-lib.sh): кандидат-ciadpi обязан быть ТЕМ ЖЕ
@@ -53,22 +53,31 @@ if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
+# Ожидание СТАРТА демона (daemon-lib.sh) — тот же владелец, что у боевого плагина: тест обязан
+# ждать бинарь СТОЛЬКО ЖЕ, сколько ждёт несущая, иначе «сервер не поднялся» приезжает от медленного
+# накопителя, а не от сервера (замер 448 КБ/с ⇒ 8-МБ xray читается 18 с при пороге 8).
+# Нет файла (частичный apply-scripts) — шим повторяет ПРЕЖНИЙ путь: фиксированный срок.
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v daemon_wait_port >/dev/null 2>&1 || daemon_wait_port() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0; sleep 1; _dwi=$((_dwi+1)); done
+    netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0
+    DAEMON_WAIT_WHY="не появился за $3 с"; return 1; }
 CIADPI=$(bin_path byedpi)
 TPLUGIN="$ENODIA_DIR/transport-byedpi.sh"
-TEST_PORT=10809                          # отдельно от боевого 10808
+TEST_PORT=10809                               # отдельно от боевого 10808
 SOCKS=127.0.0.1
-BYEDPI_UID=65534                         # nobody — его egress ловит owner-RETURN
-PIDF=/tmp/byedpi-test-ciadpi.pid         # pid кандидата ciadpi (НЕ боевого, НЕ run-процесса)
+BYEDPI_UID=65534                              # nobody — его egress ловит owner-RETURN
+PIDF=/tmp/enodia-byedpi-test-ciadpi.pid       # pid кандидата ciadpi (НЕ боевого, НЕ run-процесса)
 STATE="$ENODIA_STATE/.byedpi-test.state"
 RESULT="$ENODIA_STATE/.byedpi-test.json"
 CONF="$ENODIA_STATE/.byedpi-test.conf"        # настройки теста (пишет панель: key=value)
-LOG=/tmp/byedpi-test-run.log
-RES_DIR=/tmp/byedpi-test-res             # временные файлы проб (1/0 на пробу)
-OWNER_MARK=/tmp/byedpi-test.owneradded   # есть файл = owner-RETURN добавили МЫ (снять на выходе)
-POOL_FILE=/tmp/byedpi-test-pool.lst      # пул доменов ЦЕЛИ (наполняет build_pool)
-POOL_CAP=24                              # кап доменов в пуле (тест по сотням был бы неприлично долгим)
-TARGET=0                                 # цель теста: 0 | 2|3|4 | zapret (ставит run)
-TARGET_LABEL=""                          # подпись столбца/цели (ставит build_pool)
+LOG=/tmp/enodia-byedpi-test-run.log
+RES_DIR=/tmp/enodia-byedpi-test-res           # временные файлы проб (1/0 на пробу)
+OWNER_MARK=/tmp/enodia-byedpi-test.owneradded # есть файл = owner-RETURN добавили МЫ (снять на выходе)
+POOL_FILE=/tmp/enodia-byedpi-test-pool.lst    # пул доменов ЦЕЛИ (наполняет build_pool)
+POOL_CAP=24                                   # кап доменов в пуле (тест по сотням был бы неприлично долгим)
+TARGET=0                                      # цель теста: 0 | 2|3|4 | zapret (ставит run)
+TARGET_LABEL=""                               # подпись столбца/цели (ставит build_pool)
 
 # Дефолты настроек (перекрываются .byedpi-test.conf). Диапазоны — как в приложении.
 T_TIMEOUT=5      # таймаут запроса, сек (1..15)
@@ -162,12 +171,8 @@ json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 spawn() {
     start-stop-daemon -K -p "$PIDF" 2>/dev/null; sleep 1
     start-stop-daemon -S -b -c nobody -m -p "$PIDF" -x /bin/sh -- -c "exec '$CIADPI' -i $SOCKS -p $TEST_PORT $1 >/dev/null 2>&1"
-    i=0
-    while [ $i -lt 8 ]; do
-        netstat -ltn 2>/dev/null | grep -q "$SOCKS:$TEST_PORT" && return 0
-        sleep 1; i=$((i+1))
-    done
-    return 1
+    # Ждём порт, пока жив процесс (daemon-lib.sh): тот же владелец, что у боевого плагина.
+    daemon_wait_port "$PIDF" byedpi 8 "$SOCKS" "$TEST_PORT"
 }
 
 # одна проба домена ($1) через кандидата → пишет 1 (открылся) / 0 в файл $2.
@@ -207,7 +212,7 @@ run() {
     # прерывает выполнение) → run спаунил бы следующего кандидата и затирал STATE уже после stop.
     trap 'cleanup' EXIT
     trap 'exit 143' INT TERM
-    [ -x "$CIADPI" ] || { echo ERR > "$STATE"; : > "$LOG"; log "нет бинаря ciadpi — установи набор с ByeDPI"; return 1; }
+    [ -x "$CIADPI" ] || { echo ERR > "$STATE"; : > "$LOG"; log "нет бинаря ciadpi — установите набор с ByeDPI"; return 1; }
     target_known "$TARGET" || { echo ERR > "$STATE"; : > "$LOG"; log "неизвестная цель «$TARGET» (0|2|3|4|zapret)"; return 1; }
     load_conf
     : > "$LOG"; echo RUNNING > "$STATE"
@@ -218,7 +223,7 @@ run() {
     _np=$(build_pool "$TARGET")
     case "$_np" in ''|0|*[!0-9]*)
         echo ERR > "$STATE"
-        log "через «$TARGET_LABEL» по доменам ничего не едет — заведи доменное правило, группу или доменный гео-сервис для этой цели"
+        log "через «$TARGET_LABEL» по доменам ничего не едет — заведите доменное правило, группу или доменный гео-сервис для этой цели"
         return 1 ;;
     esac
     log "цель «$TARGET_LABEL»: $_np доменов (кап $POOL_CAP)"
@@ -237,7 +242,7 @@ run() {
     # авто-набор (DEFAULT_ARGS), иначе мерили бы голый релей без десинка.
     defargs=$(sh "$TPLUGIN" defaults 2>/dev/null)
     # кандидаты: пресеты (label|args) + текущие свои .byedpi-args (если заданы и не дублируют)
-    cand=/tmp/byedpi-test-cand.lst; : > "$cand"
+    cand=/tmp/enodia-byedpi-test-cand.lst; : > "$cand"
     sh "$TPLUGIN" presets 2>/dev/null | while IFS='|' read -r lbl args; do
         [ -z "$args" ] && args="$defargs"
         [ -n "$lbl" ] && printf '%s%s%s\n' "$lbl" "$TAB" "$args" >> "$cand"
@@ -315,8 +320,8 @@ case "$1" in
     stop)
         # сигналим run-процессу и ЖДЁМ его смерти (он в curl до ~таймаута) — иначе его EXIT-trap/
         # итерация затёрли бы STOPPED уже после нас. Потом добиваем кандидата (belt) и фиксируем.
-        start-stop-daemon -K -p /tmp/byedpi-test.pid 2>/dev/null
-        i=0; while [ $i -lt 12 ]; do p=$(cat /tmp/byedpi-test.pid 2>/dev/null | tr -d ' \r\n'); { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || break; sleep 1; i=$((i+1)); done
+        start-stop-daemon -K -p /tmp/enodia-byedpi-test.pid 2>/dev/null
+        i=0; while [ $i -lt 12 ]; do p=$(cat /tmp/enodia-byedpi-test.pid 2>/dev/null | tr -d ' \r\n'); { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || break; sleep 1; i=$((i+1)); done
         cleanup; echo STOPPED > "$STATE"; log "прервано пользователем" ;;
     state) cat "$STATE" 2>/dev/null || echo IDLE ;;
     config) emit_config ;;

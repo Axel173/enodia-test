@@ -16,7 +16,10 @@
 #   add-blob <cat> file|text <fmt> <label> <path> — добавить источник-файл/текст (содержимое в path);
 #   del <cat> <id> | toggle <cat> <id> <0|1> | set-format <cat> <id> <fmt>;
 #   enable <cat> <0|1>                   — мастер-переключатель категории (adblock/ipblock);
-#   allow-set <cat> <path>               — задать allowlist (домены-исключения) из файла;
+#   allow-set <cat> <path>               — задать исключения из файла (adblock — домены, ipblock —
+#                                          IPv4/CIDR) и сразу применить; печатает kept/dropped/applied;
+#   allow-sync                           — пересобрать набор «не блокировать» (blocklist_allow), если он есть;
+#   guard-begin <cat>                    — начать проверку связи синхронно (код 1 — уже идёт), затем safe-enable;
 #   list <cat>                           — JSON состояния для панели;
 #   presets <cat>                        — JSON каталога готовых источников.
 #
@@ -37,7 +40,7 @@ command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null
 # Под `[ -f ]` (инвариант проекта): провалившийся `.` в ash — фатальная ошибка спецбилтина, шелл
 # выходит НА МЕСТЕ и молча. Библиотека здесь — весь движок, шима быть не может ⇒ честный отказ.
 if [ -f "$ENODIA_DIR/lists-lib.sh" ]; then . "$ENODIA_DIR/lists-lib.sh"; else
-	echo "нет $ENODIA_DIR/lists-lib.sh — обнови скрипты (gh-update apply-scripts)" >&2; exit 1
+	echo "нет $ENODIA_DIR/lists-lib.sh — обновите установку (панель → «Обновление» или переустановка с компьютера)" >&2; exit 1
 fi
 
 CMD="$1"; CAT="$2"
@@ -84,6 +87,11 @@ ensure_mark_rule() {  # tunnel-cidr: mangle MARK по iplist_set (как в ipli
 		sh "$ENODIA_DIR/transport.sh" configured >/dev/null 2>&1
 		[ "$?" = 1 ] && return 0
 	fi
+	# ...и ТО ЖЕ САМОЕ, когда человек выключил VPN тумблером (.vpn-off, персист с 02.09.2026).
+	# ЭТА ДВЕРЬ ВТОРАЯ, и ровно на ней 15.08.2026 уже обожглись с «только панелью»: гард стоял в
+	# iplist-update.sh, а наполнение делегировано СЮДА. Замерено на живом AX3600 02.09.2026 —
+	# при выключенном VPN метка вернулась именно этим путём.
+	[ -f "$ENODIA_STATE/.vpn-off" ] && return 0
 	iptables -t mangle -C PREROUTING -m set --match-set iplist_set dst -j MARK --set-mark 0x1 2>/dev/null || \
 		iptables -t mangle -A PREROUTING -m set --match-set iplist_set dst -j MARK --set-mark 0x1 2>/dev/null
 }
@@ -187,7 +195,11 @@ teardown() {
 }
 
 # --- update: собрать → нормализовать → применить ----------------------------
-ustate() { echo "$1" > "$(ram_dir "$CAT")/.update.state"; }  # прогресс/лог — в ОЗУ (панель читает через list)
+# Файл ПРОГРЕССА, который опрашивает панель, пишем АТОМАРНО (рядом + `mv`): `>` сперва обрезает, и опрос в это окно читал пусто —
+# «кончилось» до конца (разбор у packages.sh::set_state; следит C105).
+ustate() { _usd=$(ram_dir "$CAT"); echo "$1" > "$_usd/.update.state.new" && mv -f "$_usd/.update.state.new" "$_usd/.update.state"; }  # прогресс/лог — в ОЗУ (панель читает через list)
+# gstate <каталог категории> <состояние> — вердикт проверки «Блокировки» по адресам (панель опрашивает его так же).
+gstate() { echo "$2" > "$1/.guard.state.new" && mv -f "$1/.guard.state.new" "$1/.guard.state"; }
 ulog()   { echo "$*" >> "$(ram_dir "$CAT")/.update.log"; }
 
 # _update_pass: ОДИН проход — собрать источники реестра → нормализовать → применить в цель.
@@ -227,16 +239,21 @@ _update_pass() {
 			raw=$W/.raw.$id; : > "$raw"
 			case "$type" in
 				url)
+					# ОТМЕТКА ИСТОЧНИКА = время последней СВЕЖЕЙ закачки (шаг 5c): «обновлено N назад» у категории считается
+					# по ней, и прежняя отметка на сбое (и на откате к кэшу) ставила «только что» списку, который сегодня не
+					# скачался. Сбой без кэша: записей 0, отметка прежняя (никогда не качался — так и остаётся «не скачано»).
+					fresh=1
 					if fetch_url "$value" "$raw"; then
 						cp "$raw" "$(cache_path "$CAT" "$id")" 2>/dev/null
 						echo "src $id url ok: $value"
 					elif [ -s "$(cache_path "$CAT" "$id")" ]; then
-						cp "$(cache_path "$CAT" "$id")" "$raw"
+						cp "$(cache_path "$CAT" "$id")" "$raw"; fresh=0
 						echo "src $id url FAILED → cache: $value"
 					else
-						echo "src $id url FAILED, no cache: $value"; reg_set_meta "$CAT" "$id" 0 "$(date +%s)"; rm -f "$raw"; continue
+						echo "src $id url FAILED, no cache: $value"; reg_set_meta "$CAT" "$id" 0 "$ts"; rm -f "$raw"; continue
 					fi ;;
 				file|text)
+					fresh=1
 					if [ -s "$(blob_path "$CAT" "$id")" ]; then cp "$(blob_path "$CAT" "$id")" "$raw"
 					else echo "src $id blob missing"; rm -f "$raw"; continue; fi ;;
 				*) rm -f "$raw"; continue ;;
@@ -247,7 +264,7 @@ _update_pass() {
 			normalize "$kind" "$fmt" < "$raw" | sort -u > "$norm"
 			scnt=$(grep -c '' "$norm" 2>/dev/null); case "$scnt" in ''|*[!0-9]*) scnt=0 ;; esac
 			cat "$norm" >> "$work"
-			reg_set_meta "$CAT" "$id" "$scnt" "$(date +%s)"
+			if [ "$fresh" = 1 ]; then reg_set_meta "$CAT" "$id" "$scnt" "$(date +%s)"; else reg_set_meta "$CAT" "$id" "$scnt" "$ts"; fi
 			echo "src $id: $scnt записей ($kind)"
 			nsrc=$((nsrc + 1)); rm -f "$raw" "$norm"
 		done < "$reg"
@@ -257,6 +274,10 @@ _update_pass() {
 	all=$W/.all; sort -u "$work" > "$all" 2>/dev/null; rm -f "$work"
 	total=$(grep -c '' "$all" 2>/dev/null); case "$total" in ''|*[!0-9]*) total=0 ;; esac
 	echo "источников: $nsrc, суммарно уникальных: $total"
+
+	# КАТЕГОРИЮ ВЫКЛЮЧИЛИ ПОСРЕДИ ПРОХОДА (закачка идёт минутами): выключение уже сняло правила, а этот проход поставил бы
+	# их обратно — экран «выключена», а DROP работает до следующего прохода.
+	if ! cat_enabled "$CAT"; then echo "category disabled during pass → teardown"; teardown "$CAT"; return 0; fi
 
 	# Применить в цель.
 	case "$CAT" in
@@ -414,43 +435,166 @@ do_reapply() {
 	return 0
 }
 
+# wire: вернуть ЦЕПОЧКУ блокировки после сноса правил (firewall reload: вебморда Xiaomi, наш awg_setup), НЕ трогая набор — он
+# в ОЗУ и reload переживает. Зовёт починка правил (`vpn-toggle.sh repair|rules`) на КАЖДЫЙ reload, поэтому `reapply` не годится:
+# он заливает набор из снимка заново. Своя цепочка iptables есть только у ipblock (реклама и пулы десинка живут в dnsmasq и
+# у zapret) — прочие категории молча выходят. Идёт проверка связи — цепочкой владеет она (откат снимет её сам); выключена,
+# откачена (откат снимает `.enabled`) или набор пуст — ставить нечего.
+wire_due() {   # 0 — цепочка блокировки ОБЯЗАНА стоять; гейты общие у `wire` и `wired`, иначе вопрос и починка разъедутся
+	[ "$CAT" = ipblock ] || return 1
+	cat_enabled ipblock || return 1
+	guard_live ipblock && return 1
+	[ "$(ipset_count blocklist_set)" -gt 0 ] 2>/dev/null
+}
+do_wire() {
+	wire_due || return 0
+	# ПОД ЛОКОМ ОБНОВЛЕНИЯ категории: проход обновления зовёт тот же `ensure_block_rules` (flush + `-C || -I` прыжков), и
+	# параллельно оба `-C` могли промахнуться — ДВА прыжка в ENODIA_BLK, после чего выключение блокировки снимало один, а `-X`
+	# не проходил (ревью хвостов dev233). Лок занят ⇒ dirty: держатель пройдёт ещё раз и проведёт цепочку сам — и после reload,
+	# пришедшего посреди его прохода. Цена — повторная закачка, но совпадение починки с обновлением блок-листа редкое.
+	_wlk="$(ram_dir ipblock)/.update.lock"
+	ls_lock_take "$_wlk" "$(ram_dir ipblock)/.update.dirty" || return 0
+	trap 'ls_lock_drop "$_wlk"' EXIT INT TERM
+	ensure_block_rules
+	ls_lock_drop "$_wlk"; trap - EXIT INT TERM
+}
+# wired: снесена ли цепочка, которая обязана стоять — 0 стоит (или ставить нечего), 3 снесена, иное — не знаю. Спрашивает сторож,
+# когда VPN выключен и чужой reload заметить больше не по чему (правила несущей в этом состоянии нет вовсе; хвост 10 ревью dev233).
+# «Снесено» — НЕ 1: единицу отдаёт любой общий отказ (нет библиотеки, старая копия без верба), и сторож чинил бы по кругу.
+do_wired() {
+	wire_due || return 0
+	command -v ipt_jump_state >/dev/null 2>&1 || return 2
+	ipt_jump_state INPUT ENODIA_BLK; _wdi=$?
+	ipt_jump_state FORWARD ENODIA_BLK; _wdf=$?
+	[ "$_wdi" = 2 ] || [ "$_wdf" = 2 ] && return 2
+	[ "$_wdi" = 0 ] && [ "$_wdf" = 0 ] && return 0
+	return 3
+}
+
 # guarded_enable: включить категорию С АВТО-ОТКАТОМ при обрыве связи (слой 3 защиты). Для ipblock
 # «глухой» DROP теоретически может оборвать роутер/резолв — после apply делаем self-test и, если
 # связь/резолв упали ИЛИ приватка просочилась в блок-сет, откатываем (тот же отсоединённый guard-
 # рецепт, что раньше гоняли вручную start-stop-daemon -b). Пишем вердикт в .guard.state для панели.
+# НАЧАЛО ПРОВЕРКИ — СИНХРОННО, из CGI до фонового запуска (шаг 5c): панель перечитывает экран сразу после ответа, и
+# прежде первый ответ мог прийти раньше, чем фон записал `.enabled` и APPLYING, — экран рисовал выключенный тумблер с
+# прошлым «откачено», не запускал опрос, а повторный клик пускал ВТОРУЮ проверку параллельно. Отметка времени даёт фону
+# минуту на то, чтобы записать свой пид (до неё «пида нет» ≠ «прогон умер»). Код 1 — проверка уже идёт (не начинаем).
+GUARD_GRACE=60
+guard_live() {  # guard_live <cat> → 0, если проверка связи идёт (пид жив ИЛИ только что начата)
+	_gl=$(ram_dir "$1")
+	[ "$(cat "$_gl/.guard.state" 2>/dev/null | tr -d ' \r\n')" = APPLYING ] || return 1
+	_gp=$(cat "$_gl/.guard.pid" 2>/dev/null | tr -cd '0-9')
+	# cmdline — через tr: аргументы там разделены NUL, и grep busybox-сборки без EXTRA_COMPAT видит лишь первый (`/bin/sh`).
+	[ -n "$_gp" ] && cat "/proc/$_gp/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q lists-update && return 0
+	_gt=$(cat "$_gl/.guard.ts" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_gt" ] && [ "$(age_since "$_gt")" -lt "$GUARD_GRACE" ]
+}
+# `.enabled` здесь НЕ пишем: фон мог не стартовать, а флаг на флеше пережил бы ребут — heal поставил бы DROP без проверки
+# связи. «Включается» экран видит по самой проверке (emit_list: enabled — флаг ИЛИ идущая проверка).
+guard_begin() {
+	guard_live "$1" && return 1
+	_gb=$(ram_dir "$1")
+	# Отменённая проверка ещё доигрывает свой проход (закачка идёт минутами): вторая поверх неё писала бы в те же файлы, и
+	# первая, дойдя до конца, увидела бы APPLYING второй как свою. Код 2 — «прежняя ещё завершается».
+	if guard_cancelled "$1"; then
+		_gp=$(cat "$_gb/.guard.pid" 2>/dev/null | tr -cd '0-9')
+		[ -n "$_gp" ] && cat "/proc/$_gp/cmdline" 2>/dev/null | tr '\0' ' ' | grep -q lists-update && return 2
+	fi
+	rm -f "$_gb/.guard.pid" 2>/dev/null
+	date +%s > "$_gb/.guard.ts"
+	gstate "$_gb" APPLYING
+	return 0
+}
+# Шлюз и интернет отвечали ДО включения? Иначе их молчание после — не вердикт списку: шлюз провайдера, не отвечающий на
+# ICMP, откатывал КАЖДОЕ включение словами «после включения перестал отвечать шлюз» (к тому же шлюз стоит в наборе
+# «не блокировать» — список его не рвёт). Роутер→интернет — ПО TCP (curl), а НЕ ICMP: 1.1.1.1/8.8.8.8 лежат в
+# iplist_set и маркируются в туннель, а на socks-транспортах (xray/hy2/byedpi) несущая = tun2socks, который ICMP НЕ
+# проксирует → ping ВСЕГДА FAIL → ipblock откатывался при каждом включении. Проверено на железе 2026-07-14.
+guard_gw_ok()  { _gg=$(wan_gateway); [ -n "$_gg" ] && ping -c 1 -W 3 "$_gg" >/dev/null 2>&1; }
+guard_net_ok() {
+	for _h in 1.1.1.1 8.8.8.8; do
+		curl -sk -o /dev/null -m 6 --connect-timeout 5 "https://$_h" 2>/dev/null && return 0
+	done
+	return 1
+}
+# ВЫКЛЮЧИЛИ ПОСРЕДИ ПРОВЕРКИ — проверка ОТМЕНЕНА (`enable 0` пишет CANCELLED): без этого «включена» держалось до конца
+# прогона (флаг ИЛИ идущая проверка), тумблер на экране возвращался включённым, а в конце приходило «Проверка связи
+# прошла — блокировка включена» при выключенной (ревью шага 5c, круг 3). Отменённая проверка вердикта не пишет, флаг не
+# ставит и правил не держит: снял их `enable 0`, а свой проход (do_update) видит «выключена» и не ставит.
+# ОТКАТ — СОБЫТИЕМ В ЖУРНАЛ (и письмом, если почта настроена): опрос вердикта живёт только на экране, и человек, ушедший с
+# него, не узнавал, что включённая блокировка снялась сама — чип двери просто терял «адреса».
+guard_notify() {
+	[ -f "$ENODIA_DIR/notify-event.sh" ] || return 0
+	if [ -f "$ENODIA_DIR/nf-i18n.sh" ]; then . "$ENODIA_DIR/nf-i18n.sh"; fi
+	command -v nf_lang >/dev/null 2>&1 || nf_lang() { echo ru; }
+	if [ "$(nf_lang)" = en ]; then
+		case "$1" in
+			lan) _gn="the list contained home network addresses" ;; gw) _gn="after enabling, the provider gateway stopped answering" ;;
+			net) _gn="after enabling, the router could not reach the internet" ;; nonet) _gn="the internet was not answering even before enabling" ;;
+			*) _gn="connectivity dropped while enabling" ;;
+		esac
+		sh "$ENODIA_DIR/notify-event.sh" ipblock-reverted 3600 "Blocking by address was removed automatically" \
+			"Reason: $_gn. The network works as before; the lists and your exceptions are kept." >/dev/null 2>&1
+	else
+		case "$1" in
+			lan) _gn="в список попали адреса домашней сети" ;; gw) _gn="после включения перестал отвечать шлюз провайдера" ;;
+			net) _gn="после включения роутер не достучался до интернета" ;; nonet) _gn="интернет не отвечал ещё до включения" ;;
+			*) _gn="при включении прерывалась связь" ;;
+		esac
+		sh "$ENODIA_DIR/notify-event.sh" ipblock-reverted 3600 "Блокировка по адресам снята автоматически" \
+			"Причина: $_gn. Сеть работает как прежде; списки и ваши исключения сохранены." >/dev/null 2>&1
+	fi
+	return 0
+}
+guard_cancelled() { [ "$(cat "$(ram_dir "$1")/.guard.state" 2>/dev/null | tr -d ' \r\n')" = CANCELLED ]; }
 guarded_enable() {
 	_c="$1"
+	_g=$(ram_dir "$_c")
+	# Выключили ещё до старта фона (между guard-begin CGI и этой строкой) — флаг не пишем, иначе включили бы заново.
+	guard_cancelled "$_c" && return 0   # до флага
 	: > "$(enable_path "$_c")"
-	echo APPLYING > "$(ram_dir "$_c")/.guard.state"
+	# СВОЙ ПИД — для панели: «Проверяю связь…» висело на экране вечно, если прогон убили посреди (OOM, перезапуск uhttpd
+	# с детьми). Пидфайл spawn_bg не годится в свидетели — его перезаписывает ЛЮБОЙ следующий фоновый прогон категории.
+	# ПРИЧИНУ отката (.guard.why) пишет каждый откат заново, а читается она только при REVERTED — старую чистить незачем.
+	echo $$ > "$_g/.guard.pid"
+	gstate "$_g" APPLYING
+	[ -f "$_g/.guard.ts" ] || date +%s > "$_g/.guard.ts"
+	_gw0=0; _net0=0
+	if [ "$_c" = ipblock ]; then guard_gw_ok && _gw0=1; guard_net_ok && _net0=1; fi
 	CAT="$_c" do_update
-	[ "$_c" = ipblock ] || { echo OK > "$(ram_dir "$_c")/.guard.state"; return 0; }
+	# Лок держал ЧУЖОЙ проход (обновление по расписанию, кнопка): do_update пометил dirty и вышел сразу, а применит список
+	# тот проход. Проверять связь по прежнему состоянию значило бы написать OK до того, как DROP вообще встал. Потолок —
+	# против зависшего держателя; вышел — проверки не было, и так и сказано (ABORTED: «включена, но не проверена»).
+	# Число шагов — ручка стенда (`LISTS_GUARD_WAIT`, local/lists-block-test.sh): «потолок вышел» он ждал 600 шагами заглушки sleep —
+	# треть его времени на каждую копию-порчу. На роутере переменную не задаёт никто: 600 с. Шесть цифр и больше — тоже 600:
+	# число сверх разрядности busybox `[ -lt ]` роняет сравнение, и ожидания не было бы вовсе.
+	_gw_n=0; _gw_max=${LISTS_GUARD_WAIT:-600}; case "$_gw_max" in ''|*[!0-9]*|??????*) _gw_max=600 ;; esac
+	while [ -d "$_g/.update.lock" ] && ! _lock_stale "$_g/.update.lock" && [ "$_gw_n" -lt "$_gw_max" ] && ! guard_cancelled "$_c"; do sleep 1; _gw_n=$((_gw_n + 1)); done
+	guard_cancelled "$_c" && return 0   # ждали чужой проход
+	if [ -d "$_g/.update.lock" ] && ! _lock_stale "$_g/.update.lock"; then gstate "$_g" ABORTED; return 1; fi
+	[ "$_c" = ipblock ] || { gstate "$_g" OK; return 0; }
 	sleep 3
-	_ok=1
+	_ok=1; _why=''
 	# (а) приватка/LAN в блок-сете = катастрофа (ровно инцидент FireHOL) → откат безусловно.
 	for _p in 192.168.31.1 192.168.31.0 10.0.0.1 100.64.0.1; do
-		ipset test blocklist_set "$_p" >/dev/null 2>&1 && _ok=0
+		ipset test blocklist_set "$_p" >/dev/null 2>&1 && { _ok=0; [ -n "$_why" ] || _why=lan; }
 	done
-	# (б) роутер потерял WAN-шлюз → откат (DROP по INPUT src мог задеть роутер).
-	# ICMP до шлюза идёт НАПРЯМУЮ (шлюз не в iplist_set) → пинг тут валиден.
-	_gw=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')
-	[ -n "$_gw" ] && { ping -c 1 -W 3 "$_gw" >/dev/null 2>&1 || _ok=0; }
-	# (в) роутер→интернет проверяем ПО TCP (curl), а НЕ ICMP: 1.1.1.1/8.8.8.8 лежат в
-	# iplist_set и маркируются в туннель, а на socks-транспортах (xray/hy2/byedpi)
-	# несущая = tun2socks, который ICMP НЕ проксирует → ping ВСЕГДА FAIL → ipblock
-	# откатывался сразу при каждом включении (guard.state=REVERTED). TCP через
-	# tun2socks проходит штатно; на awg тоже работает. Проверено на железе 2026-07-14.
-	_net=0
-	for _h in 1.1.1.1 8.8.8.8; do
-		curl -sk -o /dev/null -m 6 --connect-timeout 5 "https://$_h" 2>/dev/null && { _net=1; break; }
-	done
-	[ "$_net" = 1 ] || _ok=0
+	# (б) роутер потерял WAN-шлюз — только если до включения он отвечал.
+	[ "$_gw0" = 1 ] && { guard_gw_ok || { _ok=0; [ -n "$_why" ] || _why=gw; }; }
+	# (в) интернет. Не отвечал и ДО включения — проверить нечем: блокировку не оставляем (связи нет — «защиту» не проверить),
+	# но и не валим на список — своя причина.
+	if [ "$_net0" = 1 ]; then guard_net_ok || { _ok=0; [ -n "$_why" ] || _why=net; }
+	else _ok=0; [ -n "$_why" ] || _why=nonet; fi
+	guard_cancelled "$_c" && return 0   # до вердикта
 	if [ "$_ok" != 1 ]; then
-		ulog "SELF-TEST FAILED → авто-откат ipblock (связь/резолв или приватка в сете)"
+		ulog "SELF-TEST FAILED ($_why) → авто-откат ipblock (связь/резолв или приватка в сете)"
 		rm -f "$(enable_path "$_c")"; teardown "$_c"; ct_flush
-		echo REVERTED > "$(ram_dir "$_c")/.guard.state"
+		echo "$_why" > "$_g/.guard.why"
+		gstate "$_g" REVERTED
+		guard_notify "$_why"
 		return 1
 	fi
-	echo OK > "$(ram_dir "$_c")/.guard.state"
+	gstate "$_g" OK
 	return 0
 }
 
@@ -498,7 +642,7 @@ EOF
 		zapret-cidr)
 			cat <<'EOF'
 Google + googlevideo (официальный)|https://www.gstatic.com/ipranges/goog.json|cidr|rec|~99|https://www.gstatic.com/ipranges/goog.json|официальные диапазоны Google — накрывают googlevideo целиком
-YouTube (opencck)|https://iplist.opencck.org/?format=text&data=cidr4&site=youtube.com|cidr|rec|~0.8k|https://iplist.opencck.org|подсети YouTube — точечнее, но без части googlevideo
+YouTube (opencck)|https://iplist.opencck.org/?format=text&data=cidr4&site=youtube.com|cidr|rec|~0.8k|https://iplist.opencck.org|подсети YouTube — точнее, но без части googlevideo
 Discord (opencck)|https://iplist.opencck.org/?format=text&data=cidr4&site=discord.com|cidr|rec|~0.1k|https://iplist.opencck.org|подсети Discord (сайт и медиа)
 Google (runetfreedom geoip)|https://cdn.jsdelivr.net/gh/runetfreedom/russia-blocked-geoip@release/text/google.txt|cidr|aggr|~2.9k|https://github.com/runetfreedom/russia-blocked-geoip|шире официального: весь Google по данным РКН-списков
 Instagram (opencck)|https://iplist.opencck.org/?format=text&data=cidr4&site=instagram.com|cidr|aggr|~0.1k|https://iplist.opencck.org|подсети Instagram/Meta CDN
@@ -544,12 +688,52 @@ EOF
 }
 
 # --- list: JSON состояния категории для панели ------------------------------
+# СОСТОЯНИЕ КАТЕГОРИИ — включена ли, идёт ли обновление, чем кончилась проверка связи (ставит en/st/gs/gw). Одно на `list` и на
+# лёгкий `state`: чипу двери раздела «Сеть» не нужны ни список защиты с `ipset test` по каждому адресу, ни каталог пресетов, а
+# спрашивает он на КАЖДЫЙ показ раздела (ревью шага 5c, круг 2).
+cat_state() {
+	# «Включена» — флаг ИЛИ идущая проверка связи (guard_begin флаг не пишет — разбор там).
+	en=true; cat_enabled "$CAT" || { [ "$CAT" = ipblock ] && guard_live ipblock; } || en=false
+	st=$(cat "$(ram_dir "$CAT")/.update.state" 2>/dev/null | tr -d ' \r\n'); [ -n "$st" ] || st=IDLE
+	# «Идёт» — ТОЛЬКО пока жив держатель лока: убитый посреди прогон (OOM, SIGKILL — ловушка EXIT на
+	# сигнале не срабатывает) оставлял RUNNING навсегда, и панель держала «обновляю…» с запертой
+	# кнопкой до перезагрузки роутера. Судим тем же, чем лок снимают (_lock_stale).
+	# Держатель мог ЗАКОНЧИТЬ между чтением состояния и проверкой лока (DONE и снятие лока) — это не «прервано»:
+	# состояние перечитывается, и прерванным считается, только если в файле по-прежнему RUNNING.
+	_lk="$(ram_dir "$CAT")/.update.lock"
+	if [ "$st" = RUNNING ] && { [ ! -d "$_lk" ] || _lock_stale "$_lk"; }; then
+		st=$(cat "$(ram_dir "$CAT")/.update.state" 2>/dev/null | tr -d ' \r\n'); [ "$st" = RUNNING ] && st=ABORTED; [ -n "$st" ] || st=IDLE
+	fi
+	gs=$(cat "$(ram_dir "$CAT")/.guard.state" 2>/dev/null | tr -d ' \r\n'); [ -n "$gs" ] || gs=NONE
+	# То же у проверки связи: APPLYING, а прогона нет (свой пид мёртв и начата не только что) = проверка прервалась.
+	if [ "$gs" = APPLYING ] && ! guard_live "$CAT"; then
+		gs=$(cat "$(ram_dir "$CAT")/.guard.state" 2>/dev/null | tr -d ' \r\n'); [ "$gs" = APPLYING ] && gs=ABORTED; [ -n "$gs" ] || gs=NONE
+	fi
+	gw=''; [ "$gs" = REVERTED ] && gw=$(cat "$(ram_dir "$CAT")/.guard.why" 2>/dev/null | tr -cd 'a-z')
+	# Блокировка ИМЕННО СПИСКАМИ живая (цепочка ENODIA_BLK в ядре) — отдельно от `addr_live` (списки ИЛИ гео-«Блок»): строка
+	# категории, итог прерванной проверки и чип двери говорят о СВОЕЙ блокировке, а гео-«Блок» живёт своей цепочкой — после
+	# сноса правил (fw3 reload) вернувшаяся с правкой гео цепочка выдавала бы «заблокировано: N» у списков, не дропающих ничего.
+	bl=null; [ "$CAT" = ipblock ] && { bl=false; iptables -C INPUT -j ENODIA_BLK 2>/dev/null && bl=true; }
+	return 0
+}
+
+emit_state() {
+	cat_state
+	# Сколько ВКЛЮЧЁННЫХ источников — чип двери: «реклама» при пустом наборе списков была бы неправдой.
+	_ns=0; [ -f "$(reg_path "$CAT")" ] && _ns=$(awk -F"$TAB" '$1!="" && $3==1' "$(reg_path "$CAT")" 2>/dev/null | grep -c '' || true)
+	case "$_ns" in ''|*[!0-9]*) _ns=0 ;; esac
+	# Сколько записей в ЦЕЛИ — число строки категории в хабе «Источники списков» (пять категорий на одном экране: полный
+	# `list` у ipblock собирает защиту с `ipset test` по каждому адресу). Цена — та же `applied_count`, что у `list`
+	# (замер на BE7000: `ipset list` набора на 3638 записей — 20 мс).
+	_ac=$(applied_count "$CAT"); case "$_ac" in ''|*[!0-9]*) _ac=0 ;; esac
+	printf '{"cat":"%s","kind":"%s","enabled":%s,"update_state":"%s","guard_state":"%s","guard_why":"%s","blk_live":%s,"nsrc":%s,"count":%s}\n' \
+		"$CAT" "$(kind_of "$CAT")" "$en" "$st" "$gs" "$gw" "$bl" "$_ns" "$_ac"
+}
+
 emit_list() {
-	en=true; cat_enabled "$CAT" || en=false
+	cat_state
 	ac=$(applied_count "$CAT"); case "$ac" in ''|*[!0-9]*) ac=0 ;; esac
 	al=0; [ -s "$(allow_path "$CAT")" ] && { al=$(grep -c '' "$(allow_path "$CAT")" 2>/dev/null); case "$al" in ''|*[!0-9]*) al=0 ;; esac; }
-	st=$(cat "$(ram_dir "$CAT")/.update.state" 2>/dev/null | tr -d ' \r\n'); [ -n "$st" ] || st=IDLE
-	gs=$(cat "$(ram_dir "$CAT")/.guard.state" 2>/dev/null | tr -d ' \r\n'); [ -n "$gs" ] || gs=NONE
 	# blocklist_allow — число критичных IP под защитой (для UI «Защита сети»); 0 если сет не создан.
 	# ГАРД обязателен: если ipset_count вернёт пусто (напр. рассинхрон deploy — старый lists-lib.sh
 	# без функции), пустое поле %s ломает JSON целиком («critical_count»:,) → панель «не удалось
@@ -568,29 +752,144 @@ emit_list() {
 		if [ "$(wc -c < "$(allow_path "$CAT")" 2>/dev/null || echo 0)" -gt 32768 ]; then acut=true
 		else ab=$(base64 < "$(allow_path "$CAT")" 2>/dev/null | tr -d '\n\r'); fi
 	fi
-	printf '{"cat":"%s","kind":"%s","enabled":%s,"count":%s,"allow_count":%s,"allow_b64":"%s","allow_cut":%s,"update_state":"%s","guard_state":"%s","critical_count":%s,"sources":[' \
-		"$CAT" "$(kind_of "$CAT")" "$en" "$ac" "$al" "$ab" "$acut" "$st" "$gs" "$ca"
-	first=1; reg=$(reg_path "$CAT")
+	printf '{"cat":"%s","kind":"%s","enabled":%s,"count":%s,"allow_count":%s,"allow_b64":"%s","allow_cut":%s,"update_state":"%s","guard_state":"%s","guard_why":"%s","critical_count":%s,' \
+		"$CAT" "$(kind_of "$CAT")" "$en" "$ac" "$al" "$ab" "$acut" "$st" "$gs" "$gw" "$ca"
+	# ЧТО ЗАЩИЩЕНО И ПОЧЕМУ (только ipblock — экран «Блокировка»): строками владельца (collect_critical),
+	# ЖИВЫМ сбором — это ответ «что роутер не заблокирует», и он верен и до включения. Свои исключения
+	# человека здесь не повторяем — они едут полем allow_b64. Дубли адреса схлопываем: первая причина
+	# в порядке сбора (сервер туннеля важнее «адреса DNS», если это один IP).
+	# Какой интерфейс — домашняя сеть и какой — провайдер: словами строки подсети («домашняя сеть», «сеть
+	# провайдера») панель обязана называть по ответу роутера, а не по литералу br-lan (следит C40).
+	_bl=''; _bw=''
+	if [ "$CAT" = ipblock ]; then
+		if [ -f "$ENODIA_DIR/router-lib.sh" ]; then . "$ENODIA_DIR/router-lib.sh"; fi
+		command -v lan_if >/dev/null 2>&1 || lan_if() { echo br-lan; }   # lan-lit: шим без router-lib.sh
+		_bl=$(lan_if 2>/dev/null | tr -cd 'A-Za-z0-9._-'); _bw=$(wan_iface 2>/dev/null | tr -cd 'A-Za-z0-9._-')
+	fi
+	# БЛОКИРОВКА ПО АДРЕСАМ ЖИВАЯ (цепочки в ядре) и ЕСТЬ ЛИ АДРЕС В НАБОРЕ СЕЙЧАС: список собирается живьём, а набор ядра —
+	# только на обновлении и смене сервера; переподключённый PPPoE (новый адрес и шлюз) показывался бы «всегда», хотя в
+	# ядре его ещё нет. Набора нет — признака нет (null: про ядро сказать нечего).
+	_al=false; addr_block_live && _al=true
+	_as=0; ipset list -n 2>/dev/null | grep -qx blocklist_allow && _as=1
+	printf '"lan":"%s","wan":"%s","addr_live":%s,"blk_live":%s,"critical":[' "$_bl" "$_bw" "$_al" "$bl"
+	if [ "$CAT" = ipblock ]; then
+		collect_critical 2>/dev/null | awk -F"$TAB" '$1!="" && $2!="user" && !s[$1]++' | while IFS="$TAB" read -r _ci _cw _cd; do
+			_cin=null
+			if [ "$_as" = 1 ]; then _cin=false; ipset test blocklist_allow "$_ci" >/dev/null 2>&1 && _cin=true; fi
+			printf '%s\t%s\t%s\t%s\n' "$_ci" "$_cw" "$_cd" "$_cin"
+		done | awk -F"$TAB" '{ gsub(/[\\"]/,"",$3); if (n++) printf ","
+			printf "{\"ip\":\"%s\",\"why\":\"%s\",\"dev\":\"%s\",\"in\":%s}", $1, $2, $3, $4 }'
+	fi
+	printf '],"sources":['
+	first=1; reg=$(reg_path "$CAT"); mx=0
 	if [ -f "$reg" ]; then
 		while IFS="$TAB" read -r id type enb fmt cnt ts label value; do
 			[ -n "$id" ] || continue
 			eb=false; [ "$enb" = 1 ] && eb=true
 			case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
 			case "$ts"  in ''|*[!0-9]*) ts=0 ;; esac
+			[ "$enb" = 1 ] && [ "$ts" -gt "$mx" ] && mx=$ts
 			[ "$first" = 1 ] || printf ','
 			first=0
 			printf '{"id":"%s","type":"%s","enabled":%s,"format":"%s","count":%s,"ts":%s,"label":"%s","value":"%s"}' \
 				"$(jesc "$id")" "$(jesc "$type")" "$eb" "$(jesc "$fmt")" "$cnt" "$ts" "$(jesc "$label")" "$(jesc "$value")"
 		done < "$reg"
 	fi
-	printf '],"presets":'; emit_presets "$CAT"; printf '}\n'
+	# ВОЗРАСТ СВЕЖАЙШЕГО включённого источника — «обновлено N назад» у категории. Считает РОУТЕР: обе
+	# точки из одних часов (панель от своих часов соврала бы на величину расхождения). -1 = не качалось.
+	# clock-raw: НЕ через age_since — отметка источника лежит на флеше и ребут ПЕРЕЖИВАЕТ, её возраст
+	# законно больше аптайма (кламп clock-lib соврал бы «только что»). Скачок часов — неточная подпись.
+	ua=-1; [ "$mx" -gt 0 ] && { ua=$(( $(date +%s) - mx )); [ "$ua" -ge 0 ] || ua=0; }
+	printf '],"upd_age":%s,"presets":' "$ua"; emit_presets "$CAT"; printf '}\n'
+}
+
+# --- Исключения категории (allow-set) ------------------------------------------
+# Поле панели — ВЕСЬ список (верб ЗАМЕНЯЕТ файл), и сохранённое обязано начать действовать СРАЗУ, а
+# не «при следующем обновлении»: прежний ответ «применится при обновлении» значил перекачку мегабайт
+# по расписанию — сутки или неделю реклама на исключённом домене оставалась закрытой.
+#   adblock — домены (norm_domains: хост из URL, hosts-строки, ABP); применяем переигрыванием снимка
+#             из ОЗУ (без закачки); снимка нет (роутер только загрузился) — применится обновлением.
+#   ipblock — IPv4/CIDR, СТРОГО по октетам и маске: адрес уходит в ipset, мусор там молча не встанет.
+#             Действуют на ВСЮ блокировку по адресам — и списки, и гео-категории «Блок»: набор
+#             blocklist_allow у них общий. Убрали исключение при живой блокировке ⇒ сброс соединений:
+#             ускоритель NSS/ECM иначе продолжит пропускать уже установленный поток к этому адресу.
+# Печатает одну строку «kept=N dropped=M applied=now|later|off» (dropped — записи, не ставшие исключением). В поле ни
+# одной годной записи, а прежний список не пуст — ОТКАЗ (applied=reject, код 1): вставили домены в поле адресов — и
+# прежний список молча стирался бы (со сбросом соединений всего дома).
+# Маска не шире /8 — как у strip_bogon: `0.0.0.0/0` ipset молча отвергает (а экран сказал бы «уже действуют»), а
+# `1.0.0.0/1` встал бы и снял половину всей блокировки по адресам.
+ALLOW_IP_RE='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(/([89]|[12][0-9]|3[0-2]))?$'
+# Фоновый проход категории ИЗ-ПОД CGI — отвязанным, тем же пидфайлом, что у кнопок панели (spawn_bg в action): голый `&`
+# остаётся ребёнком uhttpd, а тот гасит своих детей по таймауту CGI. Нет start-stop-daemon — прежний путь.
+bg_update() {
+	rm -f "/tmp/enodia-lists-$1.pid" 2>/dev/null   # как spawn_bg: протухший пидфайл не должен запретить запуск
+	if command -v start-stop-daemon >/dev/null 2>&1; then
+		start-stop-daemon -S -b -m -p "/tmp/enodia-lists-$1.pid" -x /bin/sh -- "$ENODIA_DIR/lists-update.sh" update "$1" >/dev/null 2>&1
+	else ( sh "$ENODIA_DIR/lists-update.sh" update "$1" >/dev/null 2>&1 & ); fi
+	return 0
+}
+allow_set() {  # allow_set <cat> <файл>
+	_af=$(allow_path "$1"); _ai="$(ram_dir "$1")/.allow.in"
+	# Значимое — без комментариев (# и ;), и записи разделяет ЛЮБОЙ пробел или запятая: «a.com, b.com» в
+	# одной строке — две записи, а не одна (norm_domains взял бы первое слово и молча потерял второе). Каждую
+	# запись и считаем «прислано» — отброшенное называется числом.
+	# У рекламы строка hosts «0.0.0.0 ads.com» — ОДНА запись (адрес — столбец формата, не исключение), а «@@» AdGuard — пометка
+	# «разрешить», не часть домена: иначе первое считалось двумя записями с одной «отброшенной», второе терялось целиком.
+	if [ "$1" = adblock ]; then
+		tr -d '\r' < "$2" | sed 's/[#;].*$//; s/^[[:space:]]*@@//; s/^[[:space:]]*0\.0\.0\.0[[:space:]][[:space:]]*//; s/^[[:space:]]*127\.0\.0\.1[[:space:]][[:space:]]*//; s/^[[:space:]]*::1*[[:space:]][[:space:]]*//'
+	else tr -d '\r' < "$2" | sed 's/[#;].*$//'; fi | tr ', \t' '\n\n\n' | grep -v '^$' > "$_ai"
+	_tot=$(grep -c '' "$_ai" 2>/dev/null); case "$_tot" in ''|*[!0-9]*) _tot=0 ;; esac
+	# В поле был ТЕКСТ, но ни одной записи (одни комментарии) — это не «очистить список»: очистка — пустое поле.
+	_raw=$(tr -d '\r' < "$2" | grep -c '[^[:space:]]'); case "$_raw" in ''|*[!0-9]*) _raw=0 ;; esac
+	[ "$_tot" = 0 ] && [ "$_raw" -gt 0 ] && _tot=$_raw
+	if [ "$1" = ipblock ]; then grep -E "$ALLOW_IP_RE" "$_ai" > "$_ai.ok" 2>/dev/null
+	else norm_domains < "$_ai" > "$_ai.ok"; fi
+	_val=$(grep -c '' "$_ai.ok" 2>/dev/null); case "$_val" in ''|*[!0-9]*) _val=0 ;; esac
+	if [ "$_val" = 0 ] && [ "$_tot" -gt 0 ] && [ -s "$_af" ]; then
+		rm -f "$_ai" "$_ai.ok"; echo "kept=0 dropped=$_tot applied=reject"; return 1
+	fi
+	# Что было до записи — снятое исключение IP (адрес был разрешён, теперь нет) требует сброса соединений.
+	_gone=0
+	if [ "$1" = ipblock ] && [ -s "$_af" ]; then
+		sort -u "$_ai.ok" > "$_ai.new"
+		# Пустой новый список = сняты все. `grep -f` с ПУСТЫМ файлом шаблонов у busybox совпадает со ВСЕМ
+		# (замер BE7000 22.09.2026: `-v` не печатает ничего), у GNU — ни с чем: туда его не пускаем.
+		if [ ! -s "$_ai.new" ]; then _gone=1
+		else grep -vxF -f "$_ai.new" "$_af" 2>/dev/null | grep -q . && _gone=1; fi
+		rm -f "$_ai.new"
+	fi
+	sort -u "$_ai.ok" > "$_af.new" && mv "$_af.new" "$_af"
+	_kept=$(grep -c '' "$_af" 2>/dev/null); case "$_kept" in ''|*[!0-9]*) _kept=0 ;; esac
+	rm -f "$_ai" "$_ai.ok"
+	_app=off
+	if [ "$1" = ipblock ]; then
+		# Блокировка по адресам ЖИВАЯ (цепочки ipblock или гео-«Блока» в ядре): исключение действует сразу на обе.
+		# Не живая, но включена (идёт проверка связи, ребут до переигрывания) — подействует, когда правила встанут.
+		if addr_block_live; then ensure_allow_set; [ "$_gone" = 1 ] && ct_flush; _app=now
+		elif cat_enabled ipblock; then _app=later; fi
+	elif cat_enabled "$1"; then
+		# Идёт проход обновления — переигрывать снимок параллельно нельзя (оба пишут один сниппет, и позже записавший
+		# вернул бы список без новых исключений): помечаем dirty — держатель пройдёт ещё раз, уже с ними.
+		_alk="$(ram_dir "$1")/.update.lock"
+		if ls_lock_take "$_alk" "$(ram_dir "$1")/.update.dirty"; then
+			if [ -s "$(snap_path "$1")" ]; then CAT="$1" do_reapply; _app=now; else _app=later; fi
+			ls_lock_drop "$_alk"
+			# Пока лок держали МЫ, проход (расписание, «Обновить», включение) мог пометить dirty и уйти — контракт лока
+			# «держатель переиграет»: переигрываем фоном, иначе это обновление потеряно до следующего расписания.
+			if [ -f "$(ram_dir "$1")/.update.dirty" ] && [ -f "$ENODIA_DIR/lists-update.sh" ]; then bg_update "$1"; fi
+		else _app=later; fi
+	fi
+	echo "kept=$_kept dropped=$((_tot - _val)) applied=$_app"
 }
 
 # --- Диспетчер подкоманд -----------------------------------------------------
 case "$CMD" in
 	update)   do_update ;;
 	reapply)  do_reapply ;;
-	list)     valid_cat "$CAT" || { echo '{"error":"unknown category"}'; exit 1; }; emit_list ;;
+	wire)     do_wire ;;
+	wired)    do_wired; exit $? ;;
+	list)    valid_cat "$CAT" || { echo '{"error":"unknown category"}'; exit 1; }; emit_list ;;
+	state)    valid_cat "$CAT" || { echo '{"error":"unknown category"}'; exit 1; }; emit_state ;;
 	presets)  valid_cat "$CAT" || { printf '[]\n'; exit 1; }; emit_presets "$CAT"; echo ;;
 	add-url)
 		valid_cat "$CAT" || { echo "unknown category" >&2; exit 1; }
@@ -622,15 +921,31 @@ case "$CMD" in
 		valid_cat "$CAT" || exit 1
 		case "$3" in
 			1) : > "$(enable_path "$CAT")" ;;
-			0) rm -f "$(enable_path "$CAT")"; teardown "$CAT" ;;
+			# Идёт проход — он мог проверить «включена» раньше этого выключения и поставит правила ПОСЛЕ teardown: помечаем
+			# dirty, держатель пройдёт ещё раз и снимет их (проход начинается с проверки «включена»).
+			0) rm -f "$(enable_path "$CAT")"; teardown "$CAT"
+			   # Идёт проверка связи — отменяем её (разбор у guard_cancelled).
+			   [ "$(cat "$(ram_dir "$CAT")/.guard.state" 2>/dev/null | tr -d ' \r\n')" = APPLYING ] && gstate "$(ram_dir "$CAT")" CANCELLED
+			   _elk="$(ram_dir "$CAT")/.update.lock"
+			   if [ -d "$_elk" ] && ! _lock_stale "$_elk"; then : > "$(ram_dir "$CAT")/.update.dirty"; fi ;;
 			*) exit 1 ;;
 		esac ;;
 	safe-enable)   # включить + собрать/применить + self-test с авто-откатом (слой 3); зовётся CGI фоном
 		valid_cat "$CAT" || exit 1
 		guarded_enable "$CAT" ;;
-	allow-set)
+	guard-begin)   # синхронное начало проверки связи (CGI — до фонового safe-enable); код 1 — проверка уже идёт
 		valid_cat "$CAT" || exit 1
+		guard_begin "$CAT" ;;
+	allow-set)
+		case "$CAT" in adblock|ipblock) ;; *) echo "исключения есть только у adblock и ipblock" >&2; exit 1 ;; esac
 		[ -f "$3" ] || { echo "no file" >&2; exit 1; }
-		norm_domains < "$3" | sort -u > "$(allow_path "$CAT").new" && mv "$(allow_path "$CAT").new" "$(allow_path "$CAT")" ;;
-	*) echo "usage: lists-update.sh update|list|presets|add-url|add-blob|get-blob|set-blob|del|toggle|set-format|enable|allow-set <cat> …" >&2; exit 2 ;;
+		allow_set "$CAT" "$3" ;;
+	# Набор «не блокировать» устарел, когда сменился сервер туннеля или выхода: адрес нового VPS в нём
+	# появлялся только на следующем обновлении списков (сутки-неделя), и сервер из списка FireHOL рвал
+	# туннель при включённой блокировке. Зовёт apply-bypass.sh на смене endpoint'а. Набора нет (блокировки
+	# по адресам нет) — нечего и пересобирать.
+	allow-sync)
+		ipset list -n 2>/dev/null | grep -qx blocklist_allow && ensure_allow_set
+		exit 0 ;;
+	*) echo "usage: lists-update.sh update|list|presets|add-url|add-blob|get-blob|set-blob|del|toggle|set-format|enable|allow-set <cat> … | allow-sync" >&2; exit 2 ;;
 esac

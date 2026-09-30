@@ -1,8 +1,10 @@
 # notify.conf — настройки почты для notify.sh. Подходит ЛЮБОЙ SMTP.
 #
-# Скопируй этот файл в notify.conf РЯДОМ со скриптом и впиши пароль приложения:
-#   cp notify.conf.example notify.conf
-#   chmod 600 notify.conf      # важно: внутри пароль
+# Проще всего настроить почту в панели («Панель → Уведомления»): она сама запишет конфиг куда надо.
+# Руками — скопируйте этот файл в КАТАЛОГ СОСТОЯНИЯ ($ENODIA_STATE, обычно /data/usr/app/enodia-state;
+# НЕ рядом со скриптом: каталог кода обновление заменяет целиком) и впишите пароль приложения:
+#   cp notify.conf.example /data/usr/app/enodia-state/notify.conf
+#   chmod 600 /data/usr/app/enodia-state/notify.conf      # важно: внутри пароль
 #
 # Письма-уведомления ВСЕГДА идут напрямую МИМО VPN: mark-core.sh (notify-guard)
 # выводит router-локальный SMTP (порты 465/587/25) из маркировки, поэтому даже

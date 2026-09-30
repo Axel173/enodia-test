@@ -70,11 +70,11 @@ OUT_COPY="$LIVE/$OUT_BASE"   # копия, которую сделает сто�
 # zapret/heal), общего лока у них нет, и на общих именах два прохода топтали бы файлы друг друга:
 # один пишет `aggregate > DRAFT`, второй в этот момент делает `mv DRAFT OUT` — в /etc уезжает
 # обрывок, а обрывок ipset=-строки роняет dnsmasq целиком (DNS у нас единая точка отказа).
-DRAFT=/tmp/.dns-merge.draft.$$  # ВНЕ conf-dir: там читается всё подряд, а не только *.conf
-PAIRS=/tmp/.dns-merge.pairs.$$
-STAMP=/tmp/.dns-merge.stamp  # RAM ⇒ после ребута штамп пуст и агрегат пересобирается заново
-LOCK=/tmp/.dns-merge.lock    # КАТАЛОГ (mkdir атомарен), внутри pid — как do_update в lists-lib
-DIRTY=/tmp/.dns-merge.dirty  # «пока ты собирал, состав изменился» — держатель лока идёт на второй круг
+DRAFT=/tmp/.enodia-dns-merge.draft.$$ # ВНЕ conf-dir: там читается всё подряд, а не только *.conf
+PAIRS=/tmp/.enodia-dns-merge.pairs.$$
+STAMP=/tmp/.enodia-dns-merge.stamp    # RAM ⇒ после ребута штамп пуст и агрегат пересобирается заново
+LOCK=/tmp/.enodia-dns-merge.lock      # КАТАЛОГ (mkdir атомарен), внутри pid — как do_update в lists-lib
+DIRTY=/tmp/.enodia-dns-merge.dirty    # «пока ты собирал, состав изменился» — держатель лока идёт на второй круг
 TAB=$(printf '\t')
 
 # Источники — В ТОМ ЖЕ ПОРЯДКЕ, В КАКОМ ИХ ЧИТАЕТ dnsmasq (по ИМЕНИ файла): от порядка зависит,
@@ -361,7 +361,7 @@ case "$1" in
 		;;
 	clear)
 		# Маской, а не поимённо: черновики/пары носят ПИД в имени, а лок — каталог (`rm -rf`).
-		rm -f "$OUT" "$OUT_COPY" "$STAMP" /tmp/.dns-merge.pairs.* /tmp/.dns-merge.draft.* "$DIRTY" 2>/dev/null
+		rm -f "$OUT" "$OUT_COPY" "$STAMP" /tmp/.enodia-dns-merge.pairs.* /tmp/.enodia-dns-merge.draft.* "$DIRTY" 2>/dev/null
 		rm -rf "$LOCK" 2>/dev/null
 		printf '[dns-merge] агрегат снят\n'
 		;;

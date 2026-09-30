@@ -33,7 +33,7 @@
 #   transport-hy2.sh health    — здоровье транспорта (для watchdog): 0 здоров / 1 нет
 #   transport-hy2.sh failover  — перебор hy2-резервов внутри транспорта
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # Сброс УЖЕ УСТАНОВЛЕННЫХ соединений — только через ct-lib.sh: на ядре 4.4 (AX3600/BE3600)
@@ -44,26 +44,45 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# Нет ipt-lib.sh с `ipt_top` (частичное обновление) ⇒ прежнее «первым в цепочку», байт-в-байт.
+command -v ipt_top >/dev/null 2>&1 || ipt_top() { _itc=$1; shift; iptables -C "$_itc" "$@" 2>/dev/null || iptables -I "$_itc" 1 "$@"; }
 command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null 2>&1 || true; }
 # Где лежит бинарь (store-lib.sh): без накопителя — прежний путь байт-в-байт. Шим на случай
 # установки без lib.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
+# Ожидание СТАРТА демона (daemon-lib.sh). Фиксированный срок мерил не то: он подобран под флеш
+# (1.4 ГБ/с) и заведомо мал для накопителя (замер 448 КБ/с ⇒ 8-МБ бинарь читается 18 с) — исправный
+# демон объявлялся мёртвым и убивался. Владелец судит по ЖИЗНИ ПРОЦЕССА, потолок берёт от носителя.
+# Нет файла (частичный apply-scripts) — шим повторяет ПРЕЖНИЙ путь: фиксированный срок и никакого
+# различения «умер»/«жив, но не готов».
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+# «VPN выключен вручную — несущую не берёт никто» (carrier_barred/carrier_run, разбор в daemon-lib.sh). Нет — прежний путь.
+command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
+command -v daemon_wait_port >/dev/null 2>&1 || daemon_wait_port() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0; sleep 1; _dwi=$((_dwi+1)); done
+    netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0
+    DAEMON_WAIT_WHY="не появился за $3 с"; return 1; }
+command -v daemon_wait_dev >/dev/null 2>&1 || daemon_wait_dev() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do ip link show "$4" >/dev/null 2>&1 && return 0; sleep 1; _dwi=$((_dwi+1)); done
+    ip link show "$4" >/dev/null 2>&1 && return 0
+    DAEMON_WAIT_WHY="не появился за $3 с"; return 1; }
 TABLE=1000
 TUN=xtun
 SOCKS_ADDR=127.0.0.1
-SOCKS_PORT=10808                 # ТОТ ЖЕ порт, что у xray → общий hev.yaml несёт оба
+SOCKS_PORT=10808                             # ТОТ ЖЕ порт, что у xray → общий hev.yaml несёт оба
 HY2=$(bin_path hysteria)
 HEV=$(bin_path hev)
-HY2_YAML="$ENODIA_STATE/hysteria.yaml" # активный конфиг (генерит меню; socks5.listen ОБЯЗАН быть 127.0.0.1:10808)
+HY2_YAML="$ENODIA_STATE/hysteria.yaml"       # активный конфиг (генерит меню; socks5.listen ОБЯЗАН быть 127.0.0.1:10808)
 SEED_CONF="/etc/dnsmasq.d/02-altserver.conf" # локальный dnsmasq-ответ server-host->IP (демон резолвит имя сам)
 HEV_YAML="$ENODIA_DIR/hev.yaml"
-HY2_PID=/tmp/hysteria.pid
-HEV_PID=/tmp/hev.pid
-HY2_LOG=/tmp/hysteria.log
-HEV_LOG=/tmp/hev.log
+HY2_PID=/tmp/enodia-hysteria.pid
+HEV_PID=/tmp/enodia-hev.pid
+HY2_LOG=/tmp/enodia-hysteria.log
+HEV_LOG=/tmp/enodia-hev.log
 TRANSPORT_FLAG="$ENODIA_STATE/.transport"
-SWITCH_LOCK=/tmp/enodia-switching.lock   # ручной switch (панель/меню) держит его → авто-failover прерывается (Fix C 2026-07-09)
+SWITCH_LOCK=/tmp/enodia-switching.lock       # ручной switch (панель/меню) держит его → авто-failover прерывается (Fix C 2026-07-09)
 NOTIFY_EVENT="$ENODIA_DIR/notify-event.sh"
 APPLY_BYPASS="$ENODIA_DIR/apply-bypass.sh"
 DNS1=1.1.1.1
@@ -96,7 +115,7 @@ socks_ours() { slot_socks_is_ours "$SOCKS_PORT" "$HY2_PID"; }
 # НА МЕСТЕ и МОЛЧА (rc=2). Библиотека не опциональна (без резолва endpoint'а несущая не встанет) —
 # отказываем честно, с причиной.
 if [ -f "$ENODIA_DIR/dns-lib.sh" ]; then . "$ENODIA_DIR/dns-lib.sh"; else
-    echo "[hy2] нет $ENODIA_DIR/dns-lib.sh — обнови скрипты (gh-update apply-scripts)" >&2; exit 1
+    echo "[hy2] нет $ENODIA_DIR/dns-lib.sh — обновите установку (панель → «Обновление» или переустановка с компьютера)" >&2; exit 1
 fi
 # Шим на ДРЕЙФ ДЕПЛОЯ (dns-lib.sh есть, но старый — без seed_host_clear): без него снятие сида
 # вылетело бы «command not found» и `address=/host/IP` пережил бы релинквиш. Логика та же —
@@ -166,7 +185,9 @@ exclude_endpoint() {
 # при заблокированном awg мёртв) → ведём DNS НЕЗАВИСИМО: публичный резолвер, принудительно
 # маркированный в туннель (уйдёт в xtun→hysteria, не утечёт). Зеркало set_xray_dns.
 set_hy2_dns() {
-    doh_apply_dns tunnel && return 0    # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было
+    # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было. DOH_APPLY_NOTE — слово
+    # библиотеки о том, что резолвер пришлось увести МИМО ещё не везущей несущей (см. doh_apply_dns).
+    if doh_apply_dns tunnel; then [ -n "${DOH_APPLY_NOTE:-}" ] && log "DoH: $DOH_APPLY_NOTE"; return 0; fi
     mkdir -p /etc/dnsmasq.d
     printf 'no-resolv\nserver=%s\nserver=%s\n' "$DNS1" "$DNS2" > /etc/dnsmasq.d/00-upstream.conf
     for d in "$DNS1" "$DNS2"; do
@@ -221,9 +242,9 @@ free_foreign_socks() {
     i=0; while [ $i -lt 5 ]; do netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$SOCKS_PORT" || break; sleep 1; i=$((i+1)); done
 }
 start_daemons() {
-    [ -x "$HY2" ] || { log "НЕТ бинаря $HY2 — установи (be7000.ps1)"; return 1; }
+    [ -x "$HY2" ] || { log "НЕТ бинаря $HY2 — поставьте его в панели: «Компоненты»"; return 1; }
     [ -x "$HEV" ] || { log "НЕТ бинаря $HEV"; return 1; }
-    [ -s "$HY2_YAML" ] || { log "НЕТ конфига $HY2_YAML — добавь hy2-конфиг (меню)"; return 1; }
+    [ -s "$HY2_YAML" ] || { log "НЕТ конфига $HY2_YAML — добавьте hy2-конфиг (меню)"; return 1; }
     [ -s "$HEV_YAML" ] || { log "НЕТ $HEV_YAML"; return 1; }
 
     free_foreign_socks   # выгнать оставшийся xray/чужой демон с порта 10808
@@ -237,13 +258,12 @@ start_daemons() {
     # ждали 8с → при медленном коннекте socks не успевал, start_daemons возвращал 1, cmd_up
     # делал stop_daemons, и установщик под set -e обрывался ДО регистрации cron. Ждём до 25с
     # (запас к наблюдавшимся 15-17с). Здоровье/перебор резервов потом стерегёт watchdog.
-    i=0
-    while [ $i -lt 25 ]; do
-        netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$SOCKS_PORT" && break
-        sleep 1; i=$((i+1))
-    done
-    if ! netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$SOCKS_PORT"; then
-        log "hysteria не слушает $SOCKS_PORT (socks5.listen в конфиге обязан быть $SOCKS_ADDR:$SOCKS_PORT). Лог:"; tail -n 15 "$HY2_LOG" 2>/dev/null
+    # Эти 25 с — СРОК ДЛЯ ФЛЕША: на накопителе к хендшейку добавляется чтение 5.2-МБ бинаря
+    # (замер 448 КБ/с = 12 с), и потолок поднимает сам daemon-lib.sh — по НОСИТЕЛЮ бинаря
+    # (bin_on_store), а не по каталогу: в раскладке «всё на накопителе» каталог бинарей и есть
+    # накопитель, и вопрос «в хранилище ли он» отвечает «нет» про файл на флешке.
+    if ! daemon_wait_port "$HY2_PID" hysteria 25 "$SOCKS_ADDR" "$SOCKS_PORT"; then
+        log "hysteria не слушает $SOCKS_PORT: $DAEMON_WAIT_WHY (socks5.listen в конфиге обязан быть $SOCKS_ADDR:$SOCKS_PORT). Лог:"; tail -n 15 "$HY2_LOG" 2>/dev/null
         return 1
     fi
     socks_ours || { log "socks $SOCKS_PORT держит ЧУЖОЙ демон — наша hysteria не забиндила (несущую поверх чужого socks не поднимаю)"; return 1; }
@@ -251,12 +271,8 @@ start_daemons() {
         log "запускаю hev (tun2socks)…"
         start-stop-daemon -S -b -m -p "$HEV_PID" -x "$HEV" -- "$HEV_YAML"
     fi
-    i=0
-    while [ $i -lt 6 ]; do
-        ip link show "$TUN" >/dev/null 2>&1 && break
-        sleep 1; i=$((i+1))
-    done
-    ip link show "$TUN" >/dev/null 2>&1 || { log "tun $TUN не создан. Лог hev:"; tail -n 15 "$HEV_LOG" 2>/dev/null; return 1; }
+    daemon_wait_dev "$HEV_PID" hev 6 "$TUN" || {
+        log "tun $TUN не создан: $DAEMON_WAIT_WHY. Лог hev:"; tail -n 15 "$HEV_LOG" 2>/dev/null; return 1; }
     return 0
 }
 stop_daemons() {
@@ -287,8 +303,8 @@ restart_hy2() {
     rm -f "$HY2_PID" 2>/dev/null
     free_foreign_socks
     spawn_hysteria || { log "restart_hy2: резолв server-host не удался"; return 1; }
-    i=0; while [ $i -lt 25 ]; do netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$SOCKS_PORT " && break; sleep 1; i=$((i+1)); done   # QUIC-хендшейк бывает ~15-17с (см. start_daemons)
-    netstat -ltn 2>/dev/null | grep -q "$SOCKS_ADDR:$SOCKS_PORT " || return 1
+    # QUIC-хендшейк бывает ~15-17 с (см. start_daemons); на накопителе потолок поднимет daemon-lib.
+    daemon_wait_port "$HY2_PID" hysteria 25 "$SOCKS_ADDR" "$SOCKS_PORT" || { log "restart_hy2: $DAEMON_WAIT_WHY"; return 1; }
     socks_ours
 }
 
@@ -340,6 +356,8 @@ cmd_failover() {
     for f in "$ENODIA_STATE"/hy2-configs/*.yaml; do
         [ -f "$f" ] || continue
         [ -e "$SWITCH_LOCK" ] && { log "hy2-failover: ручной switch (lock) в процессе — прерываю перебор"; return 1; }
+        # VPN выключили вручную посреди перебора — дальше не пробуем (зеркало xray-transport.sh).
+        carrier_barred && { log "hy2-failover: VPN выключили вручную — прерываю перебор"; break; }
         name=$(basename "$f" .yaml)
         [ "$name" = "$cur" ] && continue       # текущий (дохлый) пропускаем
         # DNS мёртв (см. restart_hy2 код 2) ⇒ сервер ПО ИМЕНИ не поднимется ничем — пропускаем,
@@ -382,8 +400,9 @@ hy2-конфиг: $name — VPN снова работает. Внешний IP: 
     if [ -n "$tried" ] && [ -n "$cur" ] && [ -f "$ENODIA_STATE/hy2-configs/$cur.yaml" ]; then
         cp "$ENODIA_STATE/hy2-configs/$cur.yaml" "$HY2_YAML" && chmod 600 "$HY2_YAML"
         echo "$cur" > "$ENODIA_STATE/.hy2-active"
-        restart_hy2 || true
+        carrier_barred || restart_hy2 || true
     fi
+    carrier_barred && { log "hy2-failover: перебор прерван — VPN выключен вручную, несущую не поднимаю"; return 1; }
     log "hy2-failover FAIL: ни один резерв не поднялся (пробовал:${tried:- нет})"
     return 1
 }
@@ -391,8 +410,8 @@ hy2-конфиг: $name — VPN снова работает. Внешний IP: 
 # ---- маршрутизация (xtun-слой поверх общих правил) ------------------------
 apply_hy2_routing() {
     ip link set "$TUN" up 2>/dev/null
-    iptables -C FORWARD -o "$TUN" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o "$TUN" -j ACCEPT
-    iptables -C FORWARD -i "$TUN" -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i "$TUN" -j ACCEPT
+    ipt_top FORWARD -o "$TUN" -j ACCEPT
+    ipt_top FORWARD -i "$TUN" -j ACCEPT
     ip route replace default dev "$TUN" table "$TABLE"
 }
 
@@ -435,7 +454,7 @@ cmd_status() {
     # «транспорт: awg» там, где транспорта нет вовсе. Сравнение ниже пусто ≠ hy2 — не меняется.
     t=; [ -f "$TRANSPORT_FLAG" ] && t=$(cat "$TRANSPORT_FLAG")
     echo "=== транспорт: ${t:-(флаг пуст — транспорт не выбран)} ==="
-    echo "--- default в table $TABLE ---"; ip route show table "$TABLE" 2>/dev/null | grep default
+    echo "--- default в table $TABLE ---"; ip route show table "$TABLE" 2>/dev/null | grep default   # raw-print: сырой вывод человеку в `status`, вердикта тут нет
     echo "--- демоны ---"
     proc_alive "$HY2_PID" && echo "hysteria: pid $(cat $HY2_PID) жив" || echo "hysteria: не запущен"
     proc_alive "$HEV_PID" && echo "hev:      pid $(cat $HEV_PID) жив" || echo "hev:      не запущен"
@@ -471,15 +490,15 @@ cmd_health() {
 # слотового слоя. Нет файла ⇒ деградация по контракту: слот-вербы отвечают «не умею» (код 2).
 if [ -f "$ENODIA_DIR/slot-tun-lib.sh" ]; then . "$ENODIA_DIR/slot-tun-lib.sh"; else SLOT_LIB_MISSING=1; fi
 slot_lib_ok() { [ -z "$SLOT_LIB_MISSING" ] && return 0
-    echo "[hy2] слот-слой недоступен: нет $ENODIA_DIR/slot-tun-lib.sh — обнови скрипты" >&2; return 1; }
+    echo "[hy2] слот-слой недоступен: нет $ENODIA_DIR/slot-tun-lib.sh — обновите скрипты" >&2; return 1; }
 # Сверка «порт держит НАШ pid» нужна и ОСНОВНОМУ пути (socks_ours в шапке), а единственная
 # реализация живёт в слот-слое. Нет библиотеки (старая установка) → шим «считаем наш»:
 # диагностики нет, зато прежнее поведение основной несущей сохраняется байт-в-байт.
 command -v slot_socks_is_ours >/dev/null 2>&1 || slot_socks_is_ours() { return 0; }
 slot_srcconf()  { echo "$ENODIA_STATE/hy2-configs/$1.yaml"; }   # $1 = имя конфига
 slot_conf()     { echo "$ENODIA_STATE/hysteria-s$1.yaml"; }
-slot_hy2_pid()  { echo "/tmp/hysteria-s$1.pid"; }
-slot_hy2_log()  { echo "/tmp/hysteria-s$1.log"; }
+slot_hy2_pid()  { echo "/tmp/enodia-hysteria-s$1.pid"; }
+slot_hy2_log()  { echo "/tmp/enodia-hysteria-s$1.log"; }
 slot_seed()     { echo "/etc/dnsmasq.d/02-altserver-s$1.conf"; }
 
 # Копия конфига под слот: socks5.listen 10808 → порт слота (боевой socks не трогаем).
@@ -509,8 +528,8 @@ slot_start_daemons() {   # $1 = id ; $2 = имя конфига
         : > "$(slot_hy2_log "$_id")" 2>/dev/null || true
         start-stop-daemon -S -b -m -p "$(slot_hy2_pid "$_id")" -x /bin/sh -- -c "exec '$HY2' -c '$(slot_conf "$_id")' >>'$(slot_hy2_log "$_id")' 2>&1"
     fi
-    if ! slot_wait_socks "$_port"; then
-        log "слот №$_id: hysteria не слушает :$_port. Лог:"; tail -n 15 "$(slot_hy2_log "$_id")" 2>/dev/null
+    if ! slot_wait_socks "$_port" "$(slot_hy2_pid "$_id")" hysteria 25; then
+        log "слот №$_id: hysteria не слушает :$_port ($DAEMON_WAIT_WHY). Лог:"; tail -n 15 "$(slot_hy2_log "$_id")" 2>/dev/null
         return 1
     fi
     slot_hev_up "$_id"          # hev + ожидание xtunN (общий слой)
@@ -574,15 +593,19 @@ cmd_slot_health() {   # $1 = id
 }
 
 case "$1" in
-    up)       cmd_up ;;
+    # Берущие несущую — через carrier_run (daemon-lib.sh), см. xray-transport.sh.
+    up)       carrier_run cmd_down cmd_up ;;
     down)     cmd_down ;;
+    cold)     : ;;                        # тёплого резерва нет: демонов гасит сам `down` (stop_daemons)
     status)   cmd_status ;;
     health)   cmd_health ;;
-    failover) cmd_failover ;;
-    dns)      set_hy2_dns ;;       # переиграть DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns
+    failover) carrier_run cmd_down cmd_failover ;;
+    # DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns. При выключенном VPN — прямой, как после `down`.
+    dns)      if carrier_barred; then set_direct_dns; else set_hy2_dns; fi ;;
     # Слот-вербы ОПЦИОНАЛЬНЫ: нет слот-слоя → код 2 «не умею», основная несущая не страдает.
-    slot-up)     slot_lib_ok || exit 2; cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф3): 2-я hysteria + hev + xtunN в table 100N
+    slot-up)     slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф3): 2-я hysteria + hev + xtunN в table 100N
     slot-down)   slot_lib_ok || exit 2; cmd_slot_down "$2" ;;      # доп-выход: снять несущую слота (-> fallback-политика mark-core)
     slot-health) slot_lib_ok || exit 2; cmd_slot_health "$2" ;;    # доп-выход: жив ли выход (watchdog)
-    *) echo "usage: $0 up|down|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-health <id>"; exit 2 ;;
+    slot-iface)  slot_lib_ok || exit 2; slot_tun "$2" ;;           # имя несущей слота — учёту трафика (владелец имени один: slot-tun-lib.sh)
+    *) echo "usage: $0 up|down|cold|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-health <id>|slot-iface <id>"; exit 2 ;;
 esac

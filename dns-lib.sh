@@ -110,6 +110,27 @@ resolve_ipv4() {
     return 1
 }
 
+# ns_ips <домен> [секунд] — ВСЕ A-записи имени ОТ НАШЕГО dnsmasq, по одной в строке (пусто = имя
+# адресов не дало). Пара к doh_ips (те же A-записи, но через DoH) и ЕДИНСТВЕННЫЙ владелец РАЗБОРА
+# вывода busybox nslookup: копий было две (domain.sh::dom_ips — прогрев правила, slots.sh::cmd_route —
+# «едет ли домен через десинк»), и третья просилась в проверялку «что победит». Разбор нетривиален:
+#   • секция ОТВЕТА начинается со строки `Name:` — всё, что выше, это адрес САМОГО СЕРВЕРА;
+#   • busybox печатает и «Address 1: IP», и «Address: IP имя» ⇒ `$NF` в одном из форматов отдал бы
+#     ИМЯ, поэтому IPv4-токен ищем перебором полей (в busybox-awk нет split()/index()).
+# ВОПРОС ЗДЕСЬ ДРУГОЙ, ЧЕМ У resolve_ipv4 (тот добывает адрес сервера несущей ЛЮБЫМ путём и потому
+# доберёт DoH): нам нужно ровно то, «что отвечает НАШ резолвер», — и именно этот вызов ЗАОДНО
+# наполняет наборы по `ipset=/дом/сет` (`nslookup HOST SERVER` аргумент SERVER игнорирует, см. шапку
+# файла, так что ходим всегда в свой dnsmasq). У прогрева это цель, а не побочка; DoH-фолбэк сюда
+# добавлять НЕЛЬЗЯ — он вернёт адреса, которых в наборах нет, и мёртвое правило считалось бы живым.
+# Второй аргумент — потолок ожидания: пусто = ждём столько, сколько ждёт nslookup (прогреву обрыв
+# вреден — оборванный резолв оставляет мёртвое правило), число = `timeout -t` для тех, кто отвечает
+# человеку в панели и не может висеть на запертом резолвере.
+ns_ips() {
+    if [ -n "${2:-}" ]; then timeout -t "$2" nslookup "$1" 2>/dev/null
+    else nslookup "$1" 2>/dev/null; fi | awk '/^Name:/{f=1}
+        f{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i}'
+}
+
 # doh_ips <host> [доп-аргументы curl] — ВСЕ A-записи хоста через DoH, по одной в строке; код 1 =
 # ни один резолвер не ответил. ПУБЛИЧНЫЙ примитив: кроме resolve_ipv4 (ему нужен один адрес) им
 # ходят потребители, которым нужны ВСЕ адреса для `curl --resolve` — lists-lib.sh::_fetch_try и
@@ -149,11 +170,11 @@ doh_ips() {
 # попадёт). Именно `ip route show default`, а НЕ `ip route get 8.8.8.8`: ответ последнего сам
 # искажён тем, что мы чиним (awg-режим ставит `ip route <dns>/32 dev awg0`, 8.8.8.8 ∈ iplist_set).
 # Пусто (или дефолт вдруг смотрит в туннель) → вызывающий идёт без bind, как раньше.
-_dnslib_wan() {
-    _w=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-    case "$_w" in awg*|xtun*) _w="" ;; esac       # свои несущие (awg0/awgN/awgs0/xtunN) WAN-ом не считаем
-    echo "$_w"
-}
+# Владелец ответа с 05.09.2026 — ip-lib.sh::wan_iface (тот же дефолт main + тот же гард на свои
+# несущие); эта библиотека ip-lib не сорсит, потому шим той же строки — на случай, если у
+# вызывающего владельца нет (сорсит ли он ip-lib ПОСЛЕ нас — не важно: его определение победит).
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+_dnslib_wan() { wan_iface; }
 
 # --- ЧЕМ ЭТОМУ curl ДОВЕРЯТЬ — ЕДИНСТВЕННЫЙ ответ на роутер --------------------------------
 # ЗАМЕРЕНО на AX3600 15.08.2026: ЛЮБОЙ `curl https://` даёт rc=60 «unable to get local issuer
@@ -174,7 +195,7 @@ _dnslib_wan() {
 # (6/7/28 — не резолвится/не коннектится/таймаут) = мы ничего не узнали ⇒ не пишем ничего и
 # спросим в следующий раз. Потребители — DoH-цикл ниже и `gh-update.sh`; ВТОРОЙ КОПИИ НЕ
 # ЗАВОДИТЬ (следит C26).
-CURL_CA_CAP="${CURL_CA_CAP:-/tmp/.curl-cafile}"
+CURL_CA_CAP="${CURL_CA_CAP:-/tmp/.enodia-curl-cafile}"
 CURL_CA_CANDIDATES="${CURL_CA_CANDIDATES:-/etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem /usr/share/ca-certificates/ca-certificates.crt}"
 curl_ca_opt() {   # $1 = URL пробы; $2… = доп-аргументы curl (напр. --resolve); без URL — только известный ответ
     if [ -f "$CURL_CA_CAP" ]; then
@@ -276,7 +297,14 @@ is_ipv4() { echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
 # Пишем ТОЛЬКО когда адрес РЕАЛЬНО сменился: /data — UBIFS на 20 МБ, а зовут нас на каждый подъём.
 # Отметка времени в третьей колонке — для человека с дампом; ВОЗРАСТ по ней НЕ считаем (файл
 # переживает ребут ⇒ age_since тут неприменим, см. границу в clock-lib.sh).
-SEED_CACHE="${SEED_CACHE:-${ENODIA_DIR:-/data/usr/app/enodia}/.dns-seed-cache}"
+# СОСТОЯНИЕ — в $ENODIA_STATE, не в каталоге кода: тот заменяется обновлением ЦЕЛИКОМ (C46). Вложенная
+# форма `${ENODIA_DIR:-…}/файл` при переезде 30.08.2026 ускользнула от проверки — файл жил в коде до
+# 05.09.2026; старую копию подбираем один раз (кэш последнего рабочего адреса дорог ровно на буте).
+ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
+SEED_CACHE="${SEED_CACHE:-$ENODIA_STATE/.dns-seed-cache}"
+if [ ! -f "$SEED_CACHE" ] && [ -f "${ENODIA_DIR:-/data/usr/app/enodia}/.dns-seed-cache" ] && [ -d "$ENODIA_STATE" ]; then   # migrate: см. mv ниже
+    mv "${ENODIA_DIR:-/data/usr/app/enodia}/.dns-seed-cache" "$SEED_CACHE" 2>/dev/null || true   # migrate: код → состояние, один раз
+fi
 SEED_TRIES=${SEED_TRIES:-6}                  # ожиданий сети, когда прошлого адреса НЕТ (прежнее поведение)
 SEED_TRIES_CACHED=${SEED_TRIES_CACHED:-2}    # ...и когда ЕСТЬ: дальше поднимаемся на нём
 
@@ -341,14 +369,17 @@ _seed_live() { case "$1" in /etc/dnsmasq.d/*) echo "/tmp/dnsmasq.d/${1##*/}" ;; 
 SEED_HOSTS="${SEED_HOSTS:-/etc/hosts}"
 _seed_tag() { echo "# awg-seed ${1##*/}"; }
 
-# seed_hosts_put <host> <ip> <seed-файл> — поставить/обновить нашу строку (идемпотентно).
+# seed_hosts_put <host> <ip…> <seed-файл> — поставить/обновить наши строки (идемпотентно). Адресов бывает
+# НЕСКОЛЬКО (через пробел) — строка на адрес: закреплению имени DoH-резолвера (doh-lib.sh::doh_pin_hosts) нужны
+# оба якоря, иначе прокси потерял бы запасной адрес. Сид несущей даёт один — прежняя одна строка байт-в-байт.
 seed_hosts_put() {
     _shp_h="$1"; _shp_i="$2"
-    { [ -n "$_shp_h" ] && [ -n "$_shp_i" ]; } || return 0
+    { [ -n "$_shp_h" ] && [ -n "$(printf '%s' "$_shp_i" | tr -d ' ')" ]; } || return 0
     _shp_t=$(_seed_tag "$3")
-    _shp_w="$_shp_i	$_shp_h	$_shp_t"
+    _shp_w=$(for _shp_a in $_shp_i; do printf '%s\t%s\t%s\n' "$_shp_a" "$_shp_h" "$_shp_t"; done)
     [ -f "$SEED_HOSTS" ] || : > "$SEED_HOSTS" 2>/dev/null
-    grep -qxF "$_shp_w" "$SEED_HOSTS" 2>/dev/null && return 0     # уже стоит — файл не трогаем
+    # Уже стоят РОВНО эти строки (и ничего сверх) — файл не трогаем: на AX3600 /etc — флеш, а зовут нас на каждый подъём.
+    [ "$(grep -F "$_shp_t" "$SEED_HOSTS" 2>/dev/null)" = "$_shp_w" ] && return 0
     _shp_p="$SEED_HOSTS.enodiatmp"
     grep -vF "$_shp_t" "$SEED_HOSTS" > "$_shp_p" 2>/dev/null      # busybox: код 1 при пустом выводе — не судим по нему
     printf '%s\n' "$_shp_w" >> "$_shp_p" 2>/dev/null

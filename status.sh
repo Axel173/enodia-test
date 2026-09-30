@@ -10,9 +10,12 @@
 #   * показывает ОБА ipset — enodia_list (домены) и iplist_set (CIDR)
 #   * cron + heal.sh — главный механизм автозапуска, rc.local инфо
 
-ENODIA_DIR="/data/usr/app/enodia"
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
+# Бутстрап — единственный каталог, про который известно, что он на флеше РОУТЕРА в любой
+# раскладке: им подписываем строку «сколько осталось на роутере» (см. разбор ниже, у df).
+ENODIA_BOOT=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
 ENODIA_LIST_NAME="enodia_list"
 IPLIST_NAME="iplist_set"
 
@@ -20,6 +23,8 @@ IPLIST_NAME="iplist_set"
 # ядре 4.4 (hostname api.ipify.org там молча пустел). Шим на случай частичной установки без lib.
 if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
 command -v probe_ext_ip >/dev/null 2>&1 || probe_ext_ip() { curl -s $1 --max-time "${2:-7}" https://api.ipify.org 2>/dev/null; }
+command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
+command -v carrier_iface >/dev/null 2>&1 || carrier_iface() { ip route show table 1000 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
 
 # Возраст рукопожатия считаем через age_since (clock-lib.sh): после скачка часов голая разность
 # печатала «21 час назад» на туннеле, поднятом минуту назад. Шим = прежнее поведение.
@@ -119,7 +124,7 @@ case "$TRANSPORT" in
     zapret)  status "Активный протокол:" "Zapret — десинк напрямую (nfqws/NFQUEUE), туннеля нет" "$GREEN"
              # Пид-файл, а не `pidof nfqws`: имя демона в проекте не считается признаком (инстанс
              # опознаём своим пидфайлом — та же идиома, что в zapret.sh proc_alive).
-             _zp=$(cat /tmp/zapret-nfqws.pid 2>/dev/null | tr -d ' \r\n')
+             _zp=$(cat /tmp/enodia-zapret-nfqws.pid 2>/dev/null | tr -d ' \r\n')
              if [ -n "$_zp" ] && kill -0 "$_zp" 2>/dev/null; then status "Демон nfqws:" "жив (pid $_zp)" "$GREEN"
              else status "Демон nfqws:" "НЕ запущен" "$RED"; fi
              # Признак живой ПРОВОДКИ — тот же, по которому судит сторож (rule-heal): без jump'а
@@ -139,13 +144,13 @@ if [ "$TRANSPORT" = "xray" ]; then
     active_xray=$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d '\r')
     status "Активный протокол:" "Xray (xtun)" "$GREEN"
     status "Активный xray-конфиг:" "${active_xray:-?}"
-    if [ -f /tmp/xray.pid ] && kill -0 "$(cat /tmp/xray.pid 2>/dev/null)" 2>/dev/null; then
-        status "Демон xray:" "жив (pid $(cat /tmp/xray.pid))" "$GREEN"
+    if [ -f /tmp/enodia-xray.pid ] && kill -0 "$(cat /tmp/enodia-xray.pid 2>/dev/null)" 2>/dev/null; then
+        status "Демон xray:" "жив (pid $(cat /tmp/enodia-xray.pid))" "$GREEN"
     else
         status "Демон xray:" "НЕ запущен" "$RED"
     fi
-    if [ -f /tmp/hev.pid ] && kill -0 "$(cat /tmp/hev.pid 2>/dev/null)" 2>/dev/null; then
-        status "tun2socks (hev):" "жив (pid $(cat /tmp/hev.pid))" "$GREEN"
+    if [ -f /tmp/enodia-hev.pid ] && kill -0 "$(cat /tmp/enodia-hev.pid 2>/dev/null)" 2>/dev/null; then
+        status "tun2socks (hev):" "жив (pid $(cat /tmp/enodia-hev.pid))" "$GREEN"
     else
         status "tun2socks (hev):" "НЕ запущен" "$RED"
     fi
@@ -237,7 +242,7 @@ if ip link show awg0 >/dev/null 2>&1; then
             if [ "$hs_ago" -ge 0 ] && [ "$hs_ago" -lt 600 ]; then
                 status "Версия протокола:" "AWG 2.0 — работает (handshake идёт)" "$GREEN"
             elif [ "$hs_ago" -ge 0 ]; then
-                status "Версия протокола:" "AWG 2.0 — handshake давний, проверь VPS" "$YELLOW"
+                status "Версия протокола:" "AWG 2.0 — handshake давний, проверьте VPS" "$YELLOW"
             else
                 status "Версия протокола:" "AWG 2.0 — handshake нет, возможно бинарь старый" "$YELLOW"
             fi
@@ -248,7 +253,12 @@ if ip link show awg0 >/dev/null 2>&1; then
     esac
     [ -n "$bin_ver" ] && status "Бинарь:" "$bin_ver" "$BLUE"
 
-    [ -f "$ENODIA_STATE/.active" ] && status "Активный конфиг:" "$(cat "$ENODIA_STATE/.active")"
+    # ПУСТОЙ ФАЙЛ — ЭТО ОТВЕТ «ИМЯ НЕИЗВЕСТНО», а не отсутствие строки: так `install_config`
+    # пишет `.active`, когда имя неоткуда взять (откат без снимка имени, полуприменённая
+    # раскладка). Голый `cat` печатал пустоту, и раздел выглядел обрезанным. Знак тот же, что у
+    # соседа выше (`${active_awg:-?}`): в ОДНОМ отчёте один факт обязан называться одним словом.
+    _st_act=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d '\r')
+    [ -f "$ENODIA_STATE/.active" ] && status "Активный конфиг:" "${_st_act:-?}"
     endpoint=$(grep -E "^Endpoint" "$ENODIA_STATE/awg.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}')
     [ -n "$endpoint" ] && status "Endpoint VPS:" "$endpoint"
 
@@ -273,7 +283,17 @@ if ip link show awg0 >/dev/null 2>&1; then
         fi
     fi
 else
-    status "Состояние:" "НЕ ПОДНЯТ" "$RED"
+    # ВЫКЛЮЧЕНО ЧЕЛОВЕКОМ — НЕ ПОЛОМКА, И КРАСНЫМ ЭТО КРАСИТЬ НЕЛЬЗЯ. До 02.09.2026 `off` оставлял
+    # awg0 ТЁПЛЫМ РЕЗЕРВОМ, и сюда выключенный роутер просто не попадал; теперь `off` снимает
+    # несущую холодно (демон гасится, TUN уходит с ним), и «интерфейса нет» стало ШТАТНЫМ
+    # состоянием выключенного роутера. Принцип тот же, что у пропуска всей секции при
+    # TRANSPORT=none десятью строками выше: красное = сломалось, а тут ничего не ломалось —
+    # человек выключил сам, и отправлять его чинить это значит врать.
+    if [ -f "$ENODIA_STATE/.vpn-off" ]; then
+        status "Состояние:" "не поднят — VPN выключен человеком (норма; тумблер переживает ребут)" "$BLUE"
+    else
+        status "Состояние:" "НЕ ПОДНЯТ" "$RED"
+    fi
 fi
 fi   # конец секции «Интерфейс awg0» (пропущена целиком при TRANSPORT=none)
 
@@ -298,14 +318,14 @@ if ipset list -n 2>/dev/null | grep -qx "$IPLIST_NAME"; then
     cnt=$(ipset_count "$IPLIST_NAME")
     if   [ "$cnt" -gt 100 ]; then status "Состояние:" "наполнен" "$GREEN";          status "CIDR-подсетей:" "$cnt"
     elif [ "$cnt" -gt 0 ];   then status "Состояние:" "подозрительно мало" "$YELLOW"; status "CIDR-подсетей:" "$cnt"
-    else                          status "Состояние:" "пустой — запусти iplist-update.sh" "$RED"
+    else                          status "Состояние:" "пустой — запустите iplist-update.sh" "$RED"
     fi
-    if [ -f /tmp/iplist-update.log ]; then
-        last=$(grep -E "^=====" /tmp/iplist-update.log | tail -1 | sed 's/===== //; s/ =====//')
+    if [ -f /tmp/enodia-iplist-update.log ]; then
+        last=$(grep -E "^=====" /tmp/enodia-iplist-update.log | tail -1 | sed 's/===== //; s/ =====//')
         [ -n "$last" ] && status "Обновлён:" "$last"
     fi
 else
-    status "Состояние:" "НЕ СОЗДАН — запусти iplist-update.sh" "$RED"
+    status "Состояние:" "НЕ СОЗДАН — запустите iplist-update.sh" "$RED"
 fi
 
 # ==================== 4. ВНЕШНИЕ IP ====================
@@ -313,7 +333,8 @@ header "Тест: куда идёт трафик"
 # «Прямой IP» = реальный выход В ОБХОД туннеля: bind к WAN-iface (--interface). БЕЗ bind проба к
 # 1.1.1.1 (Cloudflare ∈ iplist_set) ушла бы В туннель и показала бы egress → ложное «совпадает с
 # прямым». Тот же приём, что в cgi-bin/ip для реального WAN. Пусто → провайдер режет / нет WAN.
-wan_if=$(ip route show default 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+# Имя WAN — у владельца (ip-lib.sh::wan_iface, следит C81); шим в шапке.
+wan_if=$(wan_iface)
 ip_direct=$(probe_ext_ip "${wan_if:+--interface $wan_if}" 5)
 if [ -n "$ip_direct" ]; then
     status "Прямой IP (без VPN):" "$ip_direct"
@@ -357,8 +378,27 @@ nat_rules=$(iptables -t nat -L POSTROUTING -v -n 2>/dev/null | grep -c "MASQUERA
 #   * установка «только панель» — правил там не должно быть ВООБЩЕ (роутер работает как сток), а
 #     ноль красился ЖЁЛТЫМ, то есть «чего-то не хватает». Тот же класс, что чинили в диаг-дампе:
 # вердикт обязан СПРОСИТЬ «а несущая-то предполагается?», а не пересказать счётчик правил.
-route_dst=$(ip route show table 1000 2>/dev/null | grep -c "^default")
-if [ "$TRANSPORT" = "zapret" ]; then
+# Устройство несущей — у владельца (ip-lib.sh::carrier_iface, следит C81), а не свой `grep -c`:
+# счётчик всё равно бывал только 0 или 1, зато его форму копировали дальше.
+carrier_dev=$(carrier_iface); route_dst=0; [ -n "$carrier_dev" ] && route_dst=1
+# ВЫКЛЮЧЕНО ЧЕЛОВЕКОМ — ПЕРВОЙ веткой, раньше всех прочих: с 02.09.2026 тумблер переживает ребут
+# (флаг .vpn-off на /data), и отсутствие правил в этом состоянии — НОРМА, а не поломка. Без этой
+# ветки status красил бы выключенный роутер КРАСНЫМ («маршрутизация неполная») и отправлял чинить
+# то, что человек выключил сам.
+if [ -f "$ENODIA_STATE/.vpn-off" ]; then
+    # СУДИМ ПО `ip rule`, А НЕ ПО МЕТКАМ. Первая редакция этой ветки требовала, чтобы исчезли и
+    # метки в mangle, — и на живом AX3600 02.09.2026 честно выключенный роутер получил ЖЁЛТОЕ
+    # «правила есть»: `vpn-toggle off` снимает РОВНО маршрутную привязку (ip rule fwmark→1000),
+    # а метки и default в table 1000 оставляет НАРОЧНО — без правила они холостые, это и есть
+    # штатный fail-open. Тревога уместна только в обратном случае: тумблер снят, а привязка жива.
+    if [ "$fwmark_rules" = 0 ]; then
+        status "VPN выключен человеком:" "тумблер снят (переживает ребут) — метки холостые, трафик идёт напрямую" "$BLUE"
+        _rc="$BLUE"
+    else
+        status "VPN выключен, а маршрут жив:" "тумблер снят, но ip rule fwmark→1000 на месте — трафик всё ещё уходит в туннель" "$YELLOW"
+        _rc="$YELLOW"
+    fi
+elif [ "$TRANSPORT" = "zapret" ]; then
     # У десинка нет ни несущей, ни table 1000: его проводка — jump ENODIA_ZAPRET, и она проверена
     # в секции «Транспорт VPN». Требовать здесь маршрут значило бы красить рабочий zapret КРАСНЫМ.
     status "Маркировка в туннель:" "у Zapret её нет и быть не должно — проводка проверена выше" "$BLUE"
@@ -379,7 +419,7 @@ else
 fi
 status "iptables-метки PREROUTING:" "$mangle_awg ($ENODIA_LIST_NAME) + $mangle_ipl ($IPLIST_NAME)" "$_rc"
 status "ip rule с fwmark 0x1:" "$fwmark_rules шт." "$_rc"
-status "default в table 1000:" "$route_dst шт. (без него метка холостая)" "$_rc"
+status "default в table 1000:" "$([ "$route_dst" = 1 ] && echo "есть → $carrier_dev" || echo "НЕТ (метка холостая)")" "$_rc"
 status "MASQUERADE на awg0:" "$nat_rules шт." "$_rc"
 
 # ==================== 6. СПИСКИ ДОМЕНОВ ====================
@@ -397,7 +437,7 @@ if [ -f /etc/dnsmasq.d/enodia-domains.conf ]; then
 fi
 if [ -f /etc/dnsmasq.d/enodia-custom.conf ]; then
     cust=$(num "$(grep -c '^ipset=' /etc/dnsmasq.d/enodia-custom.conf 2>/dev/null)")
-    status "Твои добавления:" "$cust доменов"
+    status "Ваши добавления:" "$cust доменов"
 fi
 
 # ==================== 7. ТЕСТ КОНКРЕТНЫХ САЙТОВ ====================
@@ -475,9 +515,28 @@ fi
 # CGI и «Компоненты») говорит «занято = total − available». Два числа про одно место в материалах,
 # которые тестер копирует в отчёт, — ровно то, что чинили 16.08.2026 внутри самой панели; здесь
 # была третья копия арифметики. Формат тот же, поэтому `df` в КИЛОБАЙТАХ + `%.1fM` руками
-# (оба монтирования здесь заведомо меньше гигабайта). Гард `$(NF-4)>0` — от деления на ноль.
-for m in /data /tmp; do
-    dline=$(df "$m" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)>0{printf "%.1fM своб из %.1fM (занято %.0f%%)", $(NF-2)/1024, $(NF-4)/1024, ($(NF-4)-$(NF-2))*100/$(NF-4)}')
+# (оба монтирования здесь заведомо меньше гигабайта). Гард `$(NF-4)+0>0` — от деления на ноль и
+# от строки-заголовка df (`+0` обязателен: без него сравнение строковое — см. store-lib.sh).
+# ТОМ, О КОТОРОМ РЕЧЬ, СПРАШИВАЕМ ПО ПУТИ КАТАЛОГА. `/data` — литерал, и на BE10000 (RC01) это
+# ЧУЖОЙ том: флеш там поделён на три ubifs, стоковый cfg зовётся `/data` (4.7 МБ, забит Xiaomi),
+# а весь наш код живёт на `/data/usr`. Строка «Диск /data: 0.7M своб» в статусе — это чужая
+# теснота, выданная за нашу. Соседние экраны (dump.sh, панель, гард установщика) переведены на
+# путь ещё 31.08.2026; здесь литерал уцелел, потому что df тут зовётся через переменную и под
+# первую версию проверки C50 не попадал — она смотрела только на аргумент рядом с `df`.
+_ourmp=$(df -k "$ENODIA_DIR" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{print $NF}')
+# ФЛЕШ РОУТЕРА — СВОЕЙ СТРОКОЙ. В режиме «всё на накопителе» $ENODIA_DIR лежит на флешке, и
+# статус переставал отвечать «сколько осталось на роутере» вообще. Якорь — бутстрап (резидентен
+# на /data по определению); совпал с томом кода — второй строки не печатаем, она была бы дублем.
+# Гард на СУЩЕСТВОВАНИЕ, а не фолбэк на литерал «/data»: без бутстрапа (установка старее фичи)
+# df по несуществующему пути отдал бы пусто, а литерал на BE10000 — ЧУЖОЙ том, то есть ровно
+# ту тесноту, выданную за нашу, против которой написан абзац выше. Нет бутстрапа ⇒ якорь тот
+# же, что и был, и вторая строка не появляется вовсе — поведение байт-в-байт прежнее.
+_flashdir="$ENODIA_BOOT"; [ -d "$_flashdir" ] || _flashdir="$ENODIA_DIR"
+_bootmp=$(df -k "$_flashdir" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{print $NF}')
+_mps="${_bootmp:-${_ourmp:-/data}}"
+if [ -n "$_ourmp" ] && [ -n "$_bootmp" ] && [ "$_ourmp" != "$_bootmp" ]; then _mps="$_mps $_ourmp"; fi
+for m in $_mps /tmp; do
+    dline=$(df "$m" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{printf "%.1fM своб из %.1fM (занято %.0f%%)", $(NF-2)/1024, $(NF-4)/1024, ($(NF-4)-$(NF-2))*100/$(NF-4)}')
     [ -n "$dline" ] && status "Диск $m:" "$dline"
 done
 # Суммарный размер НАШИХ логов в /tmp (это tmpfs = RAM). Список имён спрашиваем у ВЛАДЕЛЬЦА —

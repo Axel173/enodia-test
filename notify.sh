@@ -27,12 +27,21 @@
 # Использование:
 #   notify.sh "Тема письма" "Текст письма"
 #
-# Конфиг — notify.conf рядом со скриптом (chmod 600, НЕ в git). Если его нет
-# или он не заполнен (пустой SMTP_PASS) — тихо выходим с кодом 0, чтобы
-# watchdog не считал это ошибкой, пока почта ещё не настроена.
+# Конфиг — notify.conf в КАТАЛОГЕ СОСТОЯНИЯ (chmod 600, НЕ в git): его пишет панель
+# (cgi-bin/action write_notify_conf), и обновление, заменяющее каталог кода целиком, его не
+# трогает. До 16.09.2026 конфиг искали «рядом со скриптом», то есть в каталоге КОДА: так было
+# верно, пока состояние лежало рядом с кодом, а с переезда состояния 30.08.2026 письма не
+# уходили ВООБЩЕ — замерено на BE7000: «нет …/enodia/notify.conf — пропуск» в каждом вызове при
+# заполненном конфиге рядом. Форму «рядом со скриптом» для персиста сторожит C69.
+#
+# Нет конфига или он не заполнен (пустой SMTP_PASS) — выходим с кодом 3, а не 0. Ноль здесь был
+# ложью, которая и спрятала поломку на две недели: notify-event.sh писал «отправлено» и ставил
+# отметку throttle, а кнопка тест-письма в панели отвечала «250 queued». «Письмо не ушло, потому
+# что почты нет» — отдельный ответ; ошибкой отправки (1) его тоже не считаем.
 
-CONF="$(dirname "$0")/notify.conf"
-LOG=/tmp/notify.log
+ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
+CONF="$ENODIA_STATE/notify.conf"
+LOG=/tmp/enodia-notify.log
 
 SUBJECT="$1"
 BODY="$2"
@@ -64,12 +73,12 @@ _dl="$(dirname "$0")/dns-lib.sh"
 if [ -f "$_dl" ]; then . "$_dl"; fi
 command -v resolve_ipv4 >/dev/null 2>&1 || resolve_ipv4() { nslookup "$1" 2>/dev/null | awk '/^Name:/{f=1;next} f&&/Address/{x=$NF; if(x ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/){print x; exit}}'; }
 
-[ -f "$CONF" ] || { echo "$(date) notify: нет $CONF — пропуск" >>"$LOG"; exit 0; }
+[ -f "$CONF" ] || { echo "$(date) notify: нет $CONF — почта не настроена, письмо не ушло" >>"$LOG"; exit 3; }
 . "$CONF"
 
 if [ -z "$SMTP_HOST" ] || [ -z "$SMTP_USER" ] || [ -z "$SMTP_PASS" ] || [ -z "$MAIL_TO" ]; then
-    echo "$(date) notify: notify.conf не заполнен (нет SMTP_PASS?) — пропуск" >>"$LOG"
-    exit 0
+    echo "$(date) notify: notify.conf не заполнен (нет SMTP_PASS?) — письмо не ушло" >>"$LOG"
+    exit 3
 fi
 SMTP_PORT="${SMTP_PORT:-465}"
 

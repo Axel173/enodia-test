@@ -29,11 +29,13 @@
 #
 # rm живёт ЗДЕСЬ (PS-guard на литерал rm). НЕ используем set -e — шаги best-effort.
 
-ENODIA_DIR=/data/usr/app/enodia
+ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 # Где лежит бинарь (store-lib.sh): без внешнего накопителя — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -d "/proc/$1" ]; }
 command -v bin_path  >/dev/null 2>&1 || bin_path()  { printf '%s' "$ENODIA_BIN/$1"; }
 command -v bin_dest  >/dev/null 2>&1 || bin_dest()  { printf '%s' "$ENODIA_BIN/$1"; }
 command -v bin_prune >/dev/null 2>&1 || bin_prune() { return 0; }
@@ -42,9 +44,10 @@ SETUP="$ENODIA_DIR/install.sh"
 TRANSPORT="$ENODIA_DIR/transport.sh"
 STATE="$ENODIA_STATE/.proto-install.state"
 LOG="$ENODIA_STATE/.proto-install.log"
-LOCK="/tmp/proto-install.lock"
+LOCK="/tmp/enodia-proto-install.lock"
 
-set_state() { echo "$1" > "$STATE"; }
+# Атомарно (запись рядом + `mv`) — разбор у packages.sh::set_state: файл тот же, и читатель пустого видит «IDLE».
+set_state() { echo "$1" > "$STATE.new" && mv -f "$STATE.new" "$STATE"; }
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
 
 parse_combo() {
@@ -74,10 +77,14 @@ have_byedpi() { [ -x "$(bin_path byedpi)" ]; }
 # самым прятал второй альт от лога и от решения о чистке (ровно так панель рисовала «awg+xray» на
 # роутере, где рядом стоял ещё и byedpi).
 cur_alts()    { _l=""; have_xray && _l="$_l xray"; have_hy2 && _l="$_l hy2"; have_byedpi && _l="$_l byedpi"; echo "${_l# }"; }
-df_free_mb(){ df /data 2>/dev/null | tail -1 | awk 'NF>=5{printf "%d",$(NF-2)/1024}'; }
+# Том — по ПУТИ каталога, не по литералу `/data`: на BE10000 это чужой том (следит C50).
+df_free_mb(){ df -k "$ENODIA_DIR" 2>/dev/null | tail -1 | awk 'NF>=5 && $(NF-4)+0>0{printf "%d",$(NF-2)/1024}'; }
 
 apply() {
     combo="$1"
+    # План движка компонентов (packages.sh) описывает ЕГО операцию; у смены набора плана нет — снимаем прежний, иначе
+    # секция doh и карточка HTTPS приписали бы эту операцию и её лог прошлому плану (ревью шага 5a, круг 3).
+    rm -f "$ENODIA_STATE/.proto-install.plan" 2>/dev/null
     if ! parse_combo "$combo"; then : > "$LOG"; set_state FAIL; log "неизвестный набор: $combo"; return 1; fi
     : > "$LOG"; set_state RUNNING
     free=$(df_free_mb)
@@ -111,11 +118,8 @@ apply() {
         _why=$(sh "$GH" reachable 2>/dev/null)
         if [ "$?" = 0 ]; then
             log "GitHub доступен — продолжаю."
-            # Манифест бинарей тянем РОВНО здесь: сеть уже проверена, а ниже его спросят гард
-            # места и каждая закачка (порог обрыва). Одна закачка ~1 КБ на всю смену набора.
-            sh "$GH" bin-manifest refresh >/dev/null 2>&1
         else
-            [ -n "$_why" ] || _why="GitHub недоступен — проверь VPN/интернет"
+            [ -n "$_why" ] || _why="GitHub недоступен — проверьте VPN и интернет"
             set_state FAIL
             log "$_why. НЕ трогаю текущий набор (ничего не удалено)."
             return 1
@@ -169,7 +173,7 @@ apply() {
         awg_carries_slot=1
     fi
     if [ "$WANT_AWG" = 0 ] && have_awg && [ "$awg_carries_slot" = 1 ]; then
-        log "AmneziaWG-бинари ОСТАВЛЕНЫ: на них висит дополнительный выход (см. «Серверы → Дополнительные выходы»)."
+        log "AmneziaWG-бинари ОСТАВЛЕНЫ: на них висит дополнительный выход (см. «Соединение → Дополнительные выходы»)."
     elif [ "$WANT_AWG" = 0 ] && have_awg; then
         # ГАРД «ДОСТУПА ДОМОЙ»: awgs0 (роутер как VPN-сервер) — ЭТОТ ЖЕ amneziawg-go. Раньше набор
         # без awg молча сносил оба бинаря и уносил сервер вместе с ними: правила на месте, панель
@@ -177,7 +181,7 @@ apply() {
         # логе. Бинари ОСТАВЛЯЕМ (1.1 МБ) и говорим почему — ровно как purge-alt поступает с
         # бинарём, несущим доп-выход. Целевой транспорт при этом поднимется как ни в чём не бывало.
         if [ -f "$ENODIA_STATE/server/.on" ]; then
-            log "AmneziaWG-бинари ОСТАВЛЕНЫ: включён «доступ домой» (сервер awgs0 — тот же демон). Выключи его в карточке «Доступ домой», если нужно освободить ~1.1 МБ."
+            log "AmneziaWG-бинари ОСТАВЛЕНЫ: включён «доступ домой» (сервер awgs0 — тот же демон). Выключите его на экране «Доступ домой», если нужно освободить ~1.1 МБ."
         else
             log "Снимаю AmneziaWG (база) — целевой набор без awg"
             [ "$active" = awg ] && sh "$TRANSPORT" down awg >/dev/null 2>&1
@@ -212,7 +216,7 @@ apply() {
         # тесном 20-МБ флеше (after-install ~4-5 МБ free — норма для awg+xray) гард ЛОЖНО блокировал
         # установку при реально достаточных 10-11 МБ (free колеблется из-за ленивого UBIFS-GC).
         if [ "${free:-0}" -lt $((need+1)) ]; then
-            set_state FAIL; log "Мало места на /data (нужно ~${need} МБ, свободно ${free:-0} МБ) — освободи флеш/ребутни и повтори."; return 1
+            set_state FAIL; log "Мало места на /data (нужно ~${need} МБ, свободно ${free:-0} МБ) — освободите флеш или перезагрузите роутер и повторите."; return 1
         fi
     fi
 
@@ -258,14 +262,20 @@ apply() {
     # 4b. Добавляем awg, а awg0 ещё не настроен → нужен awg_setup.sh (генерит awg0.conf).
     fw3_wiped=0
     if [ "$WANT_AWG" = 1 ] && ! ip link show awg0 >/dev/null 2>&1; then
-        if [ -f "$ENODIA_STATE/awg.conf" ] && [ -f "$ENODIA_DIR/awg_setup.sh" ]; then
-            # awg_setup.sh читает amnezia_for_awg.conf (НЕ awg.conf!) и работает по
-            # ОТНОСИТЕЛЬНЫМ путям (config_file=amnezia_for_awg.conf, бинари ./awg ./amneziawg-go).
-            # Поэтому: (1) зеркалим создание amnezia_for_awg.conf из awg.conf, как большой
-            # установщик (install.sh) — иначе «File amnezia_for_awg.conf not found»;
-            # (2) ОБЯЗАТЕЛЬНО cd в $ENODIA_DIR, иначе скрипт ищет конфиг/бинари в CWD фонового
-            # процесса (/) и падает даже когда файлы на месте.
-            [ -f "$ENODIA_STATE/amnezia_for_awg.conf" ] || cp "$ENODIA_STATE/awg.conf" "$ENODIA_STATE/amnezia_for_awg.conf"
+        # Зеркало amnezia_for_awg.conf из awg.conf (его читает вендорный awg_setup.sh, НЕ awg.conf) — как большой установщик
+        # (install.sh), иначе «File amnezia_for_awg.conf not found». ДО гарда выключенного VPN: зеркала на подъёме не делает никто,
+        # кроме бутового heal, и «Включить VPN» после этой установки AmneziaWG не подняло бы (ревью ветки, круг 3).
+        if [ -f "$ENODIA_STATE/awg.conf" ] && [ ! -f "$ENODIA_STATE/amnezia_for_awg.conf" ]; then
+            cp "$ENODIA_STATE/awg.conf" "$ENODIA_STATE/amnezia_for_awg.conf"
+        fi
+        # VPN ВЫКЛЮЧЕН ВРУЧНУЮ — awg0 не поднимаем даже ради конфига: при выключенном VPN его не бывает и тёплым, а awg_setup ещё и
+        # делает firewall reload. awg0.conf сгенерит первый же подъём после «Включить VPN» (ревью ветки, круг 2; при флаге отказал
+        # бы и сам awg_setup — здесь говорим это словами и не помечаем снос правил, которого не было).
+        if [ -f "$ENODIA_STATE/.vpn-off" ]; then
+            log "VPN выключен вручную — AmneziaWG не поднимаю (поднимется при включении VPN)"
+        elif [ -f "$ENODIA_STATE/awg.conf" ] && [ -f "$ENODIA_DIR/awg_setup.sh" ]; then
+            # awg_setup.sh работает по ОТНОСИТЕЛЬНЫМ путям (бинари ./awg ./amneziawg-go; конфиг зеркалим выше) ⇒
+            # ОБЯЗАТЕЛЬНО cd в $ENODIA_DIR, иначе скрипт ищет бинари в CWD фонового процесса (/) и падает даже когда файлы на месте.
             log "Поднимаю AmneziaWG с нуля (awg_setup.sh)…"
             # Внутри — `/etc/init.d/firewall reload`, т.е. снос ВСЕХ iptables (цепочки
             # apply-bypass, ENODIA_ZAPRET, FORWARD доп-выходов, PANEL_WAN, «доступ домой»).
@@ -273,7 +283,7 @@ apply() {
             fw3_wiped=1
             ( cd "$ENODIA_DIR" && sh ./awg_setup.sh ) >> "$LOG" 2>&1 || log "awg_setup завершился с ошибкой (см. лог выше)"
         else
-            log "Нет awg.conf или awg_setup.sh — верни awg через установщик с ПК («Серверы AmneziaWG»)"
+            log "Нет awg.conf или awg_setup.sh — добавьте сервер AmneziaWG в «Соединение → Серверы и конфиги»"
         fi
     fi
 
@@ -289,12 +299,18 @@ apply() {
     if [ -z "$target" ]; then
         if [ "$WANT_AWG" = 1 ]; then target=awg; else target="$WANT_ALT"; fi
     fi
-    if [ -n "$target" ] && [ "$target" != none ]; then
+    if [ -n "$target" ] && [ "$target" != none ] && [ -f "$ENODIA_STATE/.vpn-off" ]; then
+        # VPN ВЫКЛЮЧЕН ТУМБЛЕРОМ: смена набора — не включение. switch без `--home` при флаге откажет (автомат не отменяет
+        # выключение), а прежний протокол набор мог уже снять — `.transport` остался бы на протоколе, которого нет, с ложной
+        # причиной в логе (ревью ветки, круг 1). Меняем только НАМЕРЕНИЕ (как CGI zapret_off): поднимет его «Включить VPN».
+        echo "$target" > "$ENODIA_STATE/.transport"; rm -f "$ENODIA_STATE/.zapret-on" 2>/dev/null
+        log "VPN выключен вручную — несущую не поднимаю; при включении поднимется $target"
+    elif [ -n "$target" ] && [ "$target" != none ]; then
         log "Активирую несущую: $target…"
         if sh "$TRANSPORT" switch "$target" >> "$LOG" 2>&1; then
             log "Активная несущая: $target"
         else
-            log "Несущую '$target' поднять не вышло (нет активного конфига?) — добавь конфиг в «Серверы». Пока прямой режим (интернет работает)."
+            log "Несущую '$target' поднять не вышло (нет активного конфига?) — добавьте конфиг в «Соединение → Серверы и конфиги». Пока прямой режим (интернет работает)."
         fi
     fi
 
@@ -316,7 +332,22 @@ case "$1" in
         # АТОМАРНЫЙ лок через mkdir (succeeds-or-fails без гонки). Прежний `[ RUNNING ] && [ -f LOCK ]`
         # + `: > LOCK` имел TOCTOU-окно между созданием файла и set_state RUNNING: два быстрых клика
         # из панели проходили гард ОБА → два purge+fetch на 20-МБ флеше = «No space». mkdir так не даст.
-        if ! mkdir "$LOCK" 2>/dev/null; then echo "уже выполняется"; exit 1; fi
+        if ! mkdir "$LOCK" 2>/dev/null; then
+            # ЛОК МОЖЕТ БЫТЬ ПРОТУХШИМ, и признать это обязаны МЫ. Держатель снимает его trap'ом, но
+            # `kill -9` (OOM на 176-МБ модели) трапов не знает, а `ram-lib.sh` мог принести сюда лок,
+            # взятый кодом ПРОШЛОЙ эпохи под прежним именем — снять его по старому пути уже некому.
+            # Судим ПО ДЕРЖАТЕЛЮ: pid внутри каталога. Пусто — это либо ОКНО между `mkdir` и записью
+            # ПИДа (микросекунды), либо как раз прошлая эпоха (тогда pid внутрь не писали вовсе).
+            # Различаем ОДНОЙ секундой сна, без часов: окно закрывается само, эпоха — нет. Часам тут
+            # верить нельзя (RTC нет, они прыгают через ~13 мин после загрузки), поэтому не возраст.
+            _pl=$(cat "$LOCK/pid" 2>/dev/null | tr -cd '0-9')
+            [ -n "$_pl" ] || { sleep 1; _pl=$(cat "$LOCK/pid" 2>/dev/null | tr -cd '0-9'); }
+            # Держатель — ЖИВОЙ процесс движка или этого скрипта (тот же ответ, что у packages.sh::pkg_pid_ours и `busy`).
+            if pid_runs "$_pl" 'packages\.sh|proto-install\.sh'; then echo "уже выполняется"; exit 1; fi
+            rm -rf "$LOCK" 2>/dev/null
+            mkdir "$LOCK" 2>/dev/null || { echo "уже выполняется"; exit 1; }
+        fi
+        echo $$ > "$LOCK/pid" 2>/dev/null
         # ВТОРОЙ лок — «идёт смена транспорта» (класс Б5-4). Между релинквишем несущей (шаг 1) и
         # её подъёмом (шаг 5) лежат ЗАКАЧКИ, то есть минуты, в течение которых `.transport` всё
         # ещё называет снятый транспорт: тик сторожа честно читает «health провалился» и
@@ -325,7 +356,7 @@ case "$1" in
         # ЧУЖОЙ лок не трогаем (его снимет владелец), свой снимаем trap'ом.
         SWLOCK=/tmp/enodia-switching.lock; SWMINE=0
         [ -e "$SWLOCK" ] || { : > "$SWLOCK" 2>/dev/null && SWMINE=1; }
-        trap 'rmdir "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT INT TERM HUP PIPE
+        trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT INT TERM HUP PIPE
         apply "$2"
         ;;
     state) cat "$STATE" 2>/dev/null || echo IDLE ;;

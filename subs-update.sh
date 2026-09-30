@@ -42,9 +42,9 @@ PICKS="$ENODIA_STATE/.sub-picks"
 ACTIVE_F="$ENODIA_STATE/.xray-active"
 HY2DIR="$ENODIA_STATE/hy2-configs"
 HY2_ACTIVE_F="$ENODIA_STATE/.hy2-active"
-LOG=/tmp/subs-update.log
-LOCK=/tmp/subs-update.lock
-TMPD=/tmp/subs-update.$$
+LOG=/tmp/enodia-subs-update.log
+LOCK=/tmp/enodia-subs-update.lock
+TMPD=/tmp/enodia-subs-update.$$
 TAB=$(printf '\t')
 # Кап серверов на подписку: 20-МБ /data + ~1 КБ на конфиг. Больше 200 — это не подписка,
 # а выгрузка всего пула провайдера; лучше честно обрезать, чем забить флеш.
@@ -67,14 +67,25 @@ if [ -f "$ENODIA_DIR/subs-lib.sh" ]; then
 else
 	sub_host_public() { return 1; }
 	sub_fetch() { return 1; }
+	# Счётчики подписки без библиотеки просто не появятся: карточка панели показывает «без
+	# счётчика», а не пустую полосу (пустая читалась бы как «всё израсходовано»).
+	sub_info_put() { return 0; }
 	sub_tags() { [ -f "$ENODIA_STATE/.subs" ] && cut -d"$TAB" -f1 "$ENODIA_STATE/.subs" 2>/dev/null; }
 	sub_url_of() { [ -f "$ENODIA_STATE/.subs" ] && grep "^$1$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2; }
 	sub_label_of() { [ -f "$ENODIA_STATE/.subs" ] && grep "^$1$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f3-; }
 	sub_owner_tag() { printf '%s' ""; }
-	# Шим ОБЯЗАН быть прежним поведением, а не пустотой: write_names перекладывает вывод этой
-	# функции в .sub-names, и «команда не найдена» стёрла бы КАРТУ ИМЁН всех подписок разом.
-	sub_names_keep_other() { [ -f "$ENODIA_STATE/.sub-names" ] && grep -v "^sub-$1-" "$ENODIA_STATE/.sub-names"; return 0; }
 fi
+# …и ОТДЕЛЬНО — на библиотеку СТАРЕЕ фичи: ветка `else` срабатывает, только когда файла нет ВОВСЕ,
+# а при точечной заливке (обновили один скрипт из двух) он есть, и функции в нём нет. Без этой
+# строки каждый прогон писал бы «sub_info_put: not found» в лог прямо человеку под нос.
+command -v sub_info_put >/dev/null 2>&1 || sub_info_put() { return 0; }
+# Сводка прогона для панели (subs-lib.sh::sub_sum_cut) — тот же случай: без функции третье поле `.subs-last` осталось бы
+# ПУСТЫМ, и сводка пропала бы с экрана «Подписки». Шим — прежняя обрезка по байту: обрыв посреди слова, но строка будет.
+command -v sub_sum_cut >/dev/null 2>&1 || sub_sum_cut() { tr -d '\t\r\n' | cut -c1-"$1"; }
+# Карта имён (subs-lib.sh::sub_names_keep_other) — тот же случай, и он ОПАСНЕЕ: шим ОБЯЗАН быть прежним поведением, а не
+# пустотой — write_names перекладывает вывод этой функции в .sub-names, и «команда не найдена» при старой библиотеке стёрла бы
+# КАРТУ ИМЁН всех подписок разом (прежде шим стоял только на случай, когда файла нет вовсе; ревью приёмки, круг 1).
+command -v sub_names_keep_other >/dev/null 2>&1 || sub_names_keep_other() { [ -f "$ENODIA_STATE/.sub-names" ] && grep -v "^sub-$1-" "$ENODIA_STATE/.sub-names"; return 0; }
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
 say() { echo "$*"; log "$*"; }
@@ -883,6 +894,12 @@ refresh_active() {
 				say "  активный сервер «$_act» изменился, но идёт смена транспорта — несущую не трогаю"
 				continue
 			fi
+			# VPN ВЫКЛЮЧЕН ВРУЧНУЮ — несущей нет, и поднимать её обновление подписки не вправе (плагин при флаге и сам откажет,
+			# daemon-lib.sh::carrier_run; здесь — чтобы не писать «несущая перезапущена» про то, чего не было).
+			if [ -f "$ENODIA_STATE/.vpn-off" ]; then
+				say "  активный сервер «$_act» изменился в подписке — VPN выключен вручную, применится при включении"
+				continue
+			fi
 			[ -f "$ENODIA_DIR/$FAM_TSH" ] || { say "  активный сервер «$_act» изменился, но $FAM_TSH не найден"; continue; }
 			say "  активный сервер «$_act» изменился в подписке — перезапускаю несущую"
 			sh "$ENODIA_DIR/$FAM_TSH" down >/dev/null 2>&1
@@ -914,8 +931,14 @@ update_one() {
 		say "  недоступна или пустая"
 		SUMMARY="$SUMMARY«$_lab»: не скачалась. "
 		FAILED=$((FAILED+1))
+		sub_info_put "$_t" fail
 		return 1
 	fi
+	# ОТМЕТКА — СРАЗУ ПОСЛЕ ЗАКАЧКИ, А НЕ В КОНЦЕ. Остаток трафика приезжает заголовком ответа, и
+	# он верен независимо от того, разберём ли мы тело: подписка, у которой «ключи кончились»,
+	# отдаёт как раз ошибку в теле И честные счётчики в заголовке. Разбор провалится ниже — тогда
+	# рядом с числами встанет ещё и отметка сбоя (два разных вопроса, две отметки).
+	sub_info_put "$_t" ok
 	# «через WAN» = хост подписки лежит в iplist_set и обычным путём ушёл бы в туннель.
 	[ -n "$SUB_FETCH_VIA" ] && say "  (скачано напрямую через $SUB_FETCH_VIA — хост подписки маршрутизировался в туннель)"
 	: > "$TMPD/keep"; : > "$TMPD/names"; : > "$TMPD/used"; : > "$TMPD/changed"
@@ -945,6 +968,7 @@ update_one() {
 		say "  серверов не распознано${_why:+ — подписка ответила: $_why} — реестр конфигов НЕ трогаю"
 		SUMMARY="$SUMMARY«$_lab»: не обновилась${_why:+ ($_why)}. "
 		FAILED=$((FAILED+1))
+		sub_info_put "$_t" fail
 		return 1
 	fi
 	prune_stale "$_t"
@@ -996,7 +1020,7 @@ cmd_update() {
 	# Пишем РАЗ за прогон: /data — флеш, а cron ходит сюда каждые несколько часов.
 	printf '%s\t%s\t%s\n' "$(date +%s 2>/dev/null)" \
 		"$([ "$FAILED" -gt 0 ] && echo fail || echo ok)" \
-		"$(printf '%s' "${SUMMARY:-нет подписок}" | tr -d '\t\r\n' | cut -c1-300)" \
+		"$(printf '%s' "${SUMMARY:-нет подписок}" | sub_sum_cut 1000)" \
 		> "$ENODIA_STATE/.subs-last" 2>/dev/null
 	if [ "$FAILED" -gt 0 ] && [ "$DONE" = 0 ]; then
 		ev "subs-fail" 21600 "Подписки не обновились" \
@@ -1012,7 +1036,19 @@ cmd_fetch() {
 	_url=$(sub_url_of "$_t")
 	case "$_url" in http://*|https://*) : ;; *) echo "подписка не найдена на роутере" >&2; return 1 ;; esac
 	sub_host_public "$_url" || { echo "URL подписки ведёт на приватный/локальный адрес — отказ (SSRF)" >&2; return 1; }
-	sub_fetch "$_url" "$TMPD/body" || { echo "подписка недоступна или пустая" >&2; return 1; }
+	# СЧЁТЧИКИ ПИШЕМ И ЗДЕСЬ. Этим вербом панель забирает тело при импорте — то есть в тот самый
+	# момент, когда подписку ЗАВОДЯТ, а до первого прогона cron может быть неделя (расписание по
+	# умолчанию выключено). Без отметки карточка неделю говорила бы «роутер её ещё не скачивал» о
+	# подписке, тело которой панель только что показала.
+	# ЛОКА ТУТ НЕТ НАМЕРЕННО: это чтение, а не прогон, и брать общий лок значило бы отказывать
+	# импорту, пока cron обновляет соседнюю подписку. Цена — гонка в единственном исходе: если
+	# запись cron'а придётся ровно в окно между нашим чтением файла и mv, потеряется ОТМЕТКА
+	# одной подписки (не файл: mv атомарен), и её вернёт ближайшее обновление.
+	if ! sub_fetch "$_url" "$TMPD/body"; then
+		sub_info_put "$_t" fail
+		echo "подписка недоступна или пустая" >&2; return 1
+	fi
+	sub_info_put "$_t" ok
 	base64 < "$TMPD/body" | tr -d '\r\n'
 }
 
@@ -1091,7 +1127,8 @@ trim_log() {
 mkdir -p "$TMPD" 2>/dev/null
 # PIPE/HUP в списке не для красоты: прогон пишет прогресс в stdout, и оборванный читатель
 # (панель закрыла трубу, `| head`) убивает нас сигналом — EXIT-ловушка тогда не срабатывает,
-# и каталог остаётся в /tmp, то есть в ОЗУ. Замерено на живом роутере: /tmp/subs-update.7007.
+# и каталог остаётся в /tmp, то есть в ОЗУ. Замерено на живом роутере: такой каталог (тогда он звался
+# /tmp/enodia-subs-update.7007) пережил обрыв и не убирался ничем.
 trap 'rm -rf "$TMPD" 2>/dev/null' EXIT INT TERM HUP PIPE
 trim_log
 
