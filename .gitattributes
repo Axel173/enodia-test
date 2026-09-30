@@ -34,9 +34,13 @@ SHA256SUMS            text eol=lf
 # Бинарники под роутер (ELF/UPX) — НИКОГДА не трогать text-конверсией (иначе порча).
 *.user                binary
 
-# .ps1/.bat намеренно НЕ трогаем: они работают на ПК как есть (UTF-8 BOM
-# важен для PowerShell 5 на ру-Windows), пусть остаются под глобальным
-# core.autocrlf.
+# .ps1 намеренно НЕ трогаем: он работает на ПК как есть (UTF-8 BOM важен для
+# PowerShell 5 на ру-Windows), пусть остаётся под глобальным core.autocrlf.
+# .bat — CRLF ЯВНО (ревью ветки релиза, круг 2): cmd на LF-батнике спотыкается о метки
+# и `if`, а core.autocrlf — свойство МАШИНЫ. В индексе блоб с LF, и «Code → Download ZIP»
+# у GitHub (git archive на сервере без autocrlf) отдавал сломанный лаунчер; атрибут
+# конвертирует и рабочую копию, и архив. BOM атрибут не добавляет (cmd его читает командой).
+*.bat                 text eol=crlf
 
 # Python-порт ПК-стороны (enodia.py) и mac/linux-лаунчер (enodia-setup.command) запускаются
 # и на Unix → СТРОГО LF (CRLF в shebang .command ломает запуск; .py чище кроссплатформенно).

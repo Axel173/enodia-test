@@ -87,7 +87,9 @@ got=$(stat -c %s "$tmp/f" 2>/dev/null)
 res=$(sh "$ENODIA_DIR/gh-update.sh" bin-stage "$name" "$tmp/f" 2>/dev/null | tail -n 1)
 rm -rf "$tmp"
 case "$res" in
-	OK:*) printf '{"ok":true,"name":"%s","msg":"%s"}\n' "$name" "$(printf '%s' "${res#OK: }" | jesc 300)" ;;
-	FAIL:*) printf '{"ok":false,"name":"%s","msg":"%s"}\n' "$name" "$(printf '%s' "${res#FAIL: }" | jesc 300)" ;;
+	# Потолок 600, как у status-json (ревью ветки, круг 2): отказ «файл из архива другой версии» кончается ВЕРСИЕЙ нужного архива —
+	# ради неё он и написан, а на 300 байтах длинные имена (https-dns-proxy, amneziawg-go) обрезали её целиком.
+	OK:*) printf '{"ok":true,"name":"%s","msg":"%s"}\n' "$name" "$(printf '%s' "${res#OK: }" | jesc 600)" ;;
+	FAIL:*) printf '{"ok":false,"name":"%s","msg":"%s"}\n' "$name" "$(printf '%s' "${res#FAIL: }" | jesc 600)" ;;
 	*) printf '{"ok":false,"name":"%s","msg":"роутер не ответил на приём файла (старая сборка gh-update.sh?)"}\n' "$name" ;;
 esac

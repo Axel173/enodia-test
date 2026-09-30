@@ -6927,12 +6927,13 @@
     "Последний снимок старше формы входа в панель: откат туда оставил бы её открытой всей домашней сети, поэтому роутер откажет.":"The latest snapshot predates the panel sign-in form: rolling back to it would leave the panel open to the whole home network, so the router will refuse.",
     "Откатить к последнему снимку":"Roll back to the latest snapshot",
     "Целостность":"Integrity",
-    "Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). Расхождение значит, что файл правили на роутере или он побился. Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.":"Checks the installed files against their own package, offline: the code against the package sums, the protocol programs against its signed manifest (an update and an install from a computer put the same package). A difference means the file was edited on the router or got corrupted. Code of older installs, put without a package, is compared with what is published on GitHub — if the build is newer than the public one, differences there are normal.",
+    "Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). «Расходится» значит, что файл правили на роутере или он побился; «устарело» — стоит прежняя подписанная сборка программы, а новая пришла с обновлением и ставится в «Компонентах». Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.":"Checks the installed files against their own package, offline: the code against the package sums, the protocol programs against its signed manifest (an update and an install from a computer put the same package). “Differ” means the file was edited on the router or got corrupted; “outdated” means the previous signed build of a program is installed, while the new one came with the update and is installed in “Components”. Code of older installs, put without a package, is compared with what is published on GitHub — if the build is newer than the public one, differences there are normal.",
+    "Программы протоколов не сверены: в установленном коде нет их манифеста или роутер не назвал свою архитектуру.":"The protocol programs were not checked: the installed code has no manifest for them, or the router did not report its architecture.",
     "по суммам пакета":"against the package sums",
     "Сверяю…":"Comparing…","Роутер не ответил — сверка не прошла. Повторите.":"The router did not answer — the comparison failed. Try again.",
     "Сверить не удалось: роутер ответил не то.":"Could not compare: the router answered something else.",
     "На GitHub нет файла контрольных сумм — сверять не с чем.":"GitHub has no checksum file — nothing to compare with.",
-    "Совпало":"Matched","расходится":"differ","нет на роутере":"missing on the router","Сверить":"Verify",
+    "Совпало":"Matched","расходится":"differ","нет на роутере":"missing on the router","Сверить":"Verify","устарело":"outdated","стоит":"installed",
     "Апдейтера на роутере нет — обновите панель с компьютера.":"There is no updater on the router — update the panel from a computer.",
     "Роутер не ответил — откройте экран ещё раз.":"The router did not answer — open the screen again.",
     "Состояние обновления получить не удалось: роутер ответил не то. Если вход в панель истёк — обновите страницу.":"Could not get the update state: the router answered something else. If your panel sign-in expired, reload the page.",
@@ -10111,10 +10112,18 @@
     [/архитектуру роутера опознать не вышло — какую сборку (\S+) ставить, неизвестно/,"couldn't detect the router architecture — which build of $1 to install is unknown"],
     [/«([^»]*)» \(([^)]*)\) нет в манифесте бинарей установленной версии — ставить нечего/,"«$1» ($2) is not in the binary manifest of the installed version — nothing to install"],
     [/в установленном коде нет манифеста бинарей \(([^)]*)\) — сверить сборку не с чем; обновите систему/,"the installed code has no binary manifest ($1) — nothing to check the build against; update the system"],
-    [/на GitHub лежит другая сборка (\S+), чем та, что знает установленная версия — обновите систему \(экран «Обновление»\)/,"GitHub has a different build of $1 than the one the installed version knows — update the system (the «Update» screen)"],
+    [/на GitHub лежит другая сборка (\S+), чем та, что знает установленная версия — обновите систему или загрузите (\S+) из архива установщика(.*?) \(«Файлы с компьютера»\)/,"GitHub has a different build of $1 than the one the installed version knows — update the system or upload $2 from the installer archive$3 (“Files from your computer”)"],
     [/на GitHub нет (\S+) ни на теге релиза, ни в ветке (\S+)/,"GitHub has no $1 either at the release tag or on branch $2"],
+    // установка из файла, загруженного с компьютера (gh-update.sh::fetch_bin_staged)
+    [/загруженный (\S+) не совпал с манифестом$/,"the uploaded $1 does not match the manifest"],
+    [/загруженный (\S+) не ELF \(не бинарь\)$/,"the uploaded $1 is not an ELF (not a binary)"],
+    [/(\S+): в манифесте нет суммы — загруженный файл не проверить$/,"$1: the manifest has no checksum — the uploaded file cannot be checked"],
+    [/не скопировать загруженный (\S+) \(место\?\)$/,"couldn't copy the uploaded $1 (out of space?)"],
+    [/^\[fetch-bin\] (\S+) <- файл, загруженный с компьютера$/,"[fetch-bin] $1 <- a file uploaded from the computer"],
+    [/^\[fetch-bin\] OK: (\S+) \(загружен с компьютера\) -> /,"[fetch-bin] OK: $1 (uploaded from the computer) -> "],
     [/нечем посчитать sha256 (\S+) \(нет openssl\) — сверить сборку нечем/,"nothing to compute the sha256 of $1 with (no openssl) — the build cannot be checked"],
     [/ по этому адресу — другая сборка, не та, что знает установленная версия$/," at this address is a different build, not the one the installed version knows"],
+    [/ по этому адресу — другая сборка \((\d+) байт, а у своей (\d+)\)$/," at this address is a different build ($1 bytes, its own has $2)"],
     ["FAIL: не скачался ","FAIL: couldn't download "],["нет связи с GitHub (или кончилось место)","no connection to GitHub (or out of space)"],
     // Причину отказа движок компонентов поднимает в итог БЕЗ префикса «FAIL: » — правила ниже от него не зависят (ревью шага 6c, круг 2).
     [/ лёг без права на исполнение \(([^)]*)\) — накопитель смонтирован без exec\?$/," landed without the execute bit ($1) — is the drive mounted noexec?"],
@@ -10210,7 +10219,7 @@
     // — gh-update.sh: журнал обновления и ответ отката (экран «Обновление», шаг 6c). Строки с переменными — регулярками;
     // пути файлов латиницей, поэтому хвост чистый. Метка этапа ([apply] и др.) в ключ НЕ входит: причину отказа экран показывает
     // без неё, и правило с меткой на такую строку не легло бы. Порядок: длинные фразы выше коротких кусков. —
-    [/^Расходится: (\d+)$/,"Differ: $1"],[/^Нет на роутере: (\d+)$/,"Missing on the router: $1"],
+    [/^Расходится: (\d+)$/,"Differ: $1"],[/^Нет на роутере: (\d+)$/,"Missing on the router: $1"],[/^Устарело: (\d+)$/,"Outdated: $1"],
     [/на GitHub нет VERSION \(([^)]*)\) — обновление отменено/,"no VERSION on GitHub ($1) — update cancelled"],
     ["VERSION не прошёл проверку целостности — обновление отменено","VERSION failed the integrity check — update cancelled"],
     [/на GitHub код (\d+) <= локального (\d+) — это даунгрейд, отмена \(--force чтобы всё равно\)/,"GitHub code $1 <= local $2 — that is a downgrade, cancelled (--force to do it anyway)"],
@@ -22196,14 +22205,20 @@
   // ---- карточка «Целостность»: что из установленного расходится с опубликованным ----
   function updIntHtml(d){
     var r=updVer, h='<div class="card" id="upd-int"><div class="wt">Целостность</div>'
-      + dkLine('Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). Расхождение значит, что файл правили на роутере или он побился. Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.');
+      + dkLine('Сверяет установленные файлы с их же пакетом, без сети: код — с суммами пакета, программы протоколов — с его подписанным манифестом (обновление и установка с компьютера ставят один и тот же пакет). «Расходится» значит, что файл правили на роутере или он побился; «устарело» — стоит прежняя подписанная сборка программы, а новая пришла с обновлением и ставится в «Компонентах». Код прежних установок, поставленный не пакетом, сверяется с опубликованным на GitHub — если сборка новее публичной, расхождения там норма.');
     var out='';
     if(r && r.run) out='<span>Сверяю…</span>';
     else if(r && r.err) out='<span class="wr">'+(r.err==='net' ? 'Роутер не ответил — сверка не прошла. Повторите.' : 'Сверить не удалось: роутер ответил не то.')+'</span>';
     else if(r && r.state==='nosums') out='<span>На GitHub нет файла контрольных сумм — сверять не с чем.</span>';
-    else if(r) out='<span>Совпало</span> '+(Number(r.same)||0)+' · <span>расходится</span> '+r.diff.length+' · <span>нет на роутере</span> '+r.miss.length+(r.src==='pkg' ? ' · <span>по суммам пакета</span>' : '');
+    // «Устарело» — прежняя ПОДПИСАННАЯ сборка программы (новая пришла с обновлением кода), а не порча: её роутер отдаёт отдельным
+    // списком (ревью ветки, круг 2). Прежний роутер поля не шлёт — пусто.
+    var old=(r && Array.isArray(r.old)) ? r.old : [];
+    if(r && !r.run && !r.err && r.state==='ok') out='<span>Совпало</span> '+(Number(r.same)||0)+(old.length ? ' · <span>устарело</span> '+old.length : '')+' · <span>расходится</span> '+r.diff.length+' · <span>нет на роутере</span> '+r.miss.length+(r.src==='pkg' ? ' · <span>по суммам пакета</span>' : '');
     if(out) h+='<div class="cline" id="upd-int-out" role="status" tabindex="-1">'+out+'</div>';
     if(r && !r.run && !r.err && r.state==='ok'){
+      // bins:false — бинари не сверяли: «расходится 0» иначе читалось бы «программы протоколов целы» (прежний роутер поля не шлёт).
+      if(r.src==='pkg' && r.bins===false) h+=dkLine('Программы протоколов не сверены: в установленном коде нет их манифеста или роутер не назвал свою архитектуру.', true);
+      if(old.length) h+='<details class="ri-more" data-more="old"><summary>Устарело: '+old.length+'</summary><div class="ri-list mono">'+old.map(function(x){ var i=String(x).lastIndexOf(' '); return '<div>'+(i>0 ? esc(x.slice(0, i))+' <span>стоит</span> '+esc(x.slice(i+1)) : esc(x))+'</div>'; }).join('')+'</div></details>';
       if(r.diff.length) h+='<details class="ri-more" data-more="diff"><summary>Расходится: '+r.diff.length+'</summary><div class="ri-list mono">'+r.diff.map(function(x){ return '<div>'+esc(x)+'</div>'; }).join('')+'</div></details>';
       if(r.miss.length) h+='<details class="ri-more" data-more="miss"><summary>Нет на роутере: '+r.miss.length+'</summary><div class="ri-list mono">'+r.miss.map(function(x){ return '<div>'+esc(x)+'</div>'; }).join('')+'</div></details>';
     }
@@ -22977,9 +22992,13 @@
   }
   // НОВЫЕ СБОРКИ КОМПОНЕНТОВ ПРИЕЗЖАЮТ С ОБНОВЛЕНИЕМ СИСТЕМЫ (решение пользователя 30.09.2026): суммы бинарей едут в подписанном
   // пакете кода, и роутер ставит только сборку, которую знает установленная версия (разбор — шапка манифеста в gh-update.sh). Своей
-  // сверки с GitHub у экрана больше нет — строка ведёт туда, где обновление проверяют и ставят.
+  // сверки с GitHub у экрана больше нет — строка ведёт туда, где обновление проверяют и ставят. ДВЕРЬ — ТОЛЬКО пока показана дверь
+  // раздела «Обновление» (`card-update` в index.html): канал заморожен — экран спрятан, и строка не уводит на него в обход (ревью ветки,
+  // круг 1); переключатель у обоих один — `display:none` той двери.
   function pkgCheckRow(){
-    return lrowGo('update')+'<div class="grow"><div class="nm">Обновления компонентов</div><div class="ds">новые сборки приезжают с обновлением системы</div></div>'+CHEV+'</div>';
+    var ud=document.getElementById('card-update'), open=!!ud && ud.style.display!=='none';
+    var body='<div class="grow"><div class="nm">Обновления компонентов</div><div class="ds">новые сборки приезжают с обновлением системы</div></div>';
+    return open ? lrowGo('update')+body+CHEV+'</div>' : '<div class="lrow">'+body+'</div>';
   }
   // ФАЙЛЫ С КОМПЬЮТЕРА — установка без GitHub (решение пользователя 30.09.2026): у кого GitHub закрыт или архив проекта пришёл не с
   // GitHub, кладут бинарь из архива (`bin/<арка>/<имя>.user`). Роутер сверяет его с манифестом проекта (размер и sha256 своей арки,

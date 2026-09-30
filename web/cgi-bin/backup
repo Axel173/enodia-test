@@ -93,7 +93,7 @@ SETTINGS="$SETTINGS .doh-on .doh-proto .doh-resolver .doh-auto .doh-nextdns-id" 
 SETTINGS="$SETTINGS .doh-custom-url .doh-custom-sni .doh-custom-ips .doh-custom-dot-port"   # ...и СВОЙ резолвер (адрес + якоря + порт DoT)
 SETTINGS="$SETTINGS .dns-hosts .ipv6-block .tun-mtu .go-memlimit"                    # DNS-hosts, IPv6-блок, MTU, потолок ОЗУ демона
 SETTINGS="$SETTINGS iplist.conf iplist.custom lists"                                 # списки и их источники
-SETTINGS="$SETTINGS .gh-ref .gh-strict .gh-bin-tag .update-interval .subs-interval"  # обновления
+SETTINGS="$SETTINGS .gh-ref .gh-bin-tag .update-interval .subs-interval"  # обновления
 SETTINGS="$SETTINGS .prefs .panel-layout"                                            # язык, тема, порядок карточек
 SETTINGS="$SETTINGS .traffic-daily"                                                  # история трафика (посуточно)
 # --- ЧТО НЕ ВХОДИТ И ПОЧЕМУ ------------------------------------------------------------------

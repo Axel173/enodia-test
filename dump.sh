@@ -998,7 +998,7 @@ sec "БИНАРНИКИ + ВЕРСИИ (что реально установле
 #     и про xray/hysteria. «Где лежит бинарь» — вопрос с ОДНИМ владельцем (store-lib.sh), своей
 #     копии `[ -x "$ENODIA_DIR/…" ]` дамп держать не вправе.
 # Список имён ЯВНЫЙ (идиома RAM_LOGS в clean.sh): вывести его из кода нельзя — половина имён
-# приезжает из bin-manifest.txt, которого на роутере может не быть. Новый бинарь дописывает СЕБЯ.
+# приезжает из bin-manifest.txt, которого у кода, поставленного не пакетом, может не быть. Новый бинарь дописывает СЕБЯ.
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path  >/dev/null 2>&1 || bin_path()  { printf '%s' "$ENODIA_BIN/$1"; }
 command -v bin_where >/dev/null 2>&1 || bin_where() { [ -x "$ENODIA_BIN/$1" ] && printf 'router'; }
