@@ -266,6 +266,9 @@ pkg_del_b() {       # $1 = связка, $2 = ВЕСЬ список снимае
 }
 # hev общий: его держат ЛЮБОЙ оставшийся socks-карриер и ЛЮБОЙ слот на нём (slot-tun-lib.sh).
 hev_needed_after() {   # $1 = список снимаемых; 0 = hev ещё нужен
+    # …в том числе тому, кого этот же план СТАВИТ (P_INS — план уже посчитан): «снять ByeDPI, поставить Xray» сносил hev, а Xray
+    # вставал без него — в закачку плана hev не попадал, потому что на момент плана стоял (найдено стендом закачки заранее, 01.10.2026).
+    for p in $P_INS; do case "$p" in xray|hy2|byedpi) return 0 ;; esac; done
     for p in xray hy2 byedpi; do
         in_list "$p" "$1" && continue
         for b in $(pkg_own "$p"); do have_bin "$b" && return 0; done
@@ -282,6 +285,17 @@ hev_needed_after() {   # $1 = список снимаемых; 0 = hev ещё н
 # свежем роутере может ещё не быть создан, а df по несуществующему пути молчит — и гард
 # прочитал бы «свободно 0», запретив установку ровно там, где она нужна.
 disk_free_b()  { fs_free_b  "$ENODIA_DIR"; }
+# Сколько ОЗУ можно занять под закачку заранее (cmd_apply): меньшее из «свободно в /tmp» (tmpfs режет запись своим потолком) и
+# «доступно ядру» (MemAvailable; у старого ядра его нет — MemFree): tmpfs пишет в ту же память, что нужна демонам. MEMINFO —
+# подмена для стендов (то же соглашение, что у dump.sh).
+ram_room_b() {
+    _rrt=$(fs_free_b /tmp)
+    _rra=$(awk '/^MemAvailable:/{a=$2}/^MemFree:/{f=$2}END{printf "%.0f", (a==""?f:a)*1024}' "${MEMINFO:-/proc/meminfo}" 2>/dev/null)
+    case "$_rra" in ''|*[!0-9]*) _rra=0 ;; esac
+    [ "$_rra" -lt "$_rrt" ] && _rrt=$_rra
+    printf '%s' "$_rrt"
+}
+PF_MARGIN_B=33554432   # 32 МБ сверх скачиваемого остаются демонам (xray, dnsmasq) и самой установке
 disk_total_b() { fs_total_b "$ENODIA_DIR"; }
 # Точка монтирования НАШЕГО тома — панель подписывает ею полосу флеша: «Флеш /data» на
 # роутере, где мы живём на /data/usr, — это ровно та подпись, из-за которой BE10000 полгода
@@ -554,6 +568,8 @@ do_install() {      # $1 = связка
             log "Обновляю $b: ${_bc:-прежняя сборка} → ${_ba:-свежая сборка}…"; _upd_b="$_upd_b $b"
         elif in_list "$b" "$_stg"; then
             log "Ставлю $b из файла, загруженного с компьютера…"   # «Скачиваю» было бы неправдой: сети этот шаг не касается
+        elif [ "$PF_ON" = 1 ] && in_list "$b" "$PF_LIST"; then
+            log "Ставлю $b (скачан заранее)…"
         else
             log "Скачиваю $b…"
         fi
@@ -651,6 +667,33 @@ cmd_apply() {
             set_state FAIL; log "$_why. НИЧЕГО не тронул."; return 1
         fi
     fi
+    # ЗАКАЧКА ЗАРАНЕЕ — ДО ПЕРВОЙ ПЕРЕМЕНЫ (решение пользователя 01.10.2026). Прежде снятия шли ПЕРВЫМИ, а пре-чек выше спрашивает
+    # только СЕТЬ: «на GitHub другая сборка» (нет тега, чужой .gh-repo, дев-код без опубликованного тега) — отказ детерминированный, и
+    # план «снять Xray, поставить Hysteria2» оставлял без обоих; так же — связка из двух файлов (amneziawg-go + awg), где второй не
+    # скачался. Теперь всё, что план качает, сперва ложится в ОЗУ (gh-update.sh bin-prefetch — та же сверка с подписанным манифестом),
+    # и только потом снятия и установка из скачанного (она сверяет копию ещё раз). Загруженное с компьютера не качаем — оно уже в ОЗУ.
+    # Цена — ОЗУ на время операции (xray — 8 МБ); не хватает — прежний порядок, и журнал говорит это словами. Скачанное, но не взятое
+    # (отказ, упавшая связка, обрыв) из ОЗУ убирает ловушка выхода — при любом исходе, одна на все дороги.
+    PF_LIST=""; PF_ON=0   # не `_pf`: так зовётся цикл пидфайлов в do_remove, и снятие затирало бы этот список
+    for b in $P_FILES; do in_list "$b" "$_stg" || PF_LIST="$PF_LIST $b"; done
+    if [ -n "$P_INS" ] && [ -f "$GH" ] && [ -n "$PF_LIST" ]; then
+        _pfn=0
+        for b in $PF_LIST; do _pfs=$(sh "$GH" bin-size "$b" 2>/dev/null | tr -d ' \r'); case "$_pfs" in ''|*[!0-9]*) _pfs=0 ;; esac; _pfn=$((_pfn + _pfs)); done
+        _pfr=$(ram_room_b)
+        if [ "$_pfr" -lt $((_pfn + PF_MARGIN_B)) ]; then
+            log "Заранее не скачать: в ОЗУ свободно $(mb "$_pfr") МБ, нужно $(mb "$_pfn") МБ и запас — качаю по ходу установки, как прежде."
+        else
+            PF_ON=1
+            for b in $PF_LIST; do
+                log "Скачиваю заранее: $b…"
+                if ! sh "$GH" bin-prefetch "$b" >> "$LOG" 2>&1; then
+                    _fw=$(grep '^\[fetch-bin\] FAIL: ' "$LOG" 2>/dev/null | tail -n 1 | sed 's/^\[fetch-bin\] FAIL: //')
+                    set_state FAIL; log "Не скачал $b: ${_fw:-причина в журнале операции}. НИЧЕГО не тронул."; return 1
+                fi
+            done
+            log "Всё нужное скачано — меняю набор."
+        fi
+    fi
     for p in $P_DEL; do do_remove "$p" "$P_DEL"; done
     [ -n "$P_DEL" ] && sync 2>/dev/null
     _rc=0; I_WHY=""
@@ -740,7 +783,9 @@ case "$1" in
                echo $$ > "$LOCK/pid" 2>/dev/null
                SWLOCK=/tmp/enodia-switching.lock; SWMINE=0
                [ -e "$SWLOCK" ] || { : > "$SWLOCK" 2>/dev/null && SWMINE=1; }
-               trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null' EXIT INT TERM HUP PIPE
+               # Скачанное заранее — из ОЗУ при ЛЮБОМ исходе (готово, отказ, обрыв; хвост убитой без ловушек операции — тоже здесь): иначе
+               # мегабайты лежали бы в /tmp до ребута.
+               trap 'rm -rf "$LOCK" 2>/dev/null; [ "$SWMINE" = 1 ] && rm -f "$SWLOCK" 2>/dev/null; [ -f "$GH" ] && sh "$GH" bin-unprefetch >/dev/null 2>&1' EXIT INT TERM HUP PIPE
                case "$1" in
                    apply)   cmd_apply "$2" "$3" ;;
                    install) cmd_apply "$2" "" ;;

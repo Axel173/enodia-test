@@ -9156,6 +9156,10 @@
   // буквы внутри слов). i18nStr применяет их подряд и, если в итоге остаётся кириллица, ВОЗВРАЩАЕТ
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
+    // ПОЛНЫЕ фразы, в которых есть «ОЗУ»/«МБ», — ПЕРВЫМИ: общие правила ниже (/ ОЗУ/g, /МБ/g) переводят кусок раньше, и точное
+    // правило уже не находит своей строки (закачка заранее, 01.10.2026 — поймано стендом panel-rr-pkg).
+    [/Заранее не скачать: в ОЗУ свободно ([0-9.]+) МБ, нужно ([0-9.]+) МБ и запас — качаю по ходу установки, как прежде\./,"Can't download ahead: $1 MB of RAM free, $2 MB plus a margin needed — downloading during the install, as before."],
+    ["не завести каталог для закачки заранее в /tmp (место в ОЗУ?)","couldn't create the download-ahead folder in /tmp (RAM space?)"],
     // ─── Экран сервера (25.09.2026) — ПЕРВЫМИ: короткие токены ниже («удаляю », «без VPS»…) рвали бы эти фразы изнутри ───
     [/^не удалось прочитать конфиг: ошибка$/,"could not read the config: error"],
     [/^не удалось прочитать конфиг: /,"could not read the config: "],
@@ -10096,6 +10100,9 @@
     ["Применить изменения?","Apply changes?"],["Снимем с роутера: ","Will remove from the router: "],["Скачаем и поставим: ","Will download and install: "],["Поставим из загруженных файлов: ","Will install from the uploaded files: "],["Обновим: ","Will update: "],
     ["Обновление заменит файлы, но работающий компонент перейдёт на новую сборку только после перезапуска — проще всего перезагрузить роутер.","The update replaces the files, but a running component switches to the new build only after a restart — the simplest way is to reboot the router."],
     ["Активную несущую и дополнительные выходы операция не переключает.","The operation does not switch the active carrier or the extra exits."],
+    // закачка заранее (packages.sh::cmd_apply): сперва всё в ОЗУ, потом снятия — правила раньше общих «Скачиваю »/«Ставлю »
+    ["Скачиваю заранее: ","Downloading ahead: "],["Всё нужное скачано — меняю набор.","Everything needed is downloaded — changing the set."],
+    [/^(\[[0-9:]+\] )?Не скачал (\S+): /,"$1Couldn't download $2: "],[" (скачан заранее)…"," (downloaded ahead)…"],
     ["Снимаю ","Removing "],["Ставлю ","Installing "],["Скачиваю ","Downloading "],
     ["hev больше никому не нужен — снимаю","hev is no longer needed by anyone — removing"],
     ["нет zapret.sh — обновите скрипты","no zapret.sh — update the scripts"],["zapret не установился","zapret failed to install"],
@@ -10121,6 +10128,13 @@
     [/не скопировать загруженный (\S+) \(место\?\)$/,"couldn't copy the uploaded $1 (out of space?)"],
     [/^\[fetch-bin\] (\S+) <- файл, загруженный с компьютера$/,"[fetch-bin] $1 <- a file uploaded from the computer"],
     [/^\[fetch-bin\] OK: (\S+) \(загружен с компьютера\) -> /,"[fetch-bin] OK: $1 (uploaded from the computer) -> "],
+    // то же для скачанного заранее (каталог ОЗУ движка)
+    [/скачанный заранее (\S+) не совпал с манифестом$/,"the file $1 downloaded ahead does not match the manifest"],
+    [/скачанный заранее (\S+) не ELF \(не бинарь\)$/,"the file $1 downloaded ahead is not an ELF (not a binary)"],
+    [/(\S+): в манифесте нет суммы — скачанный заранее файл не проверить$/,"$1: the manifest has no checksum — the file downloaded ahead cannot be checked"],
+    [/не скопировать скачанный заранее (\S+) \(место\?\)$/,"couldn't copy the file $1 downloaded ahead (out of space?)"],
+    [/^\[fetch-bin\] (\S+) <- скачан заранее \(ОЗУ\)$/,"[fetch-bin] $1 <- downloaded ahead (RAM)"],
+    [/^\[fetch-bin\] OK: (\S+) \(скачан заранее\) -> /,"[fetch-bin] OK: $1 (downloaded ahead) -> "],
     [/нечем посчитать sha256 (\S+) \(нет openssl\) — сверить сборку нечем/,"nothing to compute the sha256 of $1 with (no openssl) — the build cannot be checked"],
     [/ по этому адресу — другая сборка, не та, что знает установленная версия$/," at this address is a different build, not the one the installed version knows"],
     [/ по этому адресу — другая сборка \((\d+) байт, а у своей (\d+)\)$/," at this address is a different build ($1 bytes, its own has $2)"],

@@ -671,9 +671,13 @@ bin_srcs() {
 fetch_bin() {
     name="$1"; dst="$2"; minsz="$3"
     case "$minsz" in ''|*[!0-9]*|0) minsz="" ;; esac
-    # Файл, загруженный с компьютера (bin-stage), — первым: человек положил его именно потому, что GitHub недоступен.
-    # Чужой каталог хранилища — мимо, не трогая его файлов (разбор у bstage_ok).
-    if bstage_ok && [ -f "$BIN_STAGE/$name" ] && fetch_bin_staged "$name" "$dst"; then return 0; fi
+    # Файл, загруженный с компьютера (bin-stage), — первым: человек положил его именно потому, что GitHub недоступен. Затем — скачанный
+    # заранее движком (bin-prefetch). Чужой каталог — мимо, не трогая его файлов (разбор у bstage_ok). Закачка заранее сама локальные
+    # источники не спрашивает (FB_NOLOCAL).
+    if [ "$FB_NOLOCAL" != 1 ]; then
+        if bstage_ok && [ -f "$BIN_STAGE/$name" ] && fetch_bin_staged "$name" "$dst"; then return 0; fi
+        if bstage_ok "$BIN_PREFETCH" && [ -f "$BIN_PREFETCH/$name" ] && fetch_bin_staged "$name" "$dst" "$BIN_PREFETCH"; then return 0; fi
+    fi
     BA_VAL=$(bin_arch); BA_DONE=1
     if [ -z "$BA_VAL" ]; then log "[fetch-bin] FAIL: архитектуру роутера опознать не вышло — какую сборку $name ставить, неизвестно"; return 1; fi
     _fbl=$(bm_line "$name"); FB_WANT=${_fbl#* }; FB_SIZE=${_fbl%% *}
@@ -718,21 +722,28 @@ fetch_bin() {
 # заново, а fetch_bin сверяет ЕЩЁ РАЗ свою копию, уже лёгшую рядом с местом установки, а не файл в /tmp. До ребута: принятый,
 # но не поставленный файл живёт в ОЗУ, пока его не заберёт установка (или ребут).
 BIN_STAGE=/tmp/enodia-bin-stage
-# «Каталог наш» (наш uid, 0700, не симлинк) — ТОЛЬКО ЧИТАЕТ, и спрашивают его ВСЕ ТРИ потребителя. Для перечня и установки чужой
+# ЗАКАЧКА ЗАРАНЕЕ (решение пользователя 01.10.2026): движок компонентов сперва кладёт СЮДА всё, что качает план, и лишь потом снимает
+# и ставит — не скачалось хоть что-то ⇒ не тронуто ничего. Прежде снятия шли ДО закачки, а пре-чек спрашивал только сеть: «на GitHub
+# другая сборка» (нет тега, чужой .gh-repo, дев-код) оставляла без обоих компонентов. Каталог — ОТДЕЛЬНЫЙ от загрузок с компьютера:
+# перечень `bin-staged` (панель: «загружено с компьютера») его не видит; гарды — те же (bstage_ok/bstage_dir с каталогом аргументом),
+# а установка сверяет копию с манифестом ещё раз — тем же fetch_bin_staged.
+BIN_PREFETCH=/tmp/enodia-bin-prefetch
+# «Каталог наш» (наш uid, 0700, не симлинк) — ТОЛЬКО ЧИТАЕТ, и спрашивают его ВСЕ потребители. Для перечня и установки чужой
 # каталог = «ничего не загружено»: его файлы не в счёт и не трогаются. Прежде проверял только приём, и симлинк хранилища на каталог
 # бинарей превращал установочное «не сошлось — убрать из хранилища» в удаление СТОЯЩЕГО бинаря (ревью с.88, подтверждено песочницей).
-bstage_ok() {
-    _bsd_me="$(id -u 2>/dev/null) 700"
-    [ -d "$BIN_STAGE" ] && [ ! -L "$BIN_STAGE" ] && [ "$(stat -c '%u %a' "$BIN_STAGE" 2>/dev/null)" = "$_bsd_me" ]
+bstage_ok() {   # [$1 = каталог; по умолчанию — хранилище загрузок с компьютера]
+    _bsd=${1:-$BIN_STAGE}; _bsd_me="$(id -u 2>/dev/null) 700"
+    [ -d "$_bsd" ] && [ ! -L "$_bsd" ] && [ "$(stat -c '%u %a' "$_bsd" 2>/dev/null)" = "$_bsd_me" ]
 }
 # Приём: свой каталог. Чужой — НЕ СНОСИМ, а отодвигаем переименованием: `rm -rf` обходит дерево (lstat, потом opendir), и процесс
 # nobody, подменив вложенный каталог симлинком в этом окне, увёл бы root сносить чужое, например настройки (ревью с.88, круг 2). `mv`
 # дерево не обходит (симлинк переименовывается сам, цель не тронута); отодвинутое — мусор чужого процесса в /tmp, уйдёт с ребутом.
-bstage_dir() {
-    bstage_ok && return 0
-    if [ -e "$BIN_STAGE" ] || [ -L "$BIN_STAGE" ]; then mv -f "$BIN_STAGE" "$BIN_STAGE.foreign.$$" 2>/dev/null || return 1; fi
-    mkdir -m 700 "$BIN_STAGE" 2>/dev/null
-    bstage_ok
+bstage_dir() {   # [$1 = каталог]
+    _bdd=${1:-$BIN_STAGE}
+    bstage_ok "$_bdd" && return 0
+    if [ -e "$_bdd" ] || [ -L "$_bdd" ]; then mv -f "$_bdd" "$_bdd.foreign.$$" 2>/dev/null || return 1; fi
+    mkdir -m 700 "$_bdd" 2>/dev/null
+    bstage_ok "$_bdd"
 }
 # «байты sha256» опубликованной сборки СВОЕЙ арки (пусто — строки нет или арка не опознана: чужую арку не подставляем, она у нас
 # не исполнится). Сеть не нужна — манифест лежит в каталоге кода.
@@ -804,32 +815,47 @@ cmd_bin_staged() {
 }
 # Убрать всё принятое (кнопка панели «Убрать»): принятое живёт в ОЗУ до установки или ребута, и панель, показав «загружено», обязана
 # уметь это снять — не заводим того, чего сами не снимем (ревью с.88, круг 2). Чужой каталог не трогаем (разбор у bstage_ok).
-cmd_bin_unstage() {
-    bstage_ok || return 0
-    for _bf in "$BIN_STAGE"/*; do if [ -f "$_bf" ]; then rm -f "$_bf"; fi; done
+# С аргументом — тот же разбор для другого своего каталога (скачанное заранее: движок снимает его в начале и в конце операции).
+cmd_bin_unstage() {   # [$1 = каталог]
+    _bud=${1:-$BIN_STAGE}
+    bstage_ok "$_bud" || return 0
+    for _bf in "$_bud"/*; do if [ -f "$_bf" ]; then rm -f "$_bf"; fi; done
     return 0
+}
+# bin-prefetch <имя> — скачать заранее в ОЗУ (разбор у BIN_PREFETCH): тот же fetch_bin с той же сверкой по подписанному манифесту, но
+# в свой каталог, МИМО локальных источников (иначе он взял бы файл из самого этого каталога — перенос в себя кончается `rm` исходника)
+# и без записи в кэш хеша (кэш — про файл на месте установки; его посеет установка из скачанного). Итог — последней строкой FAIL, как
+# у закачки: её поднимает движок.
+cmd_bin_prefetch() {
+    case "$1" in ''|*[!a-z0-9-]*) log "[fetch-bin] FAIL: имя компонента не по форме"; return 1 ;; esac
+    bstage_dir "$BIN_PREFETCH" || { log "[fetch-bin] FAIL: не завести каталог для закачки заранее в /tmp (место в ОЗУ?)"; return 1; }
+    rm -f "$BIN_PREFETCH/$1"
+    FB_NOLOCAL=1; FB_NOSEED=1
+    fetch_bin "$1" "$BIN_PREFETCH/$1" ""
 }
 # Загруженный файл — ВМЕСТО СЕТИ. Сверяем СВОЮ копию (уже рядом с местом установки) с манифестом: файл в общем /tmp мог смениться
 # после приёма. Прочее — как у закачки: ELF, право на исполнение, кэш хеша. Не сошлось — файл из хранилища убираем (второй раз он
 # не сойдётся) и отдаём слово закачке с GitHub.
-fetch_bin_staged() {   # $1 = имя, $2 = куда
-    _fsn="$1"; _fsd="$2"
-    log "[fetch-bin] $_fsn <- файл, загруженный с компьютера"
+fetch_bin_staged() {   # $1 = имя, $2 = куда, [$3 = каталог-источник: по умолчанию — загрузки с компьютера; BIN_PREFETCH — скачанное заранее]
+    _fsn="$1"; _fsd="$2"; _fsc=${3:-$BIN_STAGE}
+    if [ "$_fsc" = "$BIN_PREFETCH" ]; then _fsw="скачанный заранее"; log "[fetch-bin] $_fsn <- скачан заранее (ОЗУ)"
+    else _fsw="загруженный"; log "[fetch-bin] $_fsn <- файл, загруженный с компьютера"; fi
     _fsl=$(bm_line "$_fsn"); _fss=${_fsl#* }
-    [ "${#_fss}" = 64 ] || { rm -f "$BIN_STAGE/$_fsn" "$BIN_STAGE/$_fsn.sha"; fb_fail "$_fsn: в манифесте нет суммы — загруженный файл не проверить"; return 1; }
-    cp "$BIN_STAGE/$_fsn" "$_fsd.dl" 2>/dev/null || { rm -f "$_fsd.dl"; fb_fail "не скопировать загруженный $_fsn (место?)"; return 1; }
+    [ "${#_fss}" = 64 ] || { rm -f "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsn: в манифесте нет суммы — $_fsw файл не проверить"; return 1; }
+    cp "$_fsc/$_fsn" "$_fsd.dl" 2>/dev/null || { rm -f "$_fsd.dl"; fb_fail "не скопировать $_fsw $_fsn (место?)"; return 1; }
     _fsh=$(file_sha256 "$_fsd.dl")
-    if [ "$_fsh" != "$_fss" ]; then rm -f "$_fsd.dl" "$BIN_STAGE/$_fsn" "$BIN_STAGE/$_fsn.sha"; fb_fail "загруженный $_fsn не совпал с манифестом"; return 1; fi
-    if ! elf_ok "$_fsd.dl"; then rm -f "$_fsd.dl" "$BIN_STAGE/$_fsn" "$BIN_STAGE/$_fsn.sha"; fb_fail "загруженный $_fsn не ELF (не бинарь)"; return 1; fi
+    if [ "$_fsh" != "$_fss" ]; then rm -f "$_fsd.dl" "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsw $_fsn не совпал с манифестом"; return 1; fi
+    if ! elf_ok "$_fsd.dl"; then rm -f "$_fsd.dl" "$_fsc/$_fsn" "$_fsc/$_fsn.sha"; fb_fail "$_fsw $_fsn не ELF (не бинарь)"; return 1; fi
     chmod +x "$_fsd.dl"
     mv "$_fsd.dl" "$_fsd" || { rm -f "$_fsd.dl"; fb_fail "не смог поставить $_fsn"; return 1; }
     if [ ! -x "$_fsd" ]; then
         chmod +x "$_fsd" 2>/dev/null
         [ -x "$_fsd" ] || { rm -f "$_fsd"; fb_fail "$_fsn лёг без права на исполнение ($_fsd) — накопитель смонтирован без exec?"; return 1; }
     fi
-    rm -f "$BIN_STAGE/$_fsn" "$BIN_STAGE/$_fsn.sha"
+    rm -f "$_fsc/$_fsn" "$_fsc/$_fsn.sha"
     bs_seed "$_fsn" "$_fsd" "bin/$(bin_arch)/$_fsn.user" "$_fsh"
-    log "[fetch-bin] OK: $_fsn (загружен с компьютера) -> $_fsd"
+    if [ "$_fsc" = "$BIN_PREFETCH" ]; then log "[fetch-bin] OK: $_fsn (скачан заранее) -> $_fsd"
+    else log "[fetch-bin] OK: $_fsn (загружен с компьютера) -> $_fsd"; fi
 }
 
 # --- Путь по репо → URL ассета релиза. Пусто = ассета для него не бывает. ------------
@@ -906,7 +932,7 @@ fetch_bin_one() {
         chmod +x "$dst" 2>/dev/null
         [ -x "$dst" ] || { rm -f "$dst"; fb_fail "$name лёг без права на исполнение ($dst) — накопитель смонтирован без exec?"; return 1; }
     fi
-    bs_seed "$name" "$dst" "$rel" "$_fbh"
+    [ "$FB_NOSEED" = 1 ] || bs_seed "$name" "$dst" "$rel" "$_fbh"
     log "[fetch-bin] OK: $name ($sz байт) -> $dst"
 }
 
@@ -1438,7 +1464,10 @@ case "$1" in
     bin-ver)       bin_ver "$2" ;;
     # bin-status — «стоит ли свежая сборка и какая работает» по факту, без сети (разбор у bin_status).
     bin-status)    shift; bin_status "$@" ;;
-    *) echo "usage: $0 fetch-bin <name> <dst> [minsz] | check | apply [--force] | rollback | verify [путь] | check-json | verify-json | status-json | upd-busy | reachable [path] | bin-manifest | bin-size <имя> [min|max] | bin-ver <имя> | bin-status [имя…] | bin-stage <имя> <файл> | bin-staged | bin-unstage | bin-arch"; exit 2 ;;
+    # Закачка заранее (движок компонентов, разбор у BIN_PREFETCH): скачать в ОЗУ · убрать скачанное.
+    bin-prefetch)  cmd_bin_prefetch "$2" ;;
+    bin-unprefetch) cmd_bin_unstage "$BIN_PREFETCH" ;;
+    *) echo "usage: $0 fetch-bin <name> <dst> [minsz] | check | apply [--force] | rollback | verify [путь] | check-json | verify-json | status-json | upd-busy | reachable [path] | bin-manifest | bin-size <имя> [min|max] | bin-ver <имя> | bin-status [имя…] | bin-stage <имя> <файл> | bin-staged | bin-unstage | bin-prefetch <имя> | bin-unprefetch | bin-arch"; exit 2 ;;
 esac
 _rc=$?
 # Кэш сумм — временный (свежий на каждый запуск): протухшая копия молча пропустила бы
