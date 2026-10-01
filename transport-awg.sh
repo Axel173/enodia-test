@@ -551,6 +551,40 @@ cmd_status() {
 # отпустить маршрут и DNS и погасить демон (тёплый резерв при выключенном VPN не нужен).
 carrier_undo() { cmd_down; cmd_cold; }
 
+# ПОКОЛЕНИЕ ПРОТОКОЛА КОНФИГА — ЕДИНСТВЕННЫЙ ответ (бейдж «Серверов» через cgi-bin/list, строка status.sh): «имя⇥поколение» на
+# файл, поколение — wg · 1.0 · 1.5 · 2.0 · 3.0 · 3.1. Номера версии в файле нет, судим по ПОЛЯМ, и решает самое старшее: 3.1 —
+# RandomTrailers/DisableCookies (3.0 такой конфиг отвергает целиком); 3.0 — HeaderProtectionKey, ContentPaddingAddition, свои
+# тайминги; 2.0 — S3/S4 или H1–H4 ДИАПАЗОНОМ; 1.5 — I1–I5 (пустые не в счёт: awg_setup.sh их вычищает), J1–J3, Itime; 1.0 —
+# Jc/Jmin/Jmax/S1/S2/H1–H4; ни одного — обычный WireGuard. Все файлы — ОДНИМ проходом awk (список «Серверов» спрашивает разом);
+# пустой файл строки не получает. Функций у busybox-awk нет — итог собираем в массив и печатаем в END.
+cmd_conf_gen() {
+    [ $# -gt 0 ] || return 0
+    awk '
+        FNR == 1 { n++; nm = FILENAME; sub(/^.*\//, "", nm); sub(/\.conf$/, "", nm); N[n] = nm; G[n] = 0 }
+        { sub(/\r$/, "") }
+        !/=/ { next }
+        {
+            k = $0; sub(/[ \t]*=.*$/, "", k); sub(/^[ \t]+/, "", k)
+            v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+            if (v == "") next
+            r = 0
+            if (k == "RandomTrailers" || k == "DisableCookies") r = 31
+            else if (k == "HeaderProtectionKey" || k == "ContentPaddingAddition" || k == "RekeyAfterTime" || k == "RejectAfterTime" || k == "KeepaliveTimeout" || k == "MaxHandshakeAttempts") r = 30
+            else if (k == "S3" || k == "S4") r = 20
+            else if (k ~ /^H[1-4]$/ && v ~ /^[0-9]+[ \t]*-[ \t]*[0-9]+$/) r = 20
+            else if (k ~ /^(I[1-5]|J[1-3]|Itime)$/) r = 15
+            else if (k ~ /^(Jc|Jmin|Jmax|S1|S2|H[1-4])$/) r = 10
+            if (r > G[n]) G[n] = r
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                g = "wg"
+                if (G[i] == 31) g = "3.1"; else if (G[i] == 30) g = "3.0"; else if (G[i] == 20) g = "2.0"; else if (G[i] == 15) g = "1.5"; else if (G[i] == 10) g = "1.0"
+                printf "%s\t%s\n", N[i], g
+            }
+        }' "$@" 2>/dev/null
+}
+
 case "$1" in
     # Вербы, которые БЕРУТ несущую, — через carrier_run (daemon-lib.sh): при выключенном вручную VPN отказ, а выключение, пришедшее
     # по ходу, отпускает поднятое. Перебор серверов (failover) проверяет флаг и сам — на каждом кандидате (switch-vpn.sh).
@@ -570,5 +604,6 @@ case "$1" in
     # интерфейса, и третьей копии формулы «id -> awgN» в проекте быть не должно — она уже
     # живёт в двух местах (здесь и slot_tun в slot-tun-lib.sh), и разъехались бы они молча.
     slot-iface) slot_iface "$2" ;;
-    *) echo "usage: $0 up|down|cold|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-iface <id>"; exit 2 ;;
+    conf-gen)   shift; cmd_conf_gen "$@" ;;   # поколение протокола конфигов (разбор у cmd_conf_gen)
+    *) echo "usage: $0 up|down|cold|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-iface <id>|conf-gen <файл>…"; exit 2 ;;
 esac

@@ -185,12 +185,21 @@ awg_held() {
 	sh "$D/slots.sh" key-map 2>/dev/null | awk -F"$(printf '\t')" '$1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^[a-z0-9,]+$/ { printf "%s\"%s\":\"%s\"", (c++ ? "," : ""), $1, $2 }'
 }
 
+# ПОКОЛЕНИЕ ПРОТОКОЛА каждого конфига AmneziaWG — {"конфиг":"wg|1.0|…|3.1"}, бейдж строки «Серверов». Ответ — у владельца
+# (transport-awg.sh conf-gen), здесь только фильтр по форме: нет плагина (частичное обновление) — пустая карта, бейджей нет.
+awg_gen() {
+	[ -f "$D/transport-awg.sh" ] || return 0
+	set --; for f in "$DS"/configs/*.conf; do [ -f "$f" ] && set -- "$@" "$f"; done
+	[ $# -gt 0 ] || return 0
+	sh "$D/transport-awg.sh" conf-gen "$@" 2>/dev/null | awk -F"$(printf '\t')" '$1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^(wg|[0-9]\.[0-9])$/ { printf "%s\"%s\":\"%s\"", (c++ ? "," : ""), $1, $2 }'
+}
+
 aw_active=$(cat "$DS/.active"      2>/dev/null | tr -d ' \r\n"\\')
 xr_active=$(cat "$DS/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')
 hy_active=$(cat "$DS/.hy2-active"  2>/dev/null | tr -d ' \r\n"\\')
 
 printf '{"transport":"%s",' "$t"
-printf '"awg":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"held":{%s}},'  "${aw_active:-?}" "$(is_ready awg)"  "$(bin_present awg)"  "$(list_dir "$DS/configs" conf)" "$(awg_held)"
+printf '"awg":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"held":{%s},"gen":{%s}},'  "${aw_active:-?}" "$(is_ready awg)"  "$(bin_present awg)"  "$(list_dir "$DS/configs" conf)" "$(awg_held)" "$(awg_gen)"
 printf '"xray":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},' "${xr_active:-?}" "$(is_ready xray)" "$(bin_present xray)" "$(list_dir "$DS/xray-configs" json)" "$(meta_xray)"
 printf '"hy2":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},'  "${hy_active:-?}" "$(is_ready hy2)"  "$(bin_present hy2)"  "$(list_dir "$DS/hy2-configs" yaml)" "$(meta_hy2)"
 printf '"subs":[%s],' "$(subs_list)"

@@ -68,15 +68,17 @@ ipset_count() {
     printf '%s' "$_c"
 }
 
+# Поколение конфига — у ВЛАДЕЛЬЦА ответа (transport-awg.sh conf-gen, его же спрашивают «Серверы» панели): своя копия здесь не
+# знала AWG 3.x и называла конфиг 3.1 «2.0».
 detect_awg_version() {
     conf="$ENODIA_STATE/awg.conf"
     [ ! -f "$conf" ] && { echo "?"; return; }
-    if   grep -qE "^S3\s*=" "$conf" || grep -qE "^S4\s*=" "$conf"; then echo "2.0"
-    elif grep -qE "^H[1-4]\s*=\s*[0-9]+-[0-9]+" "$conf";          then echo "2.0"
-    elif grep -qE "^I1\s*=" "$conf";                              then echo "1.5"
-    elif grep -qE "^(Jc|S1|H1)\s*=" "$conf";                      then echo "1.0 (Legacy)"
-    else echo "обычный WireGuard"
-    fi
+    _avg=""; [ -f "$ENODIA_DIR/transport-awg.sh" ] && _avg=$(sh "$ENODIA_DIR/transport-awg.sh" conf-gen "$conf" 2>/dev/null | awk -F'\t' 'NR == 1 { print $2 }')
+    case "$_avg" in
+        wg) echo "обычный WireGuard" ;;
+        [0-9].[0-9]) echo "$_avg" ;;
+        *) echo "?" ;;
+    esac
 }
 
 # Попытка получить версию бинарника amneziawg-go / awg
@@ -237,18 +239,18 @@ if ip link show awg0 >/dev/null 2>&1; then
     bin_ver=$(detect_binary_version)
 
     case "$awg_ver" in
-        "2.0")
-            # AWG 2.0 в конфиге. Главный признак "бинарь свежий" — есть handshake.
+        2.0|3.0|3.1)
+            # AWG 2.0+ в конфиге. Главный признак "бинарь свежий" — есть handshake.
             if [ "$hs_ago" -ge 0 ] && [ "$hs_ago" -lt 600 ]; then
-                status "Версия протокола:" "AWG 2.0 — работает (handshake идёт)" "$GREEN"
+                status "Версия протокола:" "AWG $awg_ver — работает (handshake идёт)" "$GREEN"
             elif [ "$hs_ago" -ge 0 ]; then
-                status "Версия протокола:" "AWG 2.0 — handshake давний, проверьте VPS" "$YELLOW"
+                status "Версия протокола:" "AWG $awg_ver — handshake давний, проверьте VPS" "$YELLOW"
             else
-                status "Версия протокола:" "AWG 2.0 — handshake нет, возможно бинарь старый" "$YELLOW"
+                status "Версия протокола:" "AWG $awg_ver — handshake нет, возможно бинарь старый" "$YELLOW"
             fi
             ;;
         "1.5")    status "Версия протокола:" "AWG 1.5 — поддерживается" "$GREEN" ;;
-        "1.0"*)   status "Версия протокола:" "AWG 1.0 (Legacy) — стабильно работает" "$GREEN" ;;
+        "1.0")    status "Версия протокола:" "AWG 1.0 (Legacy) — стабильно работает" "$GREEN" ;;
         *)        status "Версия протокола:" "$awg_ver" "$YELLOW" ;;
     esac
     [ -n "$bin_ver" ] && status "Бинарь:" "$bin_ver" "$BLUE"

@@ -5485,7 +5485,7 @@
   function subToggle(tag){ var o={}; try{o=JSON.parse(localStorage.getItem('enodia_sub_open')||'{}');}catch(e){} o[tag]=o[tag]?0:1; try{localStorage.setItem('enodia_sub_open',JSON.stringify(o));}catch(e){} return !!o[tag]; }
   // Настоящие имена серверов (эмодзи/флаги/юникод) из /cgi-bin/list (карта файл→remark);
   // заполняется в openServers, читается serverRow. Порядок групп — localStorage per-browser.
-  var subNames={}, xrayMeta={}, hy2Meta={}, srvBin={};
+  var subNames={}, xrayMeta={}, hy2Meta={}, awgGen={}, srvBin={};
   // Плавающее текстовое меню (⋮). Вне модалки (position:fixed) → не режется
   // overflow'ом; закрывается кликом вне/по пункту. items=[{label,onClick,danger}|{sep:true}].
   var _menuEl=null, _menuAnchor=null, _menuBack=null;
@@ -12229,6 +12229,9 @@
   }
   // Имя сервера — ДАННЫЕ (ремарка подписки бывает кириллицей): перевод его не трогает (`translate="no"`), режим стримера размывает.
   function srvNm(t){ return '<div class="nm sens" translate="no">'+esc(t)+'</div>'; }
+  // ПОКОЛЕНИЕ AWG-КОНФИГА СЛОВОМ — бейдж строки и подзаголовок экрана сервера (макет, решение человека 01.10.2026): считает роутер
+  // (`awgGen` из /cgi-bin/list), панель только подписывает. Не пришло или незнакомое — бейджа нет, а не догадка.
+  function awgGenLbl(name){ var g=String(awgGen[name]||''); return g==='wg' ? 'WireGuard' : (/^[0-9]\.[0-9]$/.test(g) ? 'AWG '+g : ''); }
   // AmneziaWG и Hysteria2: метка справа — «активен» либо кнопка «выбрать →» (у транспорта без бинаря — причина, клик её объяснит);
   // под именем у Hysteria2 адрес и обфускация (из /cgi-bin/list), у обоих — последний пинг. «✎» — редактор (у AmneziaWG его нет).
   // Несущий конфиг удалить нельзя — крестика у него нет.
@@ -12239,13 +12242,14 @@
     var ds = m.host ? '<span class="mono">'+esc(m.host)+'</span>'+(m.obfs?' · '+esc(m.obfs):'') : '';
     // Конфиг выхода — не «выбрать →», а причина чипом: клик по строке всё равно дойдёт до роутера, и отказ скажет всё словами.
     var hx = (key==='awg' && !act) ? srvHeldByExit(grp.held, name) : '';
+    var gl = (key==='awg') ? awgGenLbl(name) : '';
     var st = act ? '<span class="chip'+(canAct?' acc':'')+'">'+actLbl(canAct)+'</span>'
            : hx ? '<span class="chip">занят: '+esc(slotHeldBy(hx))+'</span>'
                  : '<button type="button" class="chip srv-pick"'+(canAct ? ' aria-label="'+esc('Выбрать «'+(disp||name)+'»')+'"' : '')+'>'+(canAct?'выбрать →':notReadyLbl(grp))+'</button>';
     return srvRowOpen('srv', key, name, act, canAct)
       + '<div class="grow">'+srvNm(disp||name)+'<div class="ds">'+ds
       + '<span class="srv-ping" data-tpt="'+key+'" data-name="'+esc(name)+'"></span></div></div>'
-      + '<span class="srv-r">'+st
+      + '<span class="srv-r">'+(gl ? '<span class="badge">'+esc(gl)+'</span> ' : '')+st
       + (key==='hy2' ? '<button type="button" class="btn sm gh srv-edit" data-tpt="hy2" data-name="'+esc(name)+'" title="Изменить конфиг" aria-label="'+esc('Изменить конфиг «'+name+'»')+'">✎</button>' : '')
       + (canDel ? '<button type="button" class="btn sm gh srv-del" data-tpt="'+key+'" data-name="'+esc(name)+'" title="Удалить конфиг" aria-label="'+esc('Удалить конфиг «'+name+'»')+'">✕</button>' : '')
       + '</span>'+srvChev(key, name)+'</div>';
@@ -12438,6 +12442,7 @@
     _subTagsKnown = (d.subs||[]).map(function(s){ return s && s.tag; }).filter(function(t){ return !!t; });   // владельцы серверов для сброса кэша   // настоящие имена серверов подписки (эмодзи/флаги)
     xrayMeta = (d.xray && d.xray.meta) || {};   // host/sni/fp по конфигу (host — под именем)
     hy2Meta = (d.hy2 && d.hy2.meta) || {};      // host (сервер:порт) и obfs — строка Hysteria2 под именем
+    awgGen = (d.awg && d.awg.gen) || {};        // поколение протокола конфига AmneziaWG (transport-awg.sh conf-gen) — бейдж строки
     // Установлен ли БИНАРЬ транспорта (bin_present). Тест выхода/скорости xray без бинаря падал бы
     // в бэкенде и рисовал ложное «недоступен» — по этому флагу гейтим кнопки заранее (engineMissing).
     srvBin={awg:!(d.awg&&d.awg.bin===false), xray:!(d.xray&&d.xray.bin===false), hy2:!(d.hy2&&d.hy2.bin===false)};
@@ -13153,7 +13158,8 @@
     openModal(disp, {route:'cn-server', arg:tpt+'/'+name, deck:true, sens:true});
     var body=document.getElementById('modal-body');
     // Строка протокола — как в макете: транспорт · протокол и защита · хост · подписка.
-    var ml='<span>'+esc(names[tpt])+'</span>';
+    var agl=(tpt==='awg') ? awgGenLbl(name) : '';
+    var ml='<span>'+esc(names[tpt]+(/^AWG /.test(agl) ? agl.slice(3) : ''))+'</span>'+(agl==='WireGuard' ? ' · <span>WireGuard</span>' : '');
     if(tpt==='xray'){ ml+=' · <span>'+esc(protoBadge(meta))+'</span>'; if(meta.host) ml+=' · <span class="sens">'+esc(meta.host)+'</span>'; }
     if(tpt==='hy2'){ var hm=hy2Meta[name]||{}; ml+=' · <span>QUIC</span>'+(hm.host ? ' · <span class="sens">'+esc(hm.host)+'</span>' : '')+(hm.obfs ? ' · <span>'+esc(hm.obfs)+'</span>' : ''); }
     if(tpt==='awg') ml+=' · <span>нативный .conf</span>'+(carrier ? ' · <span>интерфейс awg0</span>' : '');
@@ -14142,7 +14148,7 @@
               d:dvDirChip(pa.tcp.r.dir, true, g)};
     }
     var one=pa.tcp || pa.udp;
-    if(one) r={h:r.h+' <span>'+(pa.tcp ? 'Кроме TCP: его целиком забирает правило по портам «все порты» —' : 'Кроме UDP: его целиком забирает правило по портам «все порты» —')+'</span> '+dvDirChip(one.r.dir, true, g), d:r.d};
+    if(one) r={h:r.h+' <span>'+(pa.tcp ? 'Кроме TCP: его целиком забирает правило по портам «все порты» —' : 'Кроме UDP: его целиком забирает правило по портам «все порты» —')+'</span> '+dvDirChip(one.r.dir, true, g), d:r.d, norm:r.norm};
     return r;
   }
   function dvRestMode(dev, net, ready){
@@ -14173,7 +14179,7 @@
       if(p==='void') return {h:'<span>Никуда: туннель поднят, но не везёт трафик — у устройства сейчас нет интернета, кроме правил «мимо VPN». Сторож сменит сервер или уведёт трафик напрямую.</span>', d:rpDir('void')};
     }
     var o=otherWords();
-    return {h:'<span>'+esc(o.norm ? 'Всё, что не решили правила, — напрямую.' : o.txt)+'</span>', d:o.k ? rpDir(o.k) : ''};
+    return {h:'<span>'+esc(o.norm ? 'Всё, что не решили правила, — напрямую.' : o.txt)+'</span>', d:o.k ? rpDir(o.k) : '', norm:o.norm};
   }
   // ПРАВИЛА ВСЕГО РОУТЕРА ДЛЯ ЭТОГО УСТРОЙСТВА — сколько «мимо» и сколько «в VPN». Те же четыре ответа, что у области «Весь
   // роутер» (разбор — там же). Запоминаем на ВИЗИТ экрана (поколение перехода `_navGen`): перерисовка после действия их не
@@ -15217,7 +15223,7 @@
   // «Десинк», «Блок», выход — его именем (`rpDirSlot`), основной туннель — СЕРВЕРОМ, которым он сейчас выходит («Амстердам»
   // макета; имя конфига из статуса — под меткой стримера, сервер не известен — «VPN»). Правило «мимо VPN» по факту — «Напрямую».
   // Класс даёт цвет (макет: `.dir.vpn` · `.dir.dirc` · `.dir.des` · `.dir.blk`).
-  var RP_DIR={vpn:['vpn','VPN'], bypass:['dirc','Напрямую'], block:['blk','Блок'], desync:['des','Десинк'], direct:['dirc','Напрямую'], split:['','По правилам'], off:['','Выключено'], broken:['blk','Выход не работает'], void:['blk','Никуда']};
+  var RP_DIR={vpn:['vpn','VPN'], bypass:['dirc','Напрямую'], block:['blk','Блок'], desync:['des','Десинк'], direct:['dirc','Напрямую'], split:['','По правилам'], dsplit:['','Раздельно'], off:['','Выключено'], broken:['blk','Выход не работает'], void:['blk','Никуда']};
   // Сервер основного туннеля — только у транспортов С СЕРВЕРОМ: у ByeDPI в `config` статуса стратегия («авто»), у Zapret — «дефолт»,
   // и чип «в туннель» назвал бы их сервером (ревью пачки 5, круг 1).
   // ИМЯ СЕРВЕРА ИЗ ОТВЕТА СТАТУСА — только у настроенного транспорта и не «?» (CGI отдаёт «?», когда конфиг не прочитан). Своей
@@ -15947,21 +15953,25 @@
   // ── ОБЛАСТЬ «УСТРОЙСТВА» ─────────────────────────────────────────────────────────────────────────────
   // Строка устройства — одна на «Обзор» и страницу раздела (`full` — с точкой «в сети» и бейджами адреса): список и
   // карточка обязаны говорить об устройстве одно и то же, а вторая склейка разошлась бы с первой.
+  // ЧИП СПИСКА — РЕАЛЬНОЕ СОСТОЯНИЕ УСТРОЙСТВА (решение человека 01.10.2026): правила работают и устройство целиком никто не
+  // забирает — «Раздельно» (слово режима устройства); иначе — факт пути из той же лестницы, что строка «Весь остальной трафик»
+  // экрана устройства (`dvRest`): «Напрямую» при выключенном VPN и мимо-режимах, сервер — целиком в туннель, «Никуда», выход.
+  // Прежде список ставил чип «куда остальное» — у всех устройств «Напрямую», и это читалось как «устройство мимо VPN».
+  function devChip(rs){ return rs.norm ? rpDir('dsplit') : (rs.d||''); }
   function devRow(dev, nP, nD, full, ws, net, ready, ports){
     var nm=devName(dev);
-    // СТРОКА «ОБЗОРА» — КАК В МАКЕТЕ: знак устройства, имя, адрес и сеть, справа — куда идёт ВЕСЬ остальной трафик устройства. Чип
-    // — тот же ответ, что строка «весь остальной трафик» экрана устройства (`dvRest`: лестница ядра, выход, «туннель не везёт»), а не
-    // режим словами: вопрос карточки — «кто в сети и куда уходит его трафик». Тип устройства роутер не знает — знак общий.
+    // СТРОКА «ОБЗОРА» — КАК В МАКЕТЕ: знак устройства, имя, адрес и сеть, справа — состояние устройства (`devChip`). Тип устройства
+    // роутер не знает — знак общий.
     if(!full){
       var rest=dvRest(dev, net||null, !!ready, ports), ss=(ws && ws.ssid) ? String(ws.ssid) : '';
       return lrowGo('dev:'+dev.ip, 'открыть правила устройства')
         + '<div class="av">'+icUse('i-dev','s','',true)+'</div>'
         + '<div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(nm)+'</span></div>'
         + '<div class="ds"><span class="sens">'+esc(dev.ip)+'</span>'+(ss ? ' · <span class="sens">'+esc(ss)+'</span>' : '')+'</div></div>'
-        + (rest.d||'') + CHEV + '</div>';
+        + devChip(rest) + CHEV + '</div>';
     }
-    // СТРАНИЦА «МАРШРУТИЗАЦИИ» — та же строка (макет): знак, имя, адрес и сводка, справа — тот же чип «куда идёт ВЕСЬ остальной
-    // трафик» (`dvRest`). Режим словами в описании не повторяем — его несёт чип; своих правил — числом. MAC рядом с именем — ради
+    // СТРАНИЦА «МАРШРУТИЗАЦИИ» — та же строка (макет): знак, имя, адрес и сводка, справа — тот же чип состояния (`devChip`). Режим
+    // словами в описании не повторяем — его несёт чип; своих правил — числом. MAC рядом с именем — ради
     // заметки «сверяйте по MAC»; не в сети — приглушено; бейджи адреса — `devFlags`. Прежде вместо знака стояла точка «в сети»,
     // режим был словом, а чипа не было вовсе (сверка 26.09.2026).
     var rs=dvRest(dev, net||null, !!ready, ports), nR=(nP|0)+(nD|0), dim=dev.online ? '' : ' style="opacity:.7"';
@@ -15971,7 +15981,7 @@
       + ((dev.mac && devNamed(dev)) ? '<span class="mono sens rp-mac">'+esc(dev.mac.toUpperCase())+'</span>' : '')+'</div>'
       + '<div class="ds"><span class="sens">'+esc(dev.ip)+'</span>'+((!dev.mode || dev.mode==='split') ? ' · <span>наследует сеть</span>' : '')
       + (nR ? ' · <span>+'+nR+' '+unitF(nR, 'правил')+'</span>' : '')+devFlags(dev)+'</div></div>'
-      + (rs.d||'') + CHEV + '</div>';
+      + devChip(rs) + CHEV + '</div>';
   }
   function rpPaintDev(box, d){
     rqDevFill();   // «для кого спрашиваем» у проверялки — из этого же ответа, второго запроса нет
