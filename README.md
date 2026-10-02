@@ -11,6 +11,7 @@
 [![Скачиваний всего](https://img.shields.io/github/downloads/Axel173/xiaomi-be7000-amnezia/total?label=скачиваний)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний последнего релиза](https://img.shields.io/github/downloads-pre/Axel173/xiaomi-be7000-amnezia/latest/total?label=последний%20релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
+[![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#поддержать-автора)
 
 <img src="assets/banner.svg" alt="BE7000 + AmneziaWG" style="max-width:100%">
 
