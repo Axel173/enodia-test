@@ -15,6 +15,9 @@ interface_config="$ENODIA_STATE/awg0.conf"
 # не делаем, даже firewall reload) и ПОСЛЕ подъёма (выключили по ходу — гасим свой демон). Владелец ответа — daemon-lib.sh.
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+# Отметка «несущую только что подняли» (clock-lib.sh, разбор у вызова ниже). Нет библиотеки — отметки нет, как раньше.
+if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
+command -v carrier_up_mark >/dev/null 2>&1 || carrier_up_mark() { return 0; }
 if carrier_barred; then
     echo "VPN выключен вручную — awg0 не поднимаю (включить: тумблер в панели)"
     exit 1
@@ -218,6 +221,11 @@ if carrier_barred; then
     ip link del awg0 2>/dev/null
     exit 1
 fi
+# «НЕСУЩУЮ ТОЛЬКО ЧТО ПОДНЯЛИ» (clock-lib.sh::carrier_up_mark) — awg0 рождается ТОЛЬКО здесь, поэтому и отметка здесь. Её читают
+# двое: сторож (грейс прогрева, как у альтов) и слой DoH — прокси держит HTTP/2 к резолверу через СНЕСЁННЫЙ awg0, и без
+# перезапуска первая проба имён после смены сервера упиралась в мёртвое соединение: 4 с таймаута + 2 с паузы (замер BE7000
+# 02.10.2026, смена сервера 9.1 с вместо ~2). Прежде у AmneziaWG отметки не было вовсе — её ставили лишь плагины альтов.
+carrier_up_mark
 
 # $ENODIA_BIN/awg - check connection
 
