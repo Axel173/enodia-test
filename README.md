@@ -7,12 +7,6 @@
 [![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
 [![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#donate)
 
-[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
-[![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
-[![Hysteria2](https://img.shields.io/badge/Hysteria2-3fb950)](https://github.com/apernet/hysteria)
-[![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
-[![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
-
 ### Русский | [English](README.en.md)
 
 Enodia — открытый проект для роутеров Xiaomi на стоковой прошивке. Заблокированные сайты идут через
@@ -43,15 +37,16 @@ Enodia — открытый проект для роутеров Xiaomi на с�
 
 ## <a id="protocols"></a>Протоколы
 
-| Протокол | Что это | Свой сервер |
-|---|---|---|
-| **AmneziaWG** | WireGuard с маскировкой трафика; конфиг из AmneziaVPN — файлом или ссылкой `vpn://` | нужен |
-| **Xray** | VLESS (в том числе Reality), VMess, Trojan, Shadowsocks — ссылкой или подпиской | нужен |
-| **Hysteria2** | протокол поверх QUIC — ссылкой `hy2://` | нужен |
-| **ByeDPI** | десинк: локальный прокси сбивает DPI провайдера | не нужен |
-| **Zapret** | десинк на уровне пакетов (nfqws) | не нужен |
+[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
+[![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
+[![Hysteria2](https://img.shields.io/badge/Hysteria2-3fb950)](https://github.com/apernet/hysteria)
+[![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
+[![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
 
-Протоколы ставятся из панели. Несколько могут стоять рядом и работать одновременно на разных выходах.
+AmneziaWG, Xray и Hysteria2 работают через ваш сервер, ByeDPI и Zapret обходят блокировки без сервера.
+Конфиги добавляются файлом или ссылкой (`vpn://` из AmneziaVPN, `vless://`, `vmess://`, `trojan://`, `ss://`,
+`hy2://`), для Xray — и подпиской. Протоколы ставятся из панели, несколько могут работать одновременно
+на разных выходах.
 
 ## Установка
 
