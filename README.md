@@ -1,15 +1,16 @@
 <div align="center">
 
-![Роутеры](https://img.shields.io/badge/роутеры-Xiaomi,_стоковая_прошивка-orange)
-![Протоколы](https://img.shields.io/badge/протоколы-AmneziaWG_%C2%B7_Xray_%C2%B7_Hysteria2_%C2%B7_ByeDPI_%C2%B7_Zapret-1f6feb)
-[![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
+[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
+[![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
+[![Hysteria2](https://img.shields.io/badge/Hysteria2-3fb950)](https://github.com/apernet/hysteria)
+[![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
+[![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
 
 [![Версия](https://img.shields.io/github/v/release/Axel173/xiaomi-be7000-amnezia?include_prereleases&sort=semver&label=версия)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Дата релиза](https://img.shields.io/github/release-date-pre/Axel173/xiaomi-be7000-amnezia?label=релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний всего](https://img.shields.io/github/downloads/Axel173/xiaomi-be7000-amnezia/total?label=скачиваний)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний последнего релиза](https://img.shields.io/github/downloads-pre/Axel173/xiaomi-be7000-amnezia/latest/total?label=последний%20релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
-[![Последний коммит](https://img.shields.io/github/last-commit/Axel173/xiaomi-be7000-amnezia?label=коммит)](https://github.com/Axel173/xiaomi-be7000-amnezia/commits)
-[![Звёзды](https://img.shields.io/github/stars/Axel173/xiaomi-be7000-amnezia?label=звёзды&style=flat)](https://github.com/Axel173/xiaomi-be7000-amnezia/stargazers)
+[![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
 
 <img src="assets/banner.svg" alt="BE7000 + AmneziaWG" style="max-width:100%">
 
@@ -54,7 +55,8 @@
 
 **BE3600 · BE6500 · BE7000 · BE10000 · BE10000 PRO · AX3600**
 
-Нужна стоковая прошивка и root-доступ по SSH — мастер установки умеет открыть его сам.
+Нужна стоковая прошивка и root-доступ по SSH — мастер установки откроет его сам встроенным
+[xmir-patcher](https://github.com/Axel173/xmir-patcher).
 
 ## Протоколы
 
