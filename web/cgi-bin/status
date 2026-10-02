@@ -309,6 +309,14 @@ if [ "$t" = xray ] && [ -n "$cfg" ] && [ -f "$DS/.sub-names" ]; then
 	fr=$(grep "^$cfg$(printf '\t')" "$DS/.sub-names" 2>/dev/null | head -1 | cut -f2-)
 	[ -n "$fr" ] && cfg="$fr"
 fi
+# Конфиг, добавленный руками (vpn://, файл, ссылка): настоящее имя — у cfg-names.sh («Interra 🇩🇪 justhost» вместо файла
+# Interra-DE-justhost). Спрашиваем ВЛАДЕЛЬЦА, ключ — вид и файл; не знает — остаётся то, что было.
+case "$t" in awg|xray|hy2)
+	if [ -n "$cfg_file" ] && [ -f "$D/cfg-names.sh" ]; then
+		fr=$(sh "$D/cfg-names.sh" get "$t" "$cfg_file" 2>/dev/null)
+		[ -n "$fr" ] && cfg="$fr"
+	fi ;;
+esac
 
 # Минимальный JSON-эскейп для имени конфига (убираем кавычки/бэкслеши и управляющие байты — см. sub_label выше).
 cfg=$(echo "$cfg" | tr -d '\000-\037"\\')

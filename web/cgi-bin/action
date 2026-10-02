@@ -1460,9 +1460,9 @@ EOF
 		[ -f "$ENODIA_STATE/configs/$name.conf" ] || fail "нет конфига $name"
 		active=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d ' \r\n')
 		[ "$name" = "$active" ] && fail "нельзя удалить активный конфиг ($name) — сначала переключитесь на другой"
-		rm -f "$ENODIA_STATE/configs/$name.conf" \
-			&& printf '{"ok":true,"code":0,"msg":"awg-конфиг %s удалён"}\n' "$name" \
-			|| fail "не удалось удалить $name"
+		rm -f "$ENODIA_STATE/configs/$name.conf" || fail "не удалось удалить $name"
+		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del awg "$name" >/dev/null 2>&1   # настоящее имя — вместе с файлом
+		printf '{"ok":true,"code":0,"msg":"awg-конфиг %s удалён"}\n' "$name"
 		exit 0 ;;
 	del_xray_server)
 		name=$(field name)
@@ -1472,6 +1472,7 @@ EOF
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = xray ]; } \
 			&& fail "это активный конфиг при включённом Xray — сначала переключитесь на другой транспорт"
 		rm -f "$ENODIA_STATE/xray-configs/$name.json"
+		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del xray "$name" >/dev/null 2>&1
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.xray-active"
 		printf '{"ok":true,"code":0,"msg":"xray-конфиг %s удалён"}\n' "$name"; exit 0 ;;
 	del_hy2_server)
@@ -1482,6 +1483,7 @@ EOF
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = hy2 ]; } \
 			&& fail "это активный конфиг при включённой Hysteria2 — сначала переключитесь на другой транспорт"
 		rm -f "$ENODIA_STATE/hy2-configs/$name.yaml"
+		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del hy2 "$name" >/dev/null 2>&1
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.hy2-active"
 		printf '{"ok":true,"code":0,"msg":"hy2-конфиг %s удалён"}\n' "$name"; exit 0 ;;
 
@@ -1500,6 +1502,8 @@ EOF
 	# регистра — через временное имя: там же `mv` в самого себя ничего не делает, а проверка «уже есть» видела бы сам файл.
 	rename_config)
 		kind=$(field kind); old=$(urldecode "$(field name)"); new=$(urldecode "$(field new)")
+		# НАСТОЯЩЕЕ ИМЯ (cfg-names.sh): как набрал человек, с эмодзи; файл — латиницей (`new`). Нет поля — прежний клиент: показ едет за файлом.
+		_rdh=0; disp=""; if printf "%s" "&$body" | grep -q "&display="; then _rdh=1; disp=$(urldecode "$(field display)"); fi
 		case "$kind" in
 			awg)  dir="$ENODIA_STATE/configs";      ext=conf; af="$ENODIA_STATE/.active" ;;
 			xray) dir="$ENODIA_STATE/xray-configs"; ext=json; af="$ENODIA_STATE/.xray-active" ;;
@@ -1509,7 +1513,7 @@ EOF
 		{ one_line "$old" && echo "$old" | grep -qE '^[A-Za-z0-9_.-]+$' && [ "$old" != . ] && [ "$old" != .. ]; } || fail "недопустимое имя конфига"
 		{ one_line "$new" && echo "$new" | grep -qE '^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$'; } \
 			|| fail "новое имя: латиница, цифры, точка, «_» и «-», до 80 знаков, первым — буква или цифра"
-		[ "$old" = "$new" ] && fail "имя не изменилось"
+		[ "$old" = "$new" ] && [ "$_rdh" = 0 ] && fail "имя не изменилось"
 		_rown=""
 		if command -v sub_owner_tag >/dev/null 2>&1; then _rown=$(sub_owner_tag "$old"); else case "$old" in sub-*) _rown=1 ;; esac; fi
 		[ -n "$_rown" ] && fail "имя сервера подписки задаёт подписка — переименовать его нельзя"
@@ -1517,6 +1521,14 @@ EOF
 		_rlo=$(printf '%s' "$old" | tr 'A-Z' 'a-z'); _rln=$(printf '%s' "$new" | tr 'A-Z' 'a-z')
 		{ [ "$_rlo" = default ] || [ "$_rln" = default ]; } && fail "«default» — служебное имя установщика: его нельзя ни дать, ни снять"
 		[ -f "$dir/$old.$ext" ] || fail "нет конфига $old"
+		# Файл тот же, сменился только показ (добавили флаг, эмодзи, поменяли регистр кириллицы) — правка одного .cfg-names: ни
+		# слотов, ни лока смены, ни переезда файла.
+		if [ "$old" = "$new" ]; then
+			[ -f "$ENODIA_DIR/cfg-names.sh" ] || fail "нет cfg-names.sh — обновите установку"
+			_rdo=$(sh "$ENODIA_DIR/cfg-names.sh" set "$kind" "$old" "$disp" 2>&1) || fail "$(printf '%s' "$_rdo" | tail -n 1 | sed 's/^\[cfg-names\] //' | jesc 200)"
+			_rdm=$(printf '%s' "${disp:-$old}" | jesc 200)
+			printf '{"ok":true,"code":0,"name":"%s","slots":0,"msg":"имя «%s» сохранено"}\n' "$old" "$_rdm"; exit 0
+		fi
 		# Смена только регистра: «уже есть» — лишь если в каталоге ДРУГОЙ файл с этим именем (на ФС без регистра его не будет).
 		if [ "$_rlo" = "$_rln" ]; then
 			ls -1 "$dir" 2>/dev/null | grep -Fxq "$new.$ext" && fail "конфиг «$new» уже есть — выберите другое имя"
@@ -1544,6 +1556,11 @@ EOF
 			fail "не удалось переименовать файл"
 		fi
 		_ra=$(cat "$af" 2>/dev/null | tr -d ' \r\n'); [ "$_ra" = "$old" ] && echo "$new" > "$af"
+		# Показ едет за файлом: набранное имя — новым показом, иначе прежний показ переезжает на новое имя файла.
+		if [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
+			if [ "$_rdh" = 1 ]; then sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" "$disp" >/dev/null 2>&1
+			else sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" >/dev/null 2>&1; fi
+		fi
 		if [ "$kind" = awg ]; then
 			for _rf in .failover-home .last.bak.name; do
 				_rv=$(cat "$ENODIA_STATE/$_rf" 2>/dev/null | tr -d ' \r\n'); [ "$_rv" = "$old" ] && echo "$new" > "$ENODIA_STATE/$_rf"
@@ -1685,6 +1702,11 @@ EOF
 		mkdir -p "$dir" 2>/dev/null
 		dst="$dir/$name.$ext"
 		if printf '%s' "$content" | tr -d '\r' > "$dst.new" && mv "$dst.new" "$dst" && chmod 600 "$dst"; then
+			# НАСТОЯЩЕЕ ИМЯ (ремарка ссылки, имя файла, description vpn://) — в .cfg-names (cfg-names.sh): файл латиницей, показ как
+			# назван. Поля нет (повторная заливка редактором, прежний клиент) — показ не трогаем. Сбой метки загрузку не отменяет.
+			if printf '%s' "&$body" | grep -q '&display=' && [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
+				sh "$ENODIA_DIR/cfg-names.sh" set "$kind" "$name" "$(urldecode "$(field display)")" >/dev/null 2>&1
+			fi
 			printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён (%s) — активируйте в списке серверов"}\n' "$name" "$kind"
 		else
 			rm -f "$dst.new" 2>/dev/null

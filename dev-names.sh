@@ -48,46 +48,17 @@ command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$
 NAME_MAX=96
 LOCK=/tmp/.enodia-dev-names.lock
 
-# Писателей несколько (две вкладки панели), а запись — read-modify-write целого файла ⇒ лок-КАТАЛОГ (mkdir атомарен) с ПИДом.
-# Протух — если держателя нет: пид мёртв ИЛИ уже чужой (пиды переиспользуются, а лок в /tmp живёт до ребута), либо пида нет
-# дольше, чем живой держатель пишет его (миг после mkdir): держатель умер между mkdir и echo. Судим по /proc, а не по возрасту
-# (часы роутера прыгают, C24). Не взять за 5 с — отказ словами, а не тихая потеря чужой правки.
-lock_take() {
-    _li=0
-    while ! mkdir "$LOCK" 2>/dev/null; do
-        _li=$((_li+1)); [ "$_li" -gt 5 ] && return 1
-        _lp=$(cat "$LOCK/pid" 2>/dev/null | tr -d ' \r\n')
-        if [ -n "$_lp" ]; then
-            pid_runs "$_lp" 'dev-names' || { rm -rf "$LOCK" 2>/dev/null; continue; }
-        elif [ "$_li" -ge 3 ]; then
-            rm -rf "$LOCK" 2>/dev/null; continue
-        fi
-        sleep 1
-    done
-    echo $$ > "$LOCK/pid" 2>/dev/null
-    return 0
-}
-lock_drop() { rm -rf "$LOCK" 2>/dev/null; }
-
-# Имя человека → безопасная строка персиста: таб и переводы строки — в пробел (это разделители TSV, но человеку — пробел),
-# прочие управляющие байты, кавычка и обратная косая — вон (JSON), пробелы по краям — вон, подряд идущие — в один.
-san_name() { printf '%s' "$1" | tr '\t\r\n' '   ' | tr -d '\000-\037"\\' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'; }
-
-# ЕДИНСТВЕННЫЙ разбор персиста (см. шапку): управляющие байты, кроме таба и перевода строки, кавычку и косую — вон ещё до awk;
-# MAC — строчными и только настоящий; хвост полей (таб в имени) — пробелом; пустое имя — не метка; на MAC — первая строка.
-cmd_list() {
-    [ -f "$STORE" ] || return 0
-    tr -d '\000-\010\013-\037"\\' < "$STORE" 2>/dev/null | awk -F"$TAB" '
-    {
-        m = tolower($1); gsub(/ /, "", m)
-        if (m !~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/) next
-        if (m in seen) next
-        n = $2; for (i = 3; i <= NF; i++) n = n " " $i
-        gsub(/  +/, " ", n); sub(/^ /, "", n); sub(/ $/, "", n)
-        if (n == "") next
-        seen[m] = 1; print m "\t" n
-    }'
-}
+# Механика метки — общая с cfg-names.sh, у ОДНОГО владельца (label-lib.sh: лок-каталог с ПИДом, очистка имени, ЕДИНСТВЕННЫЙ
+# разбор персиста, атомарная запись); здесь — только то, что про устройства: ключ — MAC строчными. Нет библиотеки — отказ
+# словами: обновление ставит файлы пакетом, а без разбора отдавать метки в JSON нельзя (управляющий байт рвал весь список).
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; else
+    echo "[dev-names] нет $ENODIA_DIR/label-lib.sh — обновите установку" >&2; exit 1
+fi
+MAC_RE='^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$'
+lock_take() { lbl_lock_take "$LOCK" 'dev-names'; }
+lock_drop() { lbl_lock_drop "$LOCK"; }
+san_name() { lbl_san "$1"; }
+cmd_list() { lbl_list "$STORE" "$MAC_RE" lower; }
 
 cmd_get() {
     _gm=$(mac_norm "$1"); mac_ok "$_gm" || return 1
@@ -98,16 +69,7 @@ cmd_get() {
 # проверяем записанное ЧТЕНИЕМ: busybox awk и `printf >>` на полном разделе (20-МБ /data, «No space» бывает и от UBIFS GC)
 # возвращают 0, и прежняя форма «временный файл пуст ⇒ снять персист» превращала сбой записи в УДАЛЕНИЕ всех имён, а
 # оборванную запись — в подмену персиста обрывком (ревью 27.09.2026). Пустой персист теперь — только настоящий итог правки.
-store_write() {   # $1 = mac, $2 = имя (пусто = снять)
-    _wb=$(cmd_list | awk -F"$TAB" -v m="$1" '$1!=m')
-    [ -n "$2" ] && _wb="${_wb:+$_wb$NL}$1$TAB$2"
-    if [ -z "$_wb" ]; then rm -f "$STORE"; return $?; fi
-    _wt="$STORE.$$"
-    if printf '%s\n' "$_wb" > "$_wt" 2>/dev/null && [ "$(cat "$_wt" 2>/dev/null)" = "$_wb" ]; then
-        mv "$_wt" "$STORE" && return 0
-    fi
-    rm -f "$_wt"; return 1
-}
+store_write() { lbl_write "$STORE" "$1" "$2" "$MAC_RE" lower; }   # $1 = mac, $2 = имя (пусто = снять)
 
 cmd_set() {
     _sm=$(mac_norm "$1")

@@ -117,6 +117,8 @@ dhcp-static.sh
 # Свои имена устройств — метка панели по MAC («Алиса» вместо голого MAC). Пишет панель (действие dev_name), читают
 # cgi-bin/data и wifi-stats.sh через его `list` (разбор персиста один); нет файла — «Переименовать» честно отказывает, список прежний.
 dev-names.sh
+label-lib.sh
+cfg-names.sh
 lists-update.sh
 groups.sh
 geo.sh

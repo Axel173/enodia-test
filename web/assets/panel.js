@@ -3626,18 +3626,18 @@
     var waitEl=_menuEl;
     fetchJson('/cgi-bin/list').then(function(d){
       if(!_menuEl || _menuEl!==waitEl) return;
-      subNames=d.names||{};
+      subNames=d.names||{}; cfgNames=d.cfgnames||{};
       var grp=d[t]||{}, list=grp.servers||[], subs=d.subs||[], canAct=canActivate(grp), items=[];
       // xray с подписками — сотни серверов в попап-меню не влезут: ведём в полноценный список.
       if(t==='xray' && list.length>14){
-        if(grp.active) items.push({label:'● '+subDisp(grp.active,subs), note:' (текущий)', onClick:function(){}});
+        if(grp.active) items.push({label:'● '+cfgDisp(t,grp.active,subs), note:' (текущий)', onClick:function(){}});
         items.push({sep:true});
         items.push({label:'🔍 Открыть список серверов…', onClick:openServers});
       } else {
         list.forEach(function(nm){
           // subDisp зовём и для hy2: подписка теперь раскладывает hysteria2-ссылки тоже, и
           // без этого её сервера показывались бы именем ФАЙЛА (sub-tag-…) вместо «🇳🇱 Нидерланды».
-          var disp=(t==='xray'||t==='hy2')?subDisp(nm,subs):nm;
+          var disp=cfgDisp(t,nm,subs);
           items.push({label:(grp.active===nm?'● ':'')+disp, onClick:function(){ if(grp.active!==nm) activateServer(t,nm,canAct); }});
         });
         if(!list.length) items.push({label:'нет конфигов — добавьте в «Серверы»…', onClick:openServers});
@@ -4954,13 +4954,15 @@
   window.addEventListener('drop', function(e){ e.preventDefault(); }, false);
   // Загрузка ОДНОГО конфига (не через postAction — нужна последовательная цепочка
   // нескольких файлов с одним busy-замком; postAction делает свой re-poll/таймер).
-  function uploadOne(kind,name,content_b64,done){
+  // `disp` — настоящее имя (ремарка ссылки, имя файла, description vpn://): роутер положит его в .cfg-names (cfg-names.sh).
+  function uploadOne(kind,name,content_b64,done,disp){
     setBusy(true,'загружаю '+name+'…');
     logLine('→ загружаю '+name+' ('+kind+')', null);
     tokPost('/cgi-bin/action', function(tok){
       return 'action=upload_config&token='+encodeURIComponent(tok)
            +'&kind='+encodeURIComponent(kind)+'&name='+encodeURIComponent(name)
-           +'&content='+encodeURIComponent(content_b64);
+           +'&content='+encodeURIComponent(content_b64)
+           +(dispCap(disp) ? '&display='+encodeURIComponent(dispCap(disp)) : '');
     }).then(function(d){
       logLine(d.msg || (d.ok?'готово':'ошибка'), !!d.ok);
       showToast(d.msg || (d.ok?'готово':'ошибка'), !!d.ok);
@@ -4988,16 +4990,16 @@
         if(kind==='awg'){
           decodeAmneziaVpn(content).then(function(res){
             if(res && res.conf){ logLine(f.name+': Amnezia vpn:// → извлёк AmneziaWG-конфиг', true);
-                      uploadOne('awg', (res.name?amneziaName(res):nm), b64utf8(res.conf), function(){ next(i+1); }); }
-            else uploadOne('awg', nm, b64utf8(content), function(){ next(i+1); });
+                      uploadOne('awg', (res.name?amneziaName(res):nm), b64utf8(res.conf), function(){ next(i+1); }, res.name||f.name.replace(/\.[^.]+$/,'')); }
+            else uploadOne('awg', nm, b64utf8(content), function(){ next(i+1); }, f.name.replace(/\.[^.]+$/,''));
           }).catch(function(){
             // Нет DecompressionStream: native .conf зальём, .vpn-контейнер — не сможем.
-            if(looksNativeWg(content)) uploadOne('awg', nm, b64utf8(content), function(){ next(i+1); });
+            if(looksNativeWg(content)) uploadOne('awg', nm, b64utf8(content), function(){ next(i+1); }, f.name.replace(/\.[^.]+$/,''));
             else { logLine(f.name+': не распаковать vpn:// (браузер без DecompressionStream)', false); next(i+1); }
           });
           return;
         }
-        uploadOne(kind, nm, b64utf8(content), function(){ next(i+1); });
+        uploadOne(kind, nm, b64utf8(content), function(){ next(i+1); }, f.name.replace(/\.[^.]+$/,''));
       };
       rd.onerror=function(){ logLine(f.name+': не прочитан', false); next(i+1); };
       rd.readAsText(f);
@@ -5404,6 +5406,13 @@
       'о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'',
       'э':'e','ю':'yu','я':'ya','і':'i','ї':'yi','є':'ye','ґ':'g','ә':'a','ғ':'g','қ':'q','ң':'n','ө':'o','ұ':'u','ү':'u','һ':'h','ў':'u'};
     var s=String(v||''); if(s.normalize) s=s.normalize('NFC');
+    // ФЛАГ СТРАНЫ → ЕЁ КОД (🇩🇪 → DE). Флаг — пара «региональных букв» U+1F1E6..1F1FF (в UTF-16 — суррогаты 🇦..\uDDFF),
+    // и раньше он падал в дефис вместе с прочими эмодзи: «Interra 🇩🇪 justhost» и «Interra 🇳🇱 justhost» давали ОДНО имя
+    // `Interra-justhost`, а роутер совпавшее имя молча перезаписывает (upload_config) — второй импорт затирал первый конфиг
+    // (жалоба 03.10.2026). Код страны имя различает и остаётся латиницей. Прочие эмодзи по-прежнему уходят в дефис.
+    s=s.replace(/\uD83C([\uDDE6-\uDDFF])\uD83C([\uDDE6-\uDDFF])/g, function(m, a, b){
+      return ' '+String.fromCharCode(65+a.charCodeAt(0)-0xDDE6, 65+b.charCodeAt(0)-0xDDE6)+' ';
+    });
     s=s.replace(/[а-яёіїєґәғқңөұүһў]/gi, function(c){
       var l=c.toLowerCase(), t=T[l]; if(t==null) return c;
       return (c!==l && t) ? t.charAt(0).toUpperCase()+t.slice(1) : t;
@@ -5422,6 +5431,12 @@
       cands.push(t); return true;
     });
     m=conf.match(/Endpoint\s*=\s*\[?([^\s\]:]+)/);  if(m) cands.push(m[1]);
+    // Ремарка из одних флагов («🇸🇬⚡»): код страны есть, а различать серверы одной страны нечем — к нему дописываем адрес
+    // сервера (`SG-203.0.113.7`), иначе два таких импорта снова сошлись бы в одно имя и второй затёр бы первый.
+    var n0=cfgSlug(cands[0]);
+    if(n0 && m && /^[A-Z]{2}(-[A-Z]{2})*$/.test(n0) && !/[0-9A-Za-zА-Яа-яЁё]/.test(String(cands[0]).replace(/\uD83C[\uDDE6-\uDDFF]/g,''))){
+      return cfgSlug(n0+'-'+m[1]);
+    }
     for(var i=0;i<cands.length;i++){ var n=cfgSlug(cands[i]); if(n) return n; }
     return 'amnezia';
   }
@@ -5445,7 +5460,7 @@
       logLine('декодирую Amnezia vpn://…', true);
       decodeAmneziaVpn(link).then(function(res){
         if(!res || !res.conf){ logLine('не разобрал Amnezia vpn:// (повреждена или не AmneziaWG-контейнер)', false); showToast('не разобрал vpn://-ссылку', false); return; }
-        uploadOne('awg', amneziaName(res), b64utf8(res.conf), function(){ setTimeout(navIfShown('cn-servers', openServers),400); });
+        uploadOne('awg', amneziaName(res), b64utf8(res.conf), function(){ setTimeout(navIfShown('cn-servers', openServers),400); }, res.name);
       }).catch(function(){ logLine('браузер не умеет распаковку vpn:// (DecompressionStream) — обновите браузер или добавьте файл .conf', false); showToast('браузер не поддерживает vpn://', false); });
       return;
     }
@@ -5457,7 +5472,7 @@
       if(!p.obfs){ logLine('в ссылке нет obfs (Salamander) — для РФ желателен на сервере', false); }
       text=hy2Yaml(p); defName=p.remark||'hy2'; }
     var nm=cfgSlug(defName); if(!nm) nm=(kind==='xray'?'xray':'hy2');
-    uploadOne(kind, nm, b64utf8(text), function(){ setTimeout(navIfShown('cn-servers', openServers),400); });
+    uploadOne(kind, nm, b64utf8(text), function(){ setTimeout(navIfShown('cn-servers', openServers),400); }, p.remark);
   }
 
   // ---- VLESS-подписки (пул vless://-серверов по URL). Браузер НЕ может сам скачать
@@ -5485,7 +5500,7 @@
   function subToggle(tag){ var o={}; try{o=JSON.parse(localStorage.getItem('enodia_sub_open')||'{}');}catch(e){} o[tag]=o[tag]?0:1; try{localStorage.setItem('enodia_sub_open',JSON.stringify(o));}catch(e){} return !!o[tag]; }
   // Настоящие имена серверов (эмодзи/флаги/юникод) из /cgi-bin/list (карта файл→remark);
   // заполняется в openServers, читается serverRow. Порядок групп — localStorage per-browser.
-  var subNames={}, xrayMeta={}, hy2Meta={}, awgGen={}, srvBin={};
+  var subNames={}, cfgNames={}, xrayMeta={}, hy2Meta={}, awgGen={}, srvBin={};
   // Плавающее текстовое меню (⋮). Вне модалки (position:fixed) → не режется
   // overflow'ом; закрывается кликом вне/по пункту. items=[{label,onClick,danger}|{sep:true}].
   var _menuEl=null, _menuAnchor=null, _menuBack=null;
@@ -5589,8 +5604,8 @@
       "A subscription server's name is set by the subscription: it finds this server by that name on every update — it would create a renamed one anew and delete this one.",
     "«default» — служебное имя установщика: им помечен первый конфиг, и он же — «дом» резерва по умолчанию. Переименовать его нельзя.":
       "«default» is the installer's service name: it marks the first config and is the default failover «home». It can't be renamed.",
-    "Латиница, цифры, точка, «_» и «-»; кириллица станет транслитом. Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.":
-      "Latin letters, digits, dot, «_» and «-»; Cyrillic is transliterated. Failover goes through servers in alphabetical order of names — a new name also moves the server in that queue.",
+    "Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.":
+      "Any name, with emoji and flags. The file on the router is in Latin: Cyrillic is transliterated, a country flag becomes its code (🇩🇪 → DE). Failover goes through servers in alphabetical order of names — a new name also moves the server in that queue.",
     "Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.":"The active AmneziaWG config can't be deleted — select another one first.",
     "Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.":"This config is carrying traffic right now — you can delete it after switching to another one.",
     "Ключи и конфиг целиком AmneziaWG панель не показывает и не правит:":"The panel neither shows nor edits AmneziaWG keys or the whole config:",
@@ -5650,7 +5665,7 @@
     "Поиск сервера или группы":"Search servers or groups",
     "Активный закреплён сверху и не уезжает при поиске и сортировке. Бейдж собирается из самого конфига: протокол · защита · транспорт · flow.":"The active server is pinned on top and stays put when you search or sort. The badge is built from the config itself: protocol · security · transport · flow.",
     "добавлены вручную":"added manually","ещё не скачивалась":"not downloaded yet","Показать или скрыть серверы группы":"Show or hide the group's servers",
-    "Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»): роутер хранит имена латиницей. В ссылке нет":"The config name comes from the link's remark, or without one from the server address; Cyrillic is transliterated (a Russian «Netherlands» becomes «Niderlandy»): the router keeps names in Latin. If the link has no",
+    "Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»), флаг страны — её кодом (🇳🇱 → NL): роутер хранит имена латиницей. В ссылке нет":"The config name comes from the link's remark, or without one from the server address; Cyrillic is transliterated (a Russian «Netherlands» becomes «Niderlandy») and a country flag becomes its code (🇳🇱 → NL): the router keeps names in Latin. If the link has no",
     "(Reality publicKey) — панель предупредит: без него сервер не поднимется.":"(Reality publicKey), the panel warns you: without it the server won't come up.",
     "В ссылке нет":"The link has no",
     "(Salamander) — панель скажет об этом: для российских провайдеров обфускация на сервере желательна, без неё поток узнаётся.":"(Salamander) — the panel will say so: with Russian ISPs obfuscation on the server is advisable, without it the traffic is recognizable.","Вид конфига":"Config view","Параметры":"Parameters","Сырой JSON":"Raw JSON","Сырой YAML":"Raw YAML",
@@ -9185,6 +9200,7 @@
     [/^Действия с сервером «([^»]*)»$/,"Server actions «$1»"],
     [/^сервера «([^»]*)» на роутере нет — удалён или переименован$/,"server «$1» is not on the router — deleted or renamed"],
     [/^сохранится как «([^»]*)»$/,"will be saved as «$1»"],
+    [/^файл на роутере — «([^»]*)»$/,"file on the router: «$1»"],
     [/^(\d+) — задан в конфиге$/,"$1 — set in the config"],
     [/^(\d+) — по конфигу; ручной MTU «Параметров сети» эта версия роутера не сообщает — обновите Enodia$/,"$1 — from the config; this router version doesn't report a manual MTU from «Network settings» — update Enodia"],
     [/^неизвестный транспорт '([^'\s]*)'$/,"unknown transport '$1'"],
@@ -12184,6 +12200,13 @@
   // Показываемое имя: НАСТОЯЩЕЕ (эмодзи/флаги из .sub-names), иначе — обрезанное
   // имя файла. subNames приходит из /cgi-bin/list (карта файл→remark).
   function subDisp(name, subs){ return subNames[name] || dispName(name, subs); }
+  // НАСТОЯЩЕЕ ИМЯ КОНФИГА — как назвал человек, с эмодзи и флагами (cfg-names.sh → поле `cfgnames` /cgi-bin/list): файл роутер
+  // держит латиницей (cfgSlug), а показ — своим. Нет такого — показ подписки (subDisp) или имя файла. Ключ — «вид/файл»: у
+  // разных протоколов файл может совпасть по имени.
+  function cfgDisp(kind, name, subs){ return cfgNames[kind+'/'+name] || subDisp(name, subs||[]); }
+  // Показ, который уходит на роутер вместе с конфигом: обрезка — по БУКВАМ (суррогатная пара эмодзи не рвётся), 60 букв — это
+  // и ремарка провайдера целиком, и не больше потолка роутера в байтах (до 4 байт на букву).
+  function dispCap(v){ var a=String(v||'').replace(/[\x00-\x1f]+/g,' ').trim().match(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]/g)||[]; return a.slice(0,60).join('').trim(); }
   // Сводка «‹метка›: …. ‹метка›: …» в строку не длиннее `max` — по границе записи с многоточием (см. вызов у тоста подписок).
   function toastCut(line, max){
     if(line.length<=max) return line;
@@ -12355,13 +12378,13 @@
   function subAccHtml(s, items, grp, si, now){
     return grpSectHtml({tag:s.tag, label:s.label, kind:'sub', ic:'i-list', n:items.length,
       nm:'<span>Подписка</span> «<span class="sens" translate="no">'+esc(s.label)+'</span>»', ds:subAgeText(si, now),
-      body: items.length ? items.map(function(nm){ return serverCard(nm, grp, subDisp(nm,[s])); }).join('')
+      body: items.length ? items.map(function(nm){ return serverCard(nm, grp, cfgDisp('xray',nm,[s])); }).join('')
                          : '<div class="lempty">пусто — обновите подписку (⋮ → Обновить серверы)</div>'});
   }
   // «Свои» — ручные (не-подписочные) xray-конфиги.
   function ownAccHtml(own, grp){
     return grpSectHtml({tag:'__own__', label:'Свои', kind:'own', ic:'i-at', n:own.length, nm:'Свои', ds:'добавлены вручную',
-      body: own.map(function(nm){ return serverCard(nm, grp, subDisp(nm,[])); }).join('')});
+      body: own.map(function(nm){ return serverCard(nm, grp, cfgDisp('xray',nm,[])); }).join('')});
   }
   // Серверы Xray: ЗАКРЕПЛЁННЫЙ активный — своей карточкой сверху, дальше группы по подпискам (в ручном порядке subGroupOrder) и
   // «Свои». Группировка — по владельцу sub-<tag>- (longest-prefix). info — подписки из `section=subs` (возраст), now — их часы.
@@ -12416,7 +12439,7 @@
       + '<input class="file-in" data-kind="'+key+'" type="file" accept="'+acc+'" multiple></div>';
     if(key==='xray') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">Подписка</div><div class="v">пул серверов по ссылке провайдера — роутер сам его обновляет</div></div><button type="button" class="act srv-to-subs">Подписки</button></div>';
     if(key==='awg') h+='<div style="margin-top:11px">'+noteBox('<span class="mono kw">vpn://</span>-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный <span class="mono kw">.conf</span>, вставленный вместо ссылки, тоже принимается.','info')+'</div>';
-    if(key==='xray') h+='<div style="margin-top:11px">'+noteBox('Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»): роутер хранит имена латиницей. В ссылке нет <span class="mono kw">pbk</span> (Reality publicKey) — панель предупредит: без него сервер не поднимется.','info')+'</div>';
+    if(key==='xray') h+='<div style="margin-top:11px">'+noteBox('Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»), флаг страны — её кодом (🇳🇱 → NL): роутер хранит имена латиницей. В ссылке нет <span class="mono kw">pbk</span> (Reality publicKey) — панель предупредит: без него сервер не поднимется.','info')+'</div>';
     if(key==='hy2') h+='<div style="margin-top:11px">'+noteBox('В ссылке нет <span class="mono kw">obfs</span> (Salamander) — панель скажет об этом: для российских провайдеров обфускация на сервере желательна, без неё поток узнаётся.','info')+'</div>';
     return h;
   }
@@ -12427,7 +12450,7 @@
     else h='<div class="card"><div class="ct">Конфиги '+names[key]+' <span class="sub dotb">'+srvStatus(grp)+'</span></div>'
       + (list.length ? list.map(function(name){
           // Настоящее имя (эмодзи/флаги) — и у Hysteria2: её конфиг может приехать из подписки (иначе «sub-de-nidjerlandy»).
-          return serverRow(key, name, grp, key==='hy2'?subDisp(name, subs):null); }).join('') : '<div class="lempty">нет конфигов</div>')
+          return serverRow(key, name, grp, cfgDisp(key, name, subs)); }).join('') : '<div class="lempty">нет конфигов</div>')
       + '<div class="tiny" style="margin-top:10px">'+(key==='awg'
           ? 'У активного конфига крестика нет — удалить то, на чём стоит несущая, нельзя.'
           : 'Имена могут прийти из подписки вместе с флагами. «✎» — редактор конфига: форма и сырой YAML; у AmneziaWG его нет.')+'</div></div>';
@@ -12438,7 +12461,7 @@
   // ОТВЕТ /cgi-bin/list → общие кэши экранов с серверами: настоящие имена из подписок, мета Xray (хост, бейдж) и
   // «стоит ли бинарь». Читают его «Серверы» и экран подписки; второй разбор разошёлся бы с первым.
   function srvListTake(d){
-    subNames = d.names||{};
+    subNames = d.names||{}; cfgNames = d.cfgnames||{};
     _subTagsKnown = (d.subs||[]).map(function(s){ return s && s.tag; }).filter(function(t){ return !!t; });   // владельцы серверов для сброса кэша   // настоящие имена серверов подписки (эмодзи/флаги)
     xrayMeta = (d.xray && d.xray.meta) || {};   // host/sni/fp по конфигу (host — под именем)
     hy2Meta = (d.hy2 && d.hy2.meta) || {};      // host (сервер:порт) и obfs — строка Hysteria2 под именем
@@ -13119,9 +13142,9 @@
     var kv='<div class="kv"><div class="grow"><div class="k">Имя файла</div><div class="v"><span class="mono sens">'+esc(name)+'</span></div></div></div>';
     if(isSub) return kv+'<div class="cline">Имя сервера подписки задаёт подписка: по нему она находит этот сервер при каждом обновлении — переименованный она создала бы заново, а этот удалила бы.</div>';
     if(name.toLowerCase()==='default') return kv+'<div class="cline">«default» — служебное имя установщика: им помечен первый конфиг, и он же — «дом» резерва по умолчанию. Переименовать его нельзя.</div>';
-    return '<div class="lnkrow" style="margin:0"><input id="srv-nm" class="inp mono" spellcheck="false" autocomplete="off" maxlength="120" aria-label="Новое имя" aria-describedby="srv-nm-p srv-nm-d" value="'+esc(name)+'"><button type="button" class="btn" data-sv="ren">Переименовать</button></div>'
+    return '<div class="lnkrow" style="margin:0"><input id="srv-nm" class="inp" spellcheck="false" autocomplete="off" maxlength="120" aria-label="Новое имя" aria-describedby="srv-nm-p srv-nm-d" value="'+esc(cfgDisp(tpt, name))+'"><button type="button" class="btn" data-sv="ren">Переименовать</button></div>'
       + '<div class="cline sens" id="srv-nm-p" aria-live="polite" hidden></div>'
-      + '<div class="cline" id="srv-nm-d">Латиница, цифры, точка, «_» и «-»; кириллица станет транслитом. Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.</div>';
+      + '<div class="cline" id="srv-nm-d">Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.</div>';
   }
   var RE_CFG_NAME=/^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$/;
   // КЭШ ПРОВЕРОК ЕДЕТ ЗА ИМЕНЕМ: ключ записи — транспорт и имя. Старый ключ хороним надгробием: без него ЭТА вкладка при следующей
@@ -13144,7 +13167,7 @@
     // Сервер подписки — по ВЛАДЕЛЬЦУ (длиннейший известный тег), а не по префиксу: свой файл «sub-test» живёт в «Своих» и переименовывается.
     var grp=d[tpt]||{}, subs=d.subs||[], tag=ownerTag(name, subs.map(function(s){ return s.tag; }).concat(_subTagsKnown)), isSub=!!tag, subLbl='';
     subs.forEach(function(x){ if(x && x.tag===tag) subLbl=x.label||x.tag; });
-    var disp=(tpt==='xray'||tpt==='hy2') ? subDisp(name, subs) : name, fl=srvFlag(disp);
+    var disp=cfgDisp(tpt, name, subs), fl=srvFlag(disp);
     // Несущий — активный конфиг транспорта, который сейчас везёт, и только при включённом VPN: выключенный человеком туннель роутер при
     // сохранении не поднимает (C67), и обещать «несущая перезапустится» было бы неправдой.
     var act=(grp.active===name), canAct=canActivate(grp), carrier=act && cur.transport===tpt && !cur.vpnOff;
@@ -13214,7 +13237,7 @@
       nm.addEventListener('input', function(){
         var sl=cfgSlug(nm.value);
         if(!sl && nm.value.trim()){ pv.hidden=false; pv.textContent='в имени нет ни одной буквы или цифры'; return; }
-        pv.hidden=(sl===nm.value || !sl); pv.textContent='сохранится как «'+sl+'»'; });
+        pv.hidden=(sl===nm.value || !sl); pv.textContent='файл на роутере — «'+sl+'»'; });
       nm.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); srvRename(tpt, name); } });
     }
     if(tpt==='awg'){
@@ -13308,13 +13331,15 @@
     var nm=document.getElementById('srv-nm'); if(!nm || busy) return;
     // Идущая проверка записала бы свой итог под СТАРЫМ именем — после переименования это сирота в кэше, а у нового имени пусто.
     if(_srvRun[chkKey(tpt,name)]){ showToast('«'+name+'» сейчас проверяется — дождитесь итога', false); return; }
-    var nn=cfgSlug(nm.value);
+    var nn=cfgSlug(nm.value), dn=dispCap(nm.value);
     if(!RE_CFG_NAME.test(nn)){ showToast('имя: латиница, цифры, точка, «_» и «-», до 80 знаков, первым — буква или цифра', false); nm.focus(); return; }
-    if(nn===name){ showToast('имя не изменилось', false); return; }
-    postAction('rename_config', null, 'переименовываю '+name, {kind:tpt, name:name, 'new':nn}, function(r){
+    // «Не изменилось» — по НАБРАННОМУ, а не по файлу: у «Берлин 🇩🇪» на файле Berlin латиница даёт Berlin-DE, и нетронутое поле
+    // переименовывало бы файл.
+    if(dn===cfgDisp(tpt, name)){ showToast('имя не изменилось', false); return; }
+    postAction('rename_config', null, 'переименовываю '+name, {kind:tpt, name:name, 'new':nn, display:dn}, function(r){
       if(!r || !r.ok) return;
       var to=r.name||nn;
-      chkRename(tpt, name, to);
+      if(to!==name) chkRename(tpt, name, to);   // сменился только показ — файл тот же, кэшу проверок ехать некуда
       // Адрес и экран — только если человек всё ещё на экране ЭТОГО сервера: иначе navReplace переписал бы адрес чужого экрана.
       if(!srvHere(tpt, name)) return;
       navReplace(navKey('cn-server', tpt+'/'+to));
@@ -17558,7 +17583,7 @@
   // чипах (`rpDir`), и своим узлом — кириллица в имени не роняет перевод остального описания (ревью пачки 5, круг 2).
   function slotDs(s, short){
     return esc(SLOT_TPT_LABEL[s.transport]||s.transport)
-      + ((!short && s.config && s.config!=='-')?(' · <span class="sens" translate="no">'+esc(s.config)+'</span>'):'')
+      + ((!short && s.config && s.config!=='-')?(' · <span class="sens" translate="no">'+esc(cfgDisp(s.transport, s.config))+'</span>'):'')
       + ' · <span>'+(s.groups|0)+' '+unitF(s.groups|0,'групп')+(((s.geo|0)>0)?(' · '+(s.geo|0)+' гео'):'')
       + (short?'':(' · '+((s.fallback==='direct')?'сбой → напрямую':'сбой → основной')))+'</span>';
   }
@@ -17831,7 +17856,7 @@
     var h=list.map(function(n){
       var hs=(tpt==='awg' && held && held[n]) ? String(held[n]).split(',').filter(function(x){ return x && x!==mine; }) : [];
       if(!hs.length) free++;
-      return '<option value="'+esc(n)+'"'+(hs.length?' disabled':'')+(n===cur&&!hs.length?' selected':'')+'>'+esc(n)+(hs.length?(' — занят: '+esc(slotHeldBy(hs[0]))):'')+'</option>';
+      return '<option value="'+esc(n)+'"'+(hs.length?' disabled':'')+(n===cur&&!hs.length?' selected':'')+'>'+esc(cfgDisp(tpt, n))+(hs.length?(' — занят: '+esc(slotHeldBy(hs[0]))):'')+'</option>';
     }).join('');
     return (free ? '' : '<option value="" selected>— все конфиги заняты: нужен отдельный —</option>')+h;
   }

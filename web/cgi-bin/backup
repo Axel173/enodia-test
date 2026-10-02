@@ -74,7 +74,7 @@ SETTINGS="$SETTINGS .full-tunnel .bypass-ips .bypass-ifaces .bypass-guest"      
 SETTINGS="$SETTINGS .fullvpn-ips .fullvpn-ifaces .fullvpn-guest"                     # «целиком в VPN»
 SETTINGS="$SETTINGS .bypass-dst .vpn-dst .port-rules .keep-vpn-ips .enodia-custom.conf" # правила: IP (оба направления!), порты, исключения из выреза, домены
 SETTINGS="$SETTINGS groups geo/actions.tsv"                                          # группы правил и гео-категории
-SETTINGS="$SETTINGS .dhcp-static .dev-names"                                         # закреплённые за устройствами адреса (DHCP-резервации); свои имена устройств
+SETTINGS="$SETTINGS .dhcp-static .dev-names .cfg-names"                                         # закреплённые за устройствами адреса (DHCP-резервации); свои имена устройств
 SETTINGS="$SETTINGS .slots .byedpi-args .byedpi-args-s2 .byedpi-args-s3 .byedpi-args-s4"  # доп-выходы и их стратегии десинка
 # `.bin-keep` — ИМЕНА бинарей, закреплённых за роутером. В отличие от соседнего `.bin-store` (тот
 # исключён как «про железо») это ПРЕДПОЧТЕНИЕ человека, а не путь к конкретной флешке: список имён
