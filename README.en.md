@@ -83,7 +83,7 @@ live hardware, maintaining the lists and scripts, documentation.
 
 If it saved you **time and nerves** or was simply useful — here's how to say thanks:
 
-**One-time donation via Telegram:**
+**One-time or recurring donation via Telegram:**
 - 💬 **Telegram (Tribute)** — [web.tribute.tg/d/LtA](https://web.tribute.tg/d/LtA) (by card)
 - 💎 **Telegram (Tribute, crypto)** — [t.me/tribute](https://t.me/tribute/app?startapp=dLtA) (crypto, right inside Telegram)
 
