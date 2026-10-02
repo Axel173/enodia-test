@@ -108,5 +108,6 @@ link below, the author gets a small bonus, **and the price stays the same for yo
 - 🖥️ **[MegaHost](https://megahost.kz/?from=16375)** (referral link) — VPS and hosting in Kazakhstan (own data centers, a registrar since 2009)
 - 🖥️ **[JustHost](https://justhost.asia/?ref=232764)** (referral link) — VPS in many locations worldwide (you can pick the server's country)
 - 🖥️ **[VDSina](https://www.vdsina.com/?partner=x8rv7m67wj)** (referral link) — affordable VPS with hourly billing; this link gives **you a 10% discount**. _(No discount but a bigger bonus to the author — [alternative link](https://www.vdsina.com/?partner=7i8wuiy8x5).)_
+- 🖥️ **[HostVDS](https://hostvds.com/?affiliate_uuid=f47d06d6-4bbf-420a-844b-4bee4e98886a)** (referral link) — affordable NVMe VPS, locations worldwide
 
 Thank you!
