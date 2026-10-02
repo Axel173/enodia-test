@@ -1,0 +1,9 @@
+# Кнопка «Sponsor» в шапке репозитория (её включает галочка Settings → Features → Sponsorships).
+# GitHub Sponsors (строка github:) не подключён — только свои ссылки (custom:, до четырёх).
+# Последняя ведёт к разделу «Поддержать автора» в README: там все кошельки и реферальные VPS.
+# Якорь закодирован процентами — кириллицу в URL GitHub может не принять. Имя репозитория
+# меняется вместе со ссылками README при переносе.
+custom:
+  - https://web.tribute.tg/d/LtA
+  - https://t.me/tribute/app?startapp=dLtA
+  - https://github.com/Axel173/enodia-test#%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-%D0%B0%D0%B2%D1%82%D0%BE%D1%80%D0%B0
