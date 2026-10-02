@@ -36,7 +36,7 @@ The project has been run and worked on Xiaomi BE3600, BE6500, BE7000, BE10000, B
 routers with stock firmware. The setup wizard opens root SSH access by itself with the built-in
 [xmir-patcher](https://github.com/Axel173/xmir-patcher).
 
-## <a id="protocols"></a>Protocols
+## Protocols
 
 [![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
 [![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
