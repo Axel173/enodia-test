@@ -1,4 +1,6 @@
-<div align="center">
+# Enodia
+
+### _VPN и обход блокировок для роутеров Xiaomi_
 
 [![Версия](https://img.shields.io/github/v/release/Axel173/xiaomi-be7000-amnezia?include_prereleases&sort=semver&label=версия)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Дата релиза](https://img.shields.io/github/release-date-pre/Axel173/xiaomi-be7000-amnezia?label=релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
@@ -13,45 +15,34 @@
 [![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
 [![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
 
+### Русский | [English](README.en.md)
+
+Enodia — открытый проект для роутеров Xiaomi на стоковой прошивке. Заблокированные сайты идут через
+ваш VPN-сервер или открываются без сервера, остальной трафик — напрямую. Настраивается всё в
+веб-панели на самом роутере.
+
 <img src="assets/banner-enodia-no-vpn.png" alt="Enodia — VPN и раздельная маршрутизация для роутеров Xiaomi" width="100%">
 
-### VPN-шлюз с раздельной маршрутизацией для роутеров Xiaomi
+### [Скачать](https://github.com/Axel173/xiaomi-be7000-amnezia/releases) | [Telegram](https://t.me/+tfMLMVKG03FhMGYy) | [Поддержать автора](#donate)
 
-🇷🇺 **Русский** · 🌐 [English version](README.en.md)
+## Возможности
 
-</div>
-
-Проект превращает роутер Xiaomi на стоковой прошивке в VPN-шлюз с **раздельной маршрутизацией**:
-выбранные сайты и сервисы идут через ваш сервер, всё остальное — напрямую, без лишнего крюка и
-потери скорости. Правила действуют сразу на все устройства дома — VPN-приложения на каждом не нужны.
-
-> 💛 **Проект бесплатный.** Если он вас выручит — можно [поддержать автора](#donate).
-
-## Что умеет
-
-- **Веб-панель на самом роутере** — всё управление в браузере, с телефона или компьютера; русский и
-  английский, светлая и тёмная тема.
-- **Несколько протоколов и выходов** — протокол меняется одним переключателем, а до трёх
-  дополнительных выходов ведут отдельные сайты через другой сервер или протокол.
-- **Обход блокировок без своего сервера** — встроенный десинк ByeDPI и Zapret.
-- **Гибкие правила** — домены, подсети, группы, гео-категории стран и сервисов, отдельные устройства
-  и Wi-Fi-сети; блокировка рекламы и вредоносных адресов.
-- **Доступ домой** — роутер сам становится сервером AmneziaWG: телефон из любой сети подключается к
-  дому по QR-коду.
-- **Шифрованный DNS (DoH/DoT) и вход в панель со вторым фактором** — по желанию.
-- **Сам следит за связью** — переподнимает туннель, переходит на запасной сервер, а в крайнем случае
-  пускает трафик напрямую, чтобы интернет не пропал; после перезагрузки всё поднимается само, о
-  сбоях приходит письмо.
-- **USB-накопитель** — по желанию: тяжёлые протоколы или вся система переезжают на флешку.
-- **Обновления из панели** — подписанным пакетом с GitHub.
+- Установка с компьютера: мастер сам открывает SSH на роутере и ставит панель, дальше всё в браузере.
+- Раздельная маршрутизация по доменам, подсетям, гео-категориям и группам правил, отдельно для
+  устройств и Wi-Fi-сетей.
+- Несколько VPN-протоколов и до трёх дополнительных выходов через другие серверы.
+- Обход блокировок без своего сервера: ByeDPI и Zapret.
+- Доступ домой: роутер работает как сервер AmneziaWG, телефон подключается по QR-коду.
+- Шифрованный DNS (DoH/DoT), блокировка рекламы, вход в панель с двухфакторной аутентификацией.
+- Сторож: переподнимает туннель, переключает на запасной сервер, присылает письма о сбоях.
+- Обновления из панели подписанным пакетом с GitHub.
+- Протоколы или всю систему можно держать на USB-флешке.
+- Панель на русском и английском, светлая и тёмная тема.
 
 ## Роутеры
 
-Проект запускался и работал на роутерах Xiaomi:
-
-**BE3600 · BE6500 · BE7000 · BE10000 · BE10000 PRO · AX3600**
-
-Нужна стоковая прошивка и root-доступ по SSH — мастер установки откроет его сам встроенным
+Проект запускался и работал на роутерах Xiaomi BE3600, BE6500, BE7000, BE10000, BE10000 PRO и AX3600
+со стоковой прошивкой. Root-доступ по SSH мастер установки открывает сам через встроенный
 [xmir-patcher](https://github.com/Axel173/xmir-patcher).
 
 ## <a id="protocols"></a>Протоколы
@@ -60,42 +51,38 @@
 |---|---|---|
 | **AmneziaWG** | WireGuard с маскировкой трафика; конфиг из AmneziaVPN — файлом или ссылкой `vpn://` | нужен |
 | **Xray** | VLESS (в том числе Reality), VMess, Trojan, Shadowsocks — ссылкой или подпиской | нужен |
-| **Hysteria2** | быстрый протокол поверх QUIC — ссылкой `hy2://` | нужен |
+| **Hysteria2** | протокол поверх QUIC — ссылкой `hy2://` | нужен |
 | **ByeDPI** | десинк: локальный прокси сбивает DPI провайдера | не нужен |
 | **Zapret** | десинк на уровне пакетов (nfqws) | не нужен |
 
-Протоколы ставятся из панели по выбору; несколько могут стоять рядом и работать одновременно —
-основным и на дополнительных выходах.
+Протоколы ставятся из панели. Несколько могут стоять рядом и работать одновременно на разных выходах.
 
-## Быстрый старт
+## Установка
 
 1. Скачайте `enodia-setup-<версия>.zip` со страницы
    [Releases](https://github.com/Axel173/xiaomi-be7000-amnezia/releases) и распакуйте.
-2. Запустите лаунчер: Windows — `enodia-setup.bat`, macOS — `enodia-setup.command`, Linux —
-   `./enodia-setup.sh`.
-3. В браузере откроется мастер установки: он спросит адрес роутера, при необходимости откроет SSH,
-   поставит панель и попросит придумать к ней пароль.
-4. Откройте панель — `http://192.168.31.1:8088` (адрес вашего роутера и порт 8088) — и добавьте
-   сервер или включите десинк.
+2. Запустите `enodia-setup.bat` (Windows), `enodia-setup.command` (macOS) или `./enodia-setup.sh` (Linux).
+3. Пройдите мастер установки в браузере.
+4. Откройте панель: `http://192.168.31.1:8088` (IP вашего роутера, порт 8088).
 
-Компьютер — Windows, macOS или Linux; Python ставить не нужно, лаунчер скачает всё сам.
+Python ставить не нужно: если его нет, лаунчер скачает сам. Подробная документация готовится, вопросы —
+в [Telegram](https://t.me/+tfMLMVKG03FhMGYy).
 
-Подробная документация готовится. Вопросы и новости — в [Telegram-канале](https://t.me/+tfMLMVKG03FhMGYy).
+## Используемые проекты
 
-## Благодарности
+- [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go)
+- [Xray-core](https://github.com/XTLS/Xray-core)
+- [Hysteria](https://github.com/apernet/hysteria)
+- [ByeDPI](https://github.com/hufrea/byedpi)
+- [zapret](https://github.com/bol-van/zapret)
+- [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)
+- [https_dns_proxy](https://github.com/aarond10/https_dns_proxy)
+- [xmir-patcher](https://github.com/openwrt-xiaomi/xmir-patcher)
+- [amneziawg-be7000](https://github.com/alexandershalin/amneziawg-be7000) — скрипт установки AmneziaWG (`awg_setup.sh`)
+- списки: [opencck / iplist](https://iplist.opencck.org) (на базе [rekryt/iplist](https://github.com/rekryt/iplist)),
+  [ITDog allow-domains](https://github.com/itdoginfo/allow-domains)
 
-- [Amnezia](https://github.com/amnezia-vpn) — AmneziaWG и `amneziawg-go`.
-- [alexandershalin/amneziawg-be7000](https://github.com/alexandershalin/amneziawg-be7000) —
-  `awg_setup.sh`, установка AmneziaWG на BE7000 (вендорится в этот репозиторий).
-- [Xray-core](https://github.com/XTLS/Xray-core) · [Hysteria](https://github.com/apernet/hysteria) ·
-  [ByeDPI](https://github.com/hufrea/byedpi) · [zapret](https://github.com/bol-van/zapret) ·
-  [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) ·
-  [https_dns_proxy](https://github.com/aarond10/https_dns_proxy) — протоколы и DNS, которые ставятся на роутер.
-- [opencck / iplist](https://iplist.opencck.org) (на базе [rekryt/iplist](https://github.com/rekryt/iplist))
-  — CIDR-списки сервисов.
-- [ITDog — allow-domains](https://github.com/itdoginfo/allow-domains) — списки доменов.
-- [xmir-patcher](https://github.com/openwrt-xiaomi/xmir-patcher) — root-SSH на стоковой прошивке Xiaomi.
-- Сообщество [@xiaomi_be7000](https://t.me/xiaomi_be7000) — опыт по этим роутерам.
+Спасибо сообществу [@xiaomi_be7000](https://t.me/xiaomi_be7000) за опыт по этим роутерам.
 
 ## <a id="donate"></a>Поддержать автора
 
