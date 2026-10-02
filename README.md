@@ -13,6 +13,8 @@ Enodia — открытый проект для роутеров Xiaomi на с�
 ваш VPN-сервер или открываются без сервера, остальной трафик — напрямую. Настраивается всё в
 веб-панели на самом роутере.
 
+<img src="assets/panel-overview.jpg" alt="Веб-панель Enodia на планшете и телефоне: состояние VPN, трафик и куда он идёт" width="100%">
+
 ### [Скачать](https://github.com/Axel173/xiaomi-be7000-amnezia/releases) | [Telegram](https://t.me/+tfMLMVKG03FhMGYy) | [Поддержать автора](#donate)
 
 ## Возможности

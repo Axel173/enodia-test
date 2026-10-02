@@ -13,6 +13,8 @@ Enodia is an open-source project for Xiaomi routers on stock firmware. Blocked s
 VPN server or open without a server, all other traffic goes direct. Everything is configured in a web
 panel on the router itself.
 
+<img src="assets/panel-overview.jpg" alt="The Enodia web panel on a tablet and a phone: VPN status, traffic and where it goes" width="100%">
+
 ### [Download](https://github.com/Axel173/xiaomi-be7000-amnezia/releases) | [Telegram](https://t.me/+tfMLMVKG03FhMGYy) | [Support the author](#donate)
 
 ## Features
