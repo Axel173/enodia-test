@@ -11,7 +11,7 @@
 [![Скачиваний всего](https://img.shields.io/github/downloads/Axel173/xiaomi-be7000-amnezia/total?label=скачиваний)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний последнего релиза](https://img.shields.io/github/downloads-pre/Axel173/xiaomi-be7000-amnezia/latest/total?label=последний%20релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
-[![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#поддержать-автора)
+[![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#donate)
 
 <img src="assets/banner.svg" alt="BE7000 + AmneziaWG" style="max-width:100%">
 
@@ -30,7 +30,7 @@
 выбранные сайты и сервисы идут через ваш сервер, всё остальное — напрямую, без лишнего крюка и
 потери скорости. Правила действуют сразу на все устройства дома — VPN-приложения на каждом не нужны.
 
-> 💛 **Проект бесплатный.** Если он вас выручит — можно [поддержать автора](#поддержать-автора).
+> 💛 **Проект бесплатный.** Если он вас выручит — можно [поддержать автора](#donate).
 
 ## Что умеет
 
@@ -59,7 +59,7 @@
 Нужна стоковая прошивка и root-доступ по SSH — мастер установки откроет его сам встроенным
 [xmir-patcher](https://github.com/Axel173/xmir-patcher).
 
-## Протоколы
+## <a id="protocols"></a>Протоколы
 
 | Протокол | Что это | Свой сервер |
 |---|---|---|
@@ -102,7 +102,7 @@
 - [xmir-patcher](https://github.com/openwrt-xiaomi/xmir-patcher) — root-SSH на стоковой прошивке Xiaomi.
 - Сообщество [@xiaomi_be7000](https://t.me/xiaomi_be7000) — опыт по этим роутерам.
 
-## Поддержать автора
+## <a id="donate"></a>Поддержать автора
 
 <!-- КАРТИНКА №7 (ждёт файла): docs/img/banner-support.png — БАННЕР раздела «Поддержать автора»: тёплая благодарность, чашка у роутера.
 Файл положили — замените весь этот комментарий строкой:
@@ -134,7 +134,7 @@
 - ◎ **Solana (SOL)** — `Eq48vnUcJn8yxmAtmyZJ4wmGW3TJaMhRdZkRJi1VULYx`
 
 **Берёте VPS для проекта? Возьмите по реферальной ссылке:**
-вам всё равно нужен сервер (см. [Протоколы](#протоколы)) — если оформите по ссылке ниже,
+вам всё равно нужен сервер (см. [Протоколы](#protocols)) — если оформите по ссылке ниже,
 автору начислится небольшой бонус, **а для вас цена та же** (а по VDSina — даже со скидкой).
 - 🖥️ **[MegaHost](https://megahost.kz/?from=16375)** (реферальная ссылка) — VPS и хостинг в Казахстане (свои дата-центры, регистратор с 2009 г.)
 - 🖥️ **[JustHost](https://justhost.asia/?ref=232764)** (реферальная ссылка) — VPS во множестве локаций по миру (можно выбрать страну сервера)
