@@ -212,7 +212,7 @@
   .badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
   /* Попап «О роутере» (метрики + подсказки). Триггер — клик по мерам ресурсов в шапке. */
   .badges.si-open{cursor:pointer}
-  .badges.si-open:hover{opacity:.82}
+  @media (hover:hover){ .badges.si-open:hover{opacity:.82} }
   /* Группа мер — кнопка (роль и tabindex ставит panel.js), и без своей рамки фокуса она была бы
      кнопкой, которую с клавиатуры не видно. Тот же вид, что у пунктов навигации. */
   .badges.si-open:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:10px}
@@ -235,7 +235,7 @@
   .iconbtn{flex:none;display:grid;place-items:center;width:36px;height:36px;padding:0;position:relative;
            background:var(--card);border:1px solid var(--line);border-radius:11px;
            color:var(--ink2);cursor:pointer;font-size:16px;line-height:1}
-  .iconbtn:hover{background:var(--soft);color:var(--ink)}
+  @media (hover:hover){ .iconbtn:hover{background:var(--soft);color:var(--ink)} }
   .iconbtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   .iconbtn .ti{font-size:19px}
   /* Счётчик непрочитанных — `.bdg` макета: 17 px, кирпичный с белой цифрой; висит на 4 px за углом кнопки (запас на это держит
@@ -315,7 +315,7 @@
   .vico{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
   .muted{opacity:.5;pointer-events:none}
   .seg.click{cursor:pointer}
-  .seg.click:hover{background:var(--bg-primary)}
+  @media (hover:hover){ .seg.click:hover{background:var(--bg-primary)} }
   .seg.dis{opacity:.4;cursor:not-allowed}
   /* НА ТЕЛЕФОНЕ полоса сегментов — во всю строку (макет: `.w-phone .seg{width:100%}`). Не влезла — сегменты ПЕРЕНОСЯТСЯ внутри
      полосы, а не уезжают вбок, как в макете (`overflow-x:auto`): там, где макет нарисован (392 px), всё влезает и вид тот же, а
@@ -345,7 +345,7 @@
   }
   button{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-primary);
          border:.5px solid var(--border-s);border-radius:var(--r-md);padding:7px 14px;cursor:pointer}
-  button:hover{background:var(--bg-secondary)}
+  @media (hover:hover){ button:hover{background:var(--bg-secondary)} }
   button:disabled{opacity:.5;cursor:not-allowed}
   /* РУКА НАД ВСЕМ, ЧТО НАЖИМАЕТСЯ. У <button> курсор задан выше, а элементы управления на <div>/<span> (сегменты `.seg`,
      плитки выбора, строки-переходы) получали его только своими правилами — и где правила не было, над кнопкой висела стрелка
@@ -356,10 +356,18 @@
      (`aria-disabled`, `data-na`) руку не получает. */
   :where([role=button]:not([aria-disabled=true]):not([data-na]),[role=tab],[role=link],[role=switch],[role=checkbox],[role=radio],
   [role=menuitem],[role=option],[data-go],summary,select,label>input[type=checkbox],label>input[type=radio]){cursor:pointer}
+  /* ЭЛЕМЕНТ УПРАВЛЕНИЯ НЕ ВЫДЕЛЯЕТСЯ КАК ТЕКСТ. Два быстрых касания соседних пунктов нижней навигации (а ещё сегментов, вкладок,
+     чипов) телефон читал как двойное касание и выделял слово с ручками, как перед копированием; долгое нажатие — то же плюс
+     меню «Копировать» на iOS (жалоба 02.10.2026). Сетка — та же, что у руки выше: по РОЛИ, а роли элементам управления панель
+     ставит сама (`wireSeg`, `wireNavKeys`, `mkHelp`). Строки с ДАННЫМИ (`.lrow`: адреса, домены, имена) роли не несут и
+     остаются выделяемыми — их копируют долгим нажатием. `touch-action:manipulation` — двойное касание не жест масштаба, а два
+     нажатия. Специфичность нулевая (`:where`), явное правило компонента перебьёт. Поля ввода не задеты: они не кнопки. */
+  :where(button,[role=button],[role=tab],[role=switch],[role=checkbox],[role=radio],[role=menuitem],[role=option],[data-go],summary){
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
   .btn-link{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-primary);
             border:.5px solid var(--border-s);border-radius:var(--r-md);padding:7px 14px;cursor:pointer;
             text-decoration:none;display:inline-flex;align-items:center;gap:6px}
-  .btn-link:hover{background:var(--bg-secondary)}
+  @media (hover:hover){ .btn-link:hover{background:var(--bg-secondary)} }
   .srv-ping{font-variant-numeric:tabular-nums;white-space:nowrap}
   /* ЭКРАН — СТРАНИЦА РАЗДЕЛА, а не слой поверх (шаг 3a переноса). Узел сохранил id и класс `modal`:
      по ним его находят гарды фоновых циклов (`screenAlive`) и тик колоды («экран открыт — карточек не
@@ -431,11 +439,11 @@
   .lrow .ds .srv-ping:not(:first-child):not(:empty)::before{content:' · '}
   /* Метка-кнопка («выбрать →»): вид чипа, поведение кнопки — ею строку активируют с клавиатуры. */
   button.chip{border:0;font:inherit;font-size:12.5px;cursor:pointer}
-  button.chip:hover{color:var(--ink);background:var(--soft2)}
+  @media (hover:hover){ button.chip:hover{color:var(--ink);background:var(--soft2)} }
   button.chip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   .srv-chev{flex:none;display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:8px;
             background:transparent;color:var(--ink3);cursor:pointer}
-  .srv-chev:hover{color:var(--ink);background:var(--soft)}
+  @media (hover:hover){ .srv-chev:hover{color:var(--ink);background:var(--soft)} }
   .srv-chev:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
   /* Строка сервера — перенос ПО НУЖДЕ, как `lr-fit`: группа справа стоит в строке имени (макет), а под имя уходит, только когда
      колонке имени осталось меньше предела — иначе имя и адрес Xray сжимались бы в столбик по букве, а у AmneziaWG/Hysteria2 на
@@ -449,7 +457,7 @@
      бросок принимает вся карточка добавления (`.dz-area`). */
   .dz.dz-line{display:block;padding:0;border:0;border-radius:4px;background:none;text-align:left;margin-top:9px;
               font-size:11.5px;line-height:1.45;color:var(--ink3)}
-  .dz.dz-line:hover{background:none;color:var(--ink2);text-decoration:underline dotted;text-underline-offset:3px}
+  @media (hover:hover){ .dz.dz-line:hover{background:none;color:var(--ink2);text-decoration:underline dotted;text-underline-offset:3px} }
   .dz.dz-line:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   .card.dz-area.over{box-shadow:inset 0 0 0 2px var(--acc);background:var(--acc-soft)}
   /* Ряд инструментов вкладки Xray: поиск растягивается, кнопки — по своей ширине; на телефоне кнопки уходят строкой ниже. */
@@ -460,7 +468,7 @@
            box-shadow:0 6px 24px rgba(0,0,0,.35);padding:4px;min-width:184px;max-width:280px}
   .popmenu-item{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text-primary);
                 font:inherit;font-size:13px;padding:9px 11px;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap}
-  .popmenu-item:hover,.popmenu-item:focus-visible{background:var(--bg-secondary)}
+  .popmenu-item:focus-visible{background:var(--bg-secondary)} @media (hover:hover){ .popmenu-item:hover{background:var(--bg-secondary)} }
   .popmenu-item:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
   .popmenu-item.danger{color:var(--text-warning)}
   /* «Приглушён» в МЕНЮ = «выбрать нельзя, но клик ведёт туда, где это чинится» — и это ПРОТИВОПОЛОЖНО
@@ -482,8 +490,8 @@
   .help{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
         flex-shrink:0;border-radius:50%;border:1px solid var(--border-s);background:var(--bg-secondary);
         color:var(--text-tertiary);font-size:11px;font-weight:700;line-height:1;cursor:pointer;
-        vertical-align:middle;user-select:none;-webkit-user-select:none}
-  .help:hover,.help.on{background:var(--toggle-on);border-color:var(--toggle-on);color:#fff}
+        vertical-align:middle}
+  .help.on{background:var(--toggle-on);border-color:var(--toggle-on);color:#fff} @media (hover:hover){ .help:hover{background:var(--toggle-on);border-color:var(--toggle-on);color:#fff} }
   .help-pop{position:fixed;z-index:70;max-width:264px;background:var(--bg-primary);
             border:.5px solid var(--border-s);border-radius:var(--r-md);box-shadow:0 6px 24px rgba(0,0,0,.35);
             padding:9px 12px;font-size:12px;line-height:1.5;color:var(--text-secondary);white-space:normal}
@@ -512,8 +520,8 @@
   /* Зона бэкапа — `.drop` макета: без значка, прозрачная, с прямыми углами и текстом крупнее. Правила состояний ниже (наведение, заперта,
      бросок) стоят ПОСЛЕ неё и перебивают её фон — зона по-прежнему отвечает на перетаскивание. */
   .dz.dz-drop{background:transparent;border-radius:0;border-color:var(--line2);padding:18px 14px;font-size:13px;color:var(--ink2)}
-  .dz:hover{border-color:var(--text-info);background:var(--bg-secondary)}
-  .dz.dz-drop:hover{border-color:var(--acc);background:var(--acc-soft)}
+  @media (hover:hover){ .dz:hover{border-color:var(--text-info);background:var(--bg-secondary)} }
+  @media (hover:hover){ .dz.dz-drop:hover{border-color:var(--acc);background:var(--acc-soft)} }
   /* Заперта на время чужой операции (импорт бэкапа, пока применяется прошлый): бросок не должен выглядеть приглашением. */
   .dz[aria-disabled="true"]{opacity:.6;cursor:not-allowed;border-color:var(--border-t);background:none}
   .dz.over{border-color:var(--text-info);background:var(--bg-success);color:var(--text-success)}
@@ -546,9 +554,9 @@
   .temp-bar>span{display:block;height:100%;border-radius:3px;transition:width .3s}
   .temp-tick{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text-tertiary);opacity:.7}
   #ping-cell{cursor:pointer}
-  #ping-cell:hover{background:var(--bg-primary)}
+  @media (hover:hover){ #ping-cell:hover{background:var(--bg-primary)} }
   .m.tap{cursor:pointer}
-  .m.tap:hover{background:var(--bg-primary)}
+  @media (hover:hover){ .m.tap:hover{background:var(--bg-primary)} }
   /* Режим стримера: блюрим чувствительные данные для записи видео (чисто визуально —
      данные НЕ меняются, бэкенд не трогается). Моноширинное = технические идентификаторы
      (IP/серверы/ifaces/CIDR/домены) ловим одним правилом по подстроке стиля; немоноширинные
@@ -609,12 +617,12 @@
   .mcard.collapsed .mc-title{display:block}
   .mc-chev{margin-left:auto;background:transparent;border:0;color:var(--text-tertiary);font-size:13px;line-height:1;
            cursor:pointer;padding:4px 7px;border-radius:var(--r-md);transition:transform .15s;flex-shrink:0}
-  .mc-chev:hover{background:var(--bg-secondary)}
+  @media (hover:hover){ .mc-chev:hover{background:var(--bg-secondary)} }
   .mcard.collapsed .mc-chev{transform:rotate(-90deg)}
   /* Кнопки перестановки ↑↓ в шапке: работают и на тач-экранах, где HTML5-drag мёртв. */
   .mc-arrow{background:transparent;border:0;color:var(--text-tertiary);font-size:13px;line-height:1;
             cursor:pointer;padding:4px 6px;border-radius:var(--r-md);flex-shrink:0}
-  .mc-arrow:hover{background:var(--bg-secondary)}
+  @media (hover:hover){ .mc-arrow:hover{background:var(--bg-secondary)} }
   .mc-arrow:disabled{opacity:.28;cursor:default;background:transparent}
   .mc-up{margin-left:auto}
   /* Блок «Разделы настроек» — перемещаемый как карточка, но БЕЗ рамки/фона .card
@@ -642,7 +650,7 @@
            display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
            color:var(--ink3);font-size:13.5px;cursor:pointer;
            background:transparent;transition:border-color .15s,color .15s}
-  .addcard:hover{border-color:var(--acc);color:var(--acc-deep)}
+  @media (hover:hover){ .addcard:hover{border-color:var(--acc);color:var(--acc-deep)} }
   .addcard:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   /* КОМПАКТНЫЙ переключатель ВНУТРИ строки списка (ширина карточки на экране «Карточки
      главной»). Обычный `.segbar` тянет сегменты на всю строку — он для переключателя, который
@@ -678,9 +686,9 @@
   .side .brand{padding:4px 10px 16px}
   .side .sp{flex:1}
   .snav{display:flex;align-items:center;gap:11px;padding:7px 10px;border-radius:8px;font-size:13.5px;
-        color:var(--ink2);cursor:pointer;user-select:none}
+        color:var(--ink2);cursor:pointer}
   .snav .sq{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:#fff;flex:none;opacity:.92}
-  .snav:not(.on):hover{background:var(--soft)}
+  @media (hover:hover){ .snav:not(.on):hover{background:var(--soft)} }
   .snav:focus-visible,.tabbar div:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   /* Базовая подсветка — обычным цветом: `color-mix()` ниже знают не все движки, и без этой
      строки активный раздел на старом WebView отличался бы только жирностью. */
@@ -724,7 +732,7 @@
   /* padding-right — не отступ ради красоты: счётчик колокольчика висит на 4 px ПРАВЕЕ кнопки, а кнопка последняя в строке. */
   .hbtns{display:flex;align-items:center;gap:8px;flex:none;padding-right:5px}
   .back{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink3);cursor:pointer}
-  .back:hover{color:var(--ink)}
+  @media (hover:hover){ .back:hover{color:var(--ink)} }
   /* ТЕЛЕФОННАЯ ШАПКА. На телефоне сайдбар скрыт, и бренда не остаётся вовсе — знак должен
      быть виден в ОБЕИХ ширинах; заголовок раздела с телефона убран совсем, его несёт таб-бар. */
   .phead{display:none}
@@ -816,11 +824,11 @@
      подвал сайдбара: за ссылкой на новости в настройки не ходят. */
   .plinks{display:flex;flex-direction:column;gap:7px;margin-bottom:9px}
   .plinks a{display:flex;align-items:center;gap:7px;color:var(--ink3);cursor:pointer;text-decoration:none}
-  .plinks a:hover{color:var(--ink2)}
+  @media (hover:hover){ .plinks a:hover{color:var(--ink2)} }
   .sfoot{margin-top:12px;padding:11px 11px 2px;border-top:1px solid var(--line);
          font-size:11.5px;color:var(--ink3);line-height:1.55}
   .sfoot .r{display:flex;align-items:center;gap:6px}
-  .sfoot .r.cl{cursor:pointer} .sfoot .r.cl:hover{color:var(--ink2)}
+  .sfoot .r.cl{cursor:pointer} @media (hover:hover){ .sfoot .r.cl:hover{color:var(--ink2)} }
   .sfoot b{font-weight:500;color:var(--ink2)}
   .sfoot .up{width:6px;height:6px;border-radius:99px;background:var(--acc);flex:none}
   /* ПОДВАЛ ТЕЛЕФОНА (макет: `pfoot`). Содержимое — ТОТ ЖЕ узел `.sfoot`, переехавший из сайдбара (placeChrome), поэтому его
@@ -926,7 +934,7 @@
   @container view (min-width:700px) and (max-width:1149px){ .doors>.door.wide2{grid-column:span 2} }
   .door{display:flex;align-items:center;gap:13px;padding:12px 14px;border-radius:var(--r2);background:var(--card);
         border:1px solid var(--line);box-shadow:var(--sh);cursor:pointer;position:relative;overflow:hidden;min-width:0}
-  .door:hover{border-color:var(--line2)}
+  @media (hover:hover){ .door:hover{border-color:var(--line2)} }
   .door:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   .door .bar{position:absolute;left:0;top:0;bottom:0;width:4px}
   .door .sq{width:40px;height:40px;border-radius:13px;display:grid;place-items:center;color:#fff;flex:none}
@@ -986,7 +994,7 @@
      ниже кнопки макета (34 против 38). */
   .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:11px;border:1px solid var(--line2);
        background:var(--card);color:var(--ink);font-size:13.5px;line-height:inherit;white-space:nowrap}
-  .btn:hover{border-color:var(--ink3);background:var(--card)}
+  @media (hover:hover){ .btn:hover{border-color:var(--ink3);background:var(--card)} }
   /* Кнопка с длинной подписью переносит строку, а не режет край карточки на 320 px («Открыть в приложении на этом устройстве», шаг 7a).
      Не `.wrap`: это имя каркаса (`#view .wrap{padding:0…}`), и кнопка теряла внутренние отступы (ревью шага 7a). */
   .btn.brk{white-space:normal;text-align:left}
@@ -1016,17 +1024,17 @@
   /* ВКЛАДКИ ЭКРАНА — `Tabs` макета: пилюли, выбранная — тёмная. */
   .tabs2{display:flex;gap:5px;flex-wrap:wrap;min-width:0}
   .tabs2 button{background:var(--soft);border:0;padding:7px 13px;border-radius:99px;font:inherit;font-size:13px;color:var(--ink2);cursor:pointer;white-space:nowrap}
-  .tabs2 button:hover{color:var(--ink)}
+  @media (hover:hover){ .tabs2 button:hover{color:var(--ink)} }
   .tabs2 button.on{background:var(--ink);color:var(--paper);font-weight:500}
   .tabs2 button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   /* Вкладки-пилюли на проводке сегментов (wireSeg: роль, фокус, Enter): вид — пилюли, поведение — сегмента. */
   .tabs2>.seg{flex:none;background:var(--soft);border:0;padding:7px 13px;border-radius:99px;font-size:13px;color:var(--ink2);cursor:pointer;font-weight:400;white-space:nowrap}
-  .tabs2>.seg:hover{color:var(--ink)}
+  @media (hover:hover){ .tabs2>.seg:hover{color:var(--ink)} }
   .tabs2>.seg.on{background:var(--ink);color:var(--paper);font-weight:500;border:0;box-shadow:none}
   /* Запертая пилюля — без руки: `.tabs2>.seg` (рука) весит как `.seg.dis` и стоит ниже, и перебивала его — над запертым периодом
      «Трафика» висела рука (ревью пачки 3, круг 2). */
   .tabs2>.seg.dis{cursor:not-allowed}
-  .tabs2>.seg.dis:hover{color:var(--ink2);background:var(--soft)}   /* и фон: `.seg.dis:hover{background:transparent}` его снимал */
+  @media (hover:hover){ .tabs2>.seg.dis:hover{color:var(--ink2);background:var(--soft)} } /* и фон: `.seg.dis:hover{background:transparent}` его снимал */
   /* СЕКЦИЯ-ГРУППА — `Sect` макета: шапка (знак · имя · число · действия · свёртка), строки под ней. Рамка и фон — как у карточки. */
   .sect{border-radius:var(--r2);background:var(--card);border:1px solid var(--line);box-shadow:var(--sh);overflow:hidden;min-width:0}
   .sect>.h{display:flex;align-items:center;gap:10px;padding:13px 17px;cursor:pointer;min-width:0}
@@ -1038,7 +1046,7 @@
   .sect-tg{flex:none;display:grid;place-items:center;width:26px;height:26px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--ink3);cursor:pointer}
   .sect-tg .ic{transition:transform .15s}
   .sect.open .sect-tg .ic{transform:rotate(180deg)}
-  .sect-tg:hover{color:var(--ink);background:var(--soft)}
+  @media (hover:hover){ .sect-tg:hover{color:var(--ink);background:var(--soft)} }
   .sect-tg:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
   /* Действие в шапке или строке карточки — не капс и не заголовок, а кнопка-пилюля (макет: `Act`). */
   .act{font-size:12.5px;font-weight:500;color:var(--acc-deep);background:var(--acc-soft);border-radius:99px;padding:4px 10px;cursor:pointer;
@@ -1073,7 +1081,7 @@
      рвали бы «ядро не умеет NFQUEUE» по слогам. */
   .opt{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
   .opt .o{padding:13px 11px;border-radius:var(--r);border:1.5px solid var(--line);background:var(--card);cursor:pointer;text-align:center;min-width:0}
-  .opt .o:hover{border-color:var(--line2)}
+  @media (hover:hover){ .opt .o:hover{border-color:var(--line2)} }
   .opt .o:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   .opt .o .oi{display:grid;place-items:center;height:22px;color:var(--ink2)}
   .opt .o .t{font-size:13.5px;font-weight:500;margin-top:7px;color:var(--ink);overflow-wrap:anywhere}
@@ -1119,7 +1127,7 @@
   .acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;min-width:0}
   .acts>.grow{flex:1 1 0}
   .btn.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
-  .btn.bad:hover{border-color:var(--bad)}
+  @media (hover:hover){ .btn.bad:hover{border-color:var(--bad)} }
   /* Заперта — СЕРЫМ, не прозрачностью (макет `.btn[aria-disabled]`): полупрозрачный белый на зелёном давал 2,2:1, а «нельзя
      нажать» читается и так. */
   .btn[disabled]{background:var(--soft2)!important;color:var(--ink2)!important;border-color:transparent!important;box-shadow:none;opacity:1;cursor:default}
@@ -1196,7 +1204,7 @@
   /* ГЛАВНАЯ КНОПКА ЭКРАНА (сохранить стратегию, запустить проверку) — как в макете: белый на `--pri`, а не на `--acc`
      (4,9:1 против 3,4 — расчёт в блоке токенов). Наведение не имеет права вернуть ей фон обычной кнопки. */
   .btn.pri{background:var(--pri);border-color:transparent;color:var(--pri-ink);font-weight:500}
-  .btn.pri:hover{background:var(--pri);border-color:transparent}
+  @media (hover:hover){ .btn.pri:hover{background:var(--pri);border-color:transparent} }
   /* Поле аргументов демона — подпись над ним тем же цветом, что пояснения карточки. */
   /* Подпись поля — НАД полем всегда (`.f label` макета: 12 px, зазор 5). Поле — блоком: строчное вставало В СТРОКУ с подписью,
      как только карточка была шире «подпись + 560 px» («Новый пароль», «Сервер SMTP», «Домен», подтверждение удаления — на ПК;
@@ -1213,7 +1221,7 @@
   .evd+.evd{border-top:1px solid var(--line)}
   .evd>summary{list-style:none;cursor:pointer}
   .evd>summary::-webkit-details-marker{display:none}
-  .evd>summary:hover .nm{color:var(--acc-deep)}
+  @media (hover:hover){ .evd>summary:hover .nm{color:var(--acc-deep)} }
   .evd>summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
   .evd>summary .chev{transition:transform .15s}
   .evd[open]>summary .chev{transform:rotate(90deg)}
@@ -1560,7 +1568,7 @@
   .lsrc button{font:inherit;font-size:11.5px;font-weight:500;text-transform:none;letter-spacing:0;line-height:1.4;
                padding:3px 10px;border-radius:99px;cursor:pointer}
   .lsrc.onhero button{background:transparent;border:1px solid rgba(255,255,255,.3);color:rgba(255,255,255,.92)}
-  .lsrc.onhero button:hover{background:rgba(0,0,0,.14)}
+  @media (hover:hover){ .lsrc.onhero button:hover{background:rgba(0,0,0,.14)} }
   .lsrc.onhero button.on{background:rgba(0,0,0,.28);border-color:rgba(255,255,255,.55);color:#fff;font-weight:600}
   .lsrc.onhero button:focus-visible{outline:2px solid #fff;outline-offset:2px}
   .hl-row{display:flex;align-items:center;gap:12px}
@@ -1599,7 +1607,7 @@
   .qbtn{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:99px;cursor:pointer;
         background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.22);font-size:13px;font-weight:500;color:#fff;
         max-width:100%;min-width:0}
-  .qbtn:hover{background:rgba(255,255,255,.24)}
+  @media (hover:hover){ .qbtn:hover{background:rgba(255,255,255,.24)} }
   .qbtn[aria-disabled="true"],.vtoggle[aria-disabled="true"]{cursor:default !important;opacity:.7}
   /* Фокус на цветной шапке — белый, как у чипов источника скорости (.lsrc.onhero): акцентный зелёный на зелёном не виден. */
   .qbtn:focus-visible,#ping-go:focus-visible{outline:2px solid #fff;outline-offset:2px}
@@ -1623,7 +1631,7 @@
   .tchip{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:99px;
          background:var(--card);border:1px solid var(--line);font-size:12.5px;color:var(--ink3);
          cursor:pointer;box-shadow:var(--sh);white-space:nowrap;max-width:100%;min-width:0}
-  .tchip:hover{border-color:var(--line2)}
+  @media (hover:hover){ .tchip:hover{border-color:var(--line2)} }
   /* Значение и адрес — ФЛЕКС-ЭЛЕМЕНТЫ, поэтому многоточие на них работает (флекс блокирует
      элементы): у чипа `white-space:nowrap`, и без обрезки длинное имя резолвера распирало бы
      страницу вбок — а горизонтальной прокрутки у панели быть не должно. */
@@ -1784,7 +1792,7 @@
   .lrow{display:flex;align-items:center;gap:11px;padding:9px 0;min-width:0}
   .lrow+.lrow{border-top:1px solid var(--line)}
   .lrow.cl{cursor:pointer}
-  .lrow.cl:hover .nm{color:var(--acc-deep)}
+  @media (hover:hover){ .lrow.cl:hover .nm{color:var(--acc-deep)} }
   .lrow.cl:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
   /* `min-width:0` на растягивающейся ячейке ОБЯЗАТЕЛЕН: без него длинное имя устройства
      распирает флекс-строку шире карточки (у флекс-элемента min-width:auto), и на 375 px
@@ -1818,7 +1826,7 @@
   .lrow .ds{font-size:12px;color:var(--ink3);margin-top:2px;overflow-wrap:anywhere;word-break:break-word}
   /* Ссылка внутри подписи строки («страница проекта» у готового списка) — цветом подписи, подчёркиванием, а не синевой браузера. */
   .lrow .ds a{color:inherit;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:2px}
-  .lrow .ds a:hover{color:var(--ink)}
+  @media (hover:hover){ .lrow .ds a:hover{color:var(--ink)} }
   /* Предупреждение ЧАСТЬЮ описания («частично», «не хватит места», «недоступен») — цветом, на ЛЮБОМ экране. Было тремя
      правилами под свои экраны (импорт, сети, гео), и четвёртый («Где лежит каждый движок») остался серым (ревью шага 6b, круг 2). */
   .ds .wr{color:var(--warn)}
@@ -1909,13 +1917,13 @@
      кнопкой внизу экрана. Действию, которое что-то меняет на роутере, здесь не место. */
   .cact{font-size:12.5px;font-weight:500;color:var(--ink2);background:var(--soft);border-radius:99px;
         padding:4px 10px;cursor:pointer;white-space:nowrap;border:0;font-family:inherit}
-  .cact:hover{background:var(--soft2);color:var(--ink)}
+  @media (hover:hover){ .cact:hover{background:var(--soft2);color:var(--ink)} }
   /* Акцентное действие (макет: `Act` без `mut`) — у «Трафика». */
   .cact.acc{color:var(--acc-deep);background:var(--acc-soft)}
   /* Наведение: фон — `--pri`, а НЕ `--acc`. Белый на `--acc` даёт 3,4:1 (это записано прямо
      в блоке токенов, там же `--pri` объявлен на шаг глубже ради 4,9), а подпись здесь мелкая
      и полужирная — норма 4,5. Тот же расчёт, что у главной кнопки панели. */
-  .cact.acc:hover{background:var(--pri);color:var(--pri-ink)}
+  @media (hover:hover){ .cact.acc:hover{background:var(--pri);color:var(--pri-ink)} }
   .cact:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   /* ПЛАШКА-ОБЪЯСНЕНИЕ (`.note2`, имя РОВНО как в макете) — «почему цифра такая» рядом с цифрой,
      а не под вопросиком: читают это ровно тогда, когда смотрят на данные. Вариант несёт СМЫСЛ:
@@ -1928,7 +1936,7 @@
      вокруг. Кнопка, а не <a>: у перехода нет адреса, его ведёт `data-cact`; рамку и фон общей кнопки снимаем. */
   .ilink{display:inline;padding:0;margin:0;border:0;border-radius:0;background:none;font:inherit;color:inherit;
          text-decoration:underline;text-underline-offset:2px;cursor:pointer}
-  .ilink:hover{background:none;text-decoration-thickness:2px}
+  @media (hover:hover){ .ilink:hover{background:none;text-decoration-thickness:2px} }
   .ilink:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
   .note2.bad{background:var(--bad-soft);color:var(--bad)}
   .note2 b{font-weight:600}
@@ -1936,7 +1944,7 @@
      обязан показывать фокус: иначе он «доступен» только на бумаге. */
   .seg:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   /* Выключенный сегмент («этот роутер так не умеет») — тот же `.dis`, что у кнопок. */
-  .seg.dis:hover{background:transparent}
+  @media (hover:hover){ .seg.dis:hover{background:transparent} }
   /* Заголовок карточки колоды: [знак · имя … своё … действие]. Разметку строит ОДИН хелпер
      `cardHead` в panel.js у ВСЕХ карточек, включая статические («Трафик», «Журнал действий» —
      через слот `data-chead`): иначе они разойдутся кеглем при первой же правке. */

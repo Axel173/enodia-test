@@ -137,7 +137,7 @@ if [ "$REPLAY" = 0 ] && [ -e "$LOCK" ]; then
         # ядро раздаёт номера по кругу. Спрашиваем cmdline — тем же приёмом проект гасит СВОЙ
         # инстанс демона, а не первый попавшийся (никаких killall/pidof). Не прочли cmdline ⇒
         # НЕ отнимаем: неизвестность трактуем в пользу прежнего поведения.
-        case "$(tr '\000' ' ' < "/proc/$_hlp/cmdline" 2>/dev/null)" in
+        case "$(tr '\000' ' ' 2>/dev/null < "/proc/$_hlp/cmdline")" in
             ''|*heal.sh*) exit 0 ;;
         esac
     fi
@@ -473,6 +473,7 @@ elif [ "$active_t" = awg ]; then
     VPN_DNS=$(grep -E '^DNS\s*=' "$ENODIA_STATE/awg.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
     [ -z "$VPN_DNS" ] && VPN_DNS=172.29.172.254
     echo "VPN_DNS: $VPN_DNS (нет плагина awg — ставлю сам)"
+    # upstream-own: бут старого layout — dnsmasq перезапускает следующая секция heal, свой рестарт здесь лишний (dns_upstream_put).
     cat > /etc/dnsmasq.d/00-upstream.conf <<UPSTREAM
 no-resolv
 server=$VPN_DNS

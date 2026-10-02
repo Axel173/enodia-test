@@ -41,7 +41,7 @@ command -v mac_ok   >/dev/null 2>&1 || mac_ok()   { printf '%s' "$1" | grep -qE 
 # «Жив ли процесс И наш ли он» — у daemon-lib.sh (NUL в cmdline — в пробелы: busybox grep читает файл до первого NUL, а у
 # держателя из CGI первым словом стоит `sh`, и имя скрипта он бы не увидел). Шим — та же строка.
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
-command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE "$2"; }
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -qE "$2"; }
 
 # Потолок имени — БАЙТАМИ и ОТКАЗОМ, а не обрезкой: `cut -c` в busybox режет байты, и обрезанная кириллица дала бы обрывок буквы
 # в JSON всего списка. 96 байт — 48 русских букв или 96 латинских: на подпись в строке хватает с запасом.

@@ -450,7 +450,7 @@ step_ram() {         # $1 = full → вместе с логами и снимк�
 daemons_pids() {      # $1 = дополнительные демоны (только purge, см. DAEMONS_PURGE)
     for _pp in /proc/[0-9]*; do
         [ -r "$_pp/cmdline" ] || continue
-        _cl="$(tr '\0' ' ' < "$_pp/cmdline" 2>/dev/null) "
+        _cl="$(tr '\0' ' ' 2>/dev/null < "$_pp/cmdline") "
         _dh=0
         for _dp in $DAEMON_DIRS; do
             for _db in $DAEMONS $1; do
@@ -481,7 +481,7 @@ step_jobs() {
         [ "$_jp" = "$$" ] && continue
         [ "$_jp" = "$PPID" ] && continue
         [ -r "$_pp/cmdline" ] || continue
-        case "$(tr '\0' ' ' < "$_pp/cmdline" 2>/dev/null)" in
+        case "$(tr '\0' ' ' 2>/dev/null < "$_pp/cmdline")" in
             *"$ENODIA_DIR/"*.sh*) kill "$_jp" 2>/dev/null; _n=$((_n+1)) ;;
         esac
     done

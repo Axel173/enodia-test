@@ -41,6 +41,7 @@
 #   transport.sh slots-down        — опустить их же (vpn-toggle off: «выключено» = как после ребута с флагом)
 #   transport.sh slot-up <id>      — поднять несущую слота; slot-down <id> — отпустить (→ fallback)
 #   transport.sh slot-health <id>  — жив ли доп-выход (0 жив / 1 просел / 2 плагин не умеет)
+#   transport.sh slot-probe <id>   — снятый выход: проба без перепроводки (0 вернули · 1 нет · 3 ключ занят · 4 несущая не встала · 5 уже есть · 6 выход сменили · 2 не умеет)
 #   transport.sh slot-iface <id>   — имя несущей доп-выхода (учёт трафика); пусто = считать нечем
 #   transport.sh slot-list         — транспорты, готовые нести доп-выход (см. slot_ready)
 
@@ -568,10 +569,16 @@ _slot_dispatch() {
 
 cmd_slot_up()   { _slot_dispatch slot-up "$1";   src=$?; apply_marking; return $src; }
 cmd_slot_down() { _slot_dispatch slot-down "$1"; src=$?; apply_marking; return $src; }
-# Здоровье ДОП-ВЫХОДА (Ф3) — БЕЗ переигрыша маркировки: проба read-only, её зовёт watchdog
-# каждый тик. Плагин отвечает 0 = жив / 1 = просел; 2 = «не умеет slot-health» (тогда сторож
-# решает по своим признакам, как для awg/byedpi). Вывод плагина глушим — в лог пишет сторож.
-cmd_slot_health() { _slot_dispatch slot-health "$1" >/dev/null 2>&1; return $?; }
+# Здоровье ДОП-ВЫХОДА (Ф3) — БЕЗ переигрыша маркировки, её зовёт watchdog каждый тик. Плагин отвечает 0 = жив / 1 = просел;
+# 2 = «не умеет slot-health» (тогда сторож решает по своим признакам, как для awg/byedpi). Маршрутов проба не меняет, но
+# ЗАЛИПШИЙ hev выхода плагин перезапускает на месте (slot-tun-lib.sh::slot_hev_path_check: TUN выхода пересоздаётся вместе с его
+# default в table 100N, ip rule не трогается) — поэтому вывод НЕ глушим: строку «hev перезапущен» должен увидеть лог сторожа.
+cmd_slot_health() { _slot_dispatch slot-health "$1"; }
+# ВОЗВРАТ СНЯТОГО ВЫХОДА (зовёт сторож, когда несущей выхода нет): плагин пробует сервер, не трогая маршрутов, и достраивает выход
+# лишь при ответе (разбор — transport-awg.sh cmd_slot_probe). Маркировку переигрываем ТОЛЬКО при возврате: неудачная попытка
+# ничего не меняла, а переигрыш на каждой — лишняя работа каждые пару минут. Коды плагина: 0 вернулся · 1 нет ответа · 3 ключ
+# занят · 4 несущая не встала (сервер не судили) · 5 несущая уже есть · 6 выход сменили по ходу · 2 не умеет (альты, старый плагин).
+cmd_slot_probe() { _slot_dispatch slot-probe "$1"; src=$?; [ "$src" = 0 ] && apply_marking; return $src; }
 
 # ИМЯ НЕСУЩЕЙ ДОП-ВЫХОДА (`awgN` у awg, `xtunN` у альтов, ПУСТО у zapret — своей несущей у десинка
 # нет вовсе). Спрашивает УЧЁТ ТРАФИКА: «сколько прошло через выход №N» считается по счётчикам его
@@ -649,7 +656,8 @@ case "$1" in
     slot-up)   cmd_slot_up "$2" ;;
     slot-down) cmd_slot_down "$2" ;;
     slot-health) cmd_slot_health "$2" ;;
+    slot-probe) cmd_slot_probe "$2" ;;   # снятый выход: проба сервера без перепроводки, ответил — вернуть (сторож)
     slot-iface) cmd_slot_iface "$2" ;;   # имя несущей выхода №N (учёт трафика); пусто = считать нечем
     slot-list) cmd_slot_list ;;      # транспорты, готовые нести ДОП-ВЫХОД (пикер в панели; ≠ list)
-    *) echo "usage: $0 active|configured|ready [t]|marking <t>|names|list|installed [t]|next <t>|up [t]|down [t]|cold [t]|switch <t> [--home]|health [t]|live|failover [t]|dns [t]|slots-up|slots-down|slot-up <id>|slot-down <id>|slot-health <id>|slot-iface <id>|slot-list"; exit 2 ;;
+    *) echo "usage: $0 active|configured|ready [t]|marking <t>|names|list|installed [t]|next <t>|up [t]|down [t]|cold [t]|switch <t> [--home]|health [t]|live|failover [t]|dns [t]|slots-up|slots-down|slot-up <id>|slot-down <id>|slot-health <id>|slot-probe <id>|slot-iface <id>|slot-list"; exit 2 ;;
 esac

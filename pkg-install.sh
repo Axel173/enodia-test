@@ -143,7 +143,7 @@ trap 'pi_on_signal' INT TERM
 # строки владельца: старый набор без них не должен лишать нас гарда.
 PI_HERE=${0%/*}; [ "$PI_HERE" = "$0" ] && PI_HERE=.
 if [ -f "$PI_HERE/daemon-lib.sh" ]; then . "$PI_HERE/daemon-lib.sh"; fi
-command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE "$2"; }
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -qE "$2"; }
 command -v store_mode_alive >/dev/null 2>&1 || store_mode_alive() {
     _sma=$(cat /tmp/enodia-store-mode.pid 2>/dev/null | tr -cd '0-9'); pid_runs "$_sma" 'usb-offload\.sh.* mode'; }
 command -v uninstall_alive >/dev/null 2>&1 || uninstall_alive() {

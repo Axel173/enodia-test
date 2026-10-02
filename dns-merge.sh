@@ -273,9 +273,9 @@ out_count() { _c=$(grep -c '^ipset=/' "$OUT" 2>/dev/null); case "$_c" in ''|*[!0
 # выйдет беднее (виден лишь /etc/dnsmasq.d), но это лучше, чем никакой.
 dns_cfg_real() {
 	for _dp in /proc/[0-9]*; do
-		case "$(tr '\0' ' ' < "$_dp/cmdline" 2>/dev/null)" in
+		case "$(tr '\0' ' ' 2>/dev/null < "$_dp/cmdline")" in
 			*dnsmasq*-C\ *)
-				_dc=$(tr '\0' '\n' < "$_dp/cmdline" 2>/dev/null | awk '$0=="-C"{f=1;next} f{print;exit}')
+				_dc=$(tr '\0' '\n' 2>/dev/null < "$_dp/cmdline" | awk '$0=="-C"{f=1;next} f{print;exit}')
 				[ -f "$_dc" ] && { printf '%s' "$_dc"; return 0; } ;;
 		esac
 	done

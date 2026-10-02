@@ -488,11 +488,19 @@ AWG_CONFIGS="$ENODIA_STATE/configs"
 # значения — вон, префикс ОТРЕЗАЕМ, а не делим по «=»: ключ — base64 с «=» на конце (грабля 27.09.2026 у сверки пира).
 # ПИРОВ МОЖЕТ БЫТЬ НЕСКОЛЬКО, и порядок их у userspace-демона случаен (обход Go-map) ⇒ никакого «первого пира»: на каждый пир —
 # своя строка «C⇥имя⇥ключ:пир» (пиров нет — «ключ»), и совпадение ЛЮБОЙ пары — одна сессия на двоих (ревью 28.09.2026, круг 2).
-AWG_ID_AWK='
+# ПРИВАТНИК — В «ПРИЖАТОЙ» ФОРМЕ. Демон хранит ключ после clamping Curve25519 (у первого байта сброшены 3 младших бита, у последнего —
+# старший, а соседний взведён), а в конфиге он бывает сырым — сгенерирован не `wg genkey`. Тогда живой ключ (`show private-key`) ≠
+# строке файла при ТОМ ЖЕ ключе (замер BE7000 02.10.2026: расходился один знак base64), и «занят ли ключ ЖИВЫМ держателем» не
+# находил держателя НИКОГДА: последний рубеж подъёма выхода молчал. Приводим ОБЕ стороны к прижатой форме — она у ключа одна.
+# Прижатие трогает ровно три знака base64 (0, 1 и 41 — биты первого и последнего байта), и делается АРИФМЕТИКОЙ, без and()/or():
+# битовых функций у busybox awk может не быть. Неканоничная строка (не 44 знака, чужой алфавит) остаётся как есть.
+AWG_CLAMP_BEGIN='BEGIN { B = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; for (i = 0; i < 64; i++) b64[substr(B, i + 1, 1)] = i }'
+AWG_CLAMP='if (length(v) == 44 && (substr(v, 1, 1) in b64) && (substr(v, 2, 1) in b64) && (substr(v, 42, 1) in b64)) { c0 = b64[substr(v, 1, 1)]; c1 = b64[substr(v, 2, 1)]; c41 = b64[substr(v, 42, 1)]; c0 = c0 - c0 % 2; c1 = c1 % 16; c41 = int(c41 / 16) * 16 + 4 + c41 % 4; v = substr(B, c0 + 1, 1) substr(B, c1 + 1, 1) substr(v, 3, 39) substr(B, c41 + 1, 1) substr(v, 43) }'
+AWG_ID_AWK="$AWG_CLAMP_BEGIN"'
 FNR == 1 && NR > 1 && pk != "" { if (np == 0) print "C\t" nm "\t" pk; for (k = 1; k <= np; k++) print "C\t" nm "\t" pk ":" pe[k] }
 FNR == 1 { nm = FILENAME; sub(/.*\//, "", nm); sub(/\.conf$/, "", nm); pk = ""; np = 0 }
 { l = $0; sub(/\r$/, "", l); t = tolower(l) }
-t ~ /^[ \t]*privatekey[ \t]*=/ && pk == "" { v = l; sub(/^[^=]*=/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v); pk = v }
+t ~ /^[ \t]*privatekey[ \t]*=/ && pk == "" { v = l; sub(/^[^=]*=/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v); '"$AWG_CLAMP"'; pk = v }
 t ~ /^[ \t]*publickey[ \t]*=/ { v = l; sub(/^[^=]*=/, "", v); sub(/#.*/, "", v); gsub(/[ \t]/, "", v); if (v != "") pe[++np] = v }
 END { if (pk != "") { if (np == 0) print "C\t" nm "\t" pk; for (k = 1; k <= np; k++) print "C\t" nm "\t" pk ":" pe[k] } }'
 awg_ids() { awk "$AWG_ID_AWK" "$@" 2>/dev/null; }             # файлы .conf -> «C⇥имя⇥идентичность» (строка на пир)
@@ -500,7 +508,9 @@ awg_key_file() { [ -f "$1" ] || return 0; awg_ids "$1" | cut -f3; }
 awg_key_live() {   # $1 = iface -> «ключ:пир» живого демона строкой на пир (пусто, если его нет или нечем спросить)
     ip link show "$1" >/dev/null 2>&1 || return 0
     _kb=$(bin_path awg); [ -x "$_kb" ] || return 0
-    _kl=$("$_kb" show "$1" private-key 2>/dev/null | head -n1 | tr -d ' \t\r')
+    # Та же прижатая форма, что у файлов (AWG_CLAMP): демон и так отдаёт прижатый, но правило «обе стороны — через одно» дешевле
+    # доверия к чужой реализации.
+    _kl=$("$_kb" show "$1" private-key 2>/dev/null | head -n1 | tr -d ' \t\r' | awk "$AWG_CLAMP_BEGIN"' { v = $0; '"$AWG_CLAMP"'; print v }')
     [ -n "$_kl" ] || return 0
     _kp=$("$_kb" show "$1" peers 2>/dev/null | tr -d ' \t\r')
     if [ -z "$_kp" ]; then printf '%s\n' "$_kl"; return 0; fi

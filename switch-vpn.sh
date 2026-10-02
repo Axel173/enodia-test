@@ -98,14 +98,19 @@ command -v doh_apply_dns >/dev/null 2>&1 || doh_apply_dns() { return 1; }
 # и выключение, нажатое посреди них, обязано их остановить (ревью ветки, круг 2). Нет библиотеки — прежний путь.
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
+# Смерть демона ждём по процессу с шагом 0.1 с (daemon-lib.sh). Нет библиотеки — прежний секундный шаг.
+command -v daemon_wait_gone >/dev/null 2>&1 || daemon_wait_gone() { _dwg=0; while [ -d "/proc/$1" ]; do [ "$_dwg" -ge "${2:-5}" ] && return 1; sleep 1; _dwg=$((_dwg+1)); done; return 0; }
+# Поколение firewall reload (ipt-lib.sh). Нет библиотеки — «reload был всегда»: каждое чтение даёт новую строку, как раньше.
+command -v fw3_gen >/dev/null 2>&1 || fw3_gen() { cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$$-$RANDOM-$RANDOM"; }
 
-# «awg_setup.sh отработал» ⇒ его последняя строка (`/etc/init.d/firewall reload`) СНЕСЛА ВСЕ
-# iptables: цепочки apply-bypass (VPN_EXCLUDE/KEEP/DEV/PORTS/FORCE, режим «целиком в десинк»),
-# ENODIA_ZAPRET + NFQUEUE, FORWARD доп-выходов, PANEL_WAN и цепочки «доступа домой». Полный
-# переигрыш после этого делает ТОЛЬКО heal.sh (на буте), а смена страны из панели шла мимо
-# него — правила оставались снесёнными до ребута, и сторож этого не видел (rule-heal судит по
-# `FORWARD -o awg0 ACCEPT`, который тут же возвращает сам awg_setup). Флаг ставит bring_up,
-# гасят его replay_* — так переигрыш случается РОВНО после нашего же fw3-reload.
+# `/etc/init.d/firewall reload` из awg_setup.sh СНОСИТ ВСЕ iptables: цепочки apply-bypass
+# (VPN_EXCLUDE/KEEP/DEV/PORTS/FORCE, режим «целиком в десинк»), ENODIA_ZAPRET + NFQUEUE, FORWARD
+# доп-выходов, PANEL_WAN и цепочки «доступа домой». Полный переигрыш после этого делает ТОЛЬКО
+# heal.sh (на буте), а смена страны из панели шла мимо него — правила оставались снесёнными до
+# ребута, и сторож этого не видел (rule-heal судит по `FORWARD -o awg0 ACCEPT`, который тут же
+# возвращает сам awg_setup). Флаг ставит bring_up — ТОЛЬКО если reload правда был (поколение
+# `fw3_gen` сменилось: зона `awg` уже стоит ⇒ reload не нужен, см. awg_setup.sh), гасят его
+# replay_* — так переигрыш случается РОВНО после нашего же fw3-reload.
 FW3_WIPED=0
 
 # Событийное письмо: $1 key, $2 throttle_sec, $3 тема, $4 текст.
@@ -196,18 +201,25 @@ show_status() {
                 printf "  Handshake: ${RED}нет${NC}\n"
             fi
         fi
-        ip_vpn=$(probe_ext_ip "--interface awg0" 5)
-        [ -n "$ip_vpn" ] && printf "  Внешний IP через VPN: ${GREEN}%s${NC}\n" "$ip_vpn"
+        # Внешний IP — только по просьбе (`status`): это запрос наружу с потолком 5 с, а смена сервера и откат ждали
+        # его ради строки в тосте, хотя панель сама перечитывает IP после любого действия (`loadIp`).
+        if [ "$1" = ip ]; then
+            ip_vpn=$(probe_ext_ip "--interface awg0" 5)
+            [ -n "$ip_vpn" ] && printf "  Внешний IP через VPN: ${GREEN}%s${NC}\n" "$ip_vpn"
+        fi
     else
         printf "  Интерфейс awg0: ${RED}не поднят${NC}\n"
     fi
 }
 
-# Ждать handshake до HS_WAIT секунд
+# Ждать handshake до HS_WAIT секунд. Шаг — четверть секунды (`usleep`; дробного `sleep` в этом busybox нет):
+# рукопожатие приходит за доли секунды после setconf, а секундный шаг добавлял к смене сервера почти целую
+# секунду ожидания уже пришедшего ответа. Нет `usleep` — прежний секундный шаг; точка — раз в секунду, как раньше.
 wait_for_handshake() {
     [ -z "$WG" ] && return 1
-    i=0
-    while [ $i -lt $HS_WAIT ]; do
+    _whq=1; command -v usleep >/dev/null 2>&1 && _whq=4
+    _whi=0
+    while [ "$_whi" -lt $((HS_WAIT * _whq)) ]; do
         hs=$($WG show awg0 latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
         case "$hs" in
             ''|*[!0-9]*) hs=0 ;;
@@ -216,9 +228,9 @@ wait_for_handshake() {
             ago=$(age_since "$hs")
             [ "$ago" -lt 300 ] && return 0
         fi
-        sleep 1
-        i=$((i+1))
-        printf "."
+        if [ "$_whq" = 4 ]; then usleep 250000; else sleep 1; fi
+        _whi=$((_whi+1))
+        [ $((_whi % _whq)) = 0 ] && printf "."
     done
     return 1
 }
@@ -426,19 +438,21 @@ install_config() {
 awg0_daemon_pids() {
     for _p in /proc/[0-9]*; do
         [ -r "$_p/cmdline" ] || continue
-        case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null) " in
+        case "$(tr '\0' ' ' 2>/dev/null < "$_p/cmdline") " in
             *"amneziawg-go awg0 "*|*"amnezia-wg awg0 "*|*"wireguard-go awg0 "*) echo "${_p#/proc/}" ;;
         esac
     done
 }
+# Смерть ждём ПО ПРОЦЕССУ с шагом 0.1 с (daemon_wait_gone), а не секундными шагами обхода /proc: демон уходит за
+# доли секунды, а первая же проверка после TERM застаёт его живым — и смена сервера платила целую секунду дважды
+# (bring_down + bring_up). Потолки прежние: 3 с на TERM, затем KILL и ещё до 5 с.
 kill_awg_processes() {
-    for _pid in $(awg0_daemon_pids); do kill -TERM "$_pid" 2>/dev/null; done
-    _i=0
-    while [ -n "$(awg0_daemon_pids)" ] && [ "$_i" -lt 8 ]; do
-        if [ "$_i" = 3 ]; then
-            for _pid in $(awg0_daemon_pids); do kill -KILL "$_pid" 2>/dev/null; done
-        fi
-        sleep 1; _i=$((_i + 1))
+    _kap=$(awg0_daemon_pids)
+    for _pid in $_kap; do kill -TERM "$_pid" 2>/dev/null; done
+    for _pid in $_kap; do
+        daemon_wait_gone "$_pid" 3 && continue
+        kill -KILL "$_pid" 2>/dev/null
+        daemon_wait_gone "$_pid" 5
     done
 }
 
@@ -493,8 +507,7 @@ replay_rules_only() {
 # Поднять туннель из текущего awg.conf
 bring_up() {
     ip link del awg0 2>/dev/null
-    kill_awg_processes
-    sleep 1
+    kill_awg_processes      # ждёт смерти демона сам — отдельной паузы после него не нужно
 
     started=0
     for s in /etc/init.d/awg /etc/init.d/amneziawg /etc/init.d/amnezia; do
@@ -507,11 +520,13 @@ bring_up() {
 
     # Если init.d не справился или его нет — зовём вендорный awg_setup.sh.
     # /etc/init.d/awg в проекте никто не создаёт ⇒ ветка init.d выше промахивается ВСЕГДА, и
-    # эта строка бежит на КАЖДОЙ смене страны. Внутри — `/etc/init.d/firewall reload`, который
-    # сносит все iptables: помечаем это флагом, переигрыш сделают replay_* (см. FW3_WIPED).
+    # эта строка бежит на КАЖДОЙ смене страны. Внутри бывает `/etc/init.d/firewall reload`, который
+    # сносит все iptables: случился (сменилось поколение) — помечаем флагом, переигрыш сделают
+    # replay_* (см. FW3_WIPED). Не случился — переигрывать нечего, правила на месте.
     if ! ip link show awg0 >/dev/null 2>&1 && [ -f "$ENODIA_DIR/awg_setup.sh" ]; then
-        FW3_WIPED=1
+        _bu_gen=$(fw3_gen)
         ( cd "$ENODIA_DIR" && sh ./awg_setup.sh >"/tmp/enodia-switch-vpn-setup.log" 2>&1 )
+        [ "$(fw3_gen)" = "$_bu_gen" ] || FW3_WIPED=1
     fi
 
     # Ждём появления интерфейса
@@ -619,6 +634,8 @@ safety_off() {
         _dnsmsg="DNS остаётся на шифрованном резолвере (он ходит мимо туннеля, напрямую)"
     elif [ -f /etc/dnsmasq.d/00-upstream.conf ]; then
         _dnsmsg="DNS временно на 1.1.1.1/8.8.8.8"
+        # upstream-own: аварийный fail-open — файл с шапкой-пояснением для того, кто его найдёт, и рестарт ниже БЕЗУСЛОВНЫЙ
+        # (демон мог залипнуть на мёртвом туннельном upstream); экономия dns_upstream_put здесь не нужна.
         cat > /etc/dnsmasq.d/00-upstream.conf <<'DNS_FALLBACK'
 # Временный fallback, поставлен switch-vpn.sh safety_off.
 # Будет заменён обратно на VPN-DNS при следующем срабатывании heal.sh
@@ -1230,7 +1247,7 @@ case "$1" in
         printf "Текущий:       %s status\n" "$0"
         ;;
     status)
-        show_status
+        show_status ip
         ;;
     rollback)
         # ГАРД КОМПОНЕНТА — как у switch_to и do_failover: без бинарей AmneziaWG откат неизбежно

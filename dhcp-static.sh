@@ -109,9 +109,9 @@ build_conf() {   # $1 = куда писать
 # только на нём видны межфайловые конфликты. Демон не бежит — берём стоковый путь.
 real_cfg() {
     for _dp in /proc/[0-9]*; do
-        case "$(tr '\0' ' ' < "$_dp/cmdline" 2>/dev/null)" in
+        case "$(tr '\0' ' ' 2>/dev/null < "$_dp/cmdline")" in
             *dnsmasq*-C\ *)
-                _dc2=$(tr '\0' '\n' < "$_dp/cmdline" 2>/dev/null | awk '$0=="-C"{f=1;next} f{print;exit}')
+                _dc2=$(tr '\0' '\n' 2>/dev/null < "$_dp/cmdline" | awk '$0=="-C"{f=1;next} f{print;exit}')
                 [ -f "$_dc2" ] && { printf '%s' "$_dc2"; return 0; } ;;
         esac
     done

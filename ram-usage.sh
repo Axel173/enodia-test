@@ -60,7 +60,7 @@ scan_procs() {
         [ -n "$_pl" ] || continue
         _rss=${_pl%% *}; _nm=${_pl#* }
         case "$_rss" in ''|*[!0-9]*) continue ;; esac
-        _cl=$(tr '\0' ' ' < "$_d/cmdline" 2>/dev/null)
+        _cl=$(tr '\0' ' ' 2>/dev/null < "$_d/cmdline")
 
         _kind=other
         case "$_cl" in

@@ -129,6 +129,8 @@ command -v probe_ext_ip >/dev/null 2>&1 || probe_ext_ip() { curl -s $1 --max-tim
 # бы HTTPS/2 DoH). ВЫКЛ (дефолт) → doh_apply_dns даёт 1, прежний прямой путь байт-в-байт. Шим — без lib.
 if [ -f "$ENODIA_DIR/doh-lib.sh" ]; then . "$ENODIA_DIR/doh-lib.sh"; fi
 command -v doh_apply_dns >/dev/null 2>&1 || doh_apply_dns() { return 1; }
+# Наш upstream dnsmasq пишет ОДИН владелец (doh-lib.sh, разбор там). Нет библиотеки — прежняя пара «записать + рестарт».
+command -v dns_upstream_put >/dev/null 2>&1 || dns_upstream_put() { mkdir -p /etc/dnsmasq.d; { echo no-resolv; for _dus in "$@"; do echo "server=$_dus"; done; } > /etc/dnsmasq.d/00-upstream.conf; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 
 log() { echo "[byedpi-transport] $*"; }
 
@@ -200,9 +202,7 @@ dns_direct_rules() {   # $1 = add|del
     done
 }
 set_dnsmasq_direct() {
-    mkdir -p /etc/dnsmasq.d
-    printf 'no-resolv\nserver=%s\nserver=%s\n' "$DNS1" "$DNS2" > /etc/dnsmasq.d/00-upstream.conf
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+    dns_upstream_put "$DNS1" "$DNS2"
 }
 set_direct_dns() {
     doh_apply_dns direct && return 0    # DoH ВКЛ/авто → резолв через локальный прокси (резолвер :443 мимо марки); иначе → ниже
@@ -473,6 +473,15 @@ cmd_status() {
 # Проба egress к НЕйтральному хосту (ipify): подтверждает, что ciadpi форвардит наружу. «Десинк
 # не пробил конкретный сайт» — НЕ событие «транспорт упал» (это per-site), потому health здесь =
 # демоны живы + xtun + ciadpi реально что-то отдаёт.
+# «ciadpi форвардит наружу?» — ОДИН критерий на socks-пробу несущей, socks-пробу выхода и пробу пути клиентов через TUN (почему по
+# IP, любой код ≠ 000 и с `-k` — разбор в cmd_health ниже). $1 — сетевые аргументы curl: `--socks5 адрес:порт` | `--interface <TUN>`.
+bd_egress_ok() {
+    for _beh in 1.1.1.1 8.8.8.8; do
+        _bec=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 $1 "https://$_beh" 2>/dev/null)   # $1 НАМЕРЕННО без кавычек — это аргументы
+        case "$_bec" in ''|000) ;; *) return 0 ;; esac
+    done
+    return 1
+}
 cmd_health() {
     t=awg; [ -f "$TRANSPORT_FLAG" ] && t=$(cat "$TRANSPORT_FLAG")
     [ "$t" = byedpi ] || return 0
@@ -509,12 +518,7 @@ cmd_health() {
     # ВСЕГДА: замерено на AX3600 (ядро 4.4, CA-бандл Feb 2023, OpenSSL 1.0.2q) — без `-k` оба
     # хоста дают 000 (rc=60), с `-k` — 301 и 302. Значит byedpi там вечно «нездоров», и сторож
     # уводит его на awg: ровно симптом «byedpi не держится», уже ловленный по другой причине.
-    _bhok=0
-    for hip in 1.1.1.1 8.8.8.8; do
-        code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 --socks5 "$SOCKS_ADDR:$SOCKS_PORT" "https://$hip" 2>/dev/null)
-        case "$code" in ''|000) ;; *) _bhok=1; break ;; esac
-    done
-    if [ "$_bhok" = 1 ]; then
+    if bd_egress_ok "--socks5 $SOCKS_ADDR:$SOCKS_PORT"; then
         # Сервер жив — а путь КЛИЕНТОВ (TUN → hev → socks)? Мимо hev проба выше не видит залипшего hev (разбор и лечение —
         # slot-tun-lib.sh::hev_path_check). Нет функции (старый слой) — как раньше.
         command -v hev_path_check >/dev/null 2>&1 || return 0
@@ -537,6 +541,10 @@ cmd_failover() {
     # Отвечаем 0 = «не вмешиваюсь», а не 1: «эскалируй cross» посреди ручного switch — худшее.
     [ -e "$SWITCH_LOCK" ] && { log "byedpi-failover: идёт смена транспорта (lock) — не вмешиваюсь"; return 0; }
     if sweep_fresh; then log "byedpi-failover: идёт браузер-свип — остаёмся на byedpi"; return 0; fi
+    # Путь клиентов через hev мёртв, и перезапуск hev не помог: переподъём ниже (тот же перезапуск ciadpi+hev со сбросом соединений)
+    # каждые 4 минуты ничего не меняет — отдаём эскалацию сторожу (разбор — xray-transport.sh cmd_failover; ревью с.93, круг 2).
+    if command -v hev_path_dead >/dev/null 2>&1 && hev_path_dead main; then
+        log "byedpi-failover: путь клиентов через hev мёртв и перезапуск hev не помог → эскалация на оркестраторе (cross/прямой)"; return 1; fi
     log "byedpi-failover: переподнимаю локальный десинк на месте (без ухода на VPS/awg)…"
     if reup_carrier; then
         log "byedpi-failover: ciadpi/hev снова подняты — остаёмся на byedpi"
@@ -742,6 +750,9 @@ slot_lib_ok() { [ -z "$SLOT_LIB_MISSING" ] && return 0
 # реализация живёт в слот-слое. Нет библиотеки (старая установка) → шим «считаем наш»:
 # диагностики нет, зато прежнее поведение основной несущей сохраняется байт-в-байт.
 command -v slot_socks_is_ours >/dev/null 2>&1 || slot_socks_is_ours() { return 0; }
+# Проба пути клиентов через TUN (slot-tun-lib.sh::hev_stuck) — ТЕМ ЖЕ критерием, что socks-проба: строже (Cloudflare trace) — и
+# «залипание» рождалось бы из ничего на сети, где 1.1.1.1 через ciadpi не проходит, а 8.8.8.8 проходит (ревью с.93).
+hev_tun_ok() { bd_egress_ok "--interface $1"; }
 slot_ciadpi_pid() { echo "/tmp/enodia-byedpi-s$1.pid"; }
 slot_ciadpi_log() { echo "/tmp/enodia-byedpi-s$1.log"; }
 slot_args_file()  { echo "$ENODIA_STATE/.byedpi-args-s$1"; }   # per-slot стратегия (нет → общий DEFAULT_ARGS)
@@ -888,12 +899,11 @@ cmd_slot_health() {   # $1 = id
     proc_alive "$(slot_ciadpi_pid "$_id")" || { log "слот №$_id health: ciadpi не жив"; return 1; }
     proc_alive "$(slot_hev_pid "$_id")"    || { log "слот №$_id health: hev не жив"; return 1; }
     ip link show "$(slot_tun "$_id")" >/dev/null 2>&1 || { log "слот №$_id health: нет $(slot_tun "$_id")"; return 1; }
-    _sp=$(slot_socks_port "$_id")
-    for _hip in 1.1.1.1 8.8.8.8; do
-        # `-k` — по той же причине, что в cmd_health выше (старый CA-бандл ⇒ вечное 000).
-        _code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 --socks5 "$SOCKS_ADDR:$_sp" "https://$_hip" 2>/dev/null)
-        case "$_code" in ''|000) ;; *) return 0 ;; esac
-    done
+    if bd_egress_ok "--socks5 $SOCKS_ADDR:$(slot_socks_port "$_id")"; then
+        # ciadpi форвардит — а путь клиентов выхода через его hev? (slot-tun-lib.sh::slot_hev_path_check; нет функции — как раньше)
+        command -v slot_hev_path_check >/dev/null 2>&1 || return 0
+        slot_hev_path_check "$_id"; return $?
+    fi
     log "слот №$_id health: проба egress не прошла (ciadpi не форвардит наружу)"
     return 1
 }
@@ -927,7 +937,7 @@ case "$1" in
     # Слот-вербы ОПЦИОНАЛЬНЫ: нет слот-слоя → код 2 «не умею», основная несущая не страдает.
     slot-up)   slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф1c): поднять ciadpi+hev+xtunN в table 100N (cfg игнор)
     slot-down) slot_lib_ok || exit 2; cmd_slot_down "$2" ;;      # доп-выход: снять несущую слота (-> fallback-политика mark-core)
-    slot-health) slot_lib_ok || exit 2; cmd_slot_health "$2" ;;  # доп-выход: жив ли выход (watchdog; egress-проба, не только pid)
+    slot-health) slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_health "$2" ;;  # доп-выход: жив ли (watchdog; egress-проба, не только pid); залипший hev выхода перезапускает — берёт несущую
     slot-reload) slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_reload "$2" ;;  # доп-выход: перечитать .byedpi-args-s<id> (перезапуск только ciadpi слота)
     slot-iface)  slot_lib_ok || exit 2; slot_tun "$2" ;;         # имя несущей слота — учёту трафика (владелец имени один: slot-tun-lib.sh)
     *) echo "usage: $0 up|down|cold|status|health|failover|reload|defaults|presets|socks-up [pid]|socks-down [pid]|sweep-begin|sweep-apply|sweep-end|slot-up <id>|slot-down <id>|slot-health <id>|slot-reload <id>|slot-iface <id>"; exit 2 ;;

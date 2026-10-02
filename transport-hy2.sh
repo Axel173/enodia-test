@@ -129,6 +129,8 @@ if [ -f "$ENODIA_DIR/ip-lib.sh" ]; then . "$ENODIA_DIR/ip-lib.sh"; fi
 # работает прежний путь байт-в-байт. Шим на случай установки без lib (DoH просто недоступен).
 if [ -f "$ENODIA_DIR/doh-lib.sh" ]; then . "$ENODIA_DIR/doh-lib.sh"; fi
 command -v doh_apply_dns >/dev/null 2>&1 || doh_apply_dns() { return 1; }
+# Наш upstream dnsmasq пишет ОДИН владелец (doh-lib.sh, разбор там). Нет библиотеки — прежняя пара «записать + рестарт».
+command -v dns_upstream_put >/dev/null 2>&1 || dns_upstream_put() { mkdir -p /etc/dnsmasq.d; { echo no-resolv; for _dus in "$@"; do echo "server=$_dus"; done; } > /etc/dnsmasq.d/00-upstream.conf; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 command -v probe_ext_ip >/dev/null 2>&1 || probe_ext_ip() { curl -s $1 --max-time "${2:-7}" https://api.ipify.org 2>/dev/null; }
 # Язык письма/события о hy2-failover — панельный pref lang (деф. ru). Шим на случай установки без файла.
 if [ -f "$ENODIA_DIR/nf-i18n.sh" ]; then . "$ENODIA_DIR/nf-i18n.sh"; fi
@@ -188,13 +190,11 @@ set_hy2_dns() {
     # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было. DOH_APPLY_NOTE — слово
     # библиотеки о том, что резолвер пришлось увести МИМО ещё не везущей несущей (см. doh_apply_dns).
     if doh_apply_dns tunnel; then [ -n "${DOH_APPLY_NOTE:-}" ] && log "DoH: $DOH_APPLY_NOTE"; return 0; fi
-    mkdir -p /etc/dnsmasq.d
-    printf 'no-resolv\nserver=%s\nserver=%s\n' "$DNS1" "$DNS2" > /etc/dnsmasq.d/00-upstream.conf
     for d in "$DNS1" "$DNS2"; do
         iptables -t mangle -C OUTPUT -d "$d" -j MARK --set-mark $FWMARK 2>/dev/null || \
             iptables -t mangle -A OUTPUT -d "$d" -j MARK --set-mark $FWMARK
     done
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+    dns_upstream_put "$DNS1" "$DNS2"
 }
 # Прямой DNS (релинквиш / прямой режим): публичный резолвер БЕЗ маркировки в туннель.
 set_direct_dns() {
@@ -205,9 +205,7 @@ set_direct_dns() {
         iptables -t mangle -D OUTPUT -d "$d" -j MARK --set-mark $FWMARK 2>/dev/null
     done
     doh_apply_dns direct && return 0    # DoH ВКЛ (или авто-режим прямых) → резолв через локальный прокси; иначе → ниже как было
-    mkdir -p /etc/dnsmasq.d
-    printf 'no-resolv\nserver=%s\nserver=%s\n' "$DNS1" "$DNS2" > /etc/dnsmasq.d/00-upstream.conf
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+    dns_upstream_put "$DNS1" "$DNS2"
 }
 
 # ---- демоны ---------------------------------------------------------------
@@ -315,6 +313,9 @@ restart_hy2() {
 # (вызывающий watchdog эскалирует: cross→awg или прямой режим).
 cmd_failover() {
     [ -e "$SWITCH_LOCK" ] && { log "hy2-failover: идёт ручной switch (lock) — не перебираю"; return 1; }
+    # Путь клиентов через hev мёртв, и перезапуск hev не помог — сменой сервера не вылечить (разбор — xray-transport.sh cmd_failover).
+    if command -v hev_path_dead >/dev/null 2>&1 && hev_path_dead main; then
+        log "hy2-failover: путь клиентов через hev мёртв и перезапуск hev не помог — серверы не перебираю, эскалация у сторожа"; return 1; fi
     # ГАРД активности hysteria. РАНЬШЕ бросали при отсутствии xtun — но xtun-устройство tun2socks
     # НЕПОСТОЯННО: смерть общего hev уносит xtun с собой (table 1000 пустеет). Это и есть отказ
     # несущей, ради которого нужна ФАЗА 0 → старый гард отсекал починку РАНЬШЕ, чем она стартовала
@@ -603,7 +604,9 @@ cmd_slot_health() {   # $1 = id
     ip link show "$(slot_tun "$_id")" >/dev/null 2>&1 || { log "слот №$_id health: нет $(slot_tun "$_id")"; return 1; }
     _ip=$(probe_ext_ip "--socks5-hostname $SOCKS_ADDR:$(slot_socks_port "$_id")" 8)
     [ -n "$_ip" ] || { log "слот №$_id health: проба egress пуста"; return 1; }
-    return 0
+    # Сервер жив — а путь клиентов выхода через его hev? (slot-tun-lib.sh::slot_hev_path_check; нет функции — как раньше)
+    command -v slot_hev_path_check >/dev/null 2>&1 || return 0
+    slot_hev_path_check "$_id"
 }
 
 case "$1" in
@@ -619,7 +622,7 @@ case "$1" in
     # Слот-вербы ОПЦИОНАЛЬНЫ: нет слот-слоя → код 2 «не умею», основная несущая не страдает.
     slot-up)     slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_up "$2" "$3" ;;   # доп-выход (Ф3): 2-я hysteria + hev + xtunN в table 100N
     slot-down)   slot_lib_ok || exit 2; cmd_slot_down "$2" ;;      # доп-выход: снять несущую слота (-> fallback-политика mark-core)
-    slot-health) slot_lib_ok || exit 2; cmd_slot_health "$2" ;;    # доп-выход: жив ли выход (watchdog)
+    slot-health) slot_lib_ok || exit 2; carrier_run cmd_slot_down cmd_slot_health "$2" ;;   # доп-выход: жив ли (watchdog); залипший hev выхода перезапускает — берёт несущую
     slot-iface)  slot_lib_ok || exit 2; slot_tun "$2" ;;           # имя несущей слота — учёту трафика (владелец имени один: slot-tun-lib.sh)
     *) echo "usage: $0 up|down|cold|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-health <id>|slot-iface <id>"; exit 2 ;;
 esac

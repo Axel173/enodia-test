@@ -407,7 +407,7 @@ cmd_peer_conf() {
 srv_daemon_pids() {   # матчим по /proc/*/cmdline — killall убил бы awg0 и слот-выходы
     for _p in /proc/[0-9]*; do
         [ -r "$_p/cmdline" ] || continue
-        case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null) " in
+        case "$(tr '\0' ' ' 2>/dev/null < "$_p/cmdline") " in
             *"amneziawg-go $IFACE "*) echo "${_p#/proc/}" ;;
         esac
     done

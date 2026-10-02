@@ -112,7 +112,8 @@ level_of() {
 		# Оба «работает, но не штатно» — тот же уровень, что у failover-ok\rollback выше;
 		# тревожного слова в ключе нет, значит глоб их не возьмёт — только это перечисление.
 		# doh-dot-fallback — выбран DoT, а порт 853 не проходит: DNS шифруется, но по DoH (doh-lib.sh).
-		transport-missing|geo-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal) echo warn ;;
+		# hev-restart-* — залипшую прослойку TUN→прокси сторож перезапустил сам (slot-tun-lib.sh): работает, но соединения рвались.
+		transport-missing|geo-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*) echo warn ;;
 		*)                        echo info ;;
 	esac
 }
@@ -135,7 +136,7 @@ class_of() {
 		panel-wan-ip)             echo addr ;;   # шлёт только открытый «вход снаружи»: в письме — новая ссылка на панель
 		subs-*)                   echo subs ;;
 		iplist-*|ipblock-*|geo-*) echo lists ;;
-		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back) echo system ;;
+		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*) echo system ;;
 		*)                        echo system ;;
 	esac
 }

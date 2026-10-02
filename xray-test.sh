@@ -78,7 +78,7 @@ _lk=0
 # cmdline только argv[0], и живой прогон считался бы мёртвым). Замок без pid-файла — это держатель между `mkdir` и записью pid:
 # ждём его секунду, а не уводим. Увод мёртвого — ПЕРЕИМЕНОВАНИЕМ (атомарно: из двух одновременных уводов удаётся один), а не `rm`,
 # который снёс бы замок, только что взятый соседом (ревью пачки 2, круг 3).
-command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE "$2"; }
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -qE "$2"; }
 lock_take() {
 	mkdir "$TLOCK" 2>/dev/null && { echo $$ > "$TLOCK/pid"; _lk=1; return 0; }
 	_lp=$(cat "$TLOCK/pid" 2>/dev/null | tr -cd '0-9')

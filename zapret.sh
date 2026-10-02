@@ -168,6 +168,8 @@ QUIC_B64='wwAAAAEIeOeYRrvzeYQAAESesuIbTYvML8k+74FJlUpbpjZLkRkbfQ7pPzj/kZL9Fu+3og
 # doh_apply_dns даёт 1, прежний прямой путь байт-в-байт. Шим на случай установки без lib.
 [ -f "$ENODIA_DIR/doh-lib.sh" ] && . "$ENODIA_DIR/doh-lib.sh"
 command -v doh_apply_dns >/dev/null 2>&1 || doh_apply_dns() { return 1; }
+# Наш upstream dnsmasq пишет ОДИН владелец (doh-lib.sh, разбор там). Нет библиотеки — прежняя пара «записать + рестарт».
+command -v dns_upstream_put >/dev/null 2>&1 || dns_upstream_put() { mkdir -p /etc/dnsmasq.d; { echo no-resolv; for _dus in "$@"; do echo "server=$_dus"; done; } > /etc/dnsmasq.d/00-upstream.conf; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 
 log() { echo "[zapret] $*"; }
 
@@ -365,9 +367,7 @@ dns_direct_rules() {   # $1 = add|del
     done
 }
 set_dnsmasq_direct() {
-    mkdir -p /etc/dnsmasq.d
-    printf 'no-resolv\nserver=%s\nserver=%s\n' "$DNS1" "$DNS2" > /etc/dnsmasq.d/00-upstream.conf
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+    dns_upstream_put "$DNS1" "$DNS2"
 }
 set_direct_dns() {
     doh_apply_dns direct && return 0    # DoH ВКЛ/авто → резолв через локальный прокси (резолвер :443 мимо марки); иначе → ниже

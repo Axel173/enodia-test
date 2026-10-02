@@ -168,7 +168,7 @@ echo "AmneziaWG binaries exist, setting up awg0 interface"
 awg0_daemon_pids() {
     for p in /proc/[0-9]*; do
         [ -r "$p/cmdline" ] || continue
-        case "$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) " in
+        case "$(tr '\0' ' ' 2>/dev/null < "$p/cmdline") " in
             *"amneziawg-go awg0 "*) echo "${p#/proc/}" ;;
         esac
     done
@@ -221,35 +221,57 @@ fi
 
 # $ENODIA_BIN/awg - check connection
 
-# Set up firewall AmneziaWG zone
-uci set firewall.awg=zone
-uci set firewall.awg.name='awg'
-uci set firewall.awg.network='awg0'
-uci set firewall.awg.input='ACCEPT'
-uci set firewall.awg.output='ACCEPT'
-uci set firewall.awg.forward='ACCEPT'
-if ! uci show firewall | grep -qE "src='awg'|dest='awg'"; then
-    uci add firewall forwarding
-    uci set firewall.@forwarding[-1].src='guest'
-    uci set firewall.@forwarding[-1].dest='awg'
-    uci add firewall forwarding
-    uci set firewall.@forwarding[-1].src='awg'
-    uci set firewall.@forwarding[-1].dest='guest'
-fi
-uci commit firewall
+# ЗОНА `awg` В ФАЕРВОЛЕ — И firewall reload ТОЛЬКО РАДИ ЕЁ РОЖДЕНИЯ. Reload флашит ВСЕ iptables, и вызыватель обязан
+# переиграть снесённое; раньше это происходило на КАЖДОЙ смене сервера. А зона — декоративная: интерфейса `network.awg0`
+# у netifd нет, fw3 не знает её устройства, и цепочки `zone_awg_*` стоят без единого правила на awg0 (замер BE7000
+# 02.10.2026). Маршрут, FORWARD и MASQUERADE несущей ставим МЫ (плагин), а правила с `-i/-o awg0` переживают пересоздание
+# интерфейса — они матчат имя. Поэтому reload нужен, только когда зоны ещё нет: uci-конфиг её не знает (на BE7000 /etc —
+# ramfs, то есть первый подъём после загрузки) или fw3 её ещё не загрузил (цепочки нет — судим по ФАКТУ ядра).
+# Перезагрузили — отмечаем (`fw3_gen_new`, ipt-lib.sh): вызыватель сверяет отметку и переигрывает ТОЛЬКО тогда.
+command -v fw3_gen_new >/dev/null 2>&1 || fw3_gen_new() { :; }   # нет ipt-lib — у вызывателей шим «reload был всегда»
+awg_zone_ready() {
+    [ "$(uci -q get firewall.awg)" = zone ] || return 1
+    for _z in name=awg network=awg0 input=ACCEPT output=ACCEPT forward=ACCEPT; do
+        [ "$(uci -q get "firewall.awg.${_z%%=*}")" = "${_z#*=}" ] || return 1
+    done
+    uci show firewall 2>/dev/null | grep -qE "src='awg'|dest='awg'" || return 1
+    iptables -S zone_awg_forward >/dev/null 2>&1
+}
+if awg_zone_ready; then
+    echo "Зона awg в фаерволе уже стоит — firewall reload не нужен, правила остаются на месте"
+    ip route flush cache
+else
+    # Set up firewall AmneziaWG zone
+    uci set firewall.awg=zone
+    uci set firewall.awg.name='awg'
+    uci set firewall.awg.network='awg0'
+    uci set firewall.awg.input='ACCEPT'
+    uci set firewall.awg.output='ACCEPT'
+    uci set firewall.awg.forward='ACCEPT'
+    if ! uci show firewall | grep -qE "src='awg'|dest='awg'"; then
+        uci add firewall forwarding
+        uci set firewall.@forwarding[-1].src='guest'
+        uci set firewall.@forwarding[-1].dest='awg'
+        uci add firewall forwarding
+        uci set firewall.@forwarding[-1].src='awg'
+        uci set firewall.@forwarding[-1].dest='guest'
+    fi
+    uci commit firewall
 
-# Clear routes cache and restart firewall
-# ПОМЕТКА ЧУЖОГО ВЫВОДА. Ниже говорит СТОКОВЫЙ fw3, а стенограмма садится в НАШ лог
-# (enodia-startup.log / switch-vpn-setup.log) — и его собственные ошибки читаются как наши.
-# Замерено на AX3600 17.08.2026, каждый подъём несущей: «! Failed with exit code 1» от
-# /etc/firewall.d/qca-nss-ecm, «Cannot find device br-guest» и «Error: argument "dport" is
-# wrong» от миксиного parentalctl (на ядре 4.4 iproute2 не знает dport). Ни одна из них не
-# наша, но именно они всплывают первыми, когда грепаешь лог тестера на error|fail.
-echo "Restarting firewall..."
-echo "--- НИЖЕ ВЫВОД СТОКОВОГО firewall reload (fw3/miwifi). Его ошибки — НЕ наши ---"
-ip route flush cache
-/etc/init.d/firewall reload
-echo "--- конец вывода стокового firewall reload ---"
+    # Clear routes cache and restart firewall
+    # ПОМЕТКА ЧУЖОГО ВЫВОДА. Ниже говорит СТОКОВЫЙ fw3, а стенограмма садится в НАШ лог
+    # (enodia-startup.log / switch-vpn-setup.log) — и его собственные ошибки читаются как наши.
+    # Замерено на AX3600 17.08.2026, каждый подъём несущей: «! Failed with exit code 1» от
+    # /etc/firewall.d/qca-nss-ecm, «Cannot find device br-guest» и «Error: argument "dport" is
+    # wrong» от миксиного parentalctl (на ядре 4.4 iproute2 не знает dport). Ни одна из них не
+    # наша, но именно они всплывают первыми, когда грепаешь лог тестера на error|fail.
+    echo "Restarting firewall..."
+    echo "--- НИЖЕ ВЫВОД СТОКОВОГО firewall reload (fw3/miwifi). Его ошибки — НЕ наши ---"
+    ip route flush cache
+    /etc/init.d/firewall reload
+    fw3_gen_new
+    echo "--- конец вывода стокового firewall reload ---"
+fi
 
 # --- Гостевая сеть: маршруты/правила/NAT (мимо-и-в-VPN) — ИДЕМПОТЕНТНО ---------
 # ПОЧЕМУ ЭТОТ БЛОК СТОИТ ПОСЛЕ `firewall reload`, А НЕ ДО (найдено ревью, батч 4).
@@ -307,6 +329,14 @@ iptables -C FORWARD -i awg0 -o br-guest -j ACCEPT 2>/dev/null || iptables -A FOR
 # Гард на пустой $dns: в конфиге может не быть строки `DNS=` вовсе (нативные .conf её несут не
 # всегда), и правило собиралось как `--to-destination :53` — iptables ругался в лог, а правила
 # не было. Для Address такой случай логировался, для DNS — нет; теперь говорим прямо.
+# DNAT НА DNS ПРЕЖНЕГО СЕРВЕРА — СНЯТЬ. Его смывал firewall reload на каждой смене сервера; теперь reload бывает раз на
+# загрузку (см. зону выше), и правило прошлого конфига осталось бы ПЕРВЫМ: у WARP DNS = 1.1.1.1, у Amnezia — 172.29.172.254,
+# и гость после смены слал бы запросы туда, куда новый туннель не ведёт (гостевая сеть без имён). Снимаем всё, что смотрит
+# не в $dns; пустой $dns — снимаем всё (гость идёт к dnsmasq роутера, как и обещает строка ниже).
+iptables -t nat -S PREROUTING 2>/dev/null \
+    | grep -E -- '^-A PREROUTING -s 192\.168\.33\.0/24 .*--dport 53 -j DNAT --to-destination ' \
+    | grep -vF -- "--to-destination ${dns:-x}:53" | sed 's/^-A /-D /' \
+    | while read -r _gd; do iptables -t nat $_gd 2>/dev/null; done
 if [ -n "$dns" ]; then
     iptables -t nat -C PREROUTING -p udp -s 192.168.33.0/24 --dport 53 -j DNAT --to-destination ${dns}:53 2>/dev/null || iptables -t nat -A PREROUTING -p udp -s 192.168.33.0/24 --dport 53 -j DNAT --to-destination ${dns}:53
     iptables -t nat -C PREROUTING -p tcp -s 192.168.33.0/24 --dport 53 -j DNAT --to-destination ${dns}:53 2>/dev/null || iptables -t nat -A PREROUTING -p tcp -s 192.168.33.0/24 --dport 53 -j DNAT --to-destination ${dns}:53

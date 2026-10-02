@@ -113,6 +113,8 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 # Слой шифрованного DNS (doh-lib.sh): keepalive демона https_dns_proxy (ниже, после лока). Шим —
 # без lib doh_want=false ⇒ keepalive no-op. [[doh-direct-modes-backlog]]
 if [ -f "$ENODIA_DIR/doh-lib.sh" ]; then . "$ENODIA_DIR/doh-lib.sh"; fi
+# Наш upstream dnsmasq пишет ОДИН владелец (doh-lib.sh, разбор там). Нет библиотеки — прежняя пара «записать + рестарт».
+command -v dns_upstream_put >/dev/null 2>&1 || dns_upstream_put() { mkdir -p /etc/dnsmasq.d; { echo no-resolv; for _dus in "$@"; do echo "server=$_dus"; done; } > /etc/dnsmasq.d/00-upstream.conf; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null; }
 command -v doh_enabled >/dev/null 2>&1 || doh_enabled() { return 1; }
 command -v doh_want >/dev/null 2>&1 || doh_want() { return 1; }   # старая lib без авто-режима
 command -v doh_rearm_due >/dev/null 2>&1 || doh_rearm_due() { return 0; }   # lib без паузы ручного DoH — прежний путь
@@ -554,10 +556,16 @@ slot_boot_window() { [ "$(up_secs)" -lt "$BOOT_GRACE" ]; }
 # на каждом тике, и удачный подъём знал лишь его лог. Отметка эпизода — `$SLOT_DOWN.<id>`: падение объявляем ОДИН раз на эпизод
 # (прежде — на каждом тике, пока выход лежит: ×N в журнале, письмо — по часовому троттлу), возврат — ТОЛЬКО у объявленного
 # падения: штатный подъём на буте и переподъём, который помог до вердикта, письма не заслуживают. Ключи — пара одного повода
-# (events.sh class_of: slot-fail-*/slot-ok-* = «сбой VPN»), иначе выключенные падения слали бы возвраты.
+# (events.sh class_of: slot-fail-*/slot-ok-* = «сбой VPN»), иначе выключенные падения слали бы возвраты. ТРОТТЛ У ОБЕИХ — НОЛЬ:
+# «раз на эпизод» и так держит отметка, а часовой троттл у «недоступен» (наследие писем на каждом тике) при втором падении в час
+# глушил его, и «снова работает» приходило без пары (ревью с.93).
 # Отметка в /tmp: ребут — новый эпизод (выходы поднимает heal, итог загрузки — своё событие boot-ok/boot-fail).
 SLOT_DOWN=/tmp/enodia-slot-down
-slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noanswer|gone|hs:<сек> $5=транспорт выхода
+slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noanswer|gone|nocarrier|hevpath|hs:<сек> $5=транспорт выхода
+    # VPN ВЫКЛЮЧИЛИ, ПОКА ШЁЛ СВИП: флаг свип смотрит один раз на входе, а дальше вербы несущих под carrier_run отказывают — и отказ
+    # читался бы падением выхода («сервер не отвечает», а после «Включить VPN» — ещё и «снова работает»). Выход снял человек,
+    # вместе со всем VPN: эпизода нет (ревью с.93, круг 2).
+    [ -f "$ENODIA_STATE/.vpn-off" ] && return 0
     [ -f "$SLOT_DOWN.$1" ] && return 0
     echo "$2" > "$SLOT_DOWN.$1"
     [ -f "$NOTIFY_EVENT" ] || return 0
@@ -565,28 +573,40 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
         desync)   _sfr="десинк не поднялся"; _sfe="desync did not come up" ;;
         noanswer) _sfr="сервер выхода не отвечает"; _sfe="the exit's server does not answer" ;;
         gone)     _sfr="несущая исчезла"; _sfe="the carrier is gone" ;;
+        nocarrier) _sfr="несущая не поднялась — причина в логе сторожа"; _sfe="the carrier did not come up — the reason is in the watchdog log" ;;
+        hevpath)  _sfr="сервер отвечает, но путь клиентов через прослойку hev не работает и перезапуск её не помог"
+                  _sfe="the server answers, but the clients' path through the hev layer does not work and restarting it did not help" ;;
         hs:*)     _sfr="рукопожатие ${4#hs:} с назад"; _sfe="last handshake ${4#hs:} s ago" ;;
         *)        _sfr=$4; _sfe=$4 ;;
     esac
     # ЧТО БУДЕТ ДАЛЬШЕ — по ФАКТУ поведения свипа, а не одной фразой на всех: несущие xray/hy2/byedpi он поднимает заново каждый
-    # тик (выход вернётся сам), а снятый выход AmneziaWG — нет (интерфейса больше нет, судить нечего): прежний текст «вернётся
-    # после перезагрузки» врал первым, «вернётся сам» соврал бы вторым.
+    # тик, а снятый выход AmneziaWG пробует с растущей паузой (slot_awg_return) — и обещанные сроки обязаны совпадать с её
+    # SLOT_RETRY_FIRST/SLOT_RETRY_MAX.
     case "$5" in
-        awg) _sfn="Сам выход не вернётся: выключите и снова включите его в панели («Соединение» → «Дополнительные выходы») или перезагрузите роутер."
-             _sfne="The exit will not come back by itself: turn it off and on again in the panel (Connection -> Additional exits) or reboot the router." ;;
+        awg) _sfn="Роутер проверяет его сервер, не трогая остальной трафик: сперва через 2 минуты, потом всё реже — до раза в полчаса. Когда сервер ответит, выход вернётся сам, и придёт письмо «снова работает»."
+             _sfne="The router checks its server without touching the rest of the traffic: first in 2 minutes, then less and less often — down to once every half hour. Once the server answers, the exit comes back by itself and a \"works again\" email follows." ;;
         *)   _sfn="Роутер пробует поднять его заново каждые 2 минуты — когда сервер ответит, выход вернётся сам, и придёт письмо «снова работает»."
              _sfne="The router retries every 2 minutes — once the server answers, the exit comes back by itself and a \"works again\" email follows." ;;
     esac
+    # Несущая не встала вовсе — сервер не судили, и обещать «когда сервер ответит» нельзя: мешает то, что на роутере.
+    if [ "$4" = nocarrier ]; then
+        _sfn="Сервер при этом не проверялся: мешает сам роутер. Проверьте в панели конфиг выхода и компонент AmneziaWG — роутер пробует снова с растущей паузой, и выход вернётся, как только несущая поднимется."
+        _sfne="The server was not checked at all: the router itself is in the way. Check the exit's config and the AmneziaWG component in the panel — the router keeps retrying with a growing pause, and the exit comes back as soon as the carrier comes up."
+    fi
+    if [ "$4" = hevpath ]; then
+        _sfn="Роутер поднимает выход заново с растущей паузой — сперва через 2 минуты, потом всё реже, до раза в полчаса; когда путь заработает, выход вернётся сам, и придёт письмо «снова работает»."
+        _sfne="The router brings the exit up again with a growing pause — first in 2 minutes, then less and less often, down to once every half hour; once the path works, the exit comes back by itself and a \"works again\" email follows."
+    fi
     if [ "$NF_LANG" = en ]; then
         _fbl=$([ "$3" = direct ] && echo "direct" || echo "through the main tunnel")
-        sh "$NOTIFY_EVENT" "slot-fail-$1" 3600 \
+        sh "$NOTIFY_EVENT" "slot-fail-$1" 0 \
             "BE7000: extra exit #$1 is down" \
 "Extra exit #$1 (server $2) does not respond ($_sfe).
 Its traffic is switched to the fallback path: $_fbl.
 $_sfne" >/dev/null 2>&1
     else
         _fbl=$([ "$3" = direct ] && echo "напрямую" || echo "через основной туннель")
-        sh "$NOTIFY_EVENT" "slot-fail-$1" 3600 \
+        sh "$NOTIFY_EVENT" "slot-fail-$1" 0 \
             "BE7000: доп-выход №$1 недоступен" \
 "Дополнительный выход №$1 (сервер $2) не отвечает ($_sfr).
 Его трафик переключён на запасной путь: $_fbl.
@@ -607,6 +627,72 @@ slot_back_event() {   # $1=id $2=cfg — выход прошёл проверк�
             "BE7000: доп-выход №$1 снова работает" \
 "Дополнительный выход №$1 (сервер $2) снова отвечает — его трафик опять идёт через него, а не запасным путём." >/dev/null 2>&1
     fi
+}
+# АВТОВОЗВРАТ ВЫХОДА AmneziaWG. Снятый выход (рукопожатие умерло → slot-down, или демон упал сам) прежде лежал до ручного
+# «выключить и включить» либо ребута: интерфейса нет, судить нечего, и свип проходил мимо. Пробует плагин (transport.sh slot-probe,
+# разбор в transport-awg.sh cmd_slot_probe) БЕЗ перепроводки: неудачная попытка соединений дома не сбрасывает, поэтому пробуем
+# сразу со следующего тика, а пауза растёт вдвое до потолка — лежащий долго сервер не стоит демона и 15 с тика каждые 2 минуты.
+# Состояние — `<отметка> <пауза>` в $SLOT_RETRY.<id>: отметка ставится и при снятии (первая попытка — через SLOT_RETRY_FIRST),
+# возраст — через age_since (скачок часов иначе растянул бы паузу на годы или обнулил её). Сроки обещает письмо о падении
+# (slot_fail_event) — правишь числа, правь и текст. «Сервер не ответил» — повод объявить эпизод (раз на эпизод: отметка
+# SLOT_DOWN): прежде выход, снятый в окне бута, письма не получал вовсе — отложенный вердикт не доходил ни до какого тика.
+SLOT_RETRY=/tmp/enodia-slot-retry
+SLOT_RETRY_FIRST=120
+SLOT_RETRY_MAX=1800
+# Пауза — «<отметка> <пауза, с> <транспорт>»: у выхода сменили транспорт — чужая пауза новому не мешает (её и снимает slot_retry_wait).
+# Ею пользуются ДВА случая: возврат снятого AmneziaWG-выхода (slot_awg_return) и выход xray/hy2/byedpi с мёртвым путём через hev
+# (slot_hevpath_down) — оба про то, что переподъём каждые 2 минуты платил бы сбросом соединений дома, ничего не меняя.
+slot_retry_arm() { echo "$(date +%s) ${2:-$SLOT_RETRY_FIRST} ${3:-}" > "$SLOT_RETRY.$1"; }   # $1 = id ; $2 = пауза, с ; $3 = транспорт
+# 0 — пауза ещё идёт. Запас 30 с: тики идут через 2 минуты с дрожанием, и пауза «120» без него пропускала бы целый тик.
+slot_retry_wait() {   # $1 = id ; $2 = транспорт выхода. Разобранную паузу оставляет в _srti (её берёт slot_retry_next).
+    _srt=$(cat "$SLOT_RETRY.$1" 2>/dev/null)
+    _srts=$(printf '%s' "$_srt" | cut -d' ' -f1); _srti=$(printf '%s' "$_srt" | cut -d' ' -f2); _srtt=$(printf '%s' "$_srt" | cut -d' ' -f3)
+    case "$_srti" in ''|*[!0-9]*) _srti=0 ;; esac
+    if [ -n "$_srtt" ] && [ "$_srtt" != "$2" ]; then rm -f "$SLOT_RETRY.$1"; _srti=0; return 1; fi
+    [ "$_srti" -gt 0 ] && [ $(( $(age_since "$_srts") + 30 )) -lt "$_srti" ]
+}
+slot_retry_next() {   # $1 = id ; $2 = транспорт — следующая пауза: вдвое от прежней (первая — SLOT_RETRY_FIRST), до потолка
+    slot_retry_wait "$1" "$2"
+    if [ "$_srti" -gt 0 ]; then _srti=$((_srti * 2)); else _srti=$SLOT_RETRY_FIRST; fi
+    [ "$_srti" -gt "$SLOT_RETRY_MAX" ] && _srti=$SLOT_RETRY_MAX
+    slot_retry_arm "$1" "$_srti" "$2"
+}
+slot_awg_return() {   # $1=id $2=cfg $3=fallback $4=транспорт выхода
+    slot_boot_window && return 0    # на буте выходы поднимает heal: проба гонялась бы с его slot-up за один и тот же awgN
+    slot_retry_wait "$1" "$4" && return 0
+    sh "$TRANSPORT_SH" slot-probe "$1" >>"$LOG" 2>&1; _srr=$?
+    case "$_srr" in
+        0) rm -f "$SLOT_RETRY.$1"
+           log "slot-health: awg-выход №$1 ($2) — сервер снова отвечает, выход возвращён"
+           slot_back_event "$1" "$2"
+           return 0 ;;
+        2) return 0 ;;                  # плагин пробы не умеет (дрейф деплоя) — прежнее поведение: лежит до ручного включения
+        5) return 0 ;;                  # несущая уже есть (подняли панель/heal) — не возврат; её судит awg-ветка свипа (и маршрут достроит)
+        6) rm -f "$SLOT_RETRY.$1"; log "slot-health: выход №$1 выключили или сменили, пока шла проба возврата — вердикта нет"; return 0 ;;
+    esac
+    # Проба идёт до 15 с, а выключение/смену выхода в панели она не ждёт (лока у тех вербов нет): выход, который за это время
+    # выключили или перевели на другой конфиг, не «сервер не отвечает» — не пишем и паузу не копим (ревью с.93).
+    _srs=$(sh "$SLOTS_SH" show "$1" 2>/dev/null)
+    if [ "$(printf '%s' "$_srs" | cut -f6)" != on ] || [ "$(printf '%s' "$_srs" | cut -f3)" != awg ] || [ "$(printf '%s' "$_srs" | cut -f4)" != "$2" ]; then
+        rm -f "$SLOT_RETRY.$1"
+        log "slot-health: выход №$1 выключили или сменили, пока шла проба возврата — вердикта нет"
+        return 0
+    fi
+    case "$_srr" in
+        3) ;;                           # ключ занят живым держателем: сервер ни при чём, письма нет, пауза растёт
+        4) slot_fail_event "$1" "$2" "$3" nocarrier "$4" ;;   # несущая не встала: сервер не судили — и письмо говорит это
+        *) slot_fail_event "$1" "$2" "$3" noanswer "$4" ;;
+    esac
+    slot_retry_next "$1" "$4"
+}
+# Выход xray/hy2/byedpi: сервер отвечает, а путь клиентов через ЕГО hev мёртв, и перезапуск hev не помог (slot-health код 5,
+# slot-tun-lib.sh::slot_hev_path_check). Переподъём на каждом тике тут лишь рвал бы соединения дома (slot-up + slot-down, ревью с.93,
+# круг 2) ⇒ снимаем выход (трафик — запасным путём) и ждём с растущей паузой; причина в письме — правдивая.
+slot_hevpath_down() {   # $1=id $2=cfg $3=fallback $4=транспорт выхода
+    log "slot-health: $4-выход №$1 ($2): сервер отвечает, а путь клиентов через hev мёртв и перезапуск hev не помог → гашу несущую (fallback=$3), следующая попытка — с растущей паузой"
+    sh "$TRANSPORT_SH" slot-down "$1" >>"$LOG" 2>&1
+    slot_retry_next "$1" "$4"
+    slot_boot_window || slot_fail_event "$1" "$2" "$3" hevpath "$4"
 }
 # Свежий лок браузер-свипа byedpi = панель СЕЙЧАС применяет стратегии вживую (ciadpi перезапускается
 # на каждой). Сторож обязан молчать: иначе принял бы штатный рестарт за падение и «переподнял» выход
@@ -637,7 +723,8 @@ slot_health_sweep() {
     _sen=$(sh "$SLOTS_SH" list-enabled 2>/dev/null)
     # Выход выключили или удалили посреди эпизода «недоступен» — отметка осиротела: номер займёт НОВЫЙ выход, и его первый
     # здоровый тик назвался бы «снова работает» (slot_back_event).
-    for _sdm in "$SLOT_DOWN".*; do
+    # То же у паузы возврата AmneziaWG-выхода (slot_awg_return): новый выход на этом номере ждал бы чужую паузу.
+    for _sdm in "$SLOT_DOWN".* "$SLOT_RETRY".*; do
         [ -f "$_sdm" ] || continue
         printf '%s\n' "$_sen" | cut -f1 | grep -qx "${_sdm##*.}" || rm -f "$_sdm"
     done
@@ -662,11 +749,18 @@ slot_health_sweep() {
             # Просел -> ПЕРЕПОДНИМАЮ на месте идемпотентным slot-up (он же переиграет mark-core).
             # Не вышло -> гашу -> fallback. Переподнять, а не бросить выход — как reup_carrier у
             # основного byedpi (ciadpi известно самовыключается).
+            # Выход снят из-за мёртвого пути через hev (slot_hevpath_down) — до конца паузы не поднимаем: каждый подъём со сбросом
+            # соединений дома, а hev, который не вылечил перезапуск, следующий тик не вылечит тоже.
+            slot_retry_wait "$sid" "$st" && continue
             _rc=2
-            [ -f "$TRANSPORT_SH" ] && { sh "$TRANSPORT_SH" slot-health "$sid" >/dev/null 2>&1; _rc=$?; }
+            [ -f "$TRANSPORT_SH" ] && { sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?; }
             if [ "$_rc" = 0 ]; then
+                rm -f "$SLOT_RETRY.$sid"
                 slot_back_event "$sid" "$scfg"       # жив по пробе: объявленное падение закрыто (переподъём ниже — ещё не вердикт)
                 continue                             # плагин: выход жив (демоны + egress) -> не трогаем
+            elif [ "$_rc" = 5 ]; then
+                slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"   # сервер жив, путь через hev мёртв — не переподнимаем по кругу
+                continue
             elif [ "$_rc" = 2 ]; then
                 _bp=$(cat "/tmp/enodia-byedpi-s$sid.pid" 2>/dev/null | tr -d ' \r\n')
                 if [ -n "$_bp" ] && kill -0 "$_bp" 2>/dev/null && ip link show "xtun$sid" >/dev/null 2>&1; then
@@ -694,13 +788,20 @@ slot_health_sweep() {
             # случай: демон упал/socks умолк), не вышло -> гасим -> fallback-политика.
             # Перебора РЕЗЕРВОВ у слота нет by design (v1, дизайн §«Отказ слота»).
             [ -f "$TRANSPORT_SH" ] || continue
-            sh "$TRANSPORT_SH" slot-health "$sid" >/dev/null 2>&1; _rc=$?
-            [ "$_rc" = 0 ] && { slot_back_event "$sid" "$scfg"; continue; }   # выход жив
+            slot_retry_wait "$sid" "$st" && continue    # снят из-за мёртвого пути через hev — ждём паузу (как у byedpi выше)
+            sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?
+            [ "$_rc" = 0 ] && { rm -f "$SLOT_RETRY.$sid"; slot_back_event "$sid" "$scfg"; continue; }   # выход жив
             [ "$_rc" = 2 ] && continue                  # плагин старой версии (дрейф деплоя) — судить не по чем, не трогаем
+            [ "$_rc" = 5 ] && { slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"; continue; }   # сервер жив, путь через hev мёртв
             log "slot-health: $st-выход №$sid ($scfg) не отвечает -> переподнимаю на месте"
-            if sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1 && sh "$TRANSPORT_SH" slot-health "$sid" >/dev/null 2>&1; then
+            _rc=1
+            if sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1; then sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?; fi
+            if [ "$_rc" = 0 ]; then
                 log "slot-health: $st-выход №$sid переподнят"
+                rm -f "$SLOT_RETRY.$sid"
                 slot_back_event "$sid" "$scfg"          # подъём + проба прошли — это уже вердикт
+            elif [ "$_rc" = 5 ]; then
+                slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"
             elif slot_boot_window; then
                 log "slot-health: $st-выход №$sid ещё не отвечает, но идёт бут (outbound холодный) — вердикт откладываю до тика после грейса"
             else
@@ -719,15 +820,32 @@ slot_health_sweep() {
             # ставил её на 100N при живой несущей; пустая 100N проваливает трафик в main=НАПРЯМУЮ,
             # игнорируя main-политику. Переигрываем — ТОЛЬКО когда правило реально устарело (0xN->100N),
             # иначе churn каждый тик. fallback=direct пустую 100N уже трактует как «напрямую» — цель.
+            # Правило чиним ДО пробы (она идёт до 15 с, и всё это время трафик выхода шёл бы напрямую), а объявляем падение ПОСЛЕ:
+            # демон, упавший сам, проба обычно поднимает тем же тиком — и пара писем «недоступен»/«снова работает» о минуте,
+            # которую никто не заметил, была бы шумом. Не поднялся — проба объявила эпизод сама (noanswer), `gone` её не дублирует.
+            _sgone=0
             if [ "$sfb" = main ] && ip rule show 2>/dev/null | grep -qE "fwmark 0x$sid(/\S+)? lookup 100$sid"; then
                 log "slot-health: awg-выход №$sid — несущая исчезла, fallback=main → переигрываю (table 1000)"
                 restore_marking
-                slot_fail_event "$sid" "$scfg" "$sfb" gone "$st"
+                _sgone=1
             fi
+            slot_awg_return "$sid" "$scfg" "$sfb" "$st"
+            [ "$_sgone" = 1 ] && ! ip link show "$sif" >/dev/null 2>&1 && slot_fail_event "$sid" "$scfg" "$sfb" gone "$st"
             continue
         fi
         _age=$(slot_hs_age "$sif")
-        [ "$_age" -lt "$HS_DEAD" ] && { slot_back_event "$sid" "$scfg"; continue; }   # выход жив — не трогаем
+        if [ "$_age" -lt "$HS_DEAD" ]; then              # выход жив — не трогаем; пауза возврата больше не нужна
+            rm -f "$SLOT_RETRY.$sid"
+            # …но ЖИВОЙ awgN без маршрута в 100N (поднят, а не достроен: проба, убитая посреди, гонка с панелью) по рукопожатию не
+            # отличить от рабочего — keepalive держит его свежим, и выход навсегда остался бы на запасном пути (ревью с.93, круг 2).
+            # slot-up идемпотентен: несущую не пересоздаёт, только кладёт маршрут и правила.
+            if ! ip route show table "100$sid" 2>/dev/null | grep -q '^default'; then   # not-wan: несущая СЛОТА (table 100N)
+                log "slot-health: awg-выход №$sid жив, но маршрута в table 100$sid нет — достраиваю (slot-up)"
+                sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1
+            fi
+            slot_back_event "$sid" "$scfg"
+            continue
+        fi
         # БЕЗ KEEPALIVE ВОЗРАСТ РУКОПОЖАТИЯ — НЕ СВИДЕТЕЛЬСТВО. WireGuard обновляет рукопожатие, лишь когда через туннель идут
         # пакеты; у выхода без трафика (привязок нет, устройство спит) возраст растёт линейно, и мы гасили ЖИВОЙ выход с письмом
         # «сервер не отвечает» — по кругу, каждые пару минут (замер 10.09.2026 на BE3600 тестера: исправный awg0 резервом рос
@@ -756,10 +874,12 @@ slot_health_sweep() {
         log "slot-health: awg-выход №$sid ($scfg) мёртв (handshake ${_age}с) → гашу несущую → fallback=$sfb"
         if slot_boot_window; then
             [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
-            log "slot-health: идёт бут — письмо о выходе №$sid откладываю до тика после грейса"
+            slot_retry_arm "$sid" "" "$st"
+            log "slot-health: идёт бут — письмо о выходе №$sid откладываю до тика после грейса (его скажет первая проба возврата)"
             continue
         fi
         [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
+        slot_retry_arm "$sid" "" "$st"
         slot_fail_event "$sid" "$scfg" "$sfb" "hs:$_age" "$st"
     done
 }
@@ -1325,7 +1445,7 @@ heal_running() {
     # лок с номером, переиспользованным kworker'ом, отвечал бы «heal жив» до самого ребута — то
     # есть выключил бы починку awg-ветки насовсем. У heal.sh та же форма безобидна (там это лишь
     # «не отнимать чужой лок»), здесь цена другая.
-    case "$(tr '\000' ' ' < "/proc/$_hr/cmdline" 2>/dev/null)" in
+    case "$(tr '\000' ' ' 2>/dev/null < "/proc/$_hr/cmdline")" in
         *heal.sh*) ;;
         *) return 1 ;;
     esac
@@ -2266,7 +2386,9 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
     TLABEL=$(transport_label "$TRANSPORT")
     xcur=HEALTHY; [ -f "$XSTATE" ] && xcur=$(cat "$XSTATE")
 
-    if sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
+    # HEV_CHECK=1 — путь клиентов через hev судит ТОЛЬКО этот, главный health тика (slot-tun-lib.sh::hev_path_check): тот же health
+    # проверяет кандидатов перебора и прогрев, и залипший путь там стоил бы перезапуска hev и сброса соединений на каждом конфиге.
+    if HEV_CHECK=1 sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
         # ВИДЕЛИ СВОИМИ ГЛАЗАМИ: несущая этого транспорта в эту загрузку везёт. Дальше провал
         # health читается как ПАДЕНИЕ, а не как «её ещё не поднимали» (см. carrier_seen).
         # Счётчик попыток подъёма сбрасываем тут же: он про НЕЗАВЕРШЁННЫЙ СТАРТ, а старт
@@ -2421,9 +2543,11 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
         fi
         _cnt=$(carrier_tries "$TRANSPORT")
         if [ "$_cnt" -lt "$CARRIER_UP_TRIES" ]; then
+            # Лок — ДО отметки попытки (как у переподъёма awg0): занятый лок кончает тик, и попытка, отмеченная раньше, сгорала бы
+            # без подъёма — три занятых тика подряд, и несущую до ребута не поднимет никто (ревью с.93).
+            wd_switch_take "подъём $TRANSPORT"
             carrier_tries_add "$TRANSPORT"
             log "$TRANSPORT: несущую в эту загрузку не поднимали ни разу (heal не смог — бинарь/накопитель приехали позже) → поднимаю, попытка $((_cnt + 1)) из $CARRIER_UP_TRIES"
-            wd_switch_take "подъём $TRANSPORT"
             sh "$TRANSPORT_SH" up "$TRANSPORT" >>"$LOG" 2>&1
             wd_switch_drop
             finish
@@ -3164,9 +3288,8 @@ elif awg_hs_alive "$age"; then
             # Старый layout без плагина: владельца DNS нет, пишем сами — как было.
             VPN_DNS=$(grep -E '^DNS\s*=' "$ENODIA_STATE/awg.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
             [ -z "$VPN_DNS" ] && VPN_DNS=172.29.172.254
-            printf 'no-resolv\nserver=%s\n' "$VPN_DNS" > /etc/dnsmasq.d/00-upstream.conf
             ip route replace "$VPN_DNS/32" dev awg0 2>/dev/null
-            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+            dns_upstream_put "$VPN_DNS"
         fi
         echo "NORMAL" > "$STATE"; episode_reset   # эпизод аварии закрыт
         ip=$(ext_ip)

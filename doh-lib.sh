@@ -165,6 +165,25 @@ doh_installed() { [ -x "$(doh_bin_for)" ]; }
 doh_enabled()   { [ "$(cat "$ENODIA_STATE/.doh-on" 2>/dev/null)" = on ] && doh_installed; }
 doh_upstream()  { echo "$DOH_UPSTREAM"; }
 
+# НАШ UPSTREAM dnsmasq ПИШЕТ ОДИН ВЛАДЕЛЕЦ — И ПЕРЕЗАПУСКАЕТ ДЕМОН ТОЛЬКО ПО ДЕЛУ. `/etc/init.d/dnsmasq restart`
+# возвращается за 0.3 с, а демон с нашими ipset-строками и списками встаёт ещё ~2.5 с — и всё это время у ВСЕЙ сети
+# нет имён, а первый запрос после него ждёт (замер BE7000 02.10.2026: проба DoH 2.8 с после рестарта против 0.26 без).
+# Платили это на КАЖДОЙ смене сервера, хотя upstream у AmneziaWG почти всегда тот же (172.29.172.254, а при DoH — сам
+# прокси). Поэтому сверяем с ОБЕИМИ копиями (init копирует /etc→/tmp аддитивно, и демон читает обе): совпало и демон
+# жив — не трогаем; иначе пишем и перезапускаем, как раньше. Аргументы — адреса `server=` в нужном порядке.
+# Пишут не все: heal.sh на буте (там рестарт — отдельным шагом) и аварийный safety_off (своя шапка-комментарий) — разбор у них.
+dns_upstream_put() {
+	_dup=$( { echo no-resolv; for _dua in "$@"; do echo "server=$_dua"; done; } )
+	if [ "$(cat /etc/dnsmasq.d/00-upstream.conf 2>/dev/null)" = "$_dup" ] \
+	   && [ "$(cat /tmp/dnsmasq.d/00-upstream.conf 2>/dev/null)" = "$_dup" ] && pidof dnsmasq >/dev/null 2>&1; then
+		killall -HUP dnsmasq 2>/dev/null   # кэш прежнего пути — сбросить (дёшево: демон не встаёт заново)
+		return 0
+	fi
+	mkdir -p /etc/dnsmasq.d
+	printf '%s\n' "$_dup" > /etc/dnsmasq.d/00-upstream.conf
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+}
+
 # ЧЕМ РОУТЕР РЕЗОЛВИТ ПРЯМО СЕЙЧАС — ОДИН ответ на проект. Спрашивают ДВОЕ: карточка «Шифрованный
 # DNS» (там это строка «Сейчас DNS») и лента технического состояния «Обзора» — и обе обязаны
 # говорить одно и то же, иначе панель спорит сама с собой на соседних экранах. Живёт ЗДЕСЬ,
@@ -617,6 +636,17 @@ doh_wait_listen() {
 	daemon_wait_uport "$DOH_PID" "${_dwlb##*/}" "${1:-45}" "$DOH_ADDR" "$DOH_PORT"
 }
 
+# ПЕРЕЗАПУСК С ОЖИДАНИЕМ ПОРТА — по процессу, без секундомера. Было `doh_restart; sleep 1; doh_running || doh_start`:
+# секунду давали «упасть сразу», и её платил КАЖДЫЙ подъём несущей (смена сервера, переподъём сторожа). Ожидание порта
+# само судит по процессу (daemon-lib): умер — отвечает сразу, и тогда один повторный старт, как и раньше. 0 — слушает.
+doh_restart_wait() {   # $1 — потолок ожидания порта, с (пусто — как у doh_wait_listen)
+	doh_restart
+	doh_wait_listen "$1" && return 0
+	doh_running && return 1
+	doh_start
+	doh_wait_listen "$1"
+}
+
 # --- Применение DNS через DoH (единая точка входа для dns-сеттеров транспортов) ---
 # Маркировка/RETURN :443 резолвера идут через ту же mangle-OUTPUT-цепочку, что и mark-core:
 #  - tunnel-режим (awg/xray/hy2): форсим :443 резолвера в table 1000 — DoH-запрос уходит
@@ -832,7 +862,7 @@ doh_retunnel() {
 		# Сессия висела бы до внутреннего таймаута прокси = возврат в туннель стоил бы минуту без DNS.
 		# Рестарт + ожидание порта (у прежних сборок прокси до 46 с до «Listening», у новых — ноль).
 		# Только в ТУННЕЛЬНОМ режиме: в прямом якорь не менялся, дёргать нечего.
-		doh_restart; sleep 1; doh_running || doh_start; doh_wait_listen
+		doh_restart_wait
 		# ПРОВЕРИТЬ, А НЕ ПОВЕРИТЬ (ревью 05.09.2026). Up-путь мог увести резолвер потому, что ЧЕРЕЗ
 		# несущую он не отвечает ВООБЩЕ (VPS не достаёт до 1.1.1.1:443, DPI на его стороне) при живом
 		# рукопожатии — health несущей DNS-независим и не усомнится никогда, а вслепую вернувшийся
@@ -1101,7 +1131,7 @@ doh_names_ok() {
 doh_dhcp_script_set() {
 	_dds_f=''
 	for _dds_p in $(pidof dnsmasq 2>/dev/null); do
-		_dds_a=$(tr '\0' '\n' < "/proc/$_dds_p/cmdline" 2>/dev/null)
+		_dds_a=$(tr '\0' '\n' 2>/dev/null < "/proc/$_dds_p/cmdline")
 		printf '%s\n' "$_dds_a" | grep -qE '^(-6|--dhcp-script|--dhcp-luascript)' && return 0
 		_dds_f="$_dds_f $(printf '%s\n' "$_dds_a" | awk 'c {print; c=0; next} $0=="-C" || $0=="--conf-file" {c=1; next} /^--conf-file=/ {sub(/^--conf-file=/, ""); print; next} /^-C./ {print substr($0, 3)}')"
 	done
@@ -1334,9 +1364,7 @@ doh_direct_regime() {
 # открытого upstream ДОСТАТОЧНО — пишем сами, как раньше.
 doh_restore_plain_dns() {
 	doh_plugin_direct_dns && return 0
-	mkdir -p /etc/dnsmasq.d
-	printf 'no-resolv\nserver=%s\nserver=%s\n' "$DOH_PLAIN_DNS1" "$DOH_PLAIN_DNS2" > /etc/dnsmasq.d/00-upstream.conf
-	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+	dns_upstream_put "$DOH_PLAIN_DNS1" "$DOH_PLAIN_DNS2"
 }
 
 # dnsmasq ОТДАН ПРОКСИ? Истина — строка в конфиге, в ЛЮБОЙ из двух копий (init копирует /etc→/tmp
@@ -1611,14 +1639,11 @@ doh_apply_dns() {
 	_doh_fresh=0
 	[ "$(age_since "$(cat "${CARRIER_UP_STAMP:-/tmp/.enodia-carrier-up.stamp}" 2>/dev/null | tr -cd '0-9')")" -lt 60 ] && _doh_fresh=1
 	if [ "$_doh_started" = 0 ] && { [ "$_doh_was" != "$_doh_now" ] || [ "$_doh_fresh" = 1 ]; }; then
-		doh_restart; sleep 1; doh_running || doh_start
 		# Потолок КОРОТКИЙ: порт слушал секунду назад, значит бинарь уже прогрет и «Listening»
 		# приходит мгновенно. Полные 45 с тут были бы третьим ожиданием в одном вызове (ревью 3).
-		doh_wait_listen 10 || { doh_apply_fail; return 1; }
+		doh_restart_wait 10 || { doh_apply_fail; return 1; }
 	fi
-	mkdir -p /etc/dnsmasq.d
-	printf 'no-resolv\nserver=%s\n' "$DOH_UPSTREAM" > /etc/dnsmasq.d/00-upstream.conf
-	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+	dns_upstream_put "$DOH_UPSTREAM"
 	# ПРОВЕРЯЕМ, ЧТО ИМЕНА ДЕЙСТВИТЕЛЬНО РЕЗОЛВЯТСЯ — В ОБОИХ РЕЖИМАХ. Раньше ручной не пробили
 	# намеренно («DoH — осознанный выбор пользователя»), и это стоило всей сети за роутером:
 	# на AX3600 прокси запускается, слушает порт и НЕ отвечает ни на один запрос, а dnsmasq к

@@ -186,10 +186,10 @@ tls_orphans() {   # pid терминаторов panel-tls на нашем ад�
 	done
 }
 tls_orphan_on() {   # $1 — порт: его держит наш сирота?
-	for _to in $(tls_orphans); do tr '\000' ' ' < "/proc/$_to/cmdline" 2>/dev/null | grep -q -- "-l $LISTEN:$1 " && return 0; done
+	for _to in $(tls_orphans); do tr '\000' ' ' 2>/dev/null < "/proc/$_to/cmdline" | grep -q -- "-l $LISTEN:$1 " && return 0; done
 	return 1
 }
-tls_pid_ours() { [ -n "$1" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q "panel-tls"; }
+tls_pid_ours() { [ -n "$1" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -q "panel-tls"; }
 
 # Самоподписанный сертификат живёт на /data (переживает ребут; /etc = ramfs).
 # ГЕЙТ ПО ЧАСАМ ОБЯЗАТЕЛЕН: RTC на роутере нет, до ntpsetclock время = 1970, и выписанный

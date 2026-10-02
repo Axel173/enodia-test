@@ -675,7 +675,7 @@ sub "dnsmasq запущен? (процесс + аргументы)"
 _dmq=""
 for _p in /proc/[0-9]*; do
     [ -r "$_p/cmdline" ] || continue
-    _cl=$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)
+    _cl=$(tr '\0' ' ' 2>/dev/null < "$_p/cmdline")
     case "${_cl%% *}" in
         */dnsmasq|dnsmasq) echo "pid ${_p#/proc/}: $_cl"; _dmq="$_cl" ;;
     esac
@@ -855,7 +855,7 @@ sub "Строка запуска uhttpd панели"
 # раскладке `full` он не на флеше, и «панель не отдаёт наши файлы» объясняется прямо здесь.
 _dmp_wpid=$(cat /tmp/enodia-uhttpd-web.pid 2>/dev/null)
 if [ -n "$_dmp_wpid" ] && [ -d "/proc/$_dmp_wpid" ]; then
-    tr '\0' ' ' < "/proc/$_dmp_wpid/cmdline" 2>/dev/null; echo
+    tr '\0' ' ' 2>/dev/null < "/proc/$_dmp_wpid/cmdline"; echo
 else
     echo "(uhttpd панели не запущен — pid-файл /tmp/enodia-uhttpd-web.pid пуст или процесса нет)"
 fi

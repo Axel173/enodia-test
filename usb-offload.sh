@@ -606,7 +606,7 @@ command -v wd_tick_alive >/dev/null 2>&1 || wd_tick_alive() { return 1; }   # с
 command -v heal_alive >/dev/null 2>&1 || heal_alive() { return 1; }
 command -v pkg_install_alive >/dev/null 2>&1 || pkg_install_alive() {   # старая библиотека — та же строка владельца
     _pia=$(cat /tmp/enodia-pkg-install.lock/pid 2>/dev/null | tr -cd '0-9'); [ -n "$_pia" ] && [ -r "/proc/$_pia/cmdline" ] \
-        && tr '\000' ' ' < "/proc/$_pia/cmdline" 2>/dev/null | grep -q 'pkg-install\.sh'; }
+        && tr '\000' ' ' 2>/dev/null < "/proc/$_pia/cmdline" | grep -q 'pkg-install\.sh'; }
 command -v exe_deleted >/dev/null 2>&1 || exe_deleted() { ls -l /proc/[0-9]*/exe 2>/dev/null | sed -n 's#^.* /proc/\([0-9][0-9]*\)/exe -> \(.*\) (deleted)$#\1 \2#p'; }
 command -v store_mode_alive >/dev/null 2>&1 || store_mode_alive() {   # старая библиотека — прежнее «жив ли pid»
     _sma=$(cat /tmp/enodia-store-mode.pid 2>/dev/null | tr -cd '0-9'); [ -n "$_sma" ] && [ -d "/proc/$_sma" ]; }
