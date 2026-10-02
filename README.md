@@ -13,16 +13,11 @@
 [![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
 [![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#donate)
 
-<img src="assets/banner.svg" alt="BE7000 + AmneziaWG" style="max-width:100%">
+<img src="assets/banner-enodia-no-vpn.png" alt="Enodia — VPN и раздельная маршрутизация для роутеров Xiaomi" width="100%">
 
 ### VPN-шлюз с раздельной маршрутизацией для роутеров Xiaomi
 
 🇷🇺 **Русский** · 🌐 [English version](README.en.md)
-
-<!-- КАРТИНКА №1 (ждёт файла): docs/img/banner-hero.png — БАННЕР-обложка: дом, роутер и два пути трафика.
-Файл положили — замените весь этот комментарий строкой:
-<img src="docs/img/banner-hero.png" alt="Роутер дома: заблокированное идёт через ваш сервер, остальное — напрямую" width="100%">
--->
 
 </div>
 
