@@ -1,17 +1,17 @@
 <div align="center">
 
-[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
-[![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
-[![Hysteria2](https://img.shields.io/badge/Hysteria2-3fb950)](https://github.com/apernet/hysteria)
-[![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
-[![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
-
 [![Версия](https://img.shields.io/github/v/release/Axel173/xiaomi-be7000-amnezia?include_prereleases&sort=semver&label=версия)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Дата релиза](https://img.shields.io/github/release-date-pre/Axel173/xiaomi-be7000-amnezia?label=релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний всего](https://img.shields.io/github/downloads/Axel173/xiaomi-be7000-amnezia/total?label=скачиваний)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Скачиваний последнего релиза](https://img.shields.io/github/downloads-pre/Axel173/xiaomi-be7000-amnezia/latest/total?label=последний%20релиз)](https://github.com/Axel173/xiaomi-be7000-amnezia/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-новости-26A5E4?logo=telegram&logoColor=white)](https://t.me/+tfMLMVKG03FhMGYy)
 [![Поддержать автора](https://img.shields.io/badge/поддержать_автора-ea4aaa?logo=githubsponsors&logoColor=white)](#donate)
+
+[![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2dd4bf)](https://github.com/amnezia-vpn/amneziawg-go)
+[![Xray](https://img.shields.io/badge/Xray-a371f7)](https://github.com/XTLS/Xray-core)
+[![Hysteria2](https://img.shields.io/badge/Hysteria2-3fb950)](https://github.com/apernet/hysteria)
+[![ByeDPI](https://img.shields.io/badge/ByeDPI-d29922)](https://github.com/hufrea/byedpi)
+[![Zapret](https://img.shields.io/badge/Zapret-db6d28)](https://github.com/bol-van/zapret)
 
 <img src="assets/banner-enodia-no-vpn.png" alt="Enodia — VPN и раздельная маршрутизация для роутеров Xiaomi" width="100%">
 
