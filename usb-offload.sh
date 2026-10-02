@@ -599,7 +599,9 @@ usb_unlock_mine() {
 MOVE_TICK_WAIT=${MOVE_TICK_WAIT:-30}
 MOVE_MODE_WAIT=${MOVE_MODE_WAIT:-300}         # смена раскладки — фоном, ей ждать можно дольше (cmd_mode)
 MOVE_GAP_WAIT=${MOVE_GAP_WAIT:-1}
+MOVE_LISTS_WAIT=${MOVE_LISTS_WAIT:-300}       # смена раскладки ждёт сборку списков/гео (cmd_mode; разбор там)
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v lists_work_alive >/dev/null 2>&1 || lists_work_alive() { return 1; }   # старая библиотека — не ждём, как раньше
 command -v wd_tick_alive >/dev/null 2>&1 || wd_tick_alive() { return 1; }   # старая библиотека — тика не ждём, как раньше
 command -v heal_alive >/dev/null 2>&1 || heal_alive() { return 1; }
 command -v pkg_install_alive >/dev/null 2>&1 || pkg_install_alive() {   # старая библиотека — та же строка владельца
@@ -1426,6 +1428,16 @@ cmd_mode() {        # $1 = пусто (показать) | data | bins | full; $
     _mtw=$MOVE_TICK_WAIT; MOVE_TICK_WAIT=$MOVE_MODE_WAIT
     move_hold; _mhr=$?; MOVE_TICK_WAIT=$_mtw
     [ "$_mhr" = 0 ] || { mode_event_fail "$1"; return 1; }
+    # СБОРКА СПИСКОВ ИЛИ ГЕО ИДЁТ — её процессы держат ПРЕЖНИЕ пути и после переезда допишут результат на флеш (на BE7000 30.09.2026
+    # вырос пустой двойник `enodia-state/lists/…/blob`, в худшем случае туда уезжает и РЕЗУЛЬТАТ). Ждём с локом в руках (новые тики
+    # не придут), потолок — MOVE_LISTS_WAIT: гео у больших категорий собирается минутами; не дождались — отказ ДО первого движения.
+    _mlw=0
+    while lists_work_alive && [ "$_mlw" -lt "$MOVE_LISTS_WAIT" ]; do sleep 1; _mlw=$((_mlw + 1)); done
+    if lists_work_alive; then
+        move_release
+        echo "идёт сборка списков или гео-категорий — раскладку не меняю, повторите, когда она закончится" >&2
+        mode_event_fail "$1"; return 1
+    fi
     case "$1" in
         full)      mode_to_full "$2" ;;
         data|bins) mode_to_router "$1" ;;

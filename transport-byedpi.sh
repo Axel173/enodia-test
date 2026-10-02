@@ -509,10 +509,17 @@ cmd_health() {
     # ВСЕГДА: замерено на AX3600 (ядро 4.4, CA-бандл Feb 2023, OpenSSL 1.0.2q) — без `-k` оба
     # хоста дают 000 (rc=60), с `-k` — 301 и 302. Значит byedpi там вечно «нездоров», и сторож
     # уводит его на awg: ровно симптом «byedpi не держится», уже ловленный по другой причине.
+    _bhok=0
     for hip in 1.1.1.1 8.8.8.8; do
         code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 --socks5 "$SOCKS_ADDR:$SOCKS_PORT" "https://$hip" 2>/dev/null)
-        case "$code" in ''|000) ;; *) return 0 ;; esac
+        case "$code" in ''|000) ;; *) _bhok=1; break ;; esac
     done
+    if [ "$_bhok" = 1 ]; then
+        # Сервер жив — а путь КЛИЕНТОВ (TUN → hev → socks)? Мимо hev проба выше не видит залипшего hev (разбор и лечение —
+        # slot-tun-lib.sh::hev_path_check). Нет функции (старый слой) — как раньше.
+        command -v hev_path_check >/dev/null 2>&1 || return 0
+        hev_path_check apply_byedpi_routing; return $?
+    fi
     log "health: проба egress по IP не прошла (ciadpi не форвардит наружу)"; return 1
 }
 

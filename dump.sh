@@ -917,7 +917,7 @@ for l in enodia-heal.lock enodia-heal.reason enodia-heal.skipped enodia-heal-kic
          enodia-failover-episode enodia-awg0.seen enodia-awg0.firstup \
          enodia-domwarm.stamp enodia-proto-install.lock enodia-byedpi-sweep.lock \
          enodia-subs-update.lock enodia-gh-update.lock enodia-pkg-install.lock enodia-uninstall.mode \
-         enodia-wanout.count enodia-wanout.event enodia-wanout.sweep \
+         enodia-wanout.valve enodia-wanout.event enodia-wanout.sweep \
          .enodia-carrier-up.stamp .enodia-support-active; do
     if [ -e "/tmp/$l" ]; then
         # mkdir-ЛОК — КАТАЛОГ, и `cat` по нему пуст: держатель лежит внутри, в `<lock>/pid`
@@ -932,6 +932,9 @@ for l in enodia-heal.lock enodia-heal.reason enodia-heal.skipped enodia-heal-kic
         echo "/tmp/$l: нет"
     fi
 done
+# enodia-slot-down.<id> — сторож объявил «доп-выход №id недоступен» (внутри — сервер выхода); письмо «снова работает» ждёт именно
+# её. Номеров заранее не знаем — маской, и молчим, когда эпизодов нет.
+for l in /tmp/enodia-slot-down.*; do [ -f "$l" ] && echo "$l: есть -> $(cat "$l" 2>/dev/null)"; done
 # ВЕРДИКТ ВЛАДЕЛЬЦА рядом с его сырьём: «дом / резерв / прямой и вернётся ли» — тот же ответ, что видит
 # шапка панели. Собирать его заново по файлам выше разбор не должен (своя сборка разошлась бы с тиком).
 # Гард — по строке верба, как в cgi-bin/status: старая копия сторожа на `standing` прогнала бы тик.

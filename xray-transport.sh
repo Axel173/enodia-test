@@ -437,7 +437,14 @@ cmd_failover() {
         log "xray-failover: починка несущей не помогла — перехожу к перебору серверов"
     fi
 
-    tried=""; dns_dead=0
+    tried=""; dns_dead=0; _xfwl=0
+    # АПЛИНК ПРОПАЛ ПОСРЕДИ ПЕРЕБОРА — дальше перебирать незачем: недостижим ЛЮБОЙ сервер, а свип у подписок идёт десятками
+    # конфигов (BE7000 02.10.2026: ~70 кандидатов, 20 минут при лёгшем провайдере). Спрашиваем после КАЖДОГО промаха —
+    # при живом WAN проба стоит доли секунды против ~17 с на кандидата. Но ТОЛЬКО если аплинк был жив НА СТАРТЕ: молчит проба
+    # уже здесь ⇒ перебор идёт вслепую (контрольный свип сторожа на случай пробы, которую режет провайдер), и обрывать его ею
+    # же — значит обрывать всегда. Нет владельца (старая ip-lib) — не спрашиваем вовсе, как раньше.
+    _xfw=0
+    command -v wan_probe_ok >/dev/null 2>&1 && command -v wan_recheck >/dev/null 2>&1 && wan_probe_ok && _xfw=1
     for f in "$ENODIA_STATE"/xray-configs/*.json; do
         [ -f "$f" ] || continue
         [ -e "$SWITCH_LOCK" ] && { log "xray-failover: ручной switch (lock) в процессе — прерываю перебор"; return 1; }
@@ -483,6 +490,9 @@ xray-конфиг: $name — VPN снова работает. Внешний IP:
             return 0
         fi
         tried="$tried $name"
+        if [ "$_xfw" = 1 ] && ! wan_probe_ok && ! wan_recheck; then
+            _xfwl=1; log "xray-failover: интернет через WAN пропал посреди перебора — прерываю (недостижим любой сервер)"; break
+        fi
     done
     # Ни один резерв не встал. Если мы что-то пробовали (xray.json уже перезаписан
     # дохлым кандидатом) — вернём исходный активный, чтобы down/мониторинг шли по нему.
@@ -498,7 +508,9 @@ xray-конфиг: $name — VPN снова работает. Внешний IP:
     # две минуты появлялась строка про несуществующие резервы — она уводила разбор в сторону от
     # настоящей причины (умирает сама несущая). Пустой список — это не провал перебора, а его
     # отсутствие, и сказать надо ровно это.
-    if [ -z "$tried" ]; then
+    if [ "$_xfwl" = 1 ]; then
+        log "xray-failover: перебор прерван — нет интернета от провайдера (пробовал:$tried); несущая на ${cur:-текущем}"
+    elif [ -z "$tried" ]; then
         log "xray-failover: резервных конфигов нет — переключаться некуда, несущая осталась на ${cur:-текущем}"
     else
         log "xray-failover FAIL: ни один резерв не поднялся (пробовал:$tried)"
@@ -581,7 +593,10 @@ cmd_health() {
     # проба реального выхода через прокси (детектит смерть VPS / блок Reality)
     ip=$(probe_ext_ip "--socks5-hostname $SOCKS_ADDR:$SOCKS_PORT" 8)
     [ -n "$ip" ] || { log "health: проба egress пуста"; return 1; }
-    return 0
+    # Сервер жив — а путь КЛИЕНТОВ (TUN → hev → socks)? Мимо hev проба выше не видит залипшего hev (разбор и лечение —
+    # slot-tun-lib.sh::hev_path_check). Нет функции (старый слой) — как раньше.
+    command -v hev_path_check >/dev/null 2>&1 || return 0
+    hev_path_check apply_xray_routing
 }
 
 # ============================================================
@@ -729,7 +744,7 @@ case "$1" in
     down)     cmd_down ;;
     cold)     : ;;                        # тёплого резерва нет: демонов гасит сам `down` (stop_daemons)
     status)   cmd_status ;;
-    health)   cmd_health ;;
+    health)   carrier_run cmd_down cmd_health ;;   # залипший hev перезапускает на месте (hev_path_check) — берёт несущую
     failover) carrier_run cmd_down cmd_failover ;;
     # DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns. При выключенном VPN — прямой, как после `down`.
     dns)      if carrier_barred; then set_direct_dns; else set_xray_dns; fi ;;

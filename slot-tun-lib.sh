@@ -166,3 +166,36 @@ slot_remove_routing() {   # $1 = id
     iptables -D FORWARD -o "$_tun" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$_tun" -j ACCEPT 2>/dev/null
 }
+
+# ===== ПУТЬ КЛИЕНТОВ ОСНОВНОЙ НЕСУЩЕЙ: TUN → hev → socks (не слот — здесь, потому что hev общий у трёх плагинов) =====
+# hev_path_check <функция маршрута плагина> — 0, если путь клиентов жив (или ожил после перезапуска hev), 1 — мёртв.
+# ЗАЧЕМ. health плагинов меряет egress ЧЕРЕЗ SOCKS — прямо в демон протокола, МИМО hev. Залипший hev (процесс жив, TUN поднят,
+# а запись в туннель не идёт) так невидим: тестер 15.09.2026 — 9 дней `socks5 tunnel write` в логе hev, YouTube не выше 720p,
+# и «здоров» на каждом тике; перезапуск hev вылечил. Проба `--interface <TUN>` идёт ровно путём клиента: пакет роутера,
+# привязанный к TUN, читает hev и несёт в socks (замер BE7000 02.10.2026: socks и xtun отдают один и тот же выход).
+# Зовут ТОЛЬКО после прошедшей socks-пробы: сервер жив ⇒ молчит именно hev, и лечение — перезапуск hev на месте, а не перебор
+# серверов. Строка в логе заодно и ДОКАЗАТЕЛЬСТВО: причина у тестера не изолирована, а совпадения срабатываний с жалобами её дадут.
+# ПРОМАХ ПОДТВЕРЖДАЕМ: перезапуск рвёт TUN и сбрасывает conntrack (установленные соединения дома), а единичный таймаут на
+# занятом роутере того не стоит.
+# КОНТРАКТ (основной путь плагина): HEV_PID, TUN, start_daemons (поднимает НЕДОСТАЮЩЕЕ — живой демон протокола не трогает),
+# ct_flush, log, probe_ext_ip (ip-lib.sh); $1 — функция маршрута (default dev TUN в table 1000: TUN пересоздан, маршрут умер с ним).
+# Перезапуск БЕРЁТ несущую ⇒ верб health у плагина — под carrier_run (следит C116).
+hev_path_check() {   # $1 = функция маршрута плагина
+    [ -n "$(probe_ext_ip "--interface $TUN" 8)" ] && return 0
+    sleep 2
+    [ -n "$(probe_ext_ip "--interface $TUN" 8)" ] && return 0
+    log "health: сервер отвечает через socks, а путь клиентов через $TUN — нет (дважды): hev залип → перезапускаю hev на месте"
+    _hpp=$(cat "$HEV_PID" 2>/dev/null | tr -d ' \r\n')
+    start-stop-daemon -K -p "$HEV_PID" >/dev/null 2>&1      # -K пишет в stdout — health читают и CGI
+    command -v daemon_wait_gone >/dev/null 2>&1 && daemon_wait_gone "$_hpp" 5
+    ip link del "$TUN" 2>/dev/null; rm -f "$HEV_PID" 2>/dev/null
+    if start_daemons && "$1"; then
+        ct_flush
+        if [ -n "$(probe_ext_ip "--interface $TUN" 8)" ]; then
+            log "health: hev перезапущен — путь клиентов через $TUN ожил"
+            return 0
+        fi
+    fi
+    log "health: и после перезапуска hev путь клиентов через $TUN мёртв"
+    return 1
+}

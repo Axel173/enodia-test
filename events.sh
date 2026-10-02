@@ -128,7 +128,7 @@ level_of() {
 CLASSES="down switch wan boot addr subs lists system"
 class_of() {
 	case "$1" in
-		vpn-failopen|switch-failopen|failover-fail|awg0-down|awg-noraise|transport-missing|boot-fail|vpn-restored|slot-fail-*) echo down ;;
+		vpn-failopen|switch-failopen|failover-fail|awg0-down|awg-noraise|transport-missing|boot-fail|vpn-restored|slot-fail-*|slot-ok-*) echo down ;;
 		cross-switch|cross-rollback|failover-ok|xray-failover-ok|hy2-failover-ok|failback|failback-server|switch-rollback) echo switch ;;
 		wan-down|wan-up)          echo wan ;;
 		boot-ok)                  echo boot ;;

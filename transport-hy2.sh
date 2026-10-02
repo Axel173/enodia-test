@@ -352,7 +352,11 @@ cmd_failover() {
         log "hy2-failover: починка несущей не помогла — перехожу к перебору серверов"
     fi
 
-    tried=""; dns_dead=0
+    tried=""; dns_dead=0; _hfwl=0
+    # Аплинк пропал посреди перебора — прерываем; спрашиваем, только если он был жив НА СТАРТЕ (разбор — зеркало в
+    # xray-transport.sh::cmd_failover: молчащая уже на старте проба = перебор вслепую, обрывать его ею нельзя).
+    _hfw=0
+    command -v wan_probe_ok >/dev/null 2>&1 && command -v wan_recheck >/dev/null 2>&1 && wan_probe_ok && _hfw=1
     for f in "$ENODIA_STATE"/hy2-configs/*.yaml; do
         [ -f "$f" ] || continue
         [ -e "$SWITCH_LOCK" ] && { log "hy2-failover: ручной switch (lock) в процессе — прерываю перебор"; return 1; }
@@ -395,6 +399,9 @@ hy2-конфиг: $name — VPN снова работает. Внешний IP: 
             return 0
         fi
         tried="$tried $name"
+        if [ "$_hfw" = 1 ] && ! wan_probe_ok && ! wan_recheck; then
+            _hfwl=1; log "hy2-failover: интернет через WAN пропал посреди перебора — прерываю (недостижим любой сервер)"; break
+        fi
     done
     # Ни один резерв не встал → вернём исходный активный, чтобы down/мониторинг шли по нему.
     if [ -n "$tried" ] && [ -n "$cur" ] && [ -f "$ENODIA_STATE/hy2-configs/$cur.yaml" ]; then
@@ -403,7 +410,11 @@ hy2-конфиг: $name — VPN снова работает. Внешний IP: 
         carrier_barred || restart_hy2 || true
     fi
     carrier_barred && { log "hy2-failover: перебор прерван — VPN выключен вручную, несущую не поднимаю"; return 1; }
-    log "hy2-failover FAIL: ни один резерв не поднялся (пробовал:${tried:- нет})"
+    if [ "$_hfwl" = 1 ]; then
+        log "hy2-failover: перебор прерван — нет интернета от провайдера (пробовал:$tried); несущая на ${cur:-текущем}"
+    else
+        log "hy2-failover FAIL: ни один резерв не поднялся (пробовал:${tried:- нет})"
+    fi
     return 1
 }
 
@@ -476,7 +487,10 @@ cmd_health() {
     ip link show "$TUN" >/dev/null 2>&1 || { log "health: нет $TUN"; return 1; }
     ip=$(probe_ext_ip "--socks5-hostname $SOCKS_ADDR:$SOCKS_PORT" 8)
     [ -n "$ip" ] || { log "health: проба egress пуста"; return 1; }
-    return 0
+    # Сервер жив — а путь КЛИЕНТОВ (TUN → hev → socks)? Мимо hev проба выше не видит залипшего hev (разбор и лечение —
+    # slot-tun-lib.sh::hev_path_check). Нет функции (старый слой) — как раньше.
+    command -v hev_path_check >/dev/null 2>&1 || return 0
+    hev_path_check apply_hy2_routing
 }
 
 # ============================================================
@@ -598,7 +612,7 @@ case "$1" in
     down)     cmd_down ;;
     cold)     : ;;                        # тёплого резерва нет: демонов гасит сам `down` (stop_daemons)
     status)   cmd_status ;;
-    health)   cmd_health ;;
+    health)   carrier_run cmd_down cmd_health ;;   # залипший hev перезапускает на месте (hev_path_check) — берёт несущую
     failover) carrier_run cmd_down cmd_failover ;;
     # DNS активной несущей (DoH toggle/смена резолвера) — через doh_apply_dns. При выключенном VPN — прямой, как после `down`.
     dns)      if carrier_barred; then set_direct_dns; else set_hy2_dns; fi ;;

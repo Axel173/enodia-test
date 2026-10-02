@@ -90,13 +90,50 @@ command -v dom_ok >/dev/null 2>&1 || {
 # прежняя форма `: > лок` + безусловный `rm` в trap СНИМАЛА лок ЧУЖОГО владельца — клик по
 # «переключить транспорт» посреди установки компонентов открывал сторожу дорогу в середину чужой
 # операции. Замер: старая форма чужой лок сносила, новая — оставляет.
+# ЖИВОЙ ДЕРЖАТЕЛЬ С ПИДОМ — подъём несущей сторожем (watchdog.sh::wd_switch_take) или другой запрос панели: ЖДЁМ, пока отпустит.
+# Иначе наш switch гасит недоподнятое, а подъём, закончив, рождает сирот или переписывает флаг и маршрут — ручной выбор проигрывал
+# (BE7000 02.10.2026: xray и hev остались жить при `.transport=awg`). Потолок 60 с — ниже срока CGI у uhttpd (-t 180); держатели
+# без пида (transport.sh switch, установка, перенос) и мёртвый пид — прежнее поведение, сразу.
 SWITCH_LOCK_MINE=0
 hold_switch() {
-	[ -e "$SWITCH_LOCK" ] || { : > "$SWITCH_LOCK" 2>/dev/null && SWITCH_LOCK_MINE=1; }
+	_hsw=0
+	while [ "$_hsw" -lt 60 ]; do
+		_hsp=$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n')
+		case "$_hsp" in ''|*[!0-9]*) break ;; esac
+		[ -d "/proc/$_hsp" ] || break
+		sleep 1; _hsw=$((_hsw + 1))
+	done
+	# Свой пид внутри и создание АТОМАРНО (`set -C`): по пиду сторож отличает CGI, убитый uhttpd на закрытой вкладке (SIGKILL,
+	# ловушка молчит), и снимает его лок сразу, а не через 30 минут (watchdog.sh::switch_lock_held); вторая вкладка ждёт живую первую.
+	( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null && SWITCH_LOCK_MINE=1
 	trap 'drop_switch' EXIT
 	trap 'exit 1' INT TERM HUP PIPE
 }
 drop_switch() { _rc=$?; [ "$SWITCH_LOCK_MINE" = 1 ] && rm -f "$SWITCH_LOCK" 2>/dev/null; return "$_rc"; }
+
+# ВЕДЁТ ЛИ НЕСУЩУЮ ПРЯМО СЕЙЧАС тик сторожа или heal — они ведут её БЕЗ лока смены (перебор резервов идёт прямо в плагине).
+carrier_busy_now() {
+	[ -n "$CBN_LIB" ] || { CBN_LIB=1; if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi; }
+	command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+	command -v wd_tick_alive >/dev/null 2>&1 && { wd_tick_alive || heal_alive; }
+}
+# dns_rewire_hold — ПЕРЕД перепроводкой DNS вербами «Шифрованного DNS» (doh_on/off, set_doh_*). ХВОСТ ревью с.84: они звали
+# `transport.sh dns` поверх ЧУЖОЙ операции — смены транспорта, установки, переноса, тика сторожа посреди перебора. Параллельный
+# `transport.sh dns` читал прежний `.transport`, и два doh_apply_dns ставили и снимали правила резолвера навстречу друг другу.
+# Чужой лок — отказ «через минуту». Тик сторожа или heal — ЖДЁМ до 20 с: здоровый тик идёт секунды, и отказ «роутер сам
+# восстанавливает соединение» на каждом пятидесятом клике был бы ложью; дольше — это уже перебор, и отказ честный. Дальше держим
+# лок со своим пидом (hold_switch): новые тики его чтут, а лок вкладки, закрытой посреди пробы, сторож снимет сразу.
+# `doh_retry` устроен сложнее (перепроводка в фоновом узле) и этого хелпера не зовёт — у него свои мутанты стенда.
+dns_rewire_hold() {
+	[ -e "$SWITCH_LOCK" ] && fail "Роутер занят другой операцией — попробуйте через минуту"
+	_dbw=0
+	while carrier_busy_now; do
+		[ "$_dbw" -ge "${DNS_REWIRE_WAIT:-20}" ] && fail "Роутер сейчас сам восстанавливает соединение — попробуйте через минуту"
+		sleep 1; _dbw=$((_dbw + 1))
+	done
+	hold_switch
+	[ "$SWITCH_LOCK_MINE" = 1 ] || fail "Роутер занят другой операцией — попробуйте через минуту"
+}
 
 # ВЫКЛЮЧЕН ЛИ VPN ЧЕЛОВЕКОМ (`.vpn-off`, персист с 02.09.2026). Спрашивают ВЫБОРЫ СЕРВЕРА: они
 # единственные в этом файле, кто поднимает несущую ПОМИМО тумблера и смены транспорта.
@@ -654,6 +691,7 @@ case "$act" in
 	doh_on)
 		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		echo on > "$ENODIA_STATE/.doh-on"
 		# Включение — новое намерение: выбранный DoT пробуем заново, а не шифруем по DoH, куда его когда-то увела
 		# проверка ДРУГОГО пути (иначе хвост ответа говорил бы «DoT не проходит» о пути, который никто не проверял).
@@ -686,6 +724,7 @@ case "$act" in
 	doh_off)
 		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		doh_dns_bailout                                   # снять форс-марку/RETURN резолвера, погасить прокси, стереть флаг «уведён»
 		rm -f "$ENODIA_STATE/.doh-on" 2>/dev/null                  # ДО reapply: doh_apply_dns теперь вернёт 1 → прежний путь транспорта
 		sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
@@ -720,9 +759,11 @@ case "$act" in
 		# время сторож не чинил бы ничего. Узел снимает лок сам; CGI его только ждёт. Тик, успевший стартовать между сверкой и
 		# локом, ловим повторной сверкой уже под локом (новые тики лок чтут и выходят сами).
 		[ -e "$SWITCH_LOCK" ] && fail "Роутер занят другой операцией — попробуйте через минуту"
-		: > "$SWITCH_LOCK" 2>/dev/null || fail "не удалось взять лок смены транспорта"
+		# Свой пид в лок, создание атомарное: CGI, убитый ДО старта узла, оставит МЁРТВЫЙ пид — сторож снимет такой лок сразу
+		# (watchdog.sh::switch_lock_held), а не через 30 мин. Узел, стартовав, ПЕРЕНИМАЕТ этот лок своим пидом (не создаёт свой).
+		( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null || fail "не удалось взять лок смены транспорта"
 		if _drc; then rm -f "$SWITCH_LOCK" 2>/dev/null; fail "Роутер сейчас сам восстанавливает соединение — попробуйте через минуту"; fi
-		spawn_bg /tmp/enodia-doh-retry.pid -c ": doh-retry; trap 'rm -f \"$SWITCH_LOCK\"' EXIT; trap 'exit 1' INT TERM HUP PIPE; sh '$ENODIA_DIR/transport.sh' dns >/dev/null 2>&1"
+		spawn_bg /tmp/enodia-doh-retry.pid -c ": doh-retry; [ -e \"$SWITCH_LOCK\" ] && echo \$\$ > \"$SWITCH_LOCK\"; trap 'rm -f \"$SWITCH_LOCK\"' EXIT; trap 'exit 1' INT TERM HUP PIPE; sh '$ENODIA_DIR/transport.sh' dns >/dev/null 2>&1"
 		_drp=$(cat /tmp/enodia-doh-retry.pid 2>/dev/null | tr -cd '0-9'); _drw=0
 		# Узел не поднялся (нет пидфайла и после запаса) — лок наш и снять его больше некому: иначе сторож стоял бы до SWITCH_STALE.
 		# fixed-wait: запас на запись пидфайла внуком start-stop-daemon под нагрузкой (spawn_bg ждёт 2 с), жизнь судить не по чему.
@@ -743,6 +784,7 @@ case "$act" in
 	set_doh_auto)
 		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		v=$(field value | tr -cd 'a-z')
 		case "$v" in on|off) : ;; *) fail "ожидается on|off" ;; esac
 		if [ "$v" = off ]; then
@@ -757,6 +799,7 @@ case "$act" in
 	set_doh_resolver)
 		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		r=$(field resolver | tr -cd 'a-z0-9')
 		case " $(doh_resolver_list) " in *" $r "*) : ;; *) fail "неизвестный резолвер" ;; esac
 		nid=$(field nextdns_id | tr -cd 'a-f0-9' | cut -c1-16)
@@ -869,6 +912,7 @@ case "$act" in
 	set_doh_proto)
 		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		v=$(field value | tr -cd 'a-z')
 		case "$v" in doh|dot) : ;; *) fail "ожидается doh|dot" ;; esac
 		prev=$(doh_proto)
