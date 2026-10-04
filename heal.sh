@@ -550,7 +550,7 @@ case "$_ipl_n" in ''|*[!0-9]*) _ipl_n=0 ;; esac
 if [ "$REPLAY" = 1 ] && [ "$_ipl_n" -gt 0 ]; then
     echo "iplist: replay — набор уже наполнен ($_ipl_n), перекачку пропускаю"
 elif [ -f ./iplist-update.sh ]; then
-    sh ./iplist-update.sh
+    sh "$ENODIA_DIR/iplist-update.sh"   # полным путём: смена раскладки ждёт движки списков по argv (daemon-lib.sh::lists_work_alive)
 fi
 
 # 5. ОБЩЕЕ ЯДРО маршрутизации (транспорт-агностично): маркировка ipset -> MARK 0x1
@@ -686,7 +686,7 @@ if [ -f ./lists-update.sh ]; then
         # свои домены) снимок на ФЛЕШЕ, и пул обязан подниматься без сети (весь смысл zapret —
         # «интернет жив, когда VPS нет»). Для adblock/ipblock снимок в ОЗУ и после ребута его нет →
         # это дешёвый no-op, не мешает.
-        sh ./lists-update.sh reapply "$bc" >/dev/null 2>&1 || true
+        sh "$ENODIA_DIR/lists-update.sh" reapply "$bc" >/dev/null 2>&1 || true
         echo "--- blocklist $bc включён — фоновая перекачка списков в ОЗУ ---"
         # `3>&-` ОБЯЗАТЕЛЕН: в режиме `replay` fd 3 — это stdout ВЫЗЫВАТЕЛЯ (см. `exec 3>&1`), а
         # `-b` подменяет демону только 0/1/2. Унеси демон нашу трубу — и вызыватель, читающий нас
@@ -737,7 +737,7 @@ fi
 # сети → отдельно ФОНОМ (сеть уже поднята выше). reapply офлайн-безопасен; без гео в реестре — no-op.
 if [ -f ./geo.sh ] && [ -s "$ENODIA_STATE/geo/actions.tsv" ]; then
     echo "--- geo: офлайн-восстановление гео-категорий из снимка ---"
-    sh ./geo.sh reapply 2>&1 | tail -1
+    sh "$ENODIA_DIR/geo.sh" reapply 2>&1 | tail -1
     # Пидфайл ОБЩИЙ с цепочкой импорта (`cgi-bin/backup`) — сознательно: второй фетч гео роутеру
     # не нужен. Спрашиваем ПИДФАЙЛ заранее и сами говорим по-человечески, а вывод демонизатора
     # глушим: при совпадении heal печатал в лог сырое «/bin/sh is already running» и голый pid —

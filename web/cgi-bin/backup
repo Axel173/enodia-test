@@ -74,7 +74,7 @@ SETTINGS="$SETTINGS .full-tunnel .bypass-ips .bypass-ifaces .bypass-guest"      
 SETTINGS="$SETTINGS .fullvpn-ips .fullvpn-ifaces .fullvpn-guest"                     # «целиком в VPN»
 SETTINGS="$SETTINGS .bypass-dst .vpn-dst .port-rules .keep-vpn-ips .enodia-custom.conf" # правила: IP (оба направления!), порты, исключения из выреза, домены
 SETTINGS="$SETTINGS groups geo/actions.tsv"                                          # группы правил и гео-категории
-SETTINGS="$SETTINGS .dhcp-static .dev-names .cfg-names"                                         # закреплённые за устройствами адреса (DHCP-резервации); свои имена устройств
+SETTINGS="$SETTINGS .dhcp-static .dev-names"                                         # закреплённые за устройствами адреса (DHCP-резервации); свои имена устройств
 SETTINGS="$SETTINGS .slots .byedpi-args .byedpi-args-s2 .byedpi-args-s3 .byedpi-args-s4"  # доп-выходы и их стратегии десинка
 # `.bin-keep` — ИМЕНА бинарей, закреплённых за роутером. В отличие от соседнего `.bin-store` (тот
 # исключён как «про железо») это ПРЕДПОЧТЕНИЕ человека, а не путь к конкретной флешке: список имён
@@ -152,6 +152,9 @@ SETTINGS="$SETTINGS .traffic-daily"                                             
 #          svc_lines() жёстко отдаёт v2fly. Добавление завело бы вторую мёртвую запись.
 # Секреты + конфиги + активные маркеры/рабочие файлы (входят только при secrets=1).
 # .subs = URL-подписки (кред), .sub-names = имена серверов подписки — с конфигами (полный бэкап).
+# .cfg-names = настоящие имена конфигов, добавленных руками (cfg-names.sh), — тоже С КОНФИГАМИ (ревью с.95): архив «без ключей»
+# конфигов не везёт, и его имена легли бы на ЧУЖИЕ конфиги с тем же файлом (`SG`, `vless`, `amnezia`). Импорт их СЛИВАЕТ по ключу
+# (cfg-names.sh import, после вливания каталогов конфигов), а не заменяет файл: конфиги, которых в архиве нет, имён не теряют.
 # server/ = «доступ домой»: ключ сервера, параметры обфускации, порт И ПРИВАТНЫЕ КЛЮЧИ ПИРОВ.
 # Только в полный бэкап: без него переезд на другой роутер означал бы переиздание конфигов на
 # всех телефонах (ключ пира восстановить неоткуда — он хранится здесь и нигде больше).
@@ -160,7 +163,7 @@ SETTINGS="$SETTINGS .traffic-daily"                                             
 # panel-cert.pem/panel-key.pem = самоподписанный сертификат HTTPS панели (решение 30.09.2026): без него
 # переезд выписывал новый, и каждый браузер и телефон заново спрашивал о доверии. Едет ТОЛЬКО ПАРОЙ, которая
 # сходится (разбор у импорта), и ничего не открывает: флаги HTTPS и входа снаружи остаются в EXCLUDE.
-SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem"
+SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .cfg-names .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
 	echo "Content-Type: application/json; charset=utf-8"
@@ -308,6 +311,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 				if cp -rp "$_e" "$ENODIA_STATE/$f"/ 2>/dev/null; then _any=1; fi
 			done
 			if [ "$_any" = 1 ]; then restored=$((restored+1)); fi
+		elif [ "$f" = .cfg-names ] && [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
+			continue   # имена конфигов — ПОСЛЕ цикла, когда каталоги конфигов уже влиты (владелец сверяет с ними)
 		else
 			# Имя может быть ВЛОЖЕННЫМ (geo/actions.tsv — берём реестр гео, но не снимки рядом
 			# с ним): на свежей установке каталога ещё нет, и cp молча ушёл бы в никуда.
@@ -315,6 +320,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 			cp -p "$tmp/$f" "$ENODIA_STATE/$f" 2>/dev/null && restored=$((restored+1))
 		fi
 	done
+	# ИМЕНА КОНФИГОВ — у владельца (cfg-names.sh import), после вливания каталогов: архивное имя побеждает у своего ключа, имена
+	# конфигов, которых в архиве нет, остаются, а у конфига, который архив ПРИВЁЗ без строки имени, локальный показ снимается — он про
+	# прежний сервер с тем же файлом (ревью с.96, круг 2). Архив без конфигов и без имён («без ключей») — не трогаем ничего.
+	if [ -f "$ENODIA_DIR/cfg-names.sh" ] && { [ -f "$tmp/.cfg-names" ] || [ -d "$tmp/configs" ] || [ -d "$tmp/xray-configs" ] || [ -d "$tmp/hy2-configs" ]; }; then
+		sh "$ENODIA_DIR/cfg-names.sh" import "$tmp/.cfg-names" "$tmp" >/dev/null 2>&1 && [ -f "$tmp/.cfg-names" ] && restored=$((restored+1))
+	fi
 	rm -rf "$tmp"
 	if [ "$restored" -eq 0 ]; then
 		# Отвергнутая пара — тоже причина: «не наш бэкап» про архив, где кроме неё ничего нет, звучал бы как «файл не тот».
@@ -393,7 +404,9 @@ fi
 [ -f ./domain.sh ] && { sh ./domain.sh restore; sh ./domain.sh apply; }
 # 2. Группы и гео: реестры на /data восстановлены, всё применение эфемерно.
 [ -f ./groups.sh ] && [ -s "$ENODIA_STATE/groups/groups.tsv" ] && sh ./groups.sh apply
-[ -f ./geo.sh ] && [ -s "$ENODIA_STATE/geo/actions.tsv" ] && sh ./geo.sh reapply
+# Движки списков — ПОЛНЫМ путём, не `./`: смена раскладки ждёт их по argv (daemon-lib.sh::lists_work_alive, точная строка
+# «$ENODIA_DIR/geo.sh»), и относительный запуск был ей невидим (ревью с.93, круг 3).
+[ -f ./geo.sh ] && [ -s "$ENODIA_STATE/geo/actions.tsv" ] && sh "$ENODIA_DIR/geo.sh" reapply
 # 3. Ядро маркировки — ПОСЛЕ групп и гео: слот-наборы grp_vpn_sN/geo_vpn_sN создаются там, и до
 #    их появления mark-core метить нечего. Несущие доп-выходов НЕ трогаем: их поднимает панель
 #    или ближайший ребут — рвать живой транспорт ради импорта настроек нельзя.
@@ -432,7 +445,7 @@ if [ -f ./lists-update.sh ]; then
     [ -n "$_optc" ] || _optc="adblock ipblock zapret-cidr zapret-dom"
     for _bc in $_optc; do
         [ -f "$ENODIA_STATE/lists/$_bc/.enabled" ] || continue
-        sh ./lists-update.sh reapply "$_bc" >/dev/null 2>&1 || true
+        sh "$ENODIA_DIR/lists-update.sh" reapply "$_bc" >/dev/null 2>&1 || true   # полным путём — см. geo.sh выше
     done
 fi
 # 5d. Закреплённые адреса: в архиве приехал персист резерваций, а сниппет `dhcp-host=` живёт в

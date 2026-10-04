@@ -570,7 +570,8 @@ _slot_dispatch() {
 cmd_slot_up()   { _slot_dispatch slot-up "$1";   src=$?; apply_marking; return $src; }
 cmd_slot_down() { _slot_dispatch slot-down "$1"; src=$?; apply_marking; return $src; }
 # Здоровье ДОП-ВЫХОДА (Ф3) — БЕЗ переигрыша маркировки, её зовёт watchdog каждый тик. Плагин отвечает 0 = жив / 1 = просел;
-# 2 = «не умеет slot-health» (тогда сторож решает по своим признакам, как для awg/byedpi). Маршрутов проба не меняет, но
+# 2 = «не умеет slot-health» (тогда сторож решает по своим признакам, как для awg/byedpi); 5 = сервер жив, путь через hev мёртв и
+# перезапуск не помог; 4 = путь через hev мёртв, но идёт смена транспорта — не судили. Маршрутов проба не меняет, но
 # ЗАЛИПШИЙ hev выхода плагин перезапускает на месте (slot-tun-lib.sh::slot_hev_path_check: TUN выхода пересоздаётся вместе с его
 # default в table 100N, ip rule не трогается) — поэтому вывод НЕ глушим: строку «hev перезапущен» должен увидеть лог сторожа.
 cmd_slot_health() { _slot_dispatch slot-health "$1"; }

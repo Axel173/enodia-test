@@ -20,6 +20,8 @@
 #   cfg-names.sh get <вид> <файл>        — имя или пусто
 #   cfg-names.sh list                    — все: `вид/файл⇥имя`
 #   cfg-names.sh json                    — то же картой JSON {"вид/файл":"имя"} (кавычки и косая вычищены разбором)
+#   cfg-names.sh merge <файл>            — влить имена из файла (импорт бэкапа): у своего ключа побеждает файл, прочие остаются
+#   cfg-names.sh import <файл> <корень>  — импорт бэкапа: merge + снять локальный показ у конфигов, привезённых архивом без имени
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 STORE="$ENODIA_STATE/.cfg-names"
@@ -48,6 +50,11 @@ put() {   # $1 = вид/файл, $2 = имя (пусто = снять)
 }
 san_checked() {   # $1 = файл, $2 = имя → очищенное имя в $SN; 1 — отказ (сказано словами)
     SN=$(lbl_san "$2")
+    # Имя из одних запрещённых знаков («"», «\») — НЕ «снять»: человек что-то написал и ждёт показ (так же у меток устройств,
+    # dev-names.sh). Снимает только пустое поле (или одни пробелы).
+    if [ -z "$SN" ] && [ -n "$(printf '%s' "$2" | tr -d ' \t\r\n')" ]; then
+        echo "[cfg-names] в имени нет ни одного допустимого знака — кавычки и обратная косая не сохраняются"; return 1
+    fi
     [ "$SN" = "$1" ] && SN=""
     if [ "$(printf '%s' "$SN" | wc -c)" -gt "$NAME_MAX" ]; then
         echo "[cfg-names] имя слишком длинное — сократите"; return 1
@@ -58,7 +65,9 @@ san_checked() {   # $1 = файл, $2 = имя → очищенное имя в 
 cmd_set() {
     key_ok "$1/$2" || { echo "[cfg-names] не тот вид или имя файла: $1/$2"; return 1; }
     san_checked "$2" "$3" || return 1
-    put "$1/$2" "$SN"
+    put "$1/$2" "$SN" || return 1
+    # ЧТО СОХРАНЕНО — последней строкой: очистка могла убрать знаки, и ответ панели обязан назвать то, что роутер записал, а не набранное.
+    if [ -n "$SN" ]; then echo "[cfg-names] имя «$SN»"; else echo "[cfg-names] своё имя снято"; fi
 }
 
 # Переименование файла: строка старого снимается, у нового — данное имя или прежний показ (файл переименовали, а назвали его
@@ -67,9 +76,13 @@ cmd_mv() {
     key_ok "$1/$2" && key_ok "$1/$3" || { echo "[cfg-names] не тот вид или имя файла: $1/$2 → $1/$3"; return 1; }
     lbl_lock_take "$LOCK" 'cfg-names' || { echo "[cfg-names] имена сейчас правит другая операция — повторите"; return 1; }
     if [ "$#" -ge 4 ]; then _mvn="$4"; else _mvn=$(cmd_list | awk -F"$LBL_TAB" -v k="$1/$2" '$1==k { print $2; exit }'); fi
+    # Файл уже переименован (зовут ПОСЛЕ mv): строку старого ключа снимаем В ЛЮБОМ случае — иначе её получил бы следующий файл с тем же
+    # именем. Отказ очистки — ЕГО словами последней строкой (CGI берёт последнюю; ревью с.96, круг 2: причину закрывало «не удалось»).
     if san_checked "$3" "$_mvn"; then
         lbl_write "$STORE" "$1/$2" "" "$KEY_RE" && lbl_write "$STORE" "$1/$3" "$SN" "$KEY_RE"; _mr=$?
-    else _mr=1; fi
+    else
+        lbl_write "$STORE" "$1/$2" "" "$KEY_RE"; lbl_lock_drop "$LOCK"; return 1
+    fi
     lbl_lock_drop "$LOCK"
     [ "$_mr" = 0 ] || { echo "[cfg-names] не удалось записать имя"; return 1; }
     return 0
@@ -79,12 +92,57 @@ cmd_json() {
     cmd_list | awk -F"$LBL_TAB" '{ printf "%s\"%s\":\"%s\"", (c++ ? "," : ""), $1, $2 }'
 }
 
+# Импорт бэкапа (cgi-bin/backup): $1 — файл имён архива (может не быть), $2 — корень архива. Архивное имя побеждает у своего ключа;
+# у конфига, который архив ПРИВЁЗ (его файл заменён архивным), а строки имени в архиве нет, локальный показ СНИМАЕМ — он про прежний
+# сервер с тем же файлом (ревью с.96, круг 2: слияние оставляло «🇩🇪 Германия» на заменённом из архива vless). Прочие — как были.
+cmd_import() {
+    _ik=$( for _if in "$2"/configs/*.conf; do [ -f "$_if" ] && { _ib=${_if##*/}; echo "awg/${_ib%.conf}"; }; done
+           for _if in "$2"/xray-configs/*.json; do [ -f "$_if" ] && { _ib=${_if##*/}; echo "xray/${_ib%.json}"; }; done
+           for _if in "$2"/hy2-configs/*.yaml; do [ -f "$_if" ] && { _ib=${_if##*/}; echo "hy2/${_ib%.yaml}"; }; done )
+    lbl_lock_take "$LOCK" 'cfg-names' || { echo "[cfg-names] имена сейчас правит другая операция — повторите"; return 1; }
+    # Архивные имена — ТОЛЬКО у конфигов, которые архив привёз: застрявшая в архиве строка (сбой снятия) иначе легла бы на ЧУЖОЙ
+    # локальный конфиг с тем же файлом — класс находки 1 ревью с.95 (ревью с.96, круг 3).
+    _ia=""
+    if [ -f "$1" ]; then
+        while IFS= read -r _ir || [ -n "$_ir" ]; do
+            [ -n "$_ir" ] || continue
+            case "$LBL_NL$_ik$LBL_NL" in *"$LBL_NL${_ir%%"$LBL_TAB"*}$LBL_NL"*) _ia="${_ia:+$_ia$LBL_NL}$_ir" ;; esac
+        done <<EOF
+$(lbl_list "$1" "$KEY_RE")
+EOF
+    fi
+    _ikeep=""
+    while IFS= read -r _ir || [ -n "$_ir" ]; do
+        [ -n "$_ir" ] || continue
+        case "$LBL_NL$_ik$LBL_NL" in *"$LBL_NL${_ir%%"$LBL_TAB"*}$LBL_NL"*) continue ;; esac
+        _ikeep="${_ikeep:+$_ikeep$LBL_NL}$_ir"
+    done <<EOF
+$(lbl_list "$STORE" "$KEY_RE")
+EOF
+    _iw=$(printf '%s\n%s\n' "$_ia" "$_ikeep" | awk -F"$LBL_TAB" 'NF >= 2 && !($1 in s) { s[$1] = 1; print }')
+    lbl_commit "$STORE" "$_iw"; _imr=$?
+    lbl_lock_drop "$LOCK"
+    [ "$_imr" = 0 ] || { echo "[cfg-names] не удалось записать имена (место на разделе?)"; return 1; }
+    return 0
+}
+
+cmd_merge() {
+    [ -f "$1" ] || { echo "[cfg-names] нет файла $1"; return 1; }
+    lbl_lock_take "$LOCK" 'cfg-names' || { echo "[cfg-names] имена сейчас правит другая операция — повторите"; return 1; }
+    lbl_merge "$STORE" "$1" "$KEY_RE"; _mgr=$?
+    lbl_lock_drop "$LOCK"
+    [ "$_mgr" = 0 ] || { echo "[cfg-names] не удалось записать имена (место на разделе?)"; return 1; }
+    return 0
+}
+
 case "$1" in
     set)  cmd_set "$2" "$3" "$4" ;;
+    merge) cmd_merge "$2" ;;
+    import) cmd_import "$2" "$3" ;;
     del)  key_ok "$2/$3" || exit 1; put "$2/$3" "" ;;
     mv)   shift; cmd_mv "$@" ;;
     get)  cmd_get "$2" "$3" ;;
     list) cmd_list; exit 0 ;;
     json) cmd_json; exit 0 ;;
-    *) echo "usage: $0 set <вид> <файл> <имя> | del <вид> <файл> | mv <вид> <старый> <новый> [имя] | get <вид> <файл> | list | json"; exit 2 ;;
+    *) echo "usage: $0 set <вид> <файл> <имя> | del <вид> <файл> | mv <вид> <старый> <новый> [имя] | get <вид> <файл> | list | json | merge <файл> | import <файл> <корень архива>"; exit 2 ;;
 esac

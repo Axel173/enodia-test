@@ -405,6 +405,10 @@ seed_hosts_clear() {
 
 # seed_host_clear <seed-файл> — снять сид ЦЕЛИКОМ (обе копии). Код 0 = что-то реально удалили
 # ⇒ вызывающему нужен рестарт dnsmasq (SIGHUP конфиг не перечитывает); 1 = сида не было.
+# Снятое ОТМЕЧАЕМ (DNS_RELOAD_MARK) — для тех, кто рестарт доверяет DNS-сеттеру следом (снятие несущей xray/hy2, сервер
+# IP-литералом ниже): сеттер теперь идёт через doh-lib.sh::dns_upstream_put, а тот при том же upstream лишь шлёт HUP — и снятый
+# `address=` жил бы в памяти демона до чужого рестарта, иногда сутками (ревью с.95). Отметка велит ему перезапустить.
+DNS_RELOAD_MARK=${DNS_RELOAD_MARK:-/tmp/enodia-dns-reload}
 seed_host_clear() {
     _sc_f="$1"; [ -n "$_sc_f" ] || return 1
     _sc_l=$(_seed_live "$_sc_f"); _sc_hit=1
@@ -413,6 +417,7 @@ seed_host_clear() {
     rm -f "$_sc_f" 2>/dev/null
     [ -n "$_sc_l" ] && rm -f "$_sc_l" 2>/dev/null
     if seed_hosts_clear "$_sc_f"; then _sc_hit=0; fi    # третья копия (форма `if` — она безразлична к позиции под set -e)
+    if [ "$_sc_hit" = 0 ]; then : > "$DNS_RELOAD_MARK" 2>/dev/null; fi
     return $_sc_hit
 }
 

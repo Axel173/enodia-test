@@ -172,13 +172,18 @@ doh_upstream()  { echo "$DOH_UPSTREAM"; }
 # прокси). Поэтому сверяем с ОБЕИМИ копиями (init копирует /etc→/tmp аддитивно, и демон читает обе): совпало и демон
 # жив — не трогаем; иначе пишем и перезапускаем, как раньше. Аргументы — адреса `server=` в нужном порядке.
 # Пишут не все: heal.sh на буте (там рестарт — отдельным шагом) и аварийный safety_off (своя шапка-комментарий) — разбор у них.
+# HUP перечитывает hosts и сбрасывает кэш, но НЕ конфиг: снятый перед нами сид сервера (`address=`, dns-lib.sh::seed_host_clear —
+# снятие несущей xray/hy2, сервер IP-литералом) остался бы в памяти демона. Тот, кто снял, кладёт отметку DNS_RELOAD_MARK — при
+# ней перезапускаем и при том же upstream (ревью с.95).
+DNS_RELOAD_MARK=${DNS_RELOAD_MARK:-/tmp/enodia-dns-reload}
 dns_upstream_put() {
 	_dup=$( { echo no-resolv; for _dua in "$@"; do echo "server=$_dua"; done; } )
-	if [ "$(cat /etc/dnsmasq.d/00-upstream.conf 2>/dev/null)" = "$_dup" ] \
+	if [ ! -e "$DNS_RELOAD_MARK" ] && [ "$(cat /etc/dnsmasq.d/00-upstream.conf 2>/dev/null)" = "$_dup" ] \
 	   && [ "$(cat /tmp/dnsmasq.d/00-upstream.conf 2>/dev/null)" = "$_dup" ] && pidof dnsmasq >/dev/null 2>&1; then
 		killall -HUP dnsmasq 2>/dev/null   # кэш прежнего пути — сбросить (дёшево: демон не встаёт заново)
 		return 0
 	fi
+	rm -f "$DNS_RELOAD_MARK" 2>/dev/null
 	mkdir -p /etc/dnsmasq.d
 	printf '%s\n' "$_dup" > /etc/dnsmasq.d/00-upstream.conf
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null

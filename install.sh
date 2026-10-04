@@ -846,6 +846,7 @@ elif [ "$ACTIVE_PROTO" = xray ] || [ "$ACTIVE_PROTO" = hy2 ] || [ "$ACTIVE_PROTO
     # МАРКИРУЕТСЯ в туннель (<transport>.sh up ниже); у byedpi DNS идёт ПРЯМО (десинк без
     # туннеля) — плагин set_direct_dns это финализирует на up. Здесь — публичная заглушка,
     # чтобы dnsmasq резолвил и до подъёма транспорта. Внутренний Amnezia-DNS при альте недостижим.
+    # upstream-own: легаси-путь полной установки (не PANEL_ONLY); рестарт ниже безусловный и обязателен — разбор под ним.
     printf 'no-resolv\nserver=1.1.1.1\nserver=8.8.8.8\n' > "$DNS_OVERRIDE"
     ok "DNS upstream: публичный 1.1.1.1/8.8.8.8 (альт-транспорт)"
     # КРИТИЧНО: dnsmasq держит СТАРЫЙ upstream в памяти, пока его не перезапустить.
@@ -863,6 +864,7 @@ else
     # AmneziaWG: upstream ВНУТРИ туннеля (адрес из awg.conf поля DNS=, fallback 172.29.172.254).
     VPN_DNS=$(grep -E '^DNS\s*=' "$AWG_CONF" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
     [ -z "$VPN_DNS" ] && VPN_DNS="172.29.172.254"
+    # upstream-own: легаси-путь полной установки (не PANEL_ONLY), файл с шапкой-комментарием для человека.
     cat > "$DNS_OVERRIDE" <<EOF
 # DNS-сервер внутри VPN-туннеля (защита от подмен провайдером).
 # Адрес взят из awg.conf поля DNS=. Если у вас другой — поправьте здесь

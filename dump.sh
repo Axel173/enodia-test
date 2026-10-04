@@ -868,6 +868,7 @@ showmeta "$ENODIA_STATE/amnezia_for_awg.conf"
 showmeta "$ENODIA_STATE/notify.conf"
 showmeta "$ENODIA_STATE/.subs"
 showmeta "$ENODIA_STATE/.sub-names"
+showmeta "$ENODIA_STATE/.cfg-names"   # свои имена конфигов (cfg-names.sh): в бэкапе — с конфигами; содержимое — имена человека
 showmeta "$ENODIA_STATE/.sub-picks"
 # Вход в панель: только режим/размер. Содержимое — ключи от панели (хэш пароля вскрывают офлайн,
 # .totp-recovery = коды восстановления, .totp-sessions = живые сессии), и в дамп оно не едет.
@@ -911,13 +912,16 @@ sec "ЛОКИ / СТЕЙТ В /tmp"
 # имени прятала их от первой редакции C84, а решения по ним принимают трое (ревью 5).
 # enodia-pkg-install.lock — идёт установка кода из пакета (pkg-install.sh): по нему отказывают смена
 # раскладки и вторая установка — без строки разбор читает «отказано» как поломку кнопки.
+# enodia-dns-reload — снят сид сервера несущей (dns-lib.sh::seed_host_clear), и следующий DNS-сеттер обязан ПЕРЕЗАПУСТИТЬ
+# dnsmasq даже при том же upstream (HUP `address=` не перечитывает). Висит — значит сеттер после снятия не звали: имя сервера
+# ещё может отдаваться прежним адресом.
 for l in enodia-heal.lock enodia-heal.reason enodia-heal.skipped enodia-heal-kick.tries enodia-heal-kick.stamp \
          enodia-heal-kick.said enodia-heal-kick.mailed enodia-heal-kick.cfg enodia-switching.lock enodia-watchdog.lock enodia-watchdog.pid \
          enodia-watchdog.state enodia-watchdog.xstate enodia-failover.stamp enodia-failover.backoff \
          enodia-failover-episode enodia-awg0.seen enodia-awg0.firstup \
          enodia-domwarm.stamp enodia-proto-install.lock enodia-byedpi-sweep.lock \
          enodia-subs-update.lock enodia-gh-update.lock enodia-pkg-install.lock enodia-uninstall.mode \
-         enodia-wanout.valve enodia-wanout.event enodia-wanout.sweep \
+         enodia-wanout.valve enodia-wanout.event enodia-wanout.sweep enodia-dns-reload \
          .enodia-carrier-up.stamp .enodia-support-active; do
     if [ -e "/tmp/$l" ]; then
         # mkdir-ЛОК — КАТАЛОГ, и `cat` по нему пуст: держатель лежит внутри, в `<lock>/pid`

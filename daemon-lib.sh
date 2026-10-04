@@ -89,6 +89,26 @@ lists_work_alive() {
     printf '%s\n' "$_lwa" | grep -qxF -e "$ENODIA_DIR/lists-update.sh" -e "$ENODIA_DIR/geo.sh" -e "$ENODIA_DIR/iplist-update.sh"
 }
 
+# ЖИВА ЛИ РАБОТА, НАЧАТАЯ ДЕРЖАТЕЛЕМ switching-ЛОКА <пид> — даже если сам держатель уже мёртв. Спрашивают те, кто судит лок с пидом
+# (сторож — switch_lock_held, панель — cgi hold_switch): CGI под своим локом ведёт смену ПОТОМКАМИ (оркестратор, плагин напрямую —
+# set_xray_server, save_config_raw, — `transport.sh dns`), а закрытую вкладку uhttpd бьёт SIGKILL только у CGI. Лок оставался с
+# мёртвым пидом при ЖИВОЙ смене: сторож снимал его и вёл лестницу поверх неё, вторая вкладка забирала «ничей» лок (ревью с.96,
+# круги 2–3). Не по именам скриптов — список имён отставал от вызовов дважды подряд, — а по МЕТКЕ в окружении: держатель экспортирует
+# ENODIA_SWITCH_HOLDER=<свой пид> (switch_holder_mark), её наследует любой потомок. Снимок /proc/*/environ — сперва, сверка — потом.
+switch_holder_mark() { ENODIA_SWITCH_HOLDER=$$; export ENODIA_SWITCH_HOLDER; }
+# Работа держателя — наш СКРИПТ (`$ENODIA_DIR/<имя>.sh` в argv: оркестратор, плагин, switch-vpn), а не демон, которого он запустил:
+# xray и hev наследуют окружение и живут сутками — по ним лок держался бы вечно. Кандидатов даёт один `grep -l` (подстрока), точная
+# метка и argv сверяются у каждого.
+switch_work_alive() {   # $1 — пид держателя из лока
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    for _swf in $(grep -l "ENODIA_SWITCH_HOLDER=$1" /proc/[0-9]*/environ 2>/dev/null); do
+        tr '\000' '\n' 2>/dev/null < "$_swf" | grep -qxF "ENODIA_SWITCH_HOLDER=$1" || continue
+        tr '\000' '\n' 2>/dev/null < "${_swf%/environ}/cmdline" | awk -v d="$ENODIA_DIR/" \
+            'substr($0, 1, length(d)) == d && substr($0, length($0) - 2) == ".sh" { f = 1 } END { exit f ? 0 : 1 }' && return 0
+    done
+    return 1
+}
+
 # КТО СЕЙЧАС ВЕДЁТ НЕСУЩУЮ — ТИК СТОРОЖА И ПРОГОН HEAL (бутовый или переигрыш). Тот же вопрос «жив ли держатель», что и у старта демона, поэтому здесь.
 # Спрашивают те, кто сам меняет то, на что они смотрят: перенос бинарей (usb-offload.sh::move_hold) и «Отключить VPN»
 # (vpn-toggle.sh, доводчик выключения). Держатель — ЖИВОЙ процесс под своим локом, а не файл: лок переживает `kill -9`, а номер

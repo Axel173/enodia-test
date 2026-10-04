@@ -416,6 +416,9 @@ cmd_up() {
     echo byedpi > "$TRANSPORT_FLAG"
     rm -f /tmp/enodia-watchdog.xstate /tmp/enodia-failover-episode 2>/dev/null
     carrier_up_mark         # грейс сторожу: демоны стартовали, но egress поднимается ещё секунды (clock-lib.sh)
+    # Отметка «путь через hev мёртв» (slot-tun-lib.sh) — про ПРЕЖНЮЮ несущую: она общая на xray/hy2/byedpi, и без снятия до получаса
+    # отказывала бы перебору только что поднятого транспорта (ревью с.93, круг 3). Свежий путь судит следующий health тика.
+    if command -v hev_dead_clear >/dev/null 2>&1; then hev_dead_clear main; fi
     ct_flush
     log "транспорт = BYEDPI (default table $TABLE -> $TUN, десинк напрямую). Общие правила сохранены."
     cmd_status

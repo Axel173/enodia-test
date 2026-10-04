@@ -93,19 +93,41 @@ command -v dom_ok >/dev/null 2>&1 || {
 # ЖИВОЙ ДЕРЖАТЕЛЬ С ПИДОМ — подъём несущей сторожем (watchdog.sh::wd_switch_take) или другой запрос панели: ЖДЁМ, пока отпустит.
 # Иначе наш switch гасит недоподнятое, а подъём, закончив, рождает сирот или переписывает флаг и маршрут — ручной выбор проигрывал
 # (BE7000 02.10.2026: xray и hev остались жить при `.transport=awg`). Потолок 60 с — ниже срока CGI у uhttpd (-t 180); держатели
-# без пида (transport.sh switch, установка, перенос) и мёртвый пид — прежнее поведение, сразу.
+# без пида (transport.sh switch, установка, перенос) — прежнее поведение, сразу; лок МЁРТВОГО держателя с пидом забираем себе.
 SWITCH_LOCK_MINE=0
+# «Ведёт ли кто-то смену» — у владельца (daemon-lib.sh::switch_work_alive): смену CGI ведёт потомок, и SIGKILL вкладки его не трогает.
+hs_work_alive() {   # $1 — пид держателя из лока
+	[ -n "$CBN_LIB" ] || { CBN_LIB=1; if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi; }
+	command -v switch_work_alive >/dev/null 2>&1 && switch_work_alive "$1"
+}
 hold_switch() {
 	_hsw=0
 	while [ "$_hsw" -lt 60 ]; do
 		_hsp=$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n')
 		case "$_hsp" in ''|*[!0-9]*) break ;; esac
-		[ -d "/proc/$_hsp" ] || break
+		if [ ! -d "/proc/$_hsp" ] && ! hs_work_alive "$_hsp"; then
+			# Держатель с пидом МЁРТВ (вкладку закрыли посреди смены — uhttpd бьёт CGI SIGKILL, ловушка молчит), и смены, которую
+			# он вёл потомком, тоже нет: лок ничей, и сторож снимет его на ближайшем тике (watchdog.sh::switch_lock_held). Не забрать
+			# его себе — значит идти дальше, НЕ владея, а сторож следующим тиком поведёт лестницу поверх нашей смены (ревью с.93,
+			# круг 3). Снимаем, только если в локе всё ещё ТОТ ЖЕ мёртвый пид, и идём на новый круг: вторая вкладка, успевшая взять
+			# лок раньше нас, его не потеряет, а мы её дождёмся (ревью с.96, круг 2 — прежде обе шли дальше, одна без лока).
+			[ "$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n')" = "$_hsp" ] && rm -f "$SWITCH_LOCK" 2>/dev/null
+			( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null && { SWITCH_LOCK_MINE=1; break; }
+			_hsw=$((_hsw + 1)); continue   # счёт — и тут: неснимаемый лок (права, раздел) не должен крутить цикл вечно
+		fi
 		sleep 1; _hsw=$((_hsw + 1))
 	done
 	# Свой пид внутри и создание АТОМАРНО (`set -C`): по пиду сторож отличает CGI, убитый uhttpd на закрытой вкладке (SIGKILL,
 	# ловушка молчит), и снимает его лок сразу, а не через 30 минут (watchdog.sh::switch_lock_held); вторая вкладка ждёт живую первую.
-	( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null && SWITCH_LOCK_MINE=1
+	[ "$SWITCH_LOCK_MINE" = 1 ] || { ( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null && SWITCH_LOCK_MINE=1; }
+	# Держатель с пидом ЖИВ (или смену ведёт его потомок) и за минуту не отпустил — идти поверх нельзя: это и есть гонка, которую лок
+	# закрывает. Отказ словами; держатели без пида (установка, перенос, CLI) — как раньше, дальше без лока.
+	if [ "$SWITCH_LOCK_MINE" != 1 ]; then
+		_hsp=$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n')
+		case "$_hsp" in ''|*[!0-9]*) ;; *) { [ -d "/proc/$_hsp" ] || hs_work_alive "$_hsp"; } && fail "${HS_FAIL_MSG:-идёт смена транспорта или сервера (другая вкладка или сам роутер) — повторите через минуту}" ;; esac
+	fi
+	# Метка держателя — потомкам: смену ведут они, и SIGKILL закрытой вкладки их не трогает (daemon-lib.sh::switch_work_alive).
+	if [ "$SWITCH_LOCK_MINE" = 1 ]; then ENODIA_SWITCH_HOLDER=$$; export ENODIA_SWITCH_HOLDER; fi
 	trap 'drop_switch' EXIT
 	trap 'exit 1' INT TERM HUP PIPE
 }
@@ -1521,13 +1543,22 @@ EOF
 		_rlo=$(printf '%s' "$old" | tr 'A-Z' 'a-z'); _rln=$(printf '%s' "$new" | tr 'A-Z' 'a-z')
 		{ [ "$_rlo" = default ] || [ "$_rln" = default ]; } && fail "«default» — служебное имя установщика: его нельзя ни дать, ни снять"
 		[ -f "$dir/$old.$ext" ] || fail "нет конфига $old"
+		# Набранный ПОКАЗ дал латиницу ДРУГОГО конфига: после загрузки с суффиксом у «🚀 Fast» файл Fast-2, а «Fast 🚀» транслитом — Fast,
+		# занятый «⚡ Fast». Человек менял показ, а не просил чужое имя файла, — меняем только показ (ревью с.96, круг 2: был отказ «конфиг
+		# Fast уже есть», которого в списке человек не видит). Набрано ровно это латинское имя — прежний отказ ниже.
+		if [ "$_rdh" = 1 ] && [ "$old" != "$new" ] && [ "$disp" != "$new" ]; then
+			if [ "$_rlo" = "$_rln" ]; then ls -1 "$dir" 2>/dev/null | grep -Fxq "$new.$ext" && new=$old
+			elif [ -e "$dir/$new.$ext" ]; then new=$old; fi
+		fi
 		# Файл тот же, сменился только показ (добавили флаг, эмодзи, поменяли регистр кириллицы) — правка одного .cfg-names: ни
 		# слотов, ни лока смены, ни переезда файла.
 		if [ "$old" = "$new" ]; then
 			[ -f "$ENODIA_DIR/cfg-names.sh" ] || fail "нет cfg-names.sh — обновите установку"
 			_rdo=$(sh "$ENODIA_DIR/cfg-names.sh" set "$kind" "$old" "$disp" 2>&1) || fail "$(printf '%s' "$_rdo" | tail -n 1 | sed 's/^\[cfg-names\] //' | jesc 200)"
-			_rdm=$(printf '%s' "${disp:-$old}" | jesc 200)
-			printf '{"ok":true,"code":0,"name":"%s","slots":0,"msg":"имя «%s» сохранено"}\n' "$old" "$_rdm"; exit 0
+			# Что СОХРАНЕНО — словами владельца (последняя строка «имя «…»» / «своё имя снято»): очистка могла убрать знаки, и тост с
+			# набранным текстом говорил бы неправду (ревью с.95: «Berlin""» на файле Berlin снимал показ, а тост хвалил набранное).
+			_rdm=$(printf '%s' "$_rdo" | tail -n 1 | sed 's/^\[cfg-names\] //' | jesc 200)
+			printf '{"ok":true,"code":0,"name":"%s","slots":0,"msg":"%s"}\n' "$old" "${_rdm:-имя сохранено}"; exit 0
 		fi
 		# Смена только регистра: «уже есть» — лишь если в каталоге ДРУГОЙ файл с этим именем (на ФС без регистра его не будет).
 		if [ "$_rlo" = "$_rln" ]; then
@@ -1556,17 +1587,26 @@ EOF
 			fail "не удалось переименовать файл"
 		fi
 		_ra=$(cat "$af" 2>/dev/null | tr -d ' \r\n'); [ "$_ra" = "$old" ] && echo "$new" > "$af"
-		# Показ едет за файлом: набранное имя — новым показом, иначе прежний показ переезжает на новое имя файла.
+		# Показ едет за файлом: набранное имя — новым показом, иначе прежний показ переезжает на новое имя файла. Сбой записи показа
+		# файл назад не возвращает (переименование уже состоялось), но ответ обязан это сказать (ревью с.95: успех без оговорки
+		# терял набранное имя молча, а строка старого ключа доставалась следующему файлу с тем же именем).
+		_rnw=""
 		if [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
-			if [ "$_rdh" = 1 ]; then sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" "$disp" >/dev/null 2>&1
-			else sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" >/dev/null 2>&1; fi
+			if [ "$_rdh" = 1 ]; then _rno=$(sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" "$disp" 2>&1)
+			else _rno=$(sh "$ENODIA_DIR/cfg-names.sh" mv "$kind" "$old" "$new" 2>&1); fi
+			[ $? = 0 ] || _rnw=$(printf '%s' "$_rno" | tail -n 1 | sed 's/^\[cfg-names\] //' | jesc 160)
 		fi
 		if [ "$kind" = awg ]; then
 			for _rf in .failover-home .last.bak.name; do
 				_rv=$(cat "$ENODIA_STATE/$_rf" 2>/dev/null | tr -d ' \r\n'); [ "$_rv" = "$old" ] && echo "$new" > "$ENODIA_STATE/$_rf"
 			done
 		fi
-		printf '{"ok":true,"code":0,"name":"%s","slots":%s,"msg":"конфиг «%s» переименован в «%s»"}\n' "$new" "$_rs" "$old" "$new"; exit 0 ;;
+		if [ -n "$_rnw" ]; then
+			printf '{"ok":true,"code":0,"name":"%s","slots":%s,"msg":"конфиг «%s» переименован в «%s», но имя не записано: %s"}\n' "$new" "$_rs" "$old" "$new" "$_rnw"
+		else
+			printf '{"ok":true,"code":0,"name":"%s","slots":%s,"msg":"конфиг «%s» переименован в «%s»"}\n' "$new" "$_rs" "$old" "$new"
+		fi
+		exit 0 ;;
 
 	# --- Полный редактор конфига (гибрид «форма + сырой режим» в панели) ------------
 	# get_config_raw: отдаёт ВЕСЬ файл конфига base64-ом (вкл. секреты — uuid/ключи/пароль:
@@ -1659,6 +1699,8 @@ EOF
 				# Между down и up несущей НЕТ: тик сторожа в это окно читает «health провалился» и
 				# уводит транспорт в cross-failover — правка конфига активного сервера сама себя
 				# отменяла бы. Соседи (set_xray_server/set_hy2_server) лок держат, эта ветка — нет.
+				# Конфиг и рабочая копия УЖЕ записаны: отказ лока обязан сказать это, а не «не вышло» (ревью с.96, круг 3).
+				HS_FAIL_MSG="Конфиг $name сохранён, но не применён: идёт смена транспорта или сервера — он подхватится при следующем подъёме несущей"
 				hold_switch
 				sh "$ENODIA_DIR/$tsh" down >/dev/null 2>&1
 				raw=$(sh "$ENODIA_DIR/$tsh" up 2>&1); rc=$?          # причину не глотаем — зеркало set_xray_server
@@ -1684,7 +1726,9 @@ EOF
 	upload_config)
 		kind=$(field kind)
 		name=$(urldecode "$(field name)")
-		echo "$name" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя файла"
+		# Одной строкой и не длиннее 80 — как у переименования (RE_CFG_NAME): гард `^…$` судит построчно, и имя в две строки прошло бы
+		# (ревью с.96, круг 2); а имя длиннее 80 потом не открыть и не переименовать.
+		{ one_line "$name" && echo "$name" | grep -qE '^[A-Za-z0-9_.-]{1,80}$'; } || fail "недопустимое имя файла"
 		case "$kind" in
 			awg)  dir="$ENODIA_STATE/configs";      ext=conf ;;
 			xray) dir="$ENODIA_STATE/xray-configs"; ext=json ;;
@@ -1701,15 +1745,82 @@ EOF
 		esac
 		mkdir -p "$dir" 2>/dev/null
 		dst="$dir/$name.$ext"
-		if printf '%s' "$content" | tr -d '\r' > "$dst.new" && mv "$dst.new" "$dst" && chmod 600 "$dst"; then
-			# НАСТОЯЩЕЕ ИМЯ (ремарка ссылки, имя файла, description vpn://) — в .cfg-names (cfg-names.sh): файл латиницей, показ как
-			# назван. Поля нет (повторная заливка редактором, прежний клиент) — показ не трогаем. Сбой метки загрузку не отменяет.
-			if printf '%s' "&$body" | grep -q '&display=' && [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
-				sh "$ENODIA_DIR/cfg-names.sh" set "$kind" "$name" "$(urldecode "$(field display)")" >/dev/null 2>&1
+		# Черновик — СВОЙ у процесса и не под маской каталога (`*.conf` и т.п.): две вкладки, загружающие разом, не пишут друг другу.
+		_utmp="$dir/.enodia-up.$$"
+		printf '%s' "$content" | tr -d '\r' > "$_utmp" 2>/dev/null || { rm -f "$_utmp" 2>/dev/null; fail "не удалось записать файл"; }
+		# ИМЯ ЗАНЯТО ДРУГИМ КОНФИГОМ (ревью с.95). Файл роутер держит латиницей, и разные серверы сходятся в одно имя («🇸🇬» и «🇸🇬⚡»
+		# у VLESS дают `SG`, «⚡ Fast» и «🚀 Fast» — `Fast`): прежде второй импорт МОЛЧА затирал первый — и его показ тоже. А «заменить» —
+		# это и законное «новые ключи того же сервера», и «второй конфиг того же сервера под доп-выход»: различить их может только человек
+		# (ревью с.96, круг 3: экран AWG обещал «загрузите заново — заменит», а импорт клал рядом). Поэтому импорт руками (`uniq`):
+		#   * тот же текст уже лежит — под базой или суффиксом — это тот файл (повторный импорт той же ссылки; прежде повторы плодили -3, -4…);
+		#   * база свободна — занимаем её;
+		#   * база занята ДРУГИМ текстом: `uniq=1` — ответ 409 «уже есть», панель спрашивает человека и повторяет запрос его решением
+		#     (`uniq=0` — заменить на месте, `uniq=2` — свободное имя с суффиксом).
+		# Свободное имя ЗАНИМАЕМ атомарно (`set -C`): две вкладки разом не сядут на одно -2. Без `uniq` (подписка, прежний клиент) —
+		# замена, как раньше: подписка свои файлы обновляет на месте.
+		_unote=""; _unew=1; [ -e "$dst" ] && _unew=0; _ub=""; _uq=$(field uniq)
+		if [ "$_uq" = 1 ] || [ "$_uq" = 2 ]; then
+			_ub=$(printf '%s' "$name" | cut -c1-76); _un=1; _uc=""; _cc="$name"
+			while [ "$_un" -lt 100 ]; do
+				if [ -e "$dir/$_cc.$ext" ] && cmp -s "$_utmp" "$dir/$_cc.$ext"; then _uc=$_cc; _unew=0; break; fi
+				_un=$((_un + 1)); _cc="$_ub-$_un"
+			done
+			if [ -z "$_uc" ]; then
+				if ( set -C; : > "$dst" ) 2>/dev/null; then _uc=$name; _unew=1
+				elif [ "$_uq" = 1 ]; then
+					rm -f "$_utmp"
+					printf '{"ok":false,"code":409,"exists":"%s","msg":"конфиг «%s» уже есть"}\n' "$name" "$name"; exit 0
+				else
+					_un=2
+					while [ "$_un" -lt 100 ]; do
+						( set -C; : > "$dir/$_ub-$_un.$ext" ) 2>/dev/null && { _uc="$_ub-$_un"; _unew=1; break; }
+						_un=$((_un + 1))
+					done
+					[ -n "$_uc" ] || { rm -f "$_utmp"; fail "имя «$name» занято, и свободного с суффиксом нет — переименуйте прежние"; }
+				fi
 			fi
-			printf '{"ok":true,"code":0,"msg":"Конфиг %s сохранён (%s) — активируйте в списке серверов"}\n' "$name" "$kind"
+			if [ "$_uc" != "$name" ]; then
+				_unote="; имя «$name» уже было у другого конфига — сохранён рядом"
+				_ubase=$name; name="$_uc"; dst="$dir/$name.$ext"
+			fi
+		fi
+		if mv "$_utmp" "$dst" && chmod 600 "$dst"; then
+			# НАСТОЯЩЕЕ ИМЯ (ремарка ссылки, имя файла, description vpn://) — в .cfg-names (cfg-names.sh): файл латиницей, показ как
+			# назван. Поля нет (повторная заливка редактором, прежний клиент) — показ не трогаем; но у НОВОГО файла снимаем строку,
+			# оставшуюся от прежнего конфига с тем же именем (сбой снятия, ручная правка): чужой показ на новом сервере — ложь.
+			# Сбой метки загрузку не отменяет, но ответ говорит о нём.
+			_uw=""
+			if [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
+				if printf '%s' "&$body" | grep -q '&display='; then
+					_ud=$(urldecode "$(field display)")
+					# Файл получил суффикс, а показ — тот же, что у соседа: в списке, шапке и выборе выхода стояли бы два одинаковых
+					# «Germany» (ревью с.96, круг 2). Различитель — номер суффикса.
+					if [ -n "$_unote" ] && [ -n "$_ud" ]; then
+						# Сверка — со ВСЕМИ соседями (база и её суффиксы; у соседа без своего имени показ — имя файла), ревью с.96, круг 3:
+						# прежде только с базой, и третий «🚀 Fast» вставал рядом со вторым неотличимым.
+						_usame=0
+						[ "$_ud" = "$_ubase" ] && [ -z "$(sh "$ENODIA_DIR/cfg-names.sh" get "$kind" "$_ubase" 2>/dev/null)" ] && _usame=1
+						sh "$ENODIA_DIR/cfg-names.sh" list 2>/dev/null | awk -F'\t' -v k="$kind/$_ubase" -v p="$kind/$_ub-" -v d="$_ud" \
+							'($1 == k || substr($1, 1, length(p)) == p) && $2 == d { f = 1 } END { exit f ? 0 : 1 }' && _usame=1
+						# Не за потолок владельца (240 байт): длинный показ без различителя лучше, чем отказ записать имя вовсе.
+						[ "$_usame" = 1 ] && [ "$(printf '%s' "$_ud ($_un)" | wc -c)" -le 240 ] && _ud="$_ud ($_un)"
+					fi
+					_uo=$(sh "$ENODIA_DIR/cfg-names.sh" set "$kind" "$name" "$_ud" 2>&1) \
+						|| _uw=$(printf '%s' "$_uo" | tail -n 1 | sed 's/^\[cfg-names\] //' | jesc 160)
+				elif [ "$_unew" = 1 ]; then
+					sh "$ENODIA_DIR/cfg-names.sh" del "$kind" "$name" >/dev/null 2>&1
+				fi
+			fi
+			_unote=$(printf '%s' "$_unote" | jesc 600)
+			if [ -n "$_uw" ]; then
+				printf '{"ok":true,"code":0,"name":"%s","msg":"Конфиг %s сохранён (%s), но имя не записано: %s"}\n' "$name" "$name" "$kind" "$_uw"
+			else
+				printf '{"ok":true,"code":0,"name":"%s","msg":"Конфиг %s сохранён (%s) — активируйте в списке серверов%s"}\n' "$name" "$name" "$kind" "$_unote"
+			fi
 		else
-			rm -f "$dst.new" 2>/dev/null
+			rm -f "$_utmp" 2>/dev/null
+			# Имя заняли пустышкой и не записали — пустышку снять, иначе в списке висел бы пустой конфиг.
+			[ "$_unew" = 1 ] && [ -n "$_ub" ] && [ ! -s "$dst" ] && rm -f "$dst" 2>/dev/null
 			fail "не удалось записать файл"
 		fi
 		exit 0 ;;

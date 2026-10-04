@@ -359,11 +359,14 @@
   /* ЭЛЕМЕНТ УПРАВЛЕНИЯ НЕ ВЫДЕЛЯЕТСЯ КАК ТЕКСТ. Два быстрых касания соседних пунктов нижней навигации (а ещё сегментов, вкладок,
      чипов) телефон читал как двойное касание и выделял слово с ручками, как перед копированием; долгое нажатие — то же плюс
      меню «Копировать» на iOS (жалоба 02.10.2026). Сетка — та же, что у руки выше: по РОЛИ, а роли элементам управления панель
-     ставит сама (`wireSeg`, `wireNavKeys`, `mkHelp`). Строки с ДАННЫМИ (`.lrow`: адреса, домены, имена) роли не несут и
-     остаются выделяемыми — их копируют долгим нажатием. `touch-action:manipulation` — двойное касание не жест масштаба, а два
-     нажатия. Специфичность нулевая (`:where`), явное правило компонента перебьёт. Поля ввода не задеты: они не кнопки. */
+     ставит сама (`wireSeg`, `wireNavKeys`, `mkHelp`). `touch-action:manipulation` — двойное касание не жест масштаба, а два
+     нажатия. Специфичность нулевая (`:where`), явное правило компонента перебьёт. Поля ввода не задеты: они не кнопки.
+     СТРОКИ С ДАННЫМИ (`.lrow`: имя и адрес устройства, SSID, домены, события) — ВЫДЕЛЯЕМЫ, хотя кликабельные несут role=button
+     (`lrowGo`, ~50 мест): их копируют долгим нажатием на телефоне и мышью на ПК (ревью с.95 — первая редакция этого не знала и
+     гасила «Копировать» у IP устройства). Им — только `touch-action`; кнопки ВНУТРИ строки ловит правило выше по своей роли. */
   :where(button,[role=button],[role=tab],[role=switch],[role=checkbox],[role=radio],[role=menuitem],[role=option],[data-go],summary){
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
+  :where(.lrow){-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
   .btn-link{font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg-primary);
             border:.5px solid var(--border-s);border-radius:var(--r-md);padding:7px 14px;cursor:pointer;
             text-decoration:none;display:inline-flex;align-items:center;gap:6px}

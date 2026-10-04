@@ -182,7 +182,7 @@ tls_orphans() {   # pid терминаторов panel-tls на нашем ад�
 	for _tpf in $(grep -l "[p]anel-tls" /proc/[0-9]*/cmdline 2>/dev/null); do   # argv0: ищем САМУ программу (argv[0] — путь panel-tls); busybox grep видит его до первого NUL (C115)
 		_tpp=${_tpf#/proc/}; _tpp=${_tpp%/cmdline}
 		[ "$_tpp" = "$_tpo" ] && continue
-		tr '\000' ' ' < "$_tpf" 2>/dev/null | grep -q -- "-l $LISTEN:" && echo "$_tpp"
+		tr '\000' ' ' 2>/dev/null < "$_tpf" | grep -q -- "-l $LISTEN:" && echo "$_tpp"
 	done
 }
 tls_orphan_on() {   # $1 — порт: его держит наш сирота?
@@ -615,7 +615,7 @@ setpass() {
 # uhttpd поднят ещё с Basic? ` -c ` в его cmdline (NUL-разделённой).
 basic_running() {
 	is_running || return 1
-	tr '\0' ' ' < "/proc/$(cat "$PIDFILE" 2>/dev/null)/cmdline" 2>/dev/null | grep -q ' -c '
+	tr '\0' ' ' 2>/dev/null < "/proc/$(cat "$PIDFILE" 2>/dev/null)/cmdline" | grep -q ' -c '
 }
 
 # ПОЧЕМУ панель не поднялась. `start-stop-daemon -b` заворачивает stdio демона в /dev/null

@@ -145,7 +145,10 @@ slot_hev_down() {   # $1 = id
     start-stop-daemon -K -p "$(slot_hev_pid "$_id")" 2>/dev/null
     # -K возвращается ДО смерти (daemon-lib.sh daemon_wait_gone): перезапуск на месте (slot_hev_path_check) стартовал бы новый hev
     # на то же имя xtunN, пока старый его ещё держит. Нет библиотеки — прежний путь.
-    command -v daemon_wait_gone >/dev/null 2>&1 && daemon_wait_gone "$_hdp" 5
+    # …и TERM не услышан — KILL (новый hev на то же имя рядом с сиротой: ревью с.93, круг 3).
+    if command -v daemon_wait_gone >/dev/null 2>&1 && [ -n "$_hdp" ] && ! daemon_wait_gone "$_hdp" 5; then
+        { ! command -v pid_runs >/dev/null 2>&1 || pid_runs "$_hdp" hev; } && { kill -9 "$_hdp" 2>/dev/null; daemon_wait_gone "$_hdp" 3; }
+    fi
     _i=0
     while ip link show "$_tun" >/dev/null 2>&1 && [ "$_i" -lt 6 ]; do
         ip link del "$_tun" 2>/dev/null
@@ -198,10 +201,10 @@ HEV_WERR_MIN=5          # строк `socks5 tunnel write` на 2 минуты (
 HEV_WERR_WINDOWS=2      # окон подряд: одиночная пачка (обрыв на сервере, пересоздание TUN) лечения не стоит
 HEV_RESTART_GAP=1800    # с: перезапуск — не чаще; не помог — повтор каждые 4 минуты лишь рвал бы соединения дома
 HEV_SWLOCK=${SWITCH_LOCK:-/tmp/enodia-switching.lock}
-command -v age_since >/dev/null 2>&1 || age_since() {
-    case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
-    [ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
-}
+# Отметки hev живут ТОЛЬКО в /tmp ⇒ это АПТАЙМ, не эпоха (clock-lib.sh::up_age, ревью с.93, круг 3: перенос часов их не видит, и после
+# скачка часов «перезапускали недавно» и «путь мёртв» держались бы часами). Нет библиотеки — «давно»: перезапуск будет.
+command -v uptime_s >/dev/null 2>&1 || uptime_s() { _cl_u=$(awk '{print int($1)}' /proc/uptime 2>/dev/null); case "$_cl_u" in ''|*[!0-9]*) _cl_u=999999999 ;; esac; echo "$_cl_u"; }
+command -v up_age >/dev/null 2>&1 || up_age() { echo 999999; }
 
 # hev_tun_ok <TUN> — проходит ли запрос путём клиента (через TUN, то есть через hev). Критерий ОБЯЗАН совпадать с socks-пробой
 # плагина: судим по разнице «socks — да, TUN — нет», и более строгая проба через TUN сама рождала бы залипание из ничего (ревью с.93:
@@ -210,7 +213,7 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 hev_tun_ok() { [ -n "$(probe_ext_ip "--interface $1" 8)" ]; }
 
 # hev_write_flood <лог hev> <метка: main | s<N>> — 0 и описание в stdout, если hev сыплет ошибками записи HEV_WERR_WINDOWS окон
-# подряд; 1 — нет (или судить пока нечем). Состояние «<байт прочитано> <отметка> <окон подряд>» — в /tmp/enodia-hev-werr.<метка>:
+# подряд; 1 — нет (или судить пока нечем). Состояние «<байт прочитано> <отметка аптайма> <окон подряд>» — в /tmp/enodia-hev-werr.<метка>:
 # считаем только НОВЫЕ строки, а лог hev в ОЗУ и не ротируется (у тестера рос 9 дней). Окно короче минуты не судим (health сторож
 # зовёт и повторно в том же тике), а копим до следующего вызова; длинное приводим к двум минутам.
 hev_write_flood() {
@@ -218,14 +221,14 @@ hev_write_flood() {
     _hwz=$(wc -c < "$_hwl" 2>/dev/null | tr -d ' '); case "$_hwz" in ''|*[!0-9]*) _hwz=0 ;; esac
     _hwst=$(cat "$_hws" 2>/dev/null)
     _hwo=$(printf '%s' "$_hwst" | cut -d' ' -f1); _hwt=$(printf '%s' "$_hwst" | cut -d' ' -f2); _hwk=$(printf '%s' "$_hwst" | cut -d' ' -f3)
-    case "$_hwo$_hwt$_hwk" in ''|*[!0-9]*) echo "$_hwz $(date +%s) 0" > "$_hws"; return 1 ;; esac   # первый вызов или битая запись
-    _hwa=$(age_since "$_hwt")
+    case "$_hwo$_hwt$_hwk" in ''|*[!0-9]*) echo "$_hwz $(uptime_s) 0" > "$_hws"; return 1 ;; esac   # первый вызов или битая запись
+    _hwa=$(up_age "$_hwt")
     [ "$_hwa" -lt 60 ] && return 1
     [ "$_hwz" -lt "$_hwo" ] && _hwo=0                                   # лог начат заново (перезапуск — hev_log_trim)
     _hwn=$(tail -c +$((_hwo + 1)) "$_hwl" 2>/dev/null | grep -c 'socks5 tunnel write' || true)
     case "$_hwn" in ''|*[!0-9]*) _hwn=0 ;; esac
     if [ $(( _hwn * 120 / _hwa )) -ge "$HEV_WERR_MIN" ]; then _hwk=$((_hwk + 1)); else _hwk=0; fi
-    echo "$_hwz $(date +%s) $_hwk" > "$_hws"
+    echo "$_hwz $(uptime_s) $_hwk" > "$_hws"
     [ "$_hwk" -ge "$HEV_WERR_WINDOWS" ] || return 1
     echo "$_hwn строк «socks5 tunnel write» за ${_hwa} с, $_hwk-е окно подряд"
 }
@@ -233,18 +236,18 @@ hev_write_flood() {
 # Перезапускали ли hev этой метки меньше HEV_RESTART_GAP назад.
 hev_restart_recent() {
     _hrc=$(cat "/tmp/enodia-hev-restart.$1" 2>/dev/null | tr -d ' \r\n')
-    [ -n "$_hrc" ] && [ "$(age_since "$_hrc")" -lt "$HEV_RESTART_GAP" ]
+    [ -n "$_hrc" ] && [ "$(up_age "$_hrc")" -lt "$HEV_RESTART_GAP" ]
 }
 # ПУТЬ МЁРТВ, И ПЕРЕЗАПУСК hev НЕ ПОМОГ — отметка для ПЕРЕБОРА РЕЗЕРВОВ плагина (ревью с.93, круг 2). health в этом случае отвечает
 # «нездоров», сторож зовёт failover, а тот первой строкой спрашивает тот же health БЕЗ проверки пути (HEV_CHECK — только у тика),
 # socks-проба проходит, и перебор отвечал «уже здоров»: лестница крутилась HEALTHY↔SUSPECT, не доходя до cross и прямого режима,
 # а трафик всё это время лил в залипший hev. Путь от сервера не зависит — сменой сервера его не вылечить, поэтому failover при
 # отметке отказывает сразу. Живёт столько же, сколько пауза перезапуска; путь ожил — снимается.
-hev_dead_mark()  { date +%s > "/tmp/enodia-hev-dead.$1"; }
+hev_dead_mark()  { uptime_s > "/tmp/enodia-hev-dead.$1"; }
 hev_dead_clear() { rm -f "/tmp/enodia-hev-dead.$1" 2>/dev/null; return 0; }
 hev_path_dead()  {
     _hdd=$(cat "/tmp/enodia-hev-dead.$1" 2>/dev/null | tr -d ' \r\n')
-    [ -n "$_hdd" ] && [ "$(age_since "$_hdd")" -lt "$HEV_RESTART_GAP" ]
+    [ -n "$_hdd" ] && [ "$(up_age "$_hdd")" -lt "$HEV_RESTART_GAP" ]
 }
 
 # hev_stuck <TUN> <лог hev> <метка> — причина в stdout и код: 0 — залип, перезапускать; 1 — здоров (или лечить сейчас нечем);
@@ -275,7 +278,7 @@ hev_log_trim() { tail -n 20 "$1" > "$1.trim" 2>/dev/null && mv -f "$1.trim" "$1"
 
 # Перезапуск состоялся: отметка для HEV_RESTART_GAP, счёт окон заново, событие в журнал. $1 метка · $2 причина · $3 ok|fail.
 hev_restart_note() {
-    date +%s > "/tmp/enodia-hev-restart.$1"
+    uptime_s > "/tmp/enodia-hev-restart.$1"
     rm -f "/tmp/enodia-hev-werr.$1" 2>/dev/null
     _hrn=$ENODIA_DIR/notify-event.sh
     [ -f "$_hrn" ] || return 0
@@ -315,7 +318,11 @@ hev_path_check() {   # $1 = функция маршрута плагина
     log "health: $_hpw — hev залип → перезапускаю hev на месте"
     _hpp=$(cat "$HEV_PID" 2>/dev/null | tr -d ' \r\n')
     start-stop-daemon -K -p "$HEV_PID" >/dev/null 2>&1      # -K пишет в stdout — health читают и CGI
-    command -v daemon_wait_gone >/dev/null 2>&1 && daemon_wait_gone "$_hpp" 5
+    # TERM не услышан за 5 с — добиваем KILL: пидфайл ниже удаляется, и `start_daemons` поднял бы ВТОРОЙ hev рядом с сиротой (ревью с.93).
+    if command -v daemon_wait_gone >/dev/null 2>&1 && [ -n "$_hpp" ] && ! daemon_wait_gone "$_hpp" 5; then
+        # KILL — только СВОЕМУ hev: пидфайл мог протухнуть, и номер уже у чужого процесса (ревью с.96, круг 2).
+        { ! command -v pid_runs >/dev/null 2>&1 || pid_runs "$_hpp" hev; } && { kill -9 "$_hpp" 2>/dev/null; daemon_wait_gone "$_hpp" 3; }
+    fi
     hev_log_trim "$HEV_LOG"
     ip link del "$TUN" 2>/dev/null; rm -f "$HEV_PID" 2>/dev/null
     _hpo=fail
@@ -336,7 +343,8 @@ hev_path_check() {   # $1 = функция маршрута плагина
 # Берёт несущую ⇒ верб slot-health у плагина — под carrier_run (C116). Зовут ТОЛЬКО после прошедшей socks-пробы выхода.
 # Коды: 0 — путь жив (или ожил) · 5 — путь мёртв, а перезапуск hev не помог (сейчас или недавно): сервер ЖИВ, и это не «сервер не
 # отвечает», а переподъём выхода каждые две минуты лишь рвал бы соединения дома ⇒ сторож снимает выход и ждёт с растущей паузой
-# (ревью с.93, круг 2: прежний код 1 вёл к «не отвечает» и паре slot-up/slot-down на каждом тике).
+# (ревью с.93, круг 2: прежний код 1 вёл к «не отвечает» и паре slot-up/slot-down на каждом тике) · 4 — путь мёртв, но лечить нельзя:
+# идёт смена транспорта (лок) — «не судили», выход сторож не трогает.
 slot_hev_path_check() {   # $1 = id
     _shid="$1"; _shtun=$(slot_tun "$_shid")
     _shw=$(hev_stuck "$_shtun" "$(slot_hev_log "$_shid")" "s$_shid"); _shr=$?
@@ -345,7 +353,9 @@ slot_hev_path_check() {   # $1 = id
         2) log "слот №$_shid health: $_shw — hev выхода перезапускали меньше $((HEV_RESTART_GAP / 60)) мин назад, а путь снова мёртв: не трогаю"
            return 5 ;;
     esac
-    hev_lock_take || { log "слот №$_shid health: $_shw — но идёт смена транспорта (лок): hev выхода не трогаю"; return 0; }
+    # Лок занят — путь МЁРТВ, но лечить сейчас нельзя: это не «жив» (код 0 сторож читал возвратом и слал «снова работает» при
+    # мёртвом пути — ревью с.93, круг 3), а «не судили» — код 4: сторож выход не трогает и вердикта не пишет, следующий тик спросит снова.
+    hev_lock_take || { log "слот №$_shid health: $_shw — но идёт смена транспорта (лок): hev выхода не трогаю, вердикт — следующим тиком"; return 4; }
     log "слот №$_shid health: $_shw — hev залип → перезапускаю hev выхода на месте"
     slot_hev_down "$_shid"
     hev_log_trim "$(slot_hev_log "$_shid")"

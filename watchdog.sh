@@ -95,6 +95,11 @@ command -v probe_ext_ip >/dev/null 2>&1 || probe_ext_ip() { curl -s $1 --max-tim
 # все троттлы разом «протухают». Шим повторяет ПРЕЖНЕЕ поведение (частичная установка без lib —
 # не хуже, чем было), но полноценная защита живёт в самой lib. [[watchdog-clock-step-false-death]]
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
+# «Ведёт ли кто-то смену» (daemon-lib.sh::switch_work_alive) — для лока смены с мёртвым пидом (switch_lock_held ниже). Нет библиотеки —
+# прежнее «мёртвый пид = лок ничей».
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v switch_work_alive >/dev/null 2>&1 || switch_work_alive() { return 1; }
+command -v switch_holder_mark >/dev/null 2>&1 || switch_holder_mark() { ENODIA_SWITCH_HOLDER=$$; export ENODIA_SWITCH_HOLDER; }
 # Секунд с загрузки — оттуда же (uptime_s): своя копия `cut -d. -f1 /proc/uptime` жила тут под
 # именем uptime_secs и была одной из ПЯТИ в проекте (следит C83). Смысл прежний: монотоника ядра,
 # а не date (RTC нет); не прочитали — заведомо большое, то есть грейс не срабатывает, как и раньше.
@@ -109,6 +114,9 @@ command -v age_since >/dev/null 2>&1 || age_since() {
     case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
     [ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
+# Возраст отметки АПТАЙМА (clock-lib.sh::up_age) — у пауз, живущих только в /tmp. Нет библиотеки — «давно»: пауза кончилась, попытка
+# будет (лишняя проба лучше выхода, лежащего до ручного включения).
+command -v up_age >/dev/null 2>&1 || up_age() { echo 999999; }
 
 # Слой шифрованного DNS (doh-lib.sh): keepalive демона https_dns_proxy (ниже, после лока). Шим —
 # без lib doh_want=false ⇒ keepalive no-op. [[doh-direct-modes-backlog]]
@@ -633,7 +641,8 @@ slot_back_event() {   # $1=id $2=cfg — выход прошёл проверк�
 # разбор в transport-awg.sh cmd_slot_probe) БЕЗ перепроводки: неудачная попытка соединений дома не сбрасывает, поэтому пробуем
 # сразу со следующего тика, а пауза растёт вдвое до потолка — лежащий долго сервер не стоит демона и 15 с тика каждые 2 минуты.
 # Состояние — `<отметка> <пауза>` в $SLOT_RETRY.<id>: отметка ставится и при снятии (первая попытка — через SLOT_RETRY_FIRST),
-# возраст — через age_since (скачок часов иначе растянул бы паузу на годы или обнулил её). Сроки обещает письмо о падении
+# отметка — АПТАЙМ (uptime_s), возраст — up_age: часы роутера прыгают, а отметку в /tmp перенос часов не видит (clock-lib.sh, разбор
+# у up_age — ревью с.93, круг 3: после скачка на сутки пауза «не кончалась» сутки). Сроки обещает письмо о падении
 # (slot_fail_event) — правишь числа, правь и текст. «Сервер не ответил» — повод объявить эпизод (раз на эпизод: отметка
 # SLOT_DOWN): прежде выход, снятый в окне бута, письма не получал вовсе — отложенный вердикт не доходил ни до какого тика.
 SLOT_RETRY=/tmp/enodia-slot-retry
@@ -642,14 +651,14 @@ SLOT_RETRY_MAX=1800
 # Пауза — «<отметка> <пауза, с> <транспорт>»: у выхода сменили транспорт — чужая пауза новому не мешает (её и снимает slot_retry_wait).
 # Ею пользуются ДВА случая: возврат снятого AmneziaWG-выхода (slot_awg_return) и выход xray/hy2/byedpi с мёртвым путём через hev
 # (slot_hevpath_down) — оба про то, что переподъём каждые 2 минуты платил бы сбросом соединений дома, ничего не меняя.
-slot_retry_arm() { echo "$(date +%s) ${2:-$SLOT_RETRY_FIRST} ${3:-}" > "$SLOT_RETRY.$1"; }   # $1 = id ; $2 = пауза, с ; $3 = транспорт
+slot_retry_arm() { echo "$(uptime_s) ${2:-$SLOT_RETRY_FIRST} ${3:-}" > "$SLOT_RETRY.$1"; }   # $1 = id ; $2 = пауза, с ; $3 = транспорт
 # 0 — пауза ещё идёт. Запас 30 с: тики идут через 2 минуты с дрожанием, и пауза «120» без него пропускала бы целый тик.
 slot_retry_wait() {   # $1 = id ; $2 = транспорт выхода. Разобранную паузу оставляет в _srti (её берёт slot_retry_next).
     _srt=$(cat "$SLOT_RETRY.$1" 2>/dev/null)
     _srts=$(printf '%s' "$_srt" | cut -d' ' -f1); _srti=$(printf '%s' "$_srt" | cut -d' ' -f2); _srtt=$(printf '%s' "$_srt" | cut -d' ' -f3)
     case "$_srti" in ''|*[!0-9]*) _srti=0 ;; esac
     if [ -n "$_srtt" ] && [ "$_srtt" != "$2" ]; then rm -f "$SLOT_RETRY.$1"; _srti=0; return 1; fi
-    [ "$_srti" -gt 0 ] && [ $(( $(age_since "$_srts") + 30 )) -lt "$_srti" ]
+    [ "$_srti" -gt 0 ] && [ $(( $(up_age "$_srts") + 30 )) -lt "$_srti" ]
 }
 slot_retry_next() {   # $1 = id ; $2 = транспорт — следующая пауза: вдвое от прежней (первая — SLOT_RETRY_FIRST), до потолка
     slot_retry_wait "$1" "$2"
@@ -751,7 +760,9 @@ slot_health_sweep() {
             # основного byedpi (ciadpi известно самовыключается).
             # Выход снят из-за мёртвого пути через hev (slot_hevpath_down) — до конца паузы не поднимаем: каждый подъём со сбросом
             # соединений дома, а hev, который не вылечил перезапуск, следующий тик не вылечит тоже.
-            slot_retry_wait "$sid" "$st" && continue
+            # Пауза — только пока несущей выхода НЕТ: выход, который за это время подняла панель (включила, сменила сервер), судим
+            # сразу, иначе он до 30 минут жил бы без присмотра (ревью с.96, круг 2).
+            slot_retry_wait "$sid" "$st" && ! ip link show "xtun$sid" >/dev/null 2>&1 && continue
             _rc=2
             [ -f "$TRANSPORT_SH" ] && { sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?; }
             if [ "$_rc" = 0 ]; then
@@ -761,6 +772,8 @@ slot_health_sweep() {
             elif [ "$_rc" = 5 ]; then
                 slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"   # сервер жив, путь через hev мёртв — не переподнимаем по кругу
                 continue
+            elif [ "$_rc" = 4 ]; then
+                continue                             # путь через hev мёртв, но идёт смена транспорта — не судили, следующий тик спросит
             elif [ "$_rc" = 2 ]; then
                 _bp=$(cat "/tmp/enodia-byedpi-s$sid.pid" 2>/dev/null | tr -d ' \r\n')
                 if [ -n "$_bp" ] && kill -0 "$_bp" 2>/dev/null && ip link show "xtun$sid" >/dev/null 2>&1; then
@@ -769,8 +782,19 @@ slot_health_sweep() {
                 fi
             fi
             log "slot-health: byedpi-выход №$sid просел (ciadpi/tun/egress) -> переподнимаю на месте"
+            # Переподъём — ещё не вердикт, и проверяем его СРАЗУ, как у xray/hy2 ниже (ревью с.93, круг 3): выход, снятый из-за
+            # мёртвого пути через hev, после паузы поднимается сюда же — и без пробы маршрут 100N вёл бы в тот же мёртвый hev до
+            # следующего тика, а каждый цикл паузы стоил бы двух сбросов соединений дома.
+            _rc=1
             if [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1; then
+                _rc=2; sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?
+            fi
+            # 2 — плагин старой версии: подъём удался, судить пробой нечем (как раньше); 4 — путь через hev судить сейчас нельзя (смена транспорта)
+            if [ "$_rc" = 0 ] || [ "$_rc" = 2 ] || [ "$_rc" = 4 ]; then
                 log "slot-health: byedpi-выход №$sid переподнят"
+                if [ "$_rc" = 0 ]; then rm -f "$SLOT_RETRY.$sid"; slot_back_event "$sid" "$scfg"; fi
+            elif [ "$_rc" = 5 ]; then
+                slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"
             elif slot_boot_window; then
                 log "slot-health: byedpi-выход №$sid не поднялся, но идёт бут — вердикт откладываю до тика после грейса"
             else
@@ -788,11 +812,12 @@ slot_health_sweep() {
             # случай: демон упал/socks умолк), не вышло -> гасим -> fallback-политика.
             # Перебора РЕЗЕРВОВ у слота нет by design (v1, дизайн §«Отказ слота»).
             [ -f "$TRANSPORT_SH" ] || continue
-            slot_retry_wait "$sid" "$st" && continue    # снят из-за мёртвого пути через hev — ждём паузу (как у byedpi выше)
+            slot_retry_wait "$sid" "$st" && ! ip link show "xtun$sid" >/dev/null 2>&1 && continue    # снят из-за мёртвого пути через hev — ждём паузу, пока его не подняли (как у byedpi выше)
             sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?
             [ "$_rc" = 0 ] && { rm -f "$SLOT_RETRY.$sid"; slot_back_event "$sid" "$scfg"; continue; }   # выход жив
             [ "$_rc" = 2 ] && continue                  # плагин старой версии (дрейф деплоя) — судить не по чем, не трогаем
             [ "$_rc" = 5 ] && { slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"; continue; }   # сервер жив, путь через hev мёртв
+            [ "$_rc" = 4 ] && continue                  # путь через hev мёртв, но идёт смена транспорта — не судили (ни «жив», ни «упал»)
             log "slot-health: $st-выход №$sid ($scfg) не отвечает -> переподнимаю на месте"
             _rc=1
             if sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1; then sh "$TRANSPORT_SH" slot-health "$sid" >>"$LOG" 2>&1; _rc=$?; fi
@@ -800,6 +825,8 @@ slot_health_sweep() {
                 log "slot-health: $st-выход №$sid переподнят"
                 rm -f "$SLOT_RETRY.$sid"
                 slot_back_event "$sid" "$scfg"          # подъём + проба прошли — это уже вердикт
+            elif [ "$_rc" = 4 ]; then
+                log "slot-health: $st-выход №$sid переподнят; путь клиентов через hev судить сейчас нельзя (смена транспорта) — следующим тиком"
             elif [ "$_rc" = 5 ]; then
                 slot_hevpath_down "$sid" "$scfg" "$sfb" "$st"
             elif slot_boot_window; then
@@ -1021,7 +1048,8 @@ tsw() {
 # Лок занят — ручная смена идёт сейчас, и она побеждает: тик уходит.
 WD_SWL=0
 wd_switch_take() {   # $1 — что собирались делать (в лог)
-    if ( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null; then WD_SWL=1; return 0; fi
+    # Метка держателя — потомкам (подъём несущей): тик унесут `kill -9`, а их работу лок обязан держать дальше (daemon-lib.sh).
+    if ( set -C; echo $$ > "$SWITCH_LOCK" ) 2>/dev/null; then WD_SWL=1; switch_holder_mark; return 0; fi
     log "идёт смена транспорта (лок) — $1 не делаю, тик дальше не ведёт"
     finish
 }
@@ -1768,7 +1796,7 @@ cross_awg_to_other() {
     _xaw=1; _xafl=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
     [ "$_xafl" = "$other" ] || _xaw=0
     [ "$_xsc" = 0 ] || _xaw=0
-    if [ "$_xaw" = 1 ] && { sh "$TRANSPORT_SH" health "$other" >/dev/null 2>&1 || sh "$TRANSPORT_SH" failover "$other" >>"$LOG" 2>&1; }; then
+    if [ "$_xaw" = 1 ] && { HEV_CHECK=1 sh "$TRANSPORT_SH" health "$other" >>"$LOG" 2>&1 || sh "$TRANSPORT_SH" failover "$other" >>"$LOG" 2>&1; }; then
         off_bail "перебора резервов $other"
         echo NORMAL > "$STATE"; echo HEALTHY > "$XSTATE"
         ip=$(ext_ip)
@@ -1867,10 +1895,12 @@ SWITCH_STALE=${SWITCH_STALE:-1800}      # дольше этого не длит�
 # ДЕРЖАТЕЛЬ С ПИДОМ ВНУТРИ (сторож — wd_switch_take, панель — hold_switch, с 02.10.2026) судится ещё и по ЖИЗНИ: CGI, у которого
 # закрыли вкладку, uhttpd бьёт SIGKILL, ловушка молчит — и лок мёртвого держателя выключал сторожа на SWITCH_STALE (30 мин) без
 # единой починки. Мёртв ⇒ не держит; жив — дальше прежний потолок по возрасту (зависший живой держатель тоже не вечен).
+# …НО СМЕНУ CGI ВЕДЁТ ЕГО ПОТОМОК, и SIGKILL от uhttpd его не трогает (ревью с.96, круг 2): пид мёртв, а оркестратор или switch-vpn
+# ещё работают — лок держит ИХ смену, и снять его значило бы вести лестницу поверх неё.
 switch_lock_held() {
     [ -e "$SWITCH_LOCK" ] || return 1
     _slp=$(cat "$SWITCH_LOCK" 2>/dev/null | tr -cd '0-9')
-    case "$_slp" in ''|*[!0-9]*) ;; *) [ -d "/proc/$_slp" ] || return 1 ;; esac
+    case "$_slp" in ''|*[!0-9]*) ;; *) [ -d "/proc/$_slp" ] || switch_work_alive "$_slp" || return 1 ;; esac
     _slm=$(date -r "$SWITCH_LOCK" +%s 2>/dev/null)
     case "$_slm" in ''|*[!0-9]*) return 0 ;; esac
     [ "$(age_since "$_slm")" -lt "$SWITCH_STALE" ]
@@ -2386,8 +2416,10 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
     TLABEL=$(transport_label "$TRANSPORT")
     xcur=HEALTHY; [ -f "$XSTATE" ] && xcur=$(cat "$XSTATE")
 
-    # HEV_CHECK=1 — путь клиентов через hev судит ТОЛЬКО этот, главный health тика (slot-tun-lib.sh::hev_path_check): тот же health
-    # проверяет кандидатов перебора и прогрев, и залипший путь там стоил бы перезапуска hev и сброса соединений на каждом конфиге.
+    # HEV_CHECK=1 — путь клиентов через hev судит главный health тика (slot-tun-lib.sh::hev_path_check) и ПРОВЕРКИ ТИКА «встали /
+    # вернулись» (cross, возврат домой, откат на прежний): тот же health проверяет кандидатов перебора и прогрев, и залипший путь
+    # там стоил бы перезапуска hev и сброса соединений на каждом конфиге. А проверка ПЕРЕХОДА без пути (ревью с.93, круг 3) читала
+    # транспорт с мёртвым hev «вернувшимся»: возврат домой → через тик снова «упал» → cross — пара писем каждые 20 минут.
     if HEV_CHECK=1 sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
         # ВИДЕЛИ СВОИМИ ГЛАЗАМИ: несущая этого транспорта в эту загрузку везёт. Дальше провал
         # health читается как ПАДЕНИЕ, а не как «её ещё не поднимали» (см. carrier_seen).
@@ -2614,7 +2646,7 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
                     # возврата домой. Везёт ⇒ несущую оставляем, а HEALTHY/NORMAL и починку правил запишет здоровая ветка
                     # следующего тика — у перехода ОДИН владелец (объявленное отставание вердикта — один тик).
                     if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = "$TRANSPORT" ] \
-                       && sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
+                       && HEV_CHECK=1 sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
                         log "$TRANSPORT режим=off: AmneziaWG не поднялся, но сам $TRANSPORT снова везёт — остаёмся на нём"
                         revived_event "$(transport_label awg)"
                         finish
@@ -2725,12 +2757,12 @@ $_fb_tru"
         tsw "$other" || _xsw=0   # релинквиш tunnel + подъём несущей $other (switch уже записал .transport)
         _xfl=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
         [ "$_xfl" = "$other" ] || _xsw=0
-        if [ "$_xsw" = 0 ] && [ "$_xfl" = "$TRANSPORT" ] && sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
+        if [ "$_xsw" = 0 ] && [ "$_xfl" = "$TRANSPORT" ] && HEV_CHECK=1 sh "$TRANSPORT_SH" health "$TRANSPORT" >>"$LOG" 2>&1; then
             # Откат вернул прежний туннель, и его VPS за это время ожил — остаёмся, как в «Выкл»: HEALTHY/NORMAL и починку правил
             # запишет здоровая ветка следующего тика (у перехода один владелец; отставание вердикта — один тик).
             log "cross: $other не поднялся, но сам $TRANSPORT снова везёт — остаёмся на нём"
             revived_event "$(transport_label "$other")"
-        elif [ "$_xsw" = 1 ] && sh "$TRANSPORT_SH" health "$other" >/dev/null 2>&1; then
+        elif [ "$_xsw" = 1 ] && HEV_CHECK=1 sh "$TRANSPORT_SH" health "$other" >>"$LOG" 2>&1; then
             # Несущая $other поднята; здоровье — через контракт плагина. Жив → остаёмся.
             echo "NORMAL" > "$STATE"; echo HEALTHY > "$XSTATE"
             log "cross: $other жив — остаёмся на нём"
@@ -3341,7 +3373,7 @@ External IP: ${ip:-unknown}."
             _fb_ok=1
             tsw "$home_t" || _fb_ok=0   # оркестратор: релинквиш awg + mark-core + подъём $home_t
             [ "$_fb_ok" = 1 ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = "$home_t" ] || _fb_ok=0
-            if [ "$_fb_ok" = 1 ] && sh "$TRANSPORT_SH" health "$home_t" >/dev/null 2>&1; then
+            if [ "$_fb_ok" = 1 ] && HEV_CHECK=1 sh "$TRANSPORT_SH" health "$home_t" >>"$LOG" 2>&1; then
                 echo HEALTHY > "$XSTATE"; log "home-transport: вернулись на $home_lbl"
                 failback_event transport "$home_lbl"
             else

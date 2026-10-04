@@ -441,6 +441,9 @@ cmd_up() {
     # Сброс watchdog-состояния: ручная смена транспорта = новый «эпизод» для авто-failover.
     rm -f /tmp/enodia-watchdog.xstate /tmp/enodia-failover-episode 2>/dev/null
     carrier_up_mark         # грейс сторожу: демоны стартовали, но egress поднимается ещё секунды (clock-lib.sh)
+    # Отметка «путь через hev мёртв» (slot-tun-lib.sh) — про ПРЕЖНЮЮ несущую: она общая на xray/hy2/byedpi, и без снятия до получаса
+    # отказывала бы перебору только что поднятого транспорта (ревью с.93, круг 3). Свежий путь судит следующий health тика.
+    if command -v hev_dead_clear >/dev/null 2>&1; then hev_dead_clear main; fi
     ct_flush
     log "транспорт = HYSTERIA2 (default table $TABLE -> $TUN). Общие правила сохранены."
     cmd_status
@@ -454,7 +457,7 @@ cmd_down() {
     iptables -D FORWARD -o "$TUN" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$TUN" -j ACCEPT 2>/dev/null
     ip route flush table "$TABLE" 2>/dev/null || true
-    seed_host_clear "$SEED_CONF"           # снять сид server-host — ОБЕ копии, /etc и живую /tmp (set_direct_dns ниже рестартит dnsmasq)
+    seed_host_clear "$SEED_CONF"           # снять сид server-host — ОБЕ копии, /etc и живую /tmp; снятое отмечено ⇒ set_direct_dns ниже перезапустит dnsmasq и при том же upstream
     set_direct_dns
     rm -f /tmp/enodia-watchdog.xstate /tmp/enodia-failover-episode 2>/dev/null
     ct_flush
@@ -590,6 +593,7 @@ cmd_slot_down() {   # $1 = id
     rm -f "$(slot_hev_yaml "$_id")" "$(slot_conf "$_id")" 2>/dev/null
     if seed_host_clear "$(slot_seed "$_id")"; then  # ОБЕ копии; HUP конфиг НЕ перечитывает — нужен рестарт
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || killall -HUP dnsmasq 2>/dev/null
+        rm -f "${DNS_RELOAD_MARK:-/tmp/enodia-dns-reload}" 2>/dev/null   # перезапустили сами — отметка снятого сида исполнена
     fi
     ct_flush
     log "слот №$_id: hy2-несущая снята"

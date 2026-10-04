@@ -312,7 +312,8 @@ fi
 # Конфиг, добавленный руками (vpn://, файл, ссылка): настоящее имя — у cfg-names.sh («Interra 🇩🇪 justhost» вместо файла
 # Interra-DE-justhost). Спрашиваем ВЛАДЕЛЬЦА, ключ — вид и файл; не знает — остаётся то, что было.
 case "$t" in awg|xray|hy2)
-	if [ -n "$cfg_file" ] && [ -f "$D/cfg-names.sh" ]; then
+	# Файла имён нет — и спрашивать некого: status зовут раз в 10 с, а запуск владельца — это разбор ~37 КБ шелла (ревью с.95).
+	if [ -n "$cfg_file" ] && [ -s "$DS/.cfg-names" ] && [ -f "$D/cfg-names.sh" ]; then
 		fr=$(sh "$D/cfg-names.sh" get "$t" "$cfg_file" 2>/dev/null)
 		[ -n "$fr" ] && cfg="$fr"
 	fi ;;
