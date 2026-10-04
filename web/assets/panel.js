@@ -479,7 +479,7 @@
   }
   // СЛОВА ШАПКИ — [заголовок, подпись]. ВИД шапки (класс) решают факты ядра в paint, а СЛОВА — те же
   // факты ПЛЮС вердикт сторожа (`standing` из cgi-bin/status). Отдельной функцией, а не веткой в paint,
-  // потому что её исполняет стенд (local/panel-standing-test.js): половину этих положений глазами не
+  // потому что её исполняет стенд (dev/panel-standing-test.js): половину этих положений глазами не
   // увидеть — загрузка роутера, гистерезис сторожа, старая копия сторожа посреди обновления.
   // c — факты статуса (cur после разбора в paint), d — сам ответ статуса.
   // ПОДПИСЬ ШАПКИ: куски heroWords — узлами (имя — под `.sens`), иначе строкой. Узлы пересоздаём, только когда куски сменились: тик
@@ -922,7 +922,7 @@
     // Минутный таймер ленты чип из старого ответа не вернёт: вердикта в `cur.fo` уже нет. Блок перерисовываем
     // отказом. Прочие чипы ленты остаются как были: число выходов и DNS — не вердикт, а «роутер не ответил» ≠
     // «стало иначе». Строка «Домашний сервер» теряет только хвост сторожа (разбор у foHomeSrvHtml). Проводку
-    // сторожит C102, поведение — local/panel-standing-test.js (живой fail).
+    // сторожит C102, поведение — dev/panel-standing-test.js (живой fail).
     var sbar=document.getElementById('techbar'), schip=sbar && sbar.querySelector('[data-t="standing"]');
     if(schip){
       var snb=(document.activeElement===schip) ? (schip.nextElementSibling||schip.previousElementSibling) : null;
@@ -3495,7 +3495,7 @@
      Своих запросов у экрана нет: сбор начинает кнопка, а «что внутри» — перечень разделов среза (`dump.sh`), то есть свойство
      сборщика, а не ответ роутера. Перечень обязан говорить ПРАВДУ о том, что уходит в чат, включая неудобное (клиенты сети,
      вход в панель, внешний адрес, хвосты логов и в текстовом срезе): каждый раздел `sec` в `main` dump.sh стенд сверяет с
-     этим перечнем (local/panel-rr-test.js) — новый раздел сборщика без строки здесь краснеет. Маскировка эвристическая
+     этим перечнем (dev/panel-rr-test.js) — новый раздел сборщика без строки здесь краснеет. Маскировка эвристическая
      (так её называет и README архива): обещать «можно отправлять» без оговорки нельзя. */
   function openDiag(){
     openModal(null, {route:'rr-diag', deck:true});
@@ -3626,7 +3626,7 @@
     var waitEl=_menuEl;
     fetchJson('/cgi-bin/list').then(function(d){
       if(!_menuEl || _menuEl!==waitEl) return;
-      subNames=d.names||{}; cfgNames=d.cfgnames||{};
+      listNamesTake(d);
       var grp=d[t]||{}, list=grp.servers||[], subs=d.subs||[], canAct=canActivate(grp), items=[];
       // xray с подписками — сотни серверов в попап-меню не влезут: ведём в полноценный список.
       if(t==='xray' && list.length>14){
@@ -3638,7 +3638,7 @@
           // subDisp зовём и для hy2: подписка теперь раскладывает hysteria2-ссылки тоже, и
           // без этого её сервера показывались бы именем ФАЙЛА (sub-tag-…) вместо «🇳🇱 Нидерланды».
           var disp=cfgDisp(t,nm,subs);
-          items.push({label:(grp.active===nm?'● ':'')+disp, data:true, onClick:function(){ if(grp.active!==nm) activateServer(t,nm,canAct); }});
+          items.push({label:(grp.active===nm?'● ':'')+disp, data:true, onClick:function(){ if(grp.active!==nm) activateServer(t,nm,canAct,subs); }});
         });
         if(!list.length) items.push({label:'нет конфигов — добавьте в «Серверы»…', onClick:openServers});
       }
@@ -4726,7 +4726,7 @@
   // человеку — здесь, до запроса.
   function srvRunXray(){ for(var k in _srvRun){ if(_srvRun.hasOwnProperty(k) && k.indexOf('xray|')===0) return true; } return false; }
   function srvRunGate(tpt, name){
-    if(_srvRun[chkKey(tpt,name)]){ showToast('«'+name+'» уже проверяется — дождитесь итога', false); return false; }
+    if(_srvRun[chkKey(tpt,name)]){ showToast('«'+cfgDisp(tpt, name)+'» уже проверяется — дождитесь итога', false); return false; }
     if(tpt==='xray' && srvRunXray()){ showToast('идёт проверка другого сервера Xray — дождитесь итога', false); return false; }
     return true;
   }
@@ -4740,12 +4740,14 @@
     if(engineMissing('xray')) return;
     srvRunSet('xray', name, 'check');
     Array.prototype.forEach.call(pingSpans('xray',name), function(s){ s.textContent='…'; s.style.color='var(--text-tertiary)'; });
-    logLine('→ проверка: '+name, null);
+    // Человеку — НАСТОЯЩЕЕ имя в «…» (данные: под английским кириллица показа в ёлочках строку не держит), роутеру — файл.
+    var dn=cfgDisp('xray', name);
+    logLine('→ проверка: «'+dn+'»', null);
     checkOne('xray', name, null, function(ok, c, r, unknown){
       srvRunSet('xray', name, null);
       // «Роутер не ответил» — не «сервер недоступен»: вердикта нет, и кэш его не пишет (разбор у checkOne).
-      if(ok){ var m='✓ «'+name+'» работает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'')+' · выход '+((r&&r.ip)||'?'); showToast(m,true); logLine(m,true); }
-      else { var em=unknown ? ((r && r.busy && r.msg) ? r.msg : 'роутер не ответил') : ((r&&r.msg)?r.msg:'недоступен'); showToast('✗ «'+name+'»: '+em,false); logLine('✗ «'+name+'»: '+em,false); }
+      if(ok){ var m='✓ «'+dn+'» работает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'')+' · выход '+((r&&r.ip)||'?'); showToast(m,true); logLine(m,true); }
+      else { var em=unknown ? ((r && r.busy && r.msg) ? r.msg : 'роутер не ответил') : ((r&&r.msg)?r.msg:'недоступен'); showToast('✗ «'+dn+'»: '+em,false); logLine('✗ «'+dn+'»: '+em,false); }
       if(after) after(ok, c, r, unknown);
     });
   }
@@ -4758,11 +4760,12 @@
     if(!srvRunGate('xray', name)) return;
     if(engineMissing('xray')) return;
     srvRunSet('xray', name, 'speed');
-    logLine('→ тест скорости: '+name, null);
+    var dn=cfgDisp('xray', name);
+    logLine('→ тест скорости: «'+dn+'»', null);
     speedOne(name, function(ok, mb, msg){
       srvRunSet('xray', name, null);
-      if(ok){ var m='«'+name+'»: '+mb+' Мбит/с'; showToast(m,true); logLine(m,true); }
-      else { showToast('скорость «'+name+'»: '+(msg||'не удалось'),false); logLine('✗ скорость «'+name+'»: '+(msg||'не удалось'),false); }
+      if(ok){ var m='«'+dn+'»: '+mb+' Мбит/с'; showToast(m,true); logLine(m,true); }
+      else { showToast('скорость «'+dn+'»: '+(msg||'не удалось'),false); logLine('✗ скорость «'+dn+'»: '+(msg||'не удалось'),false); }
       if(after) after(ok, mb, msg);
     });
   }
@@ -5627,8 +5630,8 @@
       "A subscription server's name is set by the subscription: it finds this server by that name on every update — it would create a renamed one anew and delete this one.",
     "«default» — служебное имя установщика: им помечен первый конфиг, и он же — «дом» резерва по умолчанию. Переименовать его нельзя.":
       "«default» is the installer's service name: it marks the first config and is the default failover «home». It can't be renamed.",
-    "Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.":
-      "Any name, with emoji and flags. The file on the router is in Latin: Cyrillic is transliterated, a country flag becomes its code (🇩🇪 → DE). Failover goes through servers in alphabetical order of names — a new name also moves the server in that queue.",
+    "Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту файлов — новое имя меняет и место сервера в этой очереди.":
+      "Any name, with emoji and flags. The file on the router is in Latin: Cyrillic is transliterated, a country flag becomes its code (🇩🇪 → DE). Failover goes through servers in alphabetical order of their files — a new name also moves the server in that queue.",
     "Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.":"The active AmneziaWG config can't be deleted — select another one first.",
     "Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.":"This config is carrying traffic right now — you can delete it after switching to another one.",
     "Ключи и конфиг целиком AmneziaWG панель не показывает и не правит:":"The panel neither shows nor edits AmneziaWG keys or the whole config:",
@@ -6406,7 +6409,7 @@
     "Резолвер снова не ответил — DNS остался на прежнем пути. Роутер попробует сам на ближайшей проверке сторожа.":"The resolver did not answer again — DNS stays on the previous path. The router will try on its own at the next watchdog check.",
     "Включено, но бинарь DoH ещё не установлен — шифрование заработает после установки":"Enabled, but the DoH binary isn't installed yet — encryption will start after installation",
     // (те же три ключа с другой формулировкой стояли ниже, в блоке авто-режима, и ПЕРЕБИВАЛИ эти —
-    //  дубль убран, живой остался один; проверка дублей — local/i18n-audit.js)
+    //  дубль убран, живой остался один; проверка дублей — dev/i18n-audit.js)
     // — протокол DoH/DoT —
     "переключаю на DoT…":"switching to DoT…","переключаю на DoH…":"switching to DoH…","проверяю DoT…":"checking DoT…",
     "ожидается doh|dot":"expected doh|dot",
@@ -7988,7 +7991,7 @@
     // ПРОХОД ПО АУДИТУ (dev66): строки, до которых накладной перевод не доставал — они живут в
     // ⋮-меню, тултипах, под-экранах (что запрашивает устройство, редактор конфига, консоль) и в
     // тостах редких путей, поэтому браузерный обход их не видел. Ищутся скриптом
-    // local/i18n-audit.js (повторяет i18nStr и печатает непокрытые фрагменты) — им же проверять
+    // dev/i18n-audit.js (повторяет i18nStr и печатает непокрытые фрагменты) — им же проверять
     // после КАЖДОЙ новой пачки строк, иначе класс «en светит русским» возвращается.
     // — общие тосты/ошибки —
     "внутренняя ошибка":"internal error","ошибка:":"error:","необработанная ошибка:":"unhandled error:",
@@ -8338,6 +8341,9 @@
     "список доменов пуст":"the domain list is empty","нужно имя новой группы":"a name for the new group is required",
     "не удалось получить группы":"failed to fetch the groups",
     "нет правила — идёт как обычный трафик":"no rule — travels as ordinary traffic",
+    "правила на имя нет — по адресу":"no rule on the name — by address",
+    "нет правила ни на имя, ни на адрес — идёт как обычный трафик":"no rule on the name or the address — travels as ordinary traffic",
+    "другие адреса этого имени идут иначе":"other addresses of this name go another way",
     "пока пусто — устройство ещё не резолвило доменов":"empty so far — the device hasn't resolved any domains yet",
     // — сбои переименования/ссылки подписки —
     "сбой переименования":"rename failed","сбой сохранения ссылки":"failed to save the link",
@@ -9224,6 +9230,7 @@
     [/^сервера «([^»]*)» на роутере нет — удалён или переименован$/,"server «$1» is not on the router — deleted or renamed"],
     [/^сохранится как «([^»]*)»$/,"will be saved as «$1»"],
     [/^файл на роутере — «([^»]*)»$/,"file on the router: «$1»"],
+    [/^файл «([^»]*)» уже у другого конфига — этот останется «([^»]*)», сменится только имя$/,"file «$1» already belongs to another config — this one stays «$2», only the name changes"],
     [/^(\d+) — задан в конфиге$/,"$1 — set in the config"],
     [/^(\d+) — по конфигу; ручной MTU «Параметров сети» эта версия роутера не сообщает — обновите Enodia$/,"$1 — from the config; this router version doesn't report a manual MTU from «Network settings» — update Enodia"],
     [/^неизвестный транспорт '([^'\s]*)'$/,"unknown transport '$1'"],
@@ -9248,10 +9255,14 @@
     // Отказы и итоги роутера на экране сервера (ревью пачки 2, круг 2): имя и номер — данными.
     [/^имя «([^»]*)» уже указано у выхода №(\d+) — выберите другое$/,"the name «$1» is already set on exit #$2 — choose another one"],
     [/^Конфиг (\S+) сохранён — применится, когда включите VPN$/,"Config $1 saved — it will apply once you turn the VPN on"],
-    [/^Конфиг (\S+) сохранён, но не применён: идёт смена транспорта или сервера — он подхватится при следующем подъёме несущей$/,
-     "Config $1 saved but not applied: a transport or server switch is running — it will be picked up on the next carrier start"],
+    [/^Конфиг (\S+) сохранён, но не применён: идёт смена транспорта или сервера — сохраните его ещё раз через минуту$/,
+     "Config $1 saved but not applied: a transport or server switch is running — save it again in a minute"],
     [/^идёт смена транспорта или сервера \(другая вкладка или сам роутер\) — повторите через минуту$/,
      "a transport or server switch is running (another tab or the router itself) — try again in a minute"],
+    // Отказы ревью с.97: Zapret сменили, пока ждали лок смены; CGI не завёл свой каталог вывода (cap_run).
+    [/^Zapret уже не активен — транспорт сменили, пока ждали \(другая вкладка или сам роутер\)$/,
+     "Zapret is no longer active — the transport was changed while waiting (another tab or the router itself)"],
+    [/вывод не сохранён: не удалось создать каталог вывода (\S+)/,"output not kept: could not create the output folder $1"],
     [/^Конфиг (\S+) сохранён$/,"Config $1 saved"],
     // Ответы xray-test.sh (проверка и скорость Xray): в тост и журнал они едут хвостом «✗ «имя»: <ответ>» ⇒ правила без якоря.
     [/^([+−±]\d+) % к прошлой$/,"$1 % vs previous"],[/^([↑↓±]) (\d+) п\.п\.$/,"$1 $2 pp"],
@@ -9532,7 +9543,7 @@
     // пробела нет), а в собранном имени группы — нет. Ниже они обязаны быть только у «МБ»→MB:
     // правило «X из Y ЕДИНИЦА» опирается на кириллическую единицу.
     // Правила ЛИТЕРАЛЬНЫЕ, а не регулярками с якорем: literal видит статический аудит
-    // (local/i18n-audit.js сверяет строки ИСХОДНИКА, а `/^…/` к обрезанному фрагменту не
+    // (dev/i18n-audit.js сверяет строки ИСХОДНИКА, а `/^…/` к обрезанному фрагменту не
     // приложит и честно назовёт подсказку непереведённой).
     ["Загрузка ЦП —","CPU load —"],
     // ── Частные правила экрана «Место и накопитель» — ВЫШЕ общих «до N» и « ОЗУ» (ниже): общие рвали фразу раньше, и хвост
@@ -9599,7 +9610,7 @@
     // КАЖДЫЙ кусок строки перевод знал. Правило смотрит на предлог перед ЧИСЛОМ, поэтому от
     // порядка правил-единиц не зависит. Границу слова пишем ЯВНО: `\b` в JS считает словесными
     // только ASCII-символы, и перед кириллической «д» после пробела границы НЕТ — правило с `\b`
-    // молча не срабатывало (поймано стендом local/panel-i18n-dynamic-test.js).
+    // молча не срабатывало (поймано стендом dev/panel-i18n-dynamic-test.js).
     [/(^|[\s·])до (?=\d)/g,"$1up to "],
     [/· не отвечает/g,"· not responding"],
     [/· молчит/g,"· silent for"],
@@ -9822,7 +9833,7 @@
     // «локальный адрес 192.168.31.128 на eth1» осталось бы с кириллическим хвостом и гард откатил бы
     // ВСЮ подсказку в русский.
     ["Внешний IP не удалось проверить","Could not check the external IP"],
-    // Хвостовой пробел в шаблоне — грабля покрытия: аудит (local/i18n-audit.js) отдаёт фрагменты
+    // Хвостовой пробел в шаблоне — грабля покрытия: аудит (dev/i18n-audit.js) отдаёт фрагменты
     // ОБРЕЗАННЫМИ по краям, и правило «· проверено » с ним не совпадало ⇒ строка годами числилась
     // непереведённой при живом переводе. Пробел живёт СНАРУЖИ шаблона — результат тот же.
     ["· локальный адрес","· local address"],
@@ -9999,7 +10010,7 @@
     // ДВЕ ФРАЗЫ ИЗ switch-vpn.sh СТОЯТ ЗДЕСЬ, А НЕ В СВОЁМ БЛОКЕ НИЖЕ: они содержат «обновлён» и
     // «включённом», а токены этих слов идут прямо под нами. Токен сработал бы ПЕРВЫМ, разорвал бы
     // фразу — и гард i18nStr на кириллическом хвосте вернул бы ВЕСЬ тост русским (нашёл стенд
-    // local/switch-i18n-test.js, 08.09.2026).
+    // dev/switch-i18n-test.js, 08.09.2026).
     // Хвост тостов `set_server` (и близнецов у xray/hy2) — ВЫШЕ токена «выключен»: тот срабатывает
     // первым, оставляет «VPN now disabled тумблером…», и весь тост уходит русским (ревью 9).
     ["VPN сейчас выключен тумблером — включите его в шапке панели, и роутер пойдёт через этот сервер.","The VPN is currently off by the toggle — turn it on in the panel header and the router will go through this server."],
@@ -10060,7 +10071,7 @@
     // только правилами. Стоять ОБЯЗАНЫ ЗДЕСЬ, ВЫШЕ безусловного `МБ→MB` строкой ниже и выше
     // токена « на »: иначе к моменту их очереди «1.4 МБ» уже «1.4 MB», якорь по русской единице
     // не совпадает, а « на » разрывает «на флеше» изнутри → «освобождено 1.4 MB on флеше».
-    // Ровно этот порядок ловится прогоном local/i18n-audit.js + пробой на склейках.
+    // Ровно этот порядок ловится прогоном dev/i18n-audit.js + пробой на склейках.
     // Поимённый переезд (экран «Место и накопитель»): имя бинаря и его зависимость — внутри фразы.
     [/^Держать «([^»]+)» на флеше роутера вместе с «([^»]+)» — без него он не поднимется\? Файл переедет с накопителя, и обновления будут класть его туда же\.$/,"Keep «$1» on the router flash together with «$2» — it will not start without it? The file moves off the drive, and updates will put it there too."],
     [/^Держать «([^»]+)» на флеше роутера\? Файл переедет с накопителя, и обновления будут класть его туда же\.$/,"Keep «$1» on the router flash? The file moves off the drive, and updates will put it there too."],
@@ -10068,7 +10079,7 @@
     [/^Очистить — /,"Clean up — "],
     // «лог до N» на кнопке: у стокового лога честного числа нет — флеш сжимает текст, и точную
     // цифру знает только дельта df ПОСЛЕ чистки. Правило ЛИТЕРАЛЬНОЕ, а не регуляркой с числом:
-    // так его видит статический аудит (local/i18n-audit.js сверяет строки ИСХОДНИКА, а регулярку
+    // так его видит статический аудит (dev/i18n-audit.js сверяет строки ИСХОДНИКА, а регулярку
     // с `\d` он к литералу «лог до » не приложит и честно назовёт фрагмент непереведённым).
     [/(ГБ|МБ|КБ|Б) ОЗУ/g,"$1 RAM"],
     [/освобождено (\d[\d.,]*\s*(?:ГБ|МБ|КБ|Б)) на флеше/g,"freed $1 on flash"],
@@ -10703,8 +10714,8 @@
     [/^адреса: /,"addresses: "],
     ["включаю ","enabling "],["выключаю ","disabling "],["сохраняю ","saving "],
     ["удаляю ","deleting "],["скачиваю список ","downloading list "],
-    // Имена связок с кириллицей внутри склеек («Снять «Шифрованный DNS»», «Скачаем и поставим: HTTPS панели») — ПОСЛЕДНИМИ:
-    // только то, что не взяли фразы выше.
+    // Имена связок с кириллицей внутри склеек без ёлочек («Скачаем и поставим: HTTPS панели») — ПОСЛЕДНИМИ: только то, что не взяли
+    // фразы выше. В «…» («Снять «HTTPS панели»») токен не достаёт — там их переводит список наших имён (I18N_QUOTED).
     ["Шифрованный DNS","Encrypted DNS"],["HTTPS панели","Panel HTTPS"],
   ];
   // НАШИ ИМЕНА В «…» — то, что панель САМА пишет в ёлочках: имена экранов (реестр `SCR`) и разделов (`SEC`) — из реестров, кнопки и
@@ -10719,7 +10730,9 @@
     'Восстановить','Переименовать','Сырой','Форма','Все маршруты','Все подписки','Все выходы','Все события','Показать устройства',
     'Выключен','Выкл','Авто','Вручную','Раздельно','мимо','Мимо','в десинк','В десинк','Блок','блок','напрямую','Напрямую',
     'весь трафик в VPN','целиком в VPN','в VPN — основной','через выход','через десинк-выход','Весь остальной трафик','Весь роутер',
-    'Что победит','Что запрашивает','Куда идёт трафик','DNS сейчас','Трафик сейчас','Сейчас','Протокол','Что выбрано'];
+    'Что победит','Что запрашивает','Куда идёт трафик','DNS сейчас','Трафик сейчас','Сейчас','Протокол','Что выбрано',
+    // Имена связок «Компонентов» (packages.sh::pkg_label) — в склейках «Снять «…» — освободит …».
+    'Шифрованный DNS','HTTPS панели'];
   var _i18nOurs=null;
   function i18nOurs(x){
     if(!_i18nOurs){
@@ -10747,13 +10760,31 @@
     // проваливаемся к правилам по ПОЛНОЙ строке (есть правила, где стрелка часть паттерна).
     var ar=s.match(/^(→\s+)([\s\S]+)$/);
     if(ar){ var c=i18nStr(ar[2]); if(c!==ar[2]) return ar[1]+c; }
-    var out=s;
-    for(var i=0;i<I18N_RULES.length;i++) out=out.replace(I18N_RULES[i][0], I18N_RULES[i][1]);
+    // ПРАВИЛО-ТОКЕН НЕ ДОСТАЁТ ВНУТРЬ «…» (ревью с.97). В ёлочках панель и роутер пишут ДАННЫЕ человека — показ конфига, имя группы,
+    // устройства, — а короткие правила («Сервер », « на ») переписывали и их: показ «Сервер 1» становился «Server 1» в вопросе, aria и
+    // журнале, «Дом на даче» — «Дом on даче». Правило, в шаблоне которого есть ёлочка, ЗНАЕТ, где кавычки, — оно видит строку как есть
+    // (так переводятся наши слова в «…»: «Параметрах сети», «Компонентах»); прочим содержимое «…» прячем на время замены. Признак —
+    // по шаблону, раз и навсегда, на самом массиве правил (`.q`): они не меняются после загрузки, а функцию стенды вырезают поштучно.
+    var out=s, hid=null, rq=I18N_RULES.q;
+    var qd=/«[^«»]*»/.test(s);
+    if(qd && !rq){
+      rq=I18N_RULES.q=[];
+      for(var k=0;k<I18N_RULES.length;k++){ var p=I18N_RULES[k][0]; rq.push(/[«»]/.test((typeof p==='string') ? p : p.source)); }
+    }
+    for(var i=0;i<I18N_RULES.length;i++){
+      if(qd){
+        // Содержимое «…» — в заглушки (без кириллицы, «» и пробелов: шаблоны их не поймают), перед правилом с ёлочкой — обратно.
+        if(rq[i]){ if(hid){ out=out.replace(/«\u0002(\d+)\u0003»/g, function(m, n){ return '«'+hid[+n]+'»'; }); hid=null; } }
+        else if(!hid){ hid=[]; out=out.replace(/«([^«»]*)»/g, function(m, x){ hid.push(x); return '«\u0002'+(hid.length-1)+'\u0003»'; }); }
+      }
+      out=out.replace(I18N_RULES[i][0], I18N_RULES[i][1]);
+    }
+    if(hid) out=out.replace(/«\u0002(\d+)\u0003»/g, function(m, n){ return '«'+hid[+n]+'»'; });
     if(out===s) return s;                       // ничего не сработало → ru как есть
     // Остался кириллический хвост → не мешать языки: строка по-русски ЦЕЛИКОМ. Кроме кириллицы ВНУТРИ «…»: в ёлочках панель и роутер
     // пишут ДАННЫЕ человека — имя подписки, группы, сети, устройства, — их не переводят, и прежде одно такое имя держало русской всю
     // фразу («подписка «дурев»: серверов 35» — под английским целиком; решение 25.09.2026, приёмка редизайна). Правило гарда держит
-    // стенд local/i18n-data-guard-test.js; атрибуты-литералы — local/i18n-attrs-test.js (без единой кириллической буквы); текстовые
+    // стенд dev/i18n-data-guard-test.js; атрибуты-литералы — dev/i18n-attrs-test.js (без единой кириллической буквы); текстовые
     // литералы целиком стенд не сверяет — их видит аудит local/i18n-audit.js.
     // НАШЕ слово в «…» (раздел, экран, кнопка: «Соединение», «Транспорт») — не данные, и правило, переведшее окружение, оставило бы
     // его русским посреди английской фразы (ревью пачки 2). Переводим по ключу ТОЛЬКО наши имена (`i18nOurs`): любой ключ словаря
@@ -10986,7 +11017,7 @@
           // raw = НАСТОЯЩЕЕ имя (эмодзи/флаги/юникод) для показа; rem = безопасное имя ФАЙЛА.
           var raw=((p.remark||('#'+(i+1))).replace(/[\t\r\n]+/g,' ').trim())||('#'+(i+1));
           // sub-file-slug: НЕ cfgSlug — имя файла подписки строит ещё и роутер (subs-update.sh), и по нему `.sub-names` находит СВОЙ
-          // файл: другая схема здесь развела бы идентичность серверов подписки (паритет держит local/link-parity-test.js).
+          // файл: другая схема здесь развела бы идентичность серверов подписки (паритет держит dev/link-parity-test.js).
           var rem=(p.remark||String(i+1)).replace(/[^A-Za-z0-9._-]/g,'-').replace(/^-+|-+$/g,'')||String(i+1);
           var nm=('sub-'+tag+'-'+rem).substring(0,48), base=nm, k=2;
           while(used[nm]){ nm=base.substring(0,44)+'-'+k; k++; }
@@ -11203,7 +11234,7 @@
   // остаётся пустым. Клик подставляет текст: следом «Разобрать» показывает, во что это ляжет
   // у нас — то есть пример работает ещё и демонстрацией самого мастера.
   // КАЖДЫЙ прогнан через ЭТОТ ЖЕ parseRouting с РЕАЛЬНЫМ гео-каталогом роутера (стенд
-  // local/rt-examples-test.js): пример, который не разбирается, хуже, чем его отсутствие.
+  // dev/rt-examples-test.js): пример, который не разбирается, хуже, чем его отсутствие.
   // Специально показываем страну (`ru`) и `default:` — это две вещи, на которых перенос чужого
   // конфига ломается чаще всего (см. предупреждение о приоритете выше и «полный туннель»).
   var RT_EX=[
@@ -12255,7 +12286,11 @@
   // НАСТОЯЩЕЕ ИМЯ КОНФИГА — как назвал человек, с эмодзи и флагами (cfg-names.sh → поле `cfgnames` /cgi-bin/list): файл роутер
   // держит латиницей (cfgSlug), а показ — своим. Нет такого — показ подписки (subDisp) или имя файла. Ключ — «вид/файл»: у
   // разных протоколов файл может совпасть по имени.
-  function cfgDisp(kind, name, subs){ return ownVal(cfgNames, kind+'/'+name) || subDisp(name, subs||[]); }
+  // Подписки не переданы (тосты проверки, строка статуса, выбор выхода — ответа списка под рукой нет) — по ИЗВЕСТНЫМ тегам из последнего
+  // ответа списка (srvListTake): иначе сервер подписки старого импорта (не из .sub-names) назывался бы там файлом (ревью с.98).
+  function cfgDisp(kind, name, subs){
+    return ownVal(cfgNames, kind+'/'+name) || subDisp(name, subs || _subTagsKnown.map(function(t){ return {tag:t}; }));
+  }
   // Показ, который уходит на роутер вместе с конфигом: обрезка — по БУКВАМ (суррогатная пара эмодзи не рвётся), 60 букв — это
   // и ремарка провайдера целиком, и не больше потолка роутера в байтах (до 4 байт на букву).
   // Одиночный суррогат (JSON vpn:// допускает "\ud83c") — вон: encodeURIComponent бросает на нём URIError, и падала бы вся загрузка
@@ -12297,8 +12332,8 @@
   // Точка строки — итог ПОСЛЕДНЕЙ проверки из кэша (`.srv-checks`): зелёная — отвечал, жёлтая — не ответил, серая — не проверялся.
   // Её же перекрашивает `paintRec`, когда проверка кончается, — второго ответа «что значит точка» нет.
   function recDot(c){ return (c && c.st==='ok') ? '' : ((c && c.st==='dead') ? ' warn' : ' off'); }
-  function srvChev(tpt, name){
-    return '<button type="button" class="srv-edit srv-chev" data-tpt="'+tpt+'" data-name="'+esc(name)+'" title="Открыть сервер" aria-label="'+esc('Открыть сервер «'+name+'»')+'">'+icUse('i-chev','s')+'</button>';
+  function srvChev(tpt, name, disp){
+    return '<button type="button" class="srv-edit srv-chev" data-tpt="'+tpt+'" data-name="'+esc(name)+'" title="Открыть сервер" aria-label="'+esc('Открыть сервер «'+(disp||name)+'»')+'">'+icUse('i-chev','s')+'</button>';
   }
   function srvRowOpen(cls, tpt, name, act, canAct, extra){
     return '<div class="lrow '+cls+(act?' active':' cl')+(canAct?'':' dis')+'" data-tpt="'+tpt+'" data-name="'+esc(name)+'" data-act="'+(canAct?'1':'0')+'"'+(extra||'')+'>'
@@ -12327,9 +12362,9 @@
       + '<div class="grow">'+srvNm(disp||name)+'<div class="ds">'+ds
       + '<span class="srv-ping" data-tpt="'+key+'" data-name="'+esc(name)+'"></span></div></div>'
       + '<span class="srv-r">'+(gl ? '<span class="badge">'+esc(gl)+'</span> ' : '')+st
-      + (key==='hy2' ? '<button type="button" class="btn sm gh srv-edit" data-tpt="hy2" data-name="'+esc(name)+'" title="Изменить конфиг" aria-label="'+esc('Изменить конфиг «'+name+'»')+'">✎</button>' : '')
-      + (canDel ? '<button type="button" class="btn sm gh srv-del" data-tpt="'+key+'" data-name="'+esc(name)+'" title="Удалить конфиг" aria-label="'+esc('Удалить конфиг «'+name+'»')+'">✕</button>' : '')
-      + '</span>'+srvChev(key, name)+'</div>';
+      + (key==='hy2' ? '<button type="button" class="btn sm gh srv-edit" data-tpt="hy2" data-name="'+esc(name)+'" title="Изменить конфиг" aria-label="'+esc('Изменить конфиг «'+(disp||name)+'»')+'">✎</button>' : '')
+      + (canDel ? '<button type="button" class="btn sm gh srv-del" data-tpt="'+key+'" data-name="'+esc(name)+'" title="Удалить конфиг" aria-label="'+esc('Удалить конфиг «'+(disp||name)+'»')+'">✕</button>' : '')
+      + '</span>'+srvChev(key, name, disp)+'</div>';
   }
   // Компактный дескриптор конфига для карточки: защита + транспорт + flow. Не «просто VLESS»,
   // а что именно (Reality·xhttp·Vision / TLS·WS / …). Данные из meta (/cgi-bin/list).
@@ -12360,8 +12395,8 @@
       + '<div class="grow">'+srvNm(disp||name)+(ds?'<div class="ds">'+ds+'</div>':'')+'</div>'
       + '<span class="srv-r">'+st
       + '<span class="chip srv-ping'+(act&&canAct?' acc':'')+'" data-tpt="xray" data-name="'+esc(name)+'"></span>'
-      + '<button type="button" class="btn sm gh srv2-menu" data-name="'+esc(name)+'" data-del="'+(canDel?'1':'0')+'" title="Действия" aria-label="'+esc('Действия с сервером «'+name+'»')+'">⋮</button>'
-      + '</span>'+srvChev('xray', name)+'</div>';
+      + '<button type="button" class="btn sm gh srv2-menu" data-name="'+esc(name)+'" data-del="'+(canDel?'1':'0')+'" title="Действия" aria-label="'+esc('Действия с сервером «'+(disp||name)+'»')+'">⋮</button>'
+      + '</span>'+srvChev('xray', name, disp)+'</div>';
   }
   // Метка подписки, к которой относится сервер sub-<tag>-… (по владельцу-тегу, longest-prefix).
   function subLabelOf(name, subs){
@@ -12512,11 +12547,19 @@
     if(key==='awg') h+=noteBox('<b>Редактора конфига у AmneziaWG нет</b>: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — панель спросит, заменить ли им прежний. Endpoint и MTU — на экране сервера.','info');
     return '<div class="tpane srv-tab-panel" data-tab="'+key+'"'+((key===tab)?'':' style="display:none"')+'>'+h+'</div>';
   }
-  // ОТВЕТ /cgi-bin/list → общие кэши экранов с серверами: настоящие имена из подписок, мета Xray (хост, бейдж) и
-  // «стоит ли бинарь». Читают его «Серверы» и экран подписки; второй разбор разошёлся бы с первым.
-  function srvListTake(d){
+  // ИМЕНА ИЗ ОТВЕТА /cgi-bin/list — ОДИН разбор на всех читателей: свои имена конфигов (cfg-names.sh), показ серверов подписок
+  // (.sub-names, эмодзи/флаги) и известные теги подписок (владельцы серверов для сброса кэша и запасной путь cfgDisp). Экраны выходов,
+  // меню «Сервер» шапки и «Соединение» «Серверы» не открывают: без общего разбора сервер подписки старого импорта там назывался файлом,
+  // а после захода на «Серверы» — показом (ревью с.98, круг 3). Ответ-отказ (вход, ошибка) кэшей не трогает.
+  function listNamesTake(d){
+    if(!d || typeof d!=='object' || d.error || d.need_login) return;
     subNames = d.names||{}; cfgNames = d.cfgnames||{};
-    _subTagsKnown = (d.subs||[]).map(function(s){ return s && s.tag; }).filter(function(t){ return !!t; });   // владельцы серверов для сброса кэша   // настоящие имена серверов подписки (эмодзи/флаги)
+    _subTagsKnown = (d.subs||[]).map(function(s){ return s && s.tag; }).filter(function(t){ return !!t; });
+  }
+  // ОТВЕТ /cgi-bin/list → общие кэши экранов с серверами: имена (listNamesTake), мета Xray (хост, бейдж) и «стоит ли бинарь».
+  // Читают его «Серверы» и экран подписки; второй разбор разошёлся бы с первым.
+  function srvListTake(d){
+    listNamesTake(d);
     xrayMeta = (d.xray && d.xray.meta) || {};   // host/sni/fp по конфигу (host — под именем)
     hy2Meta = (d.hy2 && d.hy2.meta) || {};      // host (сервер:порт) и obfs — строка Hysteria2 под именем
     awgGen = (d.awg && d.awg.gen) || {};        // поколение протокола конфига AmneziaWG (transport-awg.sh conf-gen) — бейдж строки
@@ -12533,13 +12576,13 @@
     Array.prototype.forEach.call(body.querySelectorAll('.srv'), function(el){
       el.addEventListener('click', function(){
         if(el.classList.contains('active')) return;
-        activateServer(el.getAttribute('data-tpt'), el.getAttribute('data-name'), el.getAttribute('data-act')==='1');
+        activateServer(el.getAttribute('data-tpt'), el.getAttribute('data-name'), el.getAttribute('data-act')==='1', d.subs);
       });
     });
     Array.prototype.forEach.call(body.querySelectorAll('.srv2'), function(el){
       el.addEventListener('click', function(){
         if(el.classList.contains('active')) return;
-        activateServer('xray', el.getAttribute('data-name'), el.getAttribute('data-act')==='1');
+        activateServer('xray', el.getAttribute('data-name'), el.getAttribute('data-act')==='1', d.subs);
       });
     });
     // ⋮ на карточке: проверка, скорость, экран сервера (конфиг, имя) + удаление (если не активная несущая).
@@ -12550,12 +12593,13 @@
         var row=el.parentNode; while(row && !(row.classList && row.classList.contains('srv2'))) row=row.parentNode;
         var items=[];
         if(row && !row.classList.contains('active'))
-          items.push({label:'Сделать активным', onClick:function(){ activateServer('xray', name, row.getAttribute('data-act')==='1'); }});
+          items.push({label:'Сделать активным', onClick:function(){ activateServer('xray', name, row.getAttribute('data-act')==='1', d.subs); }});
         items.push({label:'Проверить', onClick:function(){ checkServer(name); }},
                    {label:'Тест скорости', onClick:function(){ speedServer(name); }},
                    {label:'Изменить конфиг', onClick:function(){ srvScrGo('xray', name); }});
         if(canDel) items.push({label:'Удалить конфиг', danger:true, onClick:function(){
-          postAction('del_xray_server', 'Удалить конфиг «'+name+'» (Xray)? Файл удалится с роутера.', 'удаляю '+name, {name:name}, function(d){ if(d && d.ok) chkDrop('xray',name); repaint(); });
+          var dn=cfgDisp('xray', name, d.subs);
+          postAction('del_xray_server', 'Удалить конфиг «'+dn+'» (Xray)? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop('xray',name); repaint(); });
         }});
         openMenu(el, items);
       });
@@ -12568,8 +12612,8 @@
         e.stopPropagation();
         if(busy) return;
         var tpt=el.getAttribute('data-tpt'), name=el.getAttribute('data-name');
-        var act = tpt==='awg'?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server');
-        postAction(act, 'Удалить конфиг «'+name+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю '+name, {name:name}, function(d){ if(d && d.ok) chkDrop(tpt,name); repaint(); });
+        var act = tpt==='awg'?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server'), dn=cfgDisp(tpt, name, d.subs);
+        postAction(act, 'Удалить конфиг «'+dn+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop(tpt,name); repaint(); });
       });
     });
     // «✎» строки — экран сервера (у всех трёх транспортов: у AmneziaWG там имя, проверка и несекретное из конфига).
@@ -13198,7 +13242,7 @@
     if(name.toLowerCase()==='default') return kv+'<div class="cline">«default» — служебное имя установщика: им помечен первый конфиг, и он же — «дом» резерва по умолчанию. Переименовать его нельзя.</div>';
     return '<div class="lnkrow" style="margin:0"><input id="srv-nm" class="inp" spellcheck="false" autocomplete="off" maxlength="120" aria-label="Новое имя" aria-describedby="srv-nm-p srv-nm-d" value="'+esc(cfgDisp(tpt, name))+'"><button type="button" class="btn" data-sv="ren">Переименовать</button></div>'
       + '<div class="cline sens" id="srv-nm-p" aria-live="polite" hidden></div>'
-      + '<div class="cline" id="srv-nm-d">Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту имён — новое имя меняет и место сервера в этой очереди.</div>';
+      + '<div class="cline" id="srv-nm-d">Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту файлов — новое имя меняет и место сервера в этой очереди.</div>';
   }
   var RE_CFG_NAME=/^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$/;
   // КЭШ ПРОВЕРОК ЕДЕТ ЗА ИМЕНЕМ: ключ записи — транспорт и имя. Старый ключ хороним надгробием: без него ЭТА вкладка при следующей
@@ -13273,14 +13317,14 @@
       var b=e.target; while(b && b!==wrap && !(b.getAttribute && b.getAttribute('data-sv'))) b=b.parentNode;
       if(!b || b===wrap) return;
       var v=b.getAttribute('data-sv');
-      if(v==='use') activateServer(tpt, name, canAct);
+      if(v==='use') activateServer(tpt, name, canAct, subs);
       else if(v==='check') srvCheck(tpt, name);
       else if(v==='speed') speedServer(name);   // числа перерисует конец прогона (srvRunSet)
       else if(v==='del'){
-        if(_srvRun[chkKey(tpt,name)]){ showToast('«'+name+'» сейчас проверяется — дождитесь итога', false); return; }
-        var da=(tpt==='awg')?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server');
+        if(_srvRun[chkKey(tpt,name)]){ showToast('«'+disp+'» сейчас проверяется — дождитесь итога', false); return; }
+        var da=(tpt==='awg')?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server'), dn=disp;
         // Кэш сбрасывается при любом успехе, а уводит «наверх» только экран ЭТОГО сервера: человек мог уйти, пока роутер думал.
-        postAction(da, 'Удалить конфиг «'+name+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю '+name, {name:name},
+        postAction(da, 'Удалить конфиг «'+dn+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name},
           function(r){ if(r && r.ok){ chkDrop(tpt, name); if(srvHere(tpt, name)) navUp(); } });
       }
       else if(v==='ren') srvRename(tpt, name);
@@ -13290,8 +13334,21 @@
       // Подсказка обещает только то, что роутер примет: имя, которое он отвергнет, называется причиной, а не «сохранится как».
       nm.addEventListener('input', function(){
         // Тем же путём, что srvRename: латиница — из обрезанного показа; без букв и цифр файл остаётся прежним (меняется только показ).
-        var sl=cfgSlug(dispCap(nm.value));
+        var dv=dispCap(nm.value), sl=cfgSlug(dv);
+        // Отказы роутера (rename_config) стоят РАНЬШЕ подмены «сменится только имя»: «default» — служебное имя установщика (у
+        // самого default поля имени нет вовсе), «sub-…» — имена подписок. Подсказка называет причину его словами, а не обещает то, в
+        // чём он откажет (ревью с.97).
+        if((sl||'').toLowerCase()==='default'){ pv.hidden=false; pv.textContent='«default» — служебное имя установщика: его нельзя ни дать, ни снять'; return; }
+        if(/^sub-/.test(sl||'')){ pv.hidden=false; pv.textContent='имена «sub-…» принадлежат подпискам — выберите другое'; return; }
         if(!sl && nm.value.trim()){ pv.hidden=false; pv.textContent='файл на роутере — «'+name+'»'; return; }
+        // Латиница уже у ДРУГОГО файла — роутер (rename_config) меняет тогда только показ, а набранное ровно это латинское имя
+        // отвергает: подсказка говорит то же, а не «файл — X» про чужой файл (хвост ревью с.96). Список файлов — из ответа экрана.
+        if(sl && sl!==name && ((d[tpt]||{}).servers||[]).indexOf(sl)>=0){
+          pv.hidden=false;
+          pv.textContent=(dv===sl) ? 'конфиг «'+sl+'» уже есть — выберите другое имя'
+                                    : 'файл «'+sl+'» уже у другого конфига — этот останется «'+name+'», сменится только имя';
+          return;
+        }
         pv.hidden=(sl===nm.value || !sl); pv.textContent='файл на роутере — «'+sl+'»'; });
       nm.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); srvRename(tpt, name); } });
     }
@@ -13377,17 +13434,18 @@
     if(tpt==='xray'){ checkServer(name, function(ok, c, r, unknown){ var k=chkKey('xray',name); if(ok && r && r.ip) _srvExit[k]=r.ip; else if(!unknown) delete _srvExit[k]; srvScrRefresh('xray', name); }); return; }
     if(!srvRunGate(tpt, name)) return;
     srvRunSet(tpt, name, 'check');
-    logLine('→ проверка: '+name, null);
+    var dn=cfgDisp(tpt, name);
+    logLine('→ проверка: «'+dn+'»', null);
     checkOne(tpt, name, null, function(ok, c, r, unknown){
       srvRunSet(tpt, name, null);
-      var m=ok ? '✓ «'+name+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? '✗ «'+name+'»: роутер не ответил' : '✗ «'+name+'»: эндпоинт не отвечает');
+      var m=ok ? '✓ «'+dn+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? '✗ «'+dn+'»: роутер не ответил' : '✗ «'+dn+'»: эндпоинт не отвечает');
       showToast(m, ok); logLine(m, ok);
     });
   }
   function srvRename(tpt, name){
     var nm=document.getElementById('srv-nm'); if(!nm || busy) return;
     // Идущая проверка записала бы свой итог под СТАРЫМ именем — после переименования это сирота в кэше, а у нового имени пусто.
-    if(_srvRun[chkKey(tpt,name)]){ showToast('«'+name+'» сейчас проверяется — дождитесь итога', false); return; }
+    if(_srvRun[chkKey(tpt,name)]){ showToast('«'+cfgDisp(tpt, name)+'» сейчас проверяется — дождитесь итога', false); return; }
     // Файл — из ТОГО ЖЕ текста, что уйдёт показом (dispCap режет до 60 букв): иначе в имени файла было бы то, чего нет в показе.
     // Имя без букв и цифр («⚡🚀») латиницы не даёт — файл остаётся прежним, меняется только показ (подсказка обещает «любое»).
     var dn=dispCap(nm.value), nn=cfgSlug(dn) || name;
@@ -13779,7 +13837,7 @@
   // Активация сервера (клик по карточке/строке). Общий путь для .srv (awg/hy2) и .srv2 (карточки).
   // canAct — из canActivate(grp): БИНАРЬ есть. Отсутствие секрет-конфига активации не мешает —
   // она его и создаёт (см. разбор у canActivate).
-  function activateServer(tpt, name, canAct){
+  function activateServer(tpt, name, canAct, subs){
     if(busy) return;
     if(!canAct){
       showToast(names[tpt]+' не установлен на роутере — поставьте его в «Компонентах»', false);
@@ -13799,8 +13857,12 @@
     // `.active` меняется, awg0 и демона нет). Обещать «перезапустится» тут — та же ложь, что
     // лечили у чужой несущей выше, и она читается как «кнопка не сработала».
     var _tail = cur.vpnOff ? '? Применится, когда включите VPN.' : '? Несущая перезапустится.';
-    if(tpt===cur.transport){ msg=(tpt==='awg'?'Переключиться на сервер «'+name+'»'+_tail:'Сделать «'+name+'» активным для '+names[tpt]+_tail); }
-    else { msg='Сохранить «'+name+'» активным конфигом '+names[tpt]+'? Применится при переключении на '+names[tpt]+'.'; }
+    // Человеку — НАСТОЯЩЕЕ имя (cfgDisp), как в списке и шапке: вопрос про «Interra-DE-justhost» под строкой «Interra 🇩🇪 justhost»
+    // читался как другой сервер (замер BE7000 04.10.2026). Роутеру уходит файл. Сервер подписки — её показом (subs от места вызова):
+    // без него у сервера старого импорта (не из .sub-names) список говорил «DE», а вопрос и журнал — «sub-liberty-DE» (ревью с.97).
+    var dn = cfgDisp(tpt, name, subs);
+    if(tpt===cur.transport){ msg=(tpt==='awg'?'Переключиться на сервер «'+dn+'»'+_tail:'Сделать «'+dn+'» активным для '+names[tpt]+_tail); }
+    else { msg='Сохранить «'+dn+'» активным конфигом '+names[tpt]+'? Применится при переключении на '+names[tpt]+'.'; }
     // ВАЖНО: спрашиваем подтверждение ДО закрытия модалки. Раньше closeModal() шёл перед
     // postAction (а confirm внутри него) → при «Отмена» модалка уже закрыта = «закрылись все
     // попапы». Теперь: отмена — ничего не трогаем; ОК — закрываем модалку и шлём (confirm=null).
@@ -13808,7 +13870,7 @@
     // В раздел, где «Сейчас» покажет новый сервер: с экрана подписки `navUp` вёл в список подписок, где результата не
     // видно (ревью шага 3c-1). Из меню шапки «Обзора» экрана нет — и уводить некуда.
     if(screenOpen()) goSec('cn');
-    postAction(act, null, name+' → '+names[tpt], {name:name});
+    postAction(act, null, '«'+dn+'» → '+names[tpt], {name:name});
   }
 
   // ---- общий хелпер чтения JSON-секции ----
@@ -14819,10 +14881,20 @@
     return '';
   }
   function dwBtn(attr, val, txt, title){ return '<button type="button" class="btn sm" '+attr+'="'+esc(val)+'" title="'+esc(title)+'">'+txt+'</button>'; }
+  // ПРАВИЛА НА ИМЯ НЕТ — ПУТЬ РЕШАЕТ АДРЕС. Роутер судит адреса, которые устройство получило от резолвера (`aip`, `aroute`/`avia`), той
+  // же лестницей, что строку соединения: «нет правила — идёт как обычный трафик» у challenges.cloudflare.com, чьи адреса в общем
+  // списке, читалось ошибкой — трафик шёл в VPN (замер BE7000 04.10.2026). Чип строки — путь адреса; адреса разошлись — так и сказано.
   function dwDomRow(d){
     var o=(typeof d==='string') ? {name:d} : d, nm=o.name, rt=o.route||'', via=o.via||'', own=!!o.own;
-    return '<div class="lrow dw-r"><div class="grow"><div class="nm"><span class="mono sens">'+esc(nm)+'</span></div><div class="ds">'+dwWhy(rt, via, o.want, o.dsy)+'</div></div>'
-      + dwChip(rt, via, o.dsy)+'<span class="dw-acts">'
+    var byAddr=!rt && !via && !!o.aroute;
+    var why=!byAddr ? dwWhy(rt, via, o.want, o.dsy)
+      // Адрес — и тогда, когда у него правила нет, но другие адреса имени идут иначе: без адреса «нет правила ни на имя, ни на адрес ·
+      // другие идут иначе» не говорит, какой из них без правила (ревью с.97).
+      : ((o.avia || o.asplit) ? '<span>правила на имя нет — по адресу</span> <span class="mono sens">'+esc(o.aip||'')+'</span>: '+dwWhy(o.aroute, o.avia, o.awant, o.adsy)
+                : '<span>нет правила ни на имя, ни на адрес — идёт как обычный трафик</span>')
+        + (o.asplit ? ' · <span>другие адреса этого имени идут иначе</span>' : '');
+    return '<div class="lrow dw-r"><div class="grow"><div class="nm"><span class="mono sens">'+esc(nm)+'</span></div><div class="ds">'+why+'</div></div>'
+      + (byAddr ? (o.avia ? dwChip(o.aroute, o.avia, o.adsy) : '') : dwChip(rt, via, o.dsy))+'<span class="dw-acts">'
       + (rt!=='vpn' ? dwBtn('data-dwd', 'vpn|'+nm, '→ в VPN', 'завернуть домен в туннель') : '')
       + (rt!=='bypass' ? dwBtn('data-dwd', 'byp|'+nm, '→ мимо', 'увести домен мимо туннеля') : '')
       // ✕ = ОТКАТ в исходную точку («ни в VPN, ни мимо»). Только у СВОИХ одиночных правил: домен группы поштучно не снять —
@@ -17903,8 +17975,7 @@
   function slotCfgList(){
     return fetchJson('/cgi-bin/list').then(function(d){
       // Настоящие имена — из ЭТОГО ответа: экраны выходов «Серверы» не открывают, и кэш имён был бы пуст или устарел (ревью с.96, круг 3).
-      if(d && d.cfgnames && typeof d.cfgnames==='object') cfgNames=d.cfgnames;
-      if(d && d.names && typeof d.names==='object') subNames=d.names;
+      listNamesTake(d);
       return {awg:((d&&d.awg&&d.awg.servers)||[]), xray:((d&&d.xray&&d.xray.servers)||[]), hy2:((d&&d.hy2&&d.hy2.servers)||[]),
               held:((d&&d.awg&&d.awg.held&&typeof d.awg.held==='object')?d.awg.held:{})};
     }).catch(function(){ return {awg:[],xray:[],hy2:[],held:{}}; });
@@ -21530,6 +21601,7 @@
     var g=++_cnGen, bad=function(d){ return !d || typeof d!=='object' || d.error || d.need_login; };
     fetchJson('/cgi-bin/list').then(function(d){
       if(g!==_cnGen || bad(d)) return;
+      listNamesTake(d);   // строки выходов ниже называют сервер его показом (slotDs → cfgDisp)
       var n=0; ['awg','xray','hy2'].forEach(function(t){ n+=((d[t] && d[t].servers)||[]).length; });
       cnChip('card-servers-chip', n, 'Серверов и конфигов: '+n);
       if(Array.isArray(d.subs)) cnChip('card-subs-chip', d.subs.length, 'Подписок: '+d.subs.length);

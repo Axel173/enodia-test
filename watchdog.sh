@@ -100,6 +100,7 @@ if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v switch_work_alive >/dev/null 2>&1 || switch_work_alive() { return 1; }
 command -v switch_holder_mark >/dev/null 2>&1 || switch_holder_mark() { ENODIA_SWITCH_HOLDER=$$; export ENODIA_SWITCH_HOLDER; }
+command -v switch_lock_reap >/dev/null 2>&1 || switch_lock_reap() { [ "$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n')" = "$1" ] && rm -f "$SWITCH_LOCK" 2>/dev/null; return 0; }
 # Секунд с загрузки — оттуда же (uptime_s): своя копия `cut -d. -f1 /proc/uptime` жила тут под
 # именем uptime_secs и была одной из ПЯТИ в проекте (следит C83). Смысл прежний: монотоника ядра,
 # а не date (RTC нет); не прочитали — заведомо большое, то есть грейс не срабатывает, как и раньше.
@@ -141,7 +142,7 @@ HS_DEAD=${HS_DEAD:-180}     # handshake старше этого (сек) => VPS 
 HS_ALIVE=${HS_ALIVE:-120}   # handshake свежее этого (сек) => VPS жив (возврат)
                             # зазор 120..180 — гистерезис против «дребезга»
 # keepalive awg-выхода длиннее этого — судить его по рукопожатию нельзя. Зеркало transport-awg.sh SLOT_KEEPALIVE (равенство
-# держит local/slots-key-test.sh, s_kamax).
+# держит dev/slots-key-test.sh, s_kamax).
 SLOT_KA_MAX=25
 
 # Грейс после подъёма несущей: столько секунд НЕ судим tunnel-транспорт по egress-пробе.
@@ -1093,6 +1094,30 @@ notify_ev() {   # $1 ключ, $2 throttle_sec, $3 тема, $4 текст
         notify "$3" "$4"
     fi
 }
+# ПИСЬМО «ПРЯМОЙ РЕЖИМ» — РАЗ НА ЭПИЗОД АВАРИИ, а не на каждый переход в FAILED (хвост ревью с.96). У туннельных транспортов выход из
+# FAILED молчит (письма «восстановлен» у них нет), и стойко мёртвый путь через hev давал письмо раз в 30–40 мин: истекла пауза —
+# фаза 0 failover «встала» на свежем hev, тик спустя путь снова мёртв — «прямой режим». Эпизод открывает первое письмо; повтор внутри
+# него идёт в журнал (notify-event пишет его ДО почтовых гейтов), а письмом — не чаще FAILOPEN_REMIND, напоминанием о затяжной беде.
+# Закрывает эпизод письмо «VPN восстановлен» (вернулся AmneziaWG — vpn_ok_mailed) или ТИХОЕ восстановление, продержавшееся
+# FAILOPEN_STABLE (vpn_ok_quiet на здоровом тике): короткое «встало» внутри цикла эпизод не закрывает. Отметки — в /tmp, возраст —
+# аптайм (up_age): ребут начинает эпизоды заново, а скачок часов их не задевает.
+VPN_DOWN_EP=/tmp/enodia-vpn-down.episode
+VPN_OK_SINCE=/tmp/enodia-vpn-ok.since
+FAILOPEN_STABLE=${FAILOPEN_STABLE:-1800}
+FAILOPEN_REMIND=${FAILOPEN_REMIND:-86400}
+failopen_mail() {   # $1 тема, $2 текст
+    _fog=0; [ -f "$VPN_DOWN_EP" ] && _fog=$FAILOPEN_REMIND
+    rm -f "$VPN_OK_SINCE"; : > "$VPN_DOWN_EP"
+    notify_ev "vpn-failopen" "$_fog" "$1" "$2"
+}
+vpn_ok_mailed() { rm -f "$VPN_DOWN_EP" "$VPN_OK_SINCE"; }
+vpn_ok_quiet() {
+    [ -f "$VPN_DOWN_EP" ] || return 0
+    _vos=$(cat "$VPN_OK_SINCE" 2>/dev/null)
+    case "$_vos" in ''|*[!0-9]*) uptime_s > "$VPN_OK_SINCE"; return 0 ;; esac
+    [ "$(up_age "$_vos")" -ge "$FAILOPEN_STABLE" ] && rm -f "$VPN_DOWN_EP" "$VPN_OK_SINCE"
+    return 0
+}
 
 # ВОЗВРАТ ДОМОЙ — ТОЖЕ СОБЫТИЕ. До 16.09.2026 его знал только лог сторожа: журнал держал уход на
 # резерв (cross-switch, failover-ok), а возврата в нём не было НИКОГДА, и история переключений на
@@ -1433,7 +1458,7 @@ carrier_tries_reset(){ rm -f "$CARRIER_SEEN_PFX$1.tries" 2>/dev/null || true; }
 # на две минуты раньше. Гейты «VPN выключен», «транспорт не настроен», «программы нет», WAN и
 # интернет стоят НИЖЕ и работают как прежде. Признак «нас позвал hotplug» не заводим нарочно:
 # cron-тик на 60-й/120-й секунде в том же состоянии ничем не хуже, а лишняя сущность — лишний
-# способ разойтись. Сценарий 21 в local/watchdog-tick-test.sh (+ мутант R).
+# способ разойтись. Сценарий 21 в dev/watchdog-tick-test.sh (+ мутант R).
 # carrier_absent_unraised <транспорт> — «несущей нет ВОВСЕ, и подъём ещё в наших руках»: ни разу
 # не везла, маршрута в table 1000 нет, попытки ветки «не поднимали ни разу» не исчерпаны. Это же
 # условие снимает у такой несущей ГИСТЕРЕЗИС SUSPECT в tunnel-ветке: гистерезис охраняет ЖИВУЮ
@@ -1729,8 +1754,11 @@ fo_backoff_reset() {
     return 0
 }
 # Здоровье вернулось: снять бэкофф и закрыть эпизод «интернета нет» (иначе письмо «связь
-# вернулась» не ушло бы никогда — inet_reachable зовётся только в аварии).
-health_back() { fo_backoff_reset; wan_out_clear; }
+# вернулась» не ушло бы никогда — inet_reachable зовётся только в аварии). Здесь же — ТИХОЕ закрытие эпизода «прямой режим»
+# (vpn_ok_quiet): health_back стоит в ОБЕИХ ветках здоровья, а несущую после аварии нередко везёт уже AmneziaWG — перебор,
+# выбор сервера в панели, удачный cross пишут NORMAL мимо «VPS ОЖИЛ», и эпизод, закрываемый лишь в ветке туннелей, лежал до
+# ребута: следующее падение уходило без письма (ревью с.97).
+health_back() { fo_backoff_reset; wan_out_clear; vpn_ok_quiet; }
 
 # FAILOPEN — это СОСТОЯНИЕ СЕТИ, а не строка в файле: пока в table 1000 висит default в дохлую
 # несущую, «прямой режим» — блэкхол, а не fail-open. ГРАБЛЯ (диаг тестера 08.08.2026, VPS мёртв,
@@ -2128,7 +2156,7 @@ fo_standing() {
                 # ДРУГОЙ вопрос (снимать ли гистерезис и грейс) и требует пустого маршрута, а ветка тика
                 # маршрут не спрашивает вовсе. Через него вердикт говорил «не везёт», пока тик поднимал
                 # несущую поверх оставшегося маршрута, молча выходил без правила или ждал бегущий heal
-                # (нашёл перебором миров стенд паритета local/standing-parity-test.sh).
+                # (нашёл перебором миров стенд паритета dev/standing-parity-test.sh).
                 # heal поднимает её прямо сейчас ⇒ подъём идёт, просто не руками тика.
                 if heal_running; then _fs_why=raising
                 # …правила `fwmark→1000` нет ⇒ проводки нет (VPN выключили мимо панели ЛИБО её в эту
@@ -2198,10 +2226,14 @@ fo_standing() {
 # из них может унести `kill -9` или OOM — и тогда пустой файл выключает сторожа НАВСЕГДА, до
 # ребута. Это худший отказ живучести: подсистема, которая замечает чужие отказы, молча отказывает
 # сама.
+# Снимает владелец (daemon-lib.sh::switch_lock_reap) — по УВИДЕННОМУ: вкладка, забравшая тот же мёртвый лок между нашей сверкой и
+# снятием, свой не потеряет; и тогда тик не ведём — смена уже идёт (хвост ревью с.96).
 if [ -e "$SWITCH_LOCK" ]; then
+    _slraw=$(cat "$SWITCH_LOCK" 2>/dev/null | tr -d ' \r\n'); _slm=""
     switch_lock_held && exit 0
     log "switching-лок протух (держатель мёртв или лок старше ${SWITCH_STALE}с) — снимаю"
-    rm -f "$SWITCH_LOCK" 2>/dev/null
+    switch_lock_reap "$_slraw" "$_slm" || exit 0
+    [ -e "$SWITCH_LOCK" ] && switch_lock_held && exit 0
 fi
 
 # Один экземпляр за раз. Лок с ОТМЕТКОЙ ВРЕМЕНИ, а не пустой: тик сторожа делает сетевые пробы и
@@ -2429,7 +2461,7 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
         carrier_seen_mark "$TRANSPORT"; carrier_tries_reset "$TRANSPORT"
         if [ "$xcur" != "HEALTHY" ]; then echo HEALTHY > "$XSTATE"; episode_reset; log "$TRANSPORT health: ок"; fi
         doh_follow_carrier ok       # несущая везёт ⇒ резолвер можно вернуть в туннель
-        health_back   # бэкофф перебора и эпизод «интернета нет» закрыты: туннель жив ⇒ аплинк тоже
+        health_back   # бэкофф перебора, эпизоды «интернета нет» и (продержавшись FAILOPEN_STABLE) «прямого режима» закрыты
         # STATE обратно в NORMAL, если несущую подняли МИМО watchdog (типичный boot-race:
         # failopen поставил сам watchdog, а поднял транспорт heal.sh). В NORMAL его писали
         # ТОЛЬКО cross/failover-ветки → без этого STATE залипал в FAILOPEN на здоровом
@@ -2512,7 +2544,7 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
     # начало нового эпизода аварии — сбрасываем episode-гард.
     # КРОМЕ несущей, которой НЕТ ВОВСЕ (carrier_absent_unraised): подтверждать нечего, идём сразу
     # в ветку «не поднимали ни разу» ниже — её собственные гейты (интернет, программа, счётчик)
-    # остаются. Сценарий 21 в local/watchdog-tick-test.sh (+ мутант S).
+    # остаются. Сценарий 21 в dev/watchdog-tick-test.sh (+ мутант S).
     if [ "$xcur" = "HEALTHY" ] && ! carrier_absent_unraised "$TRANSPORT"; then
         echo SUSPECT > "$XSTATE"; episode_reset
         log "$TRANSPORT health: осечка (жду подтверждения на следующем тике)"
@@ -2695,7 +2727,7 @@ To turn $TLABEL back on: panel :8088 -> the VPN card."
                 echo FAILED > "$XSTATE"
                 ip=$(ext_ip)
                 if [ "$NF_LANG" = en ]; then
-                    notify_ev "vpn-failopen" 0 "BE7000: $TLABEL went down -> direct mode" \
+                    failopen_mail "BE7000: $TLABEL went down -> direct mode" \
 "$TLABEL failed the health check (daemon/tunnel/egress probe).
 Auto-failover is off (mode off) and $_fb_en — the router is in DIRECT
 mode: traffic and DNS bypass the VPN (if the ISP link is up, the internet works),
@@ -2703,7 +2735,7 @@ listed sites are unavailable.
 External IP now: ${ip:-unknown}.
 $_fb_ten"
                 else
-                notify_ev "vpn-failopen" 0 "BE7000: $TLABEL упал -> прямой режим" \
+                failopen_mail "BE7000: $TLABEL упал -> прямой режим" \
 "$TLABEL не прошёл проверку здоровья (демон/туннель/проба egress).
 Авто-failover выключен (режим off), $_fb_ru — роутер в ПРЯМОМ
 режиме: трафик и DNS идут мимо VPN (если связь с провайдером есть, интернет
@@ -2814,7 +2846,7 @@ $_fb_tru"
             ip=$(ext_ip)
             if [ "$NF_LANG" = en ]; then
                 if [ "$_xsw" = 1 ]; then _xwhy="$_xol is unreachable as well"; else _xwhy="$_xol failed to come up"; fi
-                notify_ev "vpn-failopen" 0 "BE7000: $TLABEL and its backups are unreachable -> direct mode" \
+                failopen_mail "BE7000: $TLABEL and its backups are unreachable -> direct mode" \
 "$TLABEL went down and none of its backups came up; switching over to $_xol failed too: $_xwhy.
 The router is in DIRECT mode (safety_off): traffic and DNS bypass the VPN — if the ISP link is up,
 the internet works; listed sites are unavailable.
@@ -2822,7 +2854,7 @@ External IP now: ${ip:-unknown}.
 The watchdog keeps retrying by itself; to bring the VPN back now: panel :8088 -> the VPN card."
             else
                 if [ "$_xsw" = 1 ]; then _xwhy="$_xol тоже недоступен"; else _xwhy="$_xol не поднялся"; fi
-                notify_ev "vpn-failopen" 0 "BE7000: $TLABEL и резервы недоступны -> прямой режим" \
+                failopen_mail "BE7000: $TLABEL и резервы недоступны -> прямой режим" \
 "$TLABEL упал, и ни один его резерв не поднялся; переход на другой протокол тоже не удался: $_xwhy.
 Роутер в ПРЯМОМ режиме (safety_off): трафик и DNS идут мимо VPN — если связь с провайдером есть,
 интернет работает; сайты из списка недоступны.
@@ -2844,14 +2876,14 @@ The watchdog keeps retrying by itself; to bring the VPN back now: panel :8088 ->
         echo "FAILOPEN" > "$STATE"; echo FAILED > "$XSTATE"
         ip=$(ext_ip)
         if [ "$NF_LANG" = en ]; then
-            notify_ev "vpn-failopen" 0 "BE7000: $TLABEL and its backups are unreachable -> direct mode" \
+            failopen_mail "BE7000: $TLABEL and its backups are unreachable -> direct mode" \
 "$TLABEL went down and none of its backups came up. The router is in DIRECT mode
 (safety_off): traffic and DNS bypass the VPN — if the ISP link is up, the internet
 works; listed sites are unavailable.
 External IP now: ${ip:-unknown}.
 To bring the VPN back by hand: panel :8088 -> the VPN card."
         else
-        notify_ev "vpn-failopen" 0 "BE7000: $TLABEL и резервы недоступны -> прямой режим" \
+        failopen_mail "BE7000: $TLABEL и резервы недоступны -> прямой режим" \
 "$TLABEL упал, и ни один его резерв не поднялся. Роутер в ПРЯМОМ режиме
 (safety_off): трафик и DNS идут мимо VPN — если связь с провайдером есть,
 интернет работает; сайты из списка недоступны.
@@ -3233,7 +3265,7 @@ if [ "$age" -ge "$HS_DEAD" ]; then
             # «vpn-toggle меню → 9» — пункт из времён, когда сервером управляли по SSH. Сейчас
             # сервер меняют в панели, и совет вёл в никуда именно тогда, когда он нужен.
             if [ "$NF_LANG" = en ]; then
-                notify_ev "vpn-failopen" 0 "BE7000: the VPN went down, direct mode" \
+                failopen_mail "BE7000: the VPN went down, direct mode" \
 "The VPS does not answer (last handshake ${age} s ago).
 Config: ${active:-?}.
 
@@ -3245,7 +3277,7 @@ When the VPS comes back, the VPN returns automatically and a second email
 arrives. If the VPS stays down for long — check it, or switch the server:
 panel :8088 -> the VPN card."
             else
-            notify_ev "vpn-failopen" 0 "BE7000: VPN упал, прямой режим" \
+            failopen_mail "BE7000: VPN упал, прямой режим" \
 "VPS не отвечает (последний handshake ${age} сек назад).
 Конфиг: ${active:-?}.
 
@@ -3281,7 +3313,7 @@ elif awg_hs_alive "$age"; then
     # Туннель здоров ⇒ прошлый reup-троттл своё отработал: снимаем штамп, чтобы СЛЕДУЮЩАЯ авария
     # снова получила попытку «починить на месте», а не упёрлась в остаток получасового окна.
     rm -f "$REUP_STAMP" 2>/dev/null
-    health_back   # бэкофф перебора и эпизод «интернета нет» закрыты: handshake свежий ⇒ аплинк жив
+    health_back   # бэкофф перебора, «интернета нет» и (продержавшись) «прямой режим» закрыты: handshake свежий ⇒ аплинк жив
     doh_follow_carrier ok       # awg0 везёт ⇒ резолвер можно вернуть в туннель
     if [ "$cur" = "FAILOPEN" ] && [ -f "$AWG0_FIRSTUP" ]; then
         # ПЕРВЫЙ ПОДЪЁМ, А НЕ ВОЗВРАТ. FAILOPEN сюда поставили МЫ же — веткой «awg0 в эту загрузку
@@ -3336,6 +3368,7 @@ External IP: ${ip:-unknown}."
 Вернул VPN-роутинг и DNS через туннель.
 Внешний IP: ${ip:-неизвестен}."
         fi
+        vpn_ok_mailed   # эпизод аварии закрыт письмом: следующее падение — снова письмо
     else
         # Rule-heal: awg жив (handshake свежий) + NORMAL, но fw3-reload мог снести FORWARD/сплит
         # (mipctld-guard вернул бы лишь маркировку, не FORWARD несущей) → переиграть правила.
