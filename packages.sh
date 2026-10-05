@@ -222,13 +222,19 @@ rst_label() { case "$1" in
     esac; }
 # Works AFTER the restart — by the result, not by the owner's exit code («демон жив» never meant «сервис работает»). A fresh tunnel
 # needs a moment for its first handshake, hence the short retry; the rest are judged by their own verbs above.
+# An exit is judged by its plugin's `slot-health` CONTRACT (transport.sh): 0 alive · 1 sagging · 2 «can't judge» · 4/5 hev path
+# dead. 2 is not a failure: the AmneziaWG plugin has no exit health at all, because an idle exit has no handshake until traffic or
+# its 25-s keepalive reaches it — the watchdog judges it by its own signs, and the restart must not invent a verdict the owner
+# doesn't give (BE7000 2026-10-05: an idle awg3 restarted fine, first handshake 30 s later, and was reported «не отвечает»).
 rst_works() {   # $1 = unit
     case "$1" in
         main|slot[2-4])
             _rwn=0
             while [ "$_rwn" -lt "$RST_HEALTH_TRIES" ]; do
-                if [ "$1" = main ]; then sh "$ENODIA_DIR/transport.sh" health >/dev/null 2>&1 && return 0
-                else sh "$ENODIA_DIR/transport.sh" slot-health "${1#slot}" >/dev/null 2>&1 && return 0; fi
+                if [ "$1" = main ]; then sh "$ENODIA_DIR/transport.sh" health >/dev/null 2>&1; _rwc=$?
+                else sh "$ENODIA_DIR/transport.sh" slot-health "${1#slot}" >/dev/null 2>&1; _rwc=$?; fi
+                [ "$_rwc" = 0 ] && return 0
+                [ "$_rwc" = 2 ] && [ "$1" != main ] && return 0
                 sleep 2; _rwn=$((_rwn + 1))
             done
             return 1 ;;
