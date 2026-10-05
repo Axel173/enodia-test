@@ -161,7 +161,7 @@ RESP=$(
     echo ""
     echo "-- "
     echo "Поддержать: https://web.tribute.tg/d/LtA"
-    echo "Другие способы: https://github.com/Axel173/xiaomi-be7000-amnezia#donate"
+    echo "Другие способы: https://github.com/Axel173/enodia#donate"
     echo "."
     sleep 1
     echo "QUIT"

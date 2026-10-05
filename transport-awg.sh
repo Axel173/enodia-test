@@ -269,7 +269,7 @@ remove_awg_routing() {
 }
 
 # ---- awg-СЛОТ (доп-выход, мульти-транспорт Ф2) ----------------------------------
-# Дизайн: local/CLAUDE-мультитранспорт-дизайн.md. «Выход» слота = (awg, configs/<cfg>.conf):
+# Дизайн: заметки разработки «мультитранспорт-дизайн». «Выход» слота = (awg, configs/<cfg>.conf):
 # СВОЯ несущая awg<id> (id 2..4; awg0 = основной), свой UAPI-сокет, свой IP из конфига, default в
 # table 100<id>. Марку 0x<id> и `ip rule fwmark -> table 100<id>` ставит mark-core (transport.sh
 # после slot-up его переигрывает) — тут ТОЛЬКО карриер: подъём awgN + FORWARD/MASQUERADE + вывод
