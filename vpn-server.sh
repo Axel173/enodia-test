@@ -720,6 +720,7 @@ cmd_restart() {
 case "$1" in
     init)        cmd_init ;;
     restart)     cmd_restart ;;
+    enabled)     [ -f "$ON_FLAG" ] ;;   # код 0 — «доступ домой» включён (намерение); перезапуск в «Компонентах» отличает демон от сироты
     up)          cmd_up ;;
     down)        cmd_down ;;
     status)      cmd_status ;;
