@@ -319,6 +319,16 @@ spawn_bg() {  # spawn_bg <pidfile> <argv для /bin/sh…>:  spawn_bg /tmp/enod
 # (гард «несёт выход» живёт в packages.sh, у кнопки его не было).
 # Отказ ДОЛЖЕН приезжать синхронно: план считаем ДО фонового запуска, иначе причина оседает в
 # логе, а человек видит бодрое «запущено» и пустой прогресс.
+# START OF A COMPONENTS OPERATION in the background — one sequence for «Применить» and «Перезапустить»: status, log and plan are
+# written HERE, before the spawn, or the screen's first poll would read the previous operation and call this one finished.
+pkg_spawn() {  # pkg_spawn <строка плана: ставим⇥снимаем⇥обновляем[⇥перезапускаем]> <верб движка> [аргументы…]
+	# Атомарно (запись рядом + `mv`) — разбор у packages.sh::set_state: читатель обрезанного файла видит «IDLE».
+	echo RUNNING > "$ENODIA_STATE/.proto-install.state.new" && mv -f "$ENODIA_STATE/.proto-install.state.new" "$ENODIA_STATE/.proto-install.state"
+	: > "$ENODIA_STATE/.proto-install.log"
+	printf '%s\n' "$1" > "$ENODIA_STATE/.proto-install.plan"
+	shift
+	spawn_bg /tmp/enodia-proto-install.pid "$ENODIA_DIR/packages.sh" "$@"
+}
 pkg_bg() {  # pkg_bg <ставим|-> <снимаем|-> <сообщение об успехе>
 	[ -f "$ENODIA_DIR/packages.sh" ] || fail "packages.sh не установлен (обновите скрипты с GitHub)"
 	# «Идёт ли установка» спрашиваем У ДВИЖКА — единственного владельца ответа (packages.sh busy).
@@ -333,14 +343,10 @@ pkg_bg() {  # pkg_bg <ставим|-> <снимаем|-> <сообщение о�
 			[ -n "$pwhy" ] || pwhy="не хватает места на флеше — снимите что-нибудь в «Роутер → Компоненты»"
 			fail "$pwhy" ;;
 	esac
-	# Атомарно (запись рядом + `mv`) — разбор у packages.sh::set_state: читатель обрезанного файла видит «IDLE».
-	echo RUNNING > "$ENODIA_STATE/.proto-install.state.new" && mv -f "$ENODIA_STATE/.proto-install.state.new" "$ENODIA_STATE/.proto-install.state"
-	: > "$ENODIA_STATE/.proto-install.log"
 	# Третье поле — какие из «ставим» обновления, словами плана (`upd`): иначе до перезаписи движком карточка «Идёт установка»
 	# называла обновление «Поставить». Только имена связок — план печатает их сам, чужого в строку не пускаем.
 	pupd=$(printf '%s' "$pplan" | sed -n 's/.*"upd":"\([a-z0-9 ]*\)".*/\1/p' | tr ' ' ',')
-	printf '%s\t%s\t%s\n' "$1" "$2" "${pupd:--}" > "$ENODIA_STATE/.proto-install.plan"
-	spawn_bg /tmp/enodia-proto-install.pid "$ENODIA_DIR/packages.sh" apply "$1" "$2"
+	pkg_spawn "$(printf '%s\t%s\t%s' "$1" "$2" "${pupd:--}")" apply "$1" "$2"
 	printf '{"ok":true,"code":0,"msg":"%s"}\n' "$3"
 	exit 0
 }
@@ -2451,6 +2457,17 @@ EOF
 	# 20-МБ флеше замена (снять Xray → поставить Hysteria2) двумя заходами вообще не влезает.
 	# Прогресс и лок — ТЕ ЖЕ .proto-install.{state,log} + /tmp/enodia-proto-install.lock, что у смены
 	# набора: фронт уже умеет их опрашивать, а «две установки разом» лок и придуман не пускать.
+	# «Перезапустить» у строки «работает прежняя сборка»: живые процессы связки — на установленную сборку, каждый через своего
+	# владельца (разбор — packages.sh::cmd_restart). Фоном, под тем же локом и статусом, что «Применить»: ход и итог экран
+	# показывает своей «Последней операцией». «Нечего перезапускать» — тоже ответ движка, синхронного отказа тут нет.
+	pkg_restart)
+		prs=$(field p)
+		case "$prs" in ''|*[!a-z0-9,]*) fail "недопустимый список компонентов" ;; esac
+		[ -f "$ENODIA_DIR/packages.sh" ] || fail "packages.sh не установлен (обновите скрипты с GitHub)"
+		sh "$ENODIA_DIR/packages.sh" busy >/dev/null 2>&1 && fail "установка компонентов уже идёт — дождитесь её конца"
+		pkg_spawn "$(printf -- '-\t-\t-\t%s' "$prs")" restart "$prs"
+		printf '{"ok":true,"code":0,"msg":"%s"}\n' "Перезапуск запущен — ход виден на экране «Компоненты»"
+		exit 0 ;;
 	pkg_apply)
 		pins=$(field ins); pdel=$(field del)
 		# «-» = ПУСТАЯ сторона плана (так шлёт панель, так же зовётся CLI). Разбираем ДО whitelist'а:

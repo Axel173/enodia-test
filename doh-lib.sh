@@ -1730,8 +1730,11 @@ case "$0" in
 	*doh-lib.sh)
 		case "${1:-}" in
 			start) doh_start ;;
+			# restart — the running proxy on a fresh process from the installed file (Components → «Перезапустить»). Not running =
+			# nothing to do: whether DoH SHOULD run is doh_want's call at its own start, not ours. Same pidfile for DoH and DoT.
+			restart) doh_running || exit 0; doh_restart_wait ;;
 			"")    : ;;
-			*)     echo "usage: $0 start" >&2; exit 2 ;;
+			*)     echo "usage: $0 start|restart" >&2; exit 2 ;;
 		esac
 		;;
 esac

@@ -1311,7 +1311,7 @@
   // ФОКУС ПЕРЕЖИВАЕТ ПЕРЕРИСОВКУ ЭКРАНА. Экран после действия рисуется заново целиком, и фокус клавиатуры уходил в body:
   // нажал пробелом тумблер выхода — и следующий Tab начинается с начала страницы (тот же класс, что лечили у ленты в
   // шаге 2 и у плиток «Транспорта»). Примету узла берём ДО перерисовки, возвращаем фокус на узел с той же приметой.
-  var FOCUS_ATTRS=['data-xa','data-fb','data-fo','data-xk','data-sa','data-si','data-va','data-pa','data-pm','data-ck','data-ap','data-cact','data-rdel','data-rb','data-rdon','data-rst','data-rstg','data-rstale','data-ga','data-gd','data-gs','data-tab','data-t','data-dvm','data-dvs','data-dvos','data-dvps','data-dvt','data-dvod','data-dvpp','data-dvpd','data-dvpr','data-dwd','data-dwc','data-dwa','data-dwr','data-dwx','data-dws','data-dwg','data-dwgd','data-dva','data-gact','data-gsrc','data-gtab','data-rna','data-rns','data-rnd','data-rnx','data-rnpr','data-rnc','data-ris','data-ric','data-rix','data-rit','data-dnsp','data-dnsa','data-ntm','data-nta','data-dha','data-dhd','data-wfa','data-wfo','data-blka','data-lsi','data-dk','data-dkm','data-dkc','data-pkg','data-pka','data-pku','data-upd','data-sia','data-sup','data-sud','data-unm','data-una','data-hk','data-paa','data-tfa','data-pvt','data-pvl','data-sid','data-nfa','data-eva','data-evs','data-ala','data-sv','id'];
+  var FOCUS_ATTRS=['data-xa','data-fb','data-fo','data-xk','data-sa','data-si','data-va','data-pa','data-pm','data-ck','data-ap','data-cact','data-rdel','data-rb','data-rdon','data-rst','data-rstg','data-rstale','data-ga','data-gd','data-gs','data-tab','data-t','data-dvm','data-dvs','data-dvos','data-dvps','data-dvt','data-dvod','data-dvpp','data-dvpd','data-dvpr','data-dwd','data-dwc','data-dwa','data-dwr','data-dwx','data-dws','data-dwg','data-dwgd','data-dva','data-gact','data-gsrc','data-gtab','data-rna','data-rns','data-rnd','data-rnx','data-rnpr','data-rnc','data-ris','data-ric','data-rix','data-rit','data-dnsp','data-dnsa','data-ntm','data-nta','data-dha','data-dhd','data-wfa','data-wfo','data-blka','data-lsi','data-dk','data-dkm','data-dkc','data-pkg','data-pka','data-pku','data-pkrs','data-upd','data-sia','data-sup','data-sud','data-unm','data-una','data-hk','data-paa','data-tfa','data-pvt','data-pvl','data-sid','data-nfa','data-eva','data-evs','data-ala','data-sv','id'];
   function focusMark(){
     var a=document.activeElement;
     if(!a || !a.getAttribute) return null;
@@ -6757,6 +6757,10 @@
     // — обновление компонента (29.09.2026): строка «есть обновление», кнопка, «работает прежняя», сверка с GitHub.
     "есть обновление":"update available","обновим":"will update",
     "Поставить обновление":"Install update","Отменить обновление":"Cancel update",
+    "Перезапустить":"Restart","Перезапуск":"Restart","перезапуск":"restart","Идёт перезапуск":"Restart in progress",
+    "работает прежняя сборка — новая заработает после перезапуска":"the previous build is running — the new one starts working after a restart",
+    "перезапуск запущен…":"restart started…","перезапускаю…":"restarting…",
+    "Процессы перезапускаются по очереди, каждый — через своего владельца: связь у затронутых пропадает на секунды. Пока идёт — список не меняется и план не применить. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.":"Processes restart one by one, each through its owner: the affected ones lose connectivity for seconds. While it runs, the list does not change and the plan cannot be applied. If the router goes silent for 10 minutes, the panel will say so instead of waiting forever.",
     "работает прежняя сборка — новая заработает после перезапуска (проще всего перезагрузить роутер)":"the previous build is running — the new one starts working after a restart (the simplest way is to reboot the router)",
     "Обновления компонентов":"Component updates","новые сборки приезжают с обновлением системы":"new builds arrive with a system update",
     "Файлы с компьютера":"Files from your computer","Загрузить…":"Upload…","загружено:":"uploaded:","Убрать":"Remove",
@@ -10129,6 +10133,31 @@
     [") — новая заработает после перезапуска компонента; проще всего перезагрузить роутер.",") — the new one starts working after the component restarts; the simplest way is to reboot the router."],
     ["Обновляю ","Updating "],["прежняя сборка","previous build"],["свежая сборка","new build"],
     ["Отказ:","Refused:"],["неизвестный компонент: ","unknown component: "],
+    // Перезапуск на установленную сборку (05.10.2026): журнал движка, ответ CGI и вопрос перед запуском.
+    ["Перезапускать нечего: все процессы уже работают на установленных сборках.","Nothing to restart: every process already runs the installed build."],
+    ["Перезапуск на установленной сборке: ","Restarting on the installed build: "],["Перезапускаю: ","Restarting: "],
+    ["Ещё процессов на прежней сборке, не наших: ","Other processes on the previous build, not ours: "],[" (разовая проверка сервера) — закончатся сами"," (a one-off server check) — they will end by themselves"],
+    ["Основной канал не трогаю: сторож держит аварийный прямой режим. Перезапустите, когда туннель вернётся.","Not touching the main channel: the watchdog holds the emergency direct mode. Restart it when the tunnel is back."],
+    ["Готово: всё перезапущено на установленных сборках.","Done: everything restarted on the installed builds."],
+    [" — на установленной сборке"," — on the installed build"],[" — всё ещё на прежней сборке"," — still on the previous build"],
+    ["Перезапущено, но не отвечает: ","Restarted but not responding: "],[" — сторож проверит и починит на своём тике"," — the watchdog will check and repair it on its tick"],
+    ["Перезапуск не удался: ","Restart failed: "],["Не вышло: ","Did not work: "],["Готово: ","Done: "],
+    ["тёплый резерв AmneziaWG","AmneziaWG warm reserve"],["основной канал","main channel"],["дополнительный выход №","extra exit #"],
+    ["шифрованный DNS","encrypted DNS"],
+    ["сервер перезапущен: ","server restarted: "],[" на новом демоне"," on a new daemon"],
+    [" не поднялся — сторож поднимет его на следующем тике"," did not come up — the watchdog will bring it up on its next tick"],
+    ["сервер выключен — перезапускать нечего","the server is off — nothing to restart"],
+    ["[transport] активного транспорта нет — перезапускать нечего","[transport] no active transport — nothing to restart"],
+    ["Перезапуск запущен — ход виден на экране «Компоненты»","Restart started — progress is shown on the «Components» screen"],
+    ["→ перезапуск: ","→ restart: "],["Перезапустить ","Restart "],[" на установленной сборке?"," on the installed build?"],
+    ["Ненадолго прервётся:","Briefly interrupted:"],["Перезагружать роутер не нужно.","No need to reboot the router."],
+    [" — на 5–10 с, открытые соединения переподключатся"," — for 5–10 s, open connections will reconnect"],
+    [" — погасим, поднимется новой сборкой, когда понадобится"," — put out, it comes back on the new build when needed"],
+    ["«доступ домой» — на несколько секунд, клиенты переподключатся сами","«home access» — for a few seconds, clients reconnect by themselves"],
+    ["«доступ домой»","«home access»"],
+    [" — на секунду, правила не трогаем"," — for a second, rules stay untouched"],[" — на 1–2 с без имён"," — 1–2 s without name lookups"],
+    [" — на секунду, открытая по HTTPS страница переподключится"," — for a second, a page opened over HTTPS will reconnect"],
+    [" — на несколько секунд, его трафик пока пойдёт запасным путём"," — for a few seconds, its traffic takes its fallback path meanwhile"],
     [" указан и на установку, и на удаление"," is listed both for install and for removal"],
     ["Нельзя снять ","Cannot remove "],
     // Отказы pkg_bg: приходят СИНХРОННО в ответе CGI (в отличие от строк лога выше) на любую
@@ -23060,7 +23089,7 @@
   // ЧТО ДЕЛАЛИ — своими текстовыми узлами: глагол, имена и итог переводятся каждый своим ключом, а склейка «Поставить Xray —
   // готово» одной строкой не совпала бы ни с одним ключом словаря (имена связок — переменные). Смена набора из CLI плана не
   // оставляет — тогда общими словами.
-  function pkgOpTitle(ins, del, tail, upd){
+  function pkgOpTitle(ins, del, tail, upd, rst){
     var nm=function(ids){ return ids.map(function(id){ return '<span>'+esc(pkgLabelOf(id))+'</span>'; }).join(', '); }, h=[];
     // «Обновить» — те из «ставим», что роутер назвал обновлением (третье поле плана, `upd`): по окончании связка «установлена» в
     // обоих случаях, и задним числом их не отличить.
@@ -23070,6 +23099,9 @@
     if(up.length) h.push('<span>'+(h.length ? 'обновление' : 'Обновление')+'</span> '+nm(up));
     ins=put;
     if(del.length) h.push('<span>'+(h.length ? 'снять' : 'Снять')+'</span> '+nm(del));
+    // «Перезапуск» — живые процессы на установленную сборку (четвёртое поле плана, `rst`): у этой операции нет ни «ставим», ни «снимаем».
+    rst=rst||[];
+    if(rst.length) h.push('<span>'+(h.length ? 'перезапуск' : 'Перезапуск')+'</span> '+nm(rst));
     return '<span class="pk-t">'+(h.length ? h.join(' · ') : '<span>Смена набора протоколов</span>')+(tail||'')+'</span>';
   }
   // МЕСТО ЖИТЕЛЬСТВА связки. Полный вес и его часть на томе кода приходят разными числами: пока накопителя нет, они равны и
@@ -23110,7 +23142,11 @@
       // включённого DoH); держит его только идущая операция.
       + pkgUpdHtml(p, pkgRunning)
       // Файл уже заменён, а живой демон исполняет прежний (роутер видит это по процессу, `run_old`): «обновил, а ничего не изменилось».
-      + (was && p.run_old===true ? '<div class="ds"><span class="wr">работает прежняя сборка — новая заработает после перезапуска (проще всего перезагрузить роутер)</span></div>' : '')
+      // Кнопка — только когда роутер назвал, ЧТО перезапуск затронет (`rst`): иначе (прежний роутер, процесс не наших владельцев)
+      // остаётся прежний совет.
+      + (was && p.run_old===true ? ((p.rst||[]).length
+          ? '<div class="ds pk-upd"><span class="wr">работает прежняя сборка — новая заработает после перезапуска</span> <button type="button" class="btn sm gh" data-pkrs="'+id+'"'+(pkgRunning ? ' disabled' : '')+'>Перезапустить</button></div>'
+          : '<div class="ds"><span class="wr">работает прежняя сборка — новая заработает после перезапуска (проще всего перезагрузить роутер)</span></div>') : '')
       + (p.hold ? '<div class="ds"><span class="wr">снять нельзя: '+esc(p.hold)+'</span></div>' : '')
       // warn — «стоит, но здесь работать не будет» (zapret на ядре без NFQUEUE): не запрет и не состояние, а причина, по
       // которой занятое место бесполезно.
@@ -23161,13 +23197,14 @@
   function pkgRunHtml(){
     if(!pkgRunning) return '';
     var op=pkgOp||{ins:'', del:'', log:[]}, last=pkgProgText((op.log||[]).length ? op.log[op.log.length-1] : lastProtoMsg);
-    return '<div class="card wfull" id="pkg-run"><div class="wt">Идёт установка</div>'
-      + '<div class="lrow"><div class="grow"><div class="nm" id="pkg-run-now" role="status" tabindex="-1">'+pkgOpTitle(pkgIds(op.ins), pkgIds(op.del), '', pkgIds(op.upd))+'</div>'
+    var rs=pkgIds(op.rst).length>0;
+    return '<div class="card wfull" id="pkg-run"><div class="wt">'+(rs ? 'Идёт перезапуск' : 'Идёт установка')+'</div>'
+      + '<div class="lrow"><div class="grow"><div class="nm" id="pkg-run-now" role="status" tabindex="-1">'+pkgOpTitle(pkgIds(op.ins), pkgIds(op.del), '', pkgIds(op.upd), pkgIds(op.rst))+'</div>'
       + '<div class="ds one" id="pi-progress" aria-live="polite">'+esc(last||'')+'</div></div><span class="chip wr">идёт</span></div>'
       // Срок — от ПОСЛЕДНЕГО ПРОГРЕССА, а не от нажатия (разбор у pollProto): «замолчит» здесь значит ровно это. Перенос на накопитель
       // не ждёт, а ОТКАЗЫВАЕТ, пока идёт установка (usb-offload.sh смотрит на тот же лок) — так и говорим (ревью шага 6c, круг 1).
       // Порядок — закачка заранее (packages.sh): сперва всё в ОЗУ, потом снятия и установка; у операции без установки качать нечего.
-      + dkLine((op.ins ? 'Сперва всё нужное скачивается в память роутера, потом удаления и установка. ' : '')+'Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.')+'</div>';
+      + dkLine(rs ? 'Процессы перезапускаются по очереди, каждый — через своего владельца: связь у затронутых пропадает на секунды. Пока идёт — список не меняется и план не применить. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.' : (op.ins ? 'Сперва всё нужное скачивается в память роутера, потом удаления и установка. ' : '')+'Пока идёт — список не меняется и план не применить, а перенос движков на накопитель роутер не начнёт. Если роутер замолчит на 10 минут, панель скажет об этом, а не будет ждать вечно.')+'</div>';
   }
   // ---- карточка «Что должно стоять» ----
   function pkgListHtml(d){
@@ -23282,7 +23319,7 @@
     var st=op.state, v=(st==='OK') ? {d:'', w:'готово'} : (st==='FAIL') ? {d:' bad', w:'не удалось'} : (st==='RUNNING') ? {d:' warn', w:'прервана'} : {d:' off', w:''};
     var last=String(op.log[op.log.length-1]||'').replace(/^\[\d\d:\d\d:\d\d\] /, '');
     var h='<div class="card w2" id="pkg-last"><div class="wt">Последняя операция</div>'
-      + '<div class="lrow"><span class="dot'+v.d+'"></span><div class="grow"><div class="nm" id="pkg-last-now" tabindex="-1">'+pkgOpTitle(pkgIds(op.ins), pkgIds(op.del), v.w ? ' — <span>'+v.w+'</span>' : '', pkgIds(op.upd))
+      + '<div class="lrow"><span class="dot'+v.d+'"></span><div class="grow"><div class="nm" id="pkg-last-now" tabindex="-1">'+pkgOpTitle(pkgIds(op.ins), pkgIds(op.del), v.w ? ' — <span>'+v.w+'</span>' : '', pkgIds(op.upd), pkgIds(op.rst))
       + '</div><div class="ds"><span>'+esc(fmtAge(Math.max(0, (Number(op.now)||0)-(Number(op.at)||0))))+'</span></div></div></div>';
     if(st==='FAIL') h+='<div class="cline wr">'+esc(last)+'</div>';
     // НЕ СКАЧАЛОСЬ — ДВЕРЬ, а не только причина: у кого GitHub закрыт, повтор кнопки не поможет никогда. Имена — у роутера (`need`).
@@ -23329,6 +23366,7 @@
         if(a==='upload'){ var fi=document.getElementById('pkg-file'); if(fi && !x.disabled) fi.click(); return; }
         if(a==='unstage'){ if(!x.disabled) pkgUnstage(); return; }
         var u=x.getAttribute('data-pku'); if(u){ if(!x.disabled) pkgUpdPick(b, u); return; }
+        var rs=x.getAttribute('data-pkrs'); if(rs){ if(!x.disabled) pkgRestart(rs); return; }
         var c=x.getAttribute('data-pkc'); if(c){ pkgCand(b, c); return; }
         // Сам переключатель (и его подпись) шлёт change — второй раз строка его не переключает.
         if(x.tagName==='LABEL' || x.tagName==='INPUT' || x.tagName==='BUTTON' || x.tagName==='A' || x.tagName==='SUMMARY') return;
@@ -23427,6 +23465,43 @@
              : 'Сперва всё нужное скачивается с GitHub в память роутера, потом удаления и установка: не скачалось — не меняется ничего. Активную несущую и дополнительные выходы операция не переключает.');
     el.innerHTML=h;
     back();
+  }
+  // «ПЕРЕЗАПУСТИТЬ» — живые процессы связки на установленную сборку без перезагрузки роутера. ЧТО прервётся — по списку роутера
+  // (`rst`: владельцы процессов в порядке перезапуска), а не догадкой экрана: один AmneziaWG — это и основной канал, и выход, и
+  // «доступ домой». Запуск, опрос и итог — те же, что у «Применить» (операция движка, `pkg_op`).
+  var PKG_RST_CUT={
+    main:'основной канал — на 5–10 с, открытые соединения переподключатся',
+    'warm-awg':'тёплый резерв AmneziaWG — погасим, поднимется новой сборкой, когда понадобится',
+    server:'«доступ домой» — на несколько секунд, клиенты переподключатся сами',
+    zapret:'Zapret (nfqws) — на секунду, правила не трогаем',
+    doh:'шифрованный DNS — на 1–2 с без имён',
+    tls:'HTTPS панели — на секунду, открытая по HTTPS страница переподключится'
+  };
+  function pkgRstCut(u){ var m=/^slot([2-4])$/.exec(u); return m ? 'дополнительный выход №'+m[1]+' — на несколько секунд, его трафик пока пойдёт запасным путём' : (PKG_RST_CUT[u]||u); }
+  function pkgRestart(id){
+    if(busy || pkgRunning) return;
+    var p=null; ((pkgData||{}).pkgs||[]).forEach(function(q){ if(q.id===id) p=q; });
+    if(!p || !(p.rst||[]).length) return;
+    var q='Перезапустить '+pkgLabelOf(id)+' на установленной сборке?\n\nНенадолго прервётся:\n'
+      + p.rst.map(function(u){ return '• '+pkgRstCut(u); }).join('\n')+'\n\nПерезагружать роутер не нужно.';
+    if(!askConfirm(q)) return;
+    var np=navMark();
+    setBusy(true,'перезапускаю…'); lastProtoMsg='';
+    logLine('→ перезапуск: '+pkgLabelOf(id), null);
+    tokPost('/cgi-bin/action', function(tok){
+      return 'action=pkg_restart&token='+encodeURIComponent(tok)+'&p='+encodeURIComponent(id);
+    }).then(function(d){
+      logLine(d.msg||'', !!d.ok);
+      if(d.ok){
+        pkgRunning=true; showToast('перезапуск запущен…','busy');
+        startProtoPoll(openPackages, np);
+        _nwFocus={s:['#pkg-run-now', '#pkg-last-now'], g:_navGen};
+        navLate(np, openPackages);
+      } else {
+        showToast(d.msg||'не удалось запустить', false); setBusy(false);
+        _nwFocus={s:['#pkg-last-now', '#pkg-plan-now'], g:_navGen}; navLate(np, openPackages);
+      }
+    }).catch(function(){ logLine('сбой запроса', false); showToast('сбой запроса', false); setBusy(false); });
   }
   function applyPackages(){
     if(busy || pkgRunning) return;
