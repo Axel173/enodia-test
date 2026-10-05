@@ -2541,7 +2541,7 @@
     if(d.vif || v>0) h+=row(exitColor(0), 'Через туннель', Math.min(v, w));
     if(x.x){
       var sx=0;
-      for(k=2;k<=4;k++){
+      for(k=2;k<2+x.x.length;k++){
         var b=Number(x.x[k-2])||0, e=null, j;
         for(j=0;j<exs.length;j++) if((exs[j].id|0)===k) e=exs[j];
         sx+=b;
@@ -2924,7 +2924,8 @@
   function exitColor(id){
     if(id===0)  return 'var(--g1)';
     if(id===-1) return 'var(--text-tertiary)';
-    return ({2:'var(--g2)',3:'var(--g3)',4:'var(--g4)'})[id] || 'var(--g5)';
+    // Exits 5..7 (since 05.10.2026): own tokens --ex5..--ex7, validated against their neighbours in both themes.
+    return ({2:'var(--g2)',3:'var(--g3)',4:'var(--g4)',5:'var(--ex5)',6:'var(--ex6)',7:'var(--ex7)'})[id] || 'var(--g5)';
   }
   // ПЕРИОД — АРГУМЕНТ, А НЕ ВТОРАЯ ЛЕСТНИЦА. Карточка «Обзора» спрашивает «сегодня», экран
   // «Трафик» — те же строки за неделю, месяц и год. Разрез один, и порядок «основной путь ·
@@ -7922,14 +7923,14 @@
     "Основной":"Main",
     // fail() слот-вербов cgi-bin/action + groups.sh slot (правило dev15: все fail переведены);
     // «нет такой группы»/«битый id» — старый пробел groups.sh, закрыт заодно.
-    "доп-выход: 0, 2, 3 или 4":"extra exit: 0, 2, 3 or 4",
+    "доп-выход: 0 или 2..7":"extra exit: 0 or 2..7",
     "битый id выхода":"bad exit id",
     "неизвестный транспорт":"unknown transport","весь трафик через VPS":"all traffic via VPS","Правка конфига не сохранена — выйти без сохранения?":"The config edit is not saved — leave without saving?",
     "Этот сервер стал активным, пока вы правили конфиг. VPN выключен — сохранение несущую не тронет, экран обновится после него.":"This server became active while you were editing the config. The VPN is off — saving won't touch the carrier; the screen updates after it.","реестр занят другой операцией — повторите":"the exit registry is busy with another operation — try again",
     "битое имя конфига":"bad config name",
     "нужно имя":"name required",
     "поле: name|transport|config|fallback":"field: name|transport|config|fallback",
-    "слот: 0|2|3|4":"slot: 0|2|3|4",
+    "слот: 0|2..7":"slot: 0|2..7",
     "нет такой группы":"no such group",
     "битый id":"bad id",
     "доп-выход только для групп «в VPN»":"an extra exit is only for «via VPN» groups",
@@ -9655,7 +9656,7 @@
     // (имя человек задал сам — переводу не подлежит, поэтому подставляем как есть).
     [/→ выход /g,"→ exit "],
     [/→ основной туннель/g,"→ the main tunnel"],
-    [/IP (\S+) -> ЦЕЛИКОМ через VPN \(выход №([234])\)/g,"IP $1 → ENTIRELY through the VPN (exit #$2)"],
+    [/IP (\S+) -> ЦЕЛИКОМ через VPN \(выход №([2-7])\)/g,"IP $1 → ENTIRELY through the VPN (exit #$2)"],
     [/выход выключен \(идут основным\):/g,"exit is off (going through the main one):"],
     [/→ мимо VPN целиком/g,"→ fully bypassing the VPN"],
     [/IP (\S+) -> мимо VPN, но ручные правила \(домены\/адреса\/группы «в VPN»\) действуют/g,
@@ -10141,7 +10142,7 @@
     ["План: ставим [","Plan: installing ["],["], снимаем [","], removing ["],[", из них обновляем [",", of which updating ["],
     // Обновление связки (29.09.2026): заголовок и строка бинаря «Обновляю xray: 26.1 → 26.2…», «работает прежняя» и итог nfqws.
     ["Сейчас работает прежняя сборка (","The previous build is running now ("],
-    [") — новая заработает после перезапуска компонента; проще всего перезагрузить роутер.",") — the new one starts working after the component restarts; the simplest way is to reboot the router."],
+    [") — новая заработает после перезапуска компонента: кнопка «Перезапустить» в его строке, а где её нет — перезагрузка роутера.",") — the new one starts working after the component restarts: the «Restart» button in its row, or, where there is none, a router reboot."],
     ["Обновляю ","Updating "],["прежняя сборка","previous build"],["свежая сборка","new build"],
     ["Отказ:","Refused:"],["неизвестный компонент: ","unknown component: "],
     // Перезапуск на установленную сборку (05.10.2026): журнал движка, ответ CGI и вопрос перед запуском.
@@ -10216,7 +10217,7 @@
     // Экран «Компоненты»: имя строки «что можно снять» для читалки (`aria-label`) и подсказка накопителя в сведении плана.
     [/^Снять «/,"Remove «"],["» — освободит ","» — frees "],[/^свободно там /,"free there: "],
     ["Применить изменения?","Apply changes?"],["Снимем с роутера: ","Will remove from the router: "],["Скачаем и поставим: ","Will download and install: "],["Поставим из загруженных файлов: ","Will install from the uploaded files: "],["Обновим: ","Will update: "],
-    ["Обновление заменит файлы, но работающий компонент перейдёт на новую сборку только после перезапуска — проще всего перезагрузить роутер.","The update replaces the files, but a running component switches to the new build only after a restart — the simplest way is to reboot the router."],
+    ["Обновление заменит файлы, но работающий компонент перейдёт на новую сборку только после перезапуска — кнопкой «Перезапустить» в его строке, а где её нет — перезагрузкой роутера.","The update replaces the files, but a running component switches to the new build only after a restart — with the «Restart» button in its row, or, where there is none, by rebooting the router."],
     ["Активную несущую и дополнительные выходы операция не переключает.","The operation does not switch the active carrier or the extra exits."],
     // закачка заранее (packages.sh::cmd_apply): сперва всё в ОЗУ, потом снятия — правила раньше общих «Скачиваю »/«Ставлю »
     ["Скачиваю заранее: ","Downloading ahead: "],["Всё нужное скачано — меняю набор.","Everything needed is downloaded — changing the set."],
@@ -14065,13 +14066,13 @@
   // Имя доп-выхода по коду `sN`. Номер человеку ни о чём не говорит — выход он называл сам;
   // выключенный/удалённый выход в enabledSlots не попадает, тогда честнее номер, чем чужое имя.
   function devSlotName(code){
-    var m=/^s([234])$/.exec(code||''); if(!m) return '';
+    var m=/^s([2-7])$/.exec(code||''); if(!m) return '';
     var nm=''; enabledSlots.forEach(function(s){ if(String(s.id)===m[1]) nm=s.name; });
     return nm || ('выход №'+m[1]);
   }
   // Имя выхода писал ЧЕЛОВЕК? (разбор у slotNamed) — для чипов и плиток, у которых на руках только код `sN`.
   function devSlotNamed(code){
-    var m=/^s([234])$/.exec(code||''); if(!m) return false;
+    var m=/^s([2-7])$/.exec(code||''); if(!m) return false;
     var on=false; enabledSlots.forEach(function(s){ if(String(s.id)===m[1]) on=!!s.named; });
     return on;
   }
@@ -14286,7 +14287,7 @@
   // везёт: помеченное уходит в неё и не доходит никуда; '' — роутер ещё не сообщил. Ревью шага 4b, круг 1: лестница и
   // «Наследует» обещали «в туннель» там, где строка «Весь остальной трафик» того же экрана говорила «напрямую».
   function vpnPath(){ if(cur.live===null) return ''; if(vpnCarries()) return 'ok'; return otherWords().k==='direct' ? 'direct' : 'void'; }
-  function slotNum(code){ var m=/^s?([234])$/.exec(String(code||'')); return m ? m[1] : ''; }
+  function slotNum(code){ var m=/^s?([2-7])$/.exec(String(code||'')); return m ? m[1] : ''; }
   // КУДА ИДЁТ ПОМЕЧЕННОЕ ВЫХОДОМ n: 'slot' — выход везёт; 'direct' / 'void' / путь основного туннеля — по состоянию несущей
   // (`slot_state`: fallback — в основной; direct и down — `ip rule` нет или несущей нет, метка проваливается в main; dead —
   // не отвечает). Выключенный или удалённый выход: свои сайты и «целиком» откатываются на основной (rebuild_dev/rebuild_force),
@@ -14859,7 +14860,7 @@
     [['vpn','в VPN'],['direct','напрямую'],['bypass','мимо'],['block','заблокировано']].forEach(function(x){
       if(have[x[0]] || cf.route===x[0]) r+=dvSeg('data-dwr',x[0],x[1],rc);
     });
-    [2,3,4].forEach(function(i){ if(have['slot'+i] || cf.route==='slot'+i) r+=dvSeg('data-dwr','slot'+i,dvSlotNm('s'+i),rc); });
+    [2,3,4,5,6,7].forEach(function(i){ if(have['slot'+i] || cf.route==='slot'+i) r+=dvSeg('data-dwr','slot'+i,dvSlotNm('s'+i),rc); });
     var dd=dvSeg('data-dwx','0','все',cf.dead?'1':'0')+dvSeg('data-dwx','1','<span>не отвечают</span>'+(nd?' · '+nd:''),cf.dead?'1':'0');
     var o=dvSeg('data-dws','dead','сначала молчащие',cf.sort)+dvSeg('data-dws','ip','по адресу',cf.sort)+dvSeg('data-dws','port','по порту',cf.sort);
     function row(l, id, segs){ return '<div class="dw-f"><span class="dw-fl">'+l+'</span><div class="segbar sm" id="'+id+'">'+segs+'</div></div>'; }
@@ -14912,7 +14913,7 @@
   // Чип маршрута строки. Выход — через rpDirSlot (`own`: метку выхода роутер уже нашёл в ядре — «целиком» её не перебил); прямой
   // путь с десинком — чипом десинка: это не голый прямой путь.
   function dwChip(rt, via, dsy){
-    var m=/^slot([234])$/.exec(rt||''); if(m) return rpDirSlot(m[1], true);
+    var m=/^slot([2-7])$/.exec(rt||''); if(m) return rpDirSlot(m[1], true);
     if((rt==='direct' || rt==='bypass') && (dsy || via==='десинк' || via==='десинк устройства')) return rpDir('desync');
     if(rt==='vpn' && vpnPath()==='void') return rpDir('void');
     return (rt==='vpn' || rt==='bypass' || rt==='direct' || rt==='block') ? rpDir(rt) : '';
@@ -15493,7 +15494,7 @@
   //   · выход ОБЩЕГО правила не работает при «весь трафик в VPN» — метка VPN_FORCE стоит раньше меток выходов;
   //   · выход НА ДЕСИНКЕ общее правило ведёт (у группы и категории свой набор, nfqws ломает рукопожатия его адресов),
   //     а устройство целиком — нет, поэтому здесь нет ветки `slotNoMark`.
-  // `dir`: vpn|bypass|block|desync|off, `slot`: 0|2..4. «Выкл» чипа не даёт вовсе — в каталоге гео их тысяча.
+  // `dir`: vpn|bypass|block|desync|off, `slot`: 0|2..7. «Выкл» чипа не даёт вовсе — в каталоге гео их тысяча.
   // КУДА ПРАВИЛО УХОДИТ СЕЙЧАС — ОДНИМ КЛЮЧОМ, и из него рисуется чип (`rpDirNow`) И считаются числа сводки: до круга 2
   // счётчик «через десинк-выход» знал про выключенный выход, но не про «весь трафик в VPN» и не про выключенный
   // тумблером VPN — карточка обещала десинк там, где строка рядом уже говорила «идёт основным туннелем».
@@ -15512,7 +15513,7 @@
       if(cur.full) return 'main';
       return (cur.vpnOff || cur.transport==='zapret') ? 'direct' : 'split';
     }
-    if(dir!=='vpn' && !/^s?[234]$/.test(String(dir))) return '';   // действие от версии новее панели — не выдумываем путь
+    if(dir!=='vpn' && !/^s?[2-7]$/.test(String(dir))) return '';   // действие от версии новее панели — не выдумываем путь
     var n=parseInt(String(slot||dir||'').replace(/^s/,''),10)||0;
     if(!n || cur.full || rpSlotOff(n)) return 'main';   // выключенный и удалённый выход groups.sh/geo.sh уводят в основной
     if(cur.vpnOff) return 'direct';                     // cmd_off снимает `ip rule` всех марок и гасит выходы
@@ -23502,7 +23503,7 @@
     doh:'шифрованный DNS — несколько секунд без имён',
     tls:'HTTPS панели — на секунду, открытая по HTTPS страница переподключится'
   };
-  function pkgRstCut(u){ var m=/^slot([2-4])$/.exec(u); return m ? 'дополнительный выход №'+m[1]+' — на несколько секунд, его трафик пока пойдёт запасным путём' : (PKG_RST_CUT[u]||u); }
+  function pkgRstCut(u){ var m=/^slot([2-7])$/.exec(u); return m ? 'дополнительный выход №'+m[1]+' — на несколько секунд, его трафик пока пойдёт запасным путём' : (PKG_RST_CUT[u]||u); }
   function pkgRestart(id){
     if(busy || pkgRunning) return;
     var p=null; ((pkgData||{}).pkgs||[]).forEach(function(q){ if(q.id===id) p=q; });
@@ -23558,7 +23559,7 @@
     if(put.length) q+=(pkgFromUp(put) ? 'Поставим из загруженных файлов: ' : 'Скачаем и поставим: ')+put.map(pkgLabelOf).join(', ')+'\n';
     if(up.length) q+='Обновим: '+up.map(pkgLabelOf).join(', ')+'\n';
     q+='\nАктивную несущую и дополнительные выходы операция не переключает.';
-    if(up.length) q+='\nОбновление заменит файлы, но работающий компонент перейдёт на новую сборку только после перезапуска — проще всего перезагрузить роутер.';
+    if(up.length) q+='\nОбновление заменит файлы, но работающий компонент перейдёт на новую сборку только после перезапуска — кнопкой «Перезапустить» в его строке, а где её нет — перезагрузкой роутера.';
     if(!askConfirm(q)) return;
     pkgLaunch('pkg_apply', 'ins='+(df.ins.join(',')||'-')+'&del='+(df.del.join(',')||'-'),
       {busy:'меняю компоненты…', log:'→ компоненты: ставим ['+(df.ins.join(', ')||'—')+'], снимаем ['+(df.del.join(', ')||'—')+']',
@@ -24100,7 +24101,7 @@
   // Отдельная копия карточки под выход разъехалась бы с этой при первой же правке.
   var bpSlot='';            // '' = основная несущая; '2'|'3'|'4' = доп-выход
   var bpSlotName='';        // имя выхода для заголовка экрана
-  function bpSlotOk(s){ return (s==='2'||s==='3'||s==='4'); }
+  function bpSlotOk(s){ return /^[2-7]$/.test(s); }
   function openByedpi(slot, name, named){
     // Строгая валидация: openByedpi часто идёт колбэком в postAction/wireCard, куда прилетает
     // ответ или событие — «непохоже на id выхода» трактуем как основную несущую.
@@ -24527,7 +24528,7 @@
   }
   function dsPoolLoadCands(ctx){
     // ЕДИНЫЙ источник кандидатов для всех трёх целей (`slots.sh domains`): пусто = основная
-    // несущая byedpi (enodia_list/группы/гео), 2|3|4 = доп-выход, zapret = всё, что десинкает
+    // несущая byedpi (enodia_list/группы/гео), 2..7 = доп-выход, zapret = всё, что десинкает
     // общий nfqws. Стор пула ключуется тем же slot — цель и её пул не расходятся.
     var cs=ctx.slot||'';
     return fetchJson('/cgi-bin/data?section=probe_cands'+(cs?('&slot='+encodeURIComponent(cs)):''))
@@ -24739,9 +24740,9 @@
     document.getElementById(ctx.pfx+'-sweep-go').addEventListener('click', function(){ dsRunSweep(ctx, out); });
   }
   function dsStop(){ if(dsRun){ dsAbort=true; logLine('останавливаю браузер-свип…', null); } }
-  // Слот для ВЕРБОВ свипа: их принимают только byedpi-вербы и только 2|3|4. Ключ цели ctx.slot
+  // Слот для ВЕРБОВ свипа: их принимают только byedpi-вербы и только 2..7. Ключ цели ctx.slot
   // шире (ещё и 'zapret' — это стор пула и источник кандидатов, не аргумент верба).
-  function dsVerbSlot(ctx){ return /^[234]$/.test(String(ctx.slot||'')) ? ctx.slot : ''; }
+  function dsVerbSlot(ctx){ return /^[2-7]$/.test(String(ctx.slot||'')) ? ctx.slot : ''; }
   function dsRunSweep(ctx, out){
     dsOut(ctx, '<div class="cline">Готовлю свип…</div>');
     fetchJson(dsPoolUrl(ctx)).catch(function(){ return {urls:[]}; }).then(function(res){
@@ -26032,7 +26033,7 @@
                     arg:function(a){ return SRV_ARG.test(a); }, open:function(a){ srvScrOpen(a); }},
     // Подписка и выход — по метке и номеру, а имя экрана (метку, имя выхода) знает только роутер: разрешитель
     // сперва спрашивает его, как у пира. Проверки аргумента — те же, что в cgi-bin/action (метка [a-z0-9-]{1,16},
-    // номер выхода 2..4).
+    // номер выхода 2..7).
     'cn-sub':      {back:'cn-subs', t:'Подписка', need:1, via:'openSub', arg:function(a){ return subTagOk(a); }, open:function(a){ subScrOpen(a); }},
     'cn-exits':    {back:'cn', t:'Дополнительные выходы',         open:function(){ openExits(); }},
     'cn-exit':     {back:'cn-exits', t:'Выход', need:1, via:'openExit', arg:function(a){ return bpSlotOk(a); }, open:function(a){ exitScrOpen(a); }},

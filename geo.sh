@@ -27,7 +27,7 @@
 #   Пользователь выбирает ДЕЙСТВИЕ на элемент: vpn | bypass | block | off (по умолч. off).
 #   Реестр (actions.tsv на /data, переживает ребут) = выбор действия + доп-выход:
 #   key<TAB>action<TAB>cnt<TAB>ts<TAB>slot. slot (Ф1b, зеркало groups.sh) — доп-ВЫХОД категории:
-#   0 = основной (geo_vpn как раньше), 2..4 = слот (geo_vpn_s<N>, метит mark-core / врайрит
+#   0 = основной (geo_vpn как раньше), 2..7 = слот (geo_vpn_s<N>, метит mark-core / врайрит
 #   zapret-слот); ТОЛЬКО для action=vpn. Поле ПОСЛЕДНЕЕ — cut -f2..4 и awk $3/$4 не задеты.
 #   URL/имя/тип/kind берём из каталога по ключу (каталог — источник истины по источникам).
 #   Все включённые CIDR-элементы сводятся в ТРИ ipset (geo_vpn/geo_out/geo_block); все включённые
@@ -323,7 +323,7 @@ reg_set() {
 	# slot переживает смену действия ТОЛЬКО пока действие vpn (слот применим лишь к «в VPN»);
 	# уход в bypass/block сбрасывает в 0 — вернувшись в vpn, юзер выбирает выход заново.
 	_s=$(printf '%s' "$_old" | cut -f5)
-	case "$_s" in 2|3|4) ;; *) _s=0 ;; esac
+	case "$_s" in [2-7]) ;; *) _s=0 ;; esac
 	[ "$_a" = vpn ] || _s=0
 	grep -v "^$_k$TAB" "$REG" 2>/dev/null > "$REG.tmp"
 	[ "$_a" = off ] || printf '%s\t%s\t%s\t%s\t%s\n' "$_k" "$_a" "$_c" "$_t" "$_s" >> "$REG.tmp"
@@ -669,7 +669,7 @@ build_dns() {  # build_dns <домены-vpn> <домены-out> <домены-b
 	[ -n "$4" ] && [ -s "$4" ] && sed "s|.*|ipset=/&/$SET_DSY|" "$4" >> "$DNSCONF.new"
 	# Домены слот-категорий (Ф1b): ipset=/дом/geo_vpn_s<N> — dnsmasq кладёт живые A-записи в сет
 	# слота. Едут в тот же conf ⇒ снимок SNAP_DNS накрывает их автоматически (офлайн-ребут).
-	for _bn in 2 3 4; do
+	for _bn in 2 3 4 5 6 7; do
 		[ -s "$RAM/.dom-vpn-s$_bn" ] && sed "s|.*|ipset=/&/geo_vpn_s$_bn|" "$RAM/.dom-vpn-s$_bn" >> "$DNSCONF.new"
 	done
 	mv "$DNSCONF.new" "$DNSCONF"
@@ -718,7 +718,7 @@ _build_pass() {
 	# (CIDR → geo_vpn_s<N>, домены → dnsmasq ipset=/дом/geo_vpn_s<N>), а не в общий geo_vpn.
 	# Привязка к выключенному/удалённому слоту → категория едет ОСНОВНЫМ выходом (geo_vpn), а не
 	# молча напрямую: слот = альтернативный выход, его отказ не роняет приватность (fallback=main).
-	for _sn in 2 3 4; do : > "$RAM/.agg-vpn-s$_sn"; : > "$RAM/.dom-vpn-s$_sn"; done
+	for _sn in 2 3 4 5 6 7; do : > "$RAM/.agg-vpn-s$_sn"; : > "$RAM/.dom-vpn-s$_sn"; done
 	_any_slot=0
 	_en_slots=" "
 	[ -f "$ENODIA_DIR/slots.sh" ] && _en_slots=" $(sh "$ENODIA_DIR/slots.sh" list-enabled 2>/dev/null | cut -f1 | tr '\n' ' ') "
@@ -726,7 +726,7 @@ _build_pass() {
 		while IFS="$TAB" read -r _k _a _c _t _s; do
 			[ -n "$_k" ] || continue
 			[ -n "$(cat_url "$_k")" ] || continue        # ключа нет НИ У ОДНОГО провайдера (реально устарел) — игнор
-			case "$_s" in 2|3|4) ;; *) _s=0 ;; esac
+			case "$_s" in [2-7]) ;; *) _s=0 ;; esac
 			[ "$_s" != 0 ] && case "$_en_slots" in *" $_s "*) ;; *) _s=0 ;; esac
 			if [ "$(cat_kind "$_k")" = domain ]; then
 				case "$_a" in
@@ -770,7 +770,7 @@ _build_pass() {
 	# Слот-агрегаты: сорт+дедуп, сет наполняем если есть члены (CIDR или домены — dnsmasq требует
 	# СУЩЕСТВУЮЩИЙ сет до рестарта, set_sync его создаёт и пустым) ИЛИ сет уже жив (иначе IP отвязанной
 	# категории залипли бы в старом сете — зеркало groups.sh). Снимок на флеш — офлайн-ребут переживает.
-	for _sn in 2 3 4; do
+	for _sn in 2 3 4 5 6 7; do
 		_sf="$RAM/.agg-vpn-s$_sn"; _df="$RAM/.dom-vpn-s$_sn"
 		sort -u "$_sf" > "$_sf.s" 2>/dev/null && mv "$_sf.s" "$_sf"
 		sort -u "$_df" > "$_df.s" 2>/dev/null && mv "$_df.s" "$_df"
@@ -806,7 +806,7 @@ _build_pass() {
 	# NSS/ECM-offload держит установленные соединения на старом маршруте до таймаута — сброс обязателен.
 	ct_flush
 	rm -f "$_vpn" "$_out" "$_blk" "$_dsy" "$_dv" "$_do" "$_db" "$_dd" 2>/dev/null
-	for _sn in 2 3 4; do rm -f "$RAM/.agg-vpn-s$_sn" "$RAM/.dom-vpn-s$_sn" 2>/dev/null; done
+	for _sn in 2 3 4 5 6 7; do rm -f "$RAM/.agg-vpn-s$_sn" "$RAM/.dom-vpn-s$_sn" 2>/dev/null; done
 	# ustate DONE ставит ОБЁРТКА (do_build) после ПОСЛЕДНЕГО прохода: иначе dirty-повтор мигнул бы
 	# панели «готово» в середине работы и та перестала бы поллить.
 	printf 'гео применено: CIDR в VPN %s / мимо %s / блок %s / десинк %s; домены маршрут %s / блок %s%s%s\n' \
@@ -857,7 +857,7 @@ do_reapply() {
 	[ -s "$SNAP_DNSBLK" ] && { cp "$SNAP_DNSBLK" "$DNSBLK" 2>/dev/null; _any=1; adblock_resync; }
 	# Слот-снимки (Ф1b): CIDR слота обратно в geo_vpn_s<N>. Врайринг (марка/NFQUEUE) — забота
 	# heal 5.13b (transport.sh slots-up идёт ПОСЛЕ geo-reapply — порядок уже правильный).
-	for _sn in 2 3 4; do
+	for _sn in 2 3 4 5 6 7; do
 		[ -s "$GEO/.snap-vpn-s$_sn" ] && { set_fill "geo_vpn_s$_sn" "$GEO/.snap-vpn-s$_sn"; _any=1; }
 	done
 	[ "$_any" = 1 ] || return 0
@@ -868,7 +868,7 @@ do_reapply() {
 	grep -q "/$SET_DSY\$" "$DNSCONF" 2>/dev/null && set_ensure "$SET_DSY"
 	# То же для слот-сетов, на которые ссылается DNS-снимок (категория из одних доменов: CIDR-снимка
 	# слота нет, а ipset=-строка есть — без сета dnsmasq ругается и правило мертво).
-	for _sn in 2 3 4; do
+	for _sn in 2 3 4 5 6 7; do
 		grep -q "/geo_vpn_s$_sn\$" "$DNSCONF" 2>/dev/null && set_ensure "geo_vpn_s$_sn"
 	done
 	wire_rules
@@ -1059,7 +1059,7 @@ emit_json() {
 			a=act[$2]; if(a=="") a="off"
 			c=cnt[$2]; if(c !~ /^[0-9]+$/) c=0
 			t=ts[$2];  if(t !~ /^[0-9]+$/) t=0
-			s=slt[$2]; if(s !~ /^[2-4]$/) s=0
+			s=slt[$2]; if(s !~ /^[2-7]$/) s=0
 			if(f) printf(","); f=1
 			printf("{\"type\":\"%s\",\"key\":\"%s\",\"label\":\"%s\",\"kind\":\"%s\",\"approx\":\"%s\",\"desc\":\"%s\",\"action\":\"%s\",\"count\":%s,\"ts\":%s,\"slot\":%s}",$1,$2,$3,$4,$6,$7,a,c,t,s)
 		}
@@ -1098,7 +1098,7 @@ emit_active() {
 			_aty=$(cat_type "$_ak"); [ -n "$_aty" ] || continue
 			case "$_ac" in ''|*[!0-9]*) _ac=0 ;; esac
 			case "$_at" in ''|*[!0-9]*) _at=0 ;; esac
-			case "$_as" in 2|3|4) ;; *) _as=0 ;; esac
+			case "$_as" in [2-7]) ;; *) _as=0 ;; esac
 			[ "$_af" = 1 ] && printf ','
 			_af=1
 			printf '{"type":"%s","key":"%s","label":"%s","kind":"%s","action":"%s","count":%s,"ts":%s,"slot":%s}' \
@@ -1131,10 +1131,10 @@ case "$1" in
 		' "$REG" "$_cf" 2>/dev/null
 		rm -f "$_cf" 2>/dev/null
 		;;
-	slot)  # slot <key> <0|2|3|4> — привязать категорию к доп-выходу (0 = основной; только action=vpn).
+	slot)  # slot <key> <0|2..7> — привязать категорию к доп-выходу (0 = основной; только action=vpn).
 	       # Пишет ТОЛЬКО реестр (мгновенно, как set) — пересборку зовёт фронт следом (geo_apply).
 		[ -n "$(cat_url "$2")" ] || { echo "неизвестный ключ гео"; exit 1; }
-		case "$3" in 0|2|3|4) ;; *) echo "слот: 0|2|3|4"; exit 1 ;; esac
+		case "$3" in 0|[2-7]) ;; *) echo "слот: 0|2..7"; exit 1 ;; esac
 		_ln=$(reg_get "$2"); [ -n "$_ln" ] || { echo "категория выключена — сначала выберите действие"; exit 1; }
 		if [ "$3" != 0 ] && [ "$(printf '%s' "$_ln" | cut -f2)" != vpn ]; then
 			echo "доп-выход только для действия «в VPN»"; exit 1
@@ -1182,7 +1182,7 @@ case "$1" in
 	freshness) resolve_upstream; echo ok ;;    # обновить $SHAS (sha+даты; панель зовёт async при открытии)
 	*)
 		echo "geo.sh — гео-категории (страны/сервисы/заблок-в-РФ → в VPN / мимо VPN / блок)"
-		echo "  list | active | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2|3|4> | apply | update | reapply | enabled"
+		echo "  list | active | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2..7> | apply | update | reapply | enabled"
 		echo "  desync-list"
 		echo "  provider <type> | provider-set <type> <pid> | freshness"
 		exit 1

@@ -166,7 +166,7 @@ pkg_run_old() { for b in $(pkg_files "$1"); do [ "$(bst_field "$b" 5)" = old ] &
 #     of an exit since disabled or moved to another transport. No owner verb reaches it (`slot-down` of a disabled exit refuses,
 #     `down` of an inactive transport would tear the ACTIVE one's routing), so it is named, not restarted — a reboot clears it;
 #   · NOT OURS — in no pidfile at all (a throwaway xray-test.sh instance): it ends by itself.
-RST_ORDER="doh zapret slot2 slot3 slot4 server warm-awg main tls"   # short cuts first; the main tunnel late, the panel's own HTTPS last
+RST_ORDER="doh zapret slot2 slot3 slot4 slot5 slot6 slot7 server warm-awg main tls"   # short cuts first; the main tunnel late, the panel's own HTTPS last
 # What the scan reads — top-level, so the sandbox stand points them at its own world (dev/pkg-restart-test.sh), as with LOCK/BGPID.
 RST_PROC=/proc
 RST_PIDDIR=/tmp
@@ -195,7 +195,7 @@ rst_unit() {   # $1 = pid, $2 = бинарь, $3 = активный трансп
                 # multi-transport, where AmneziaWG is implied (transport.sh::implied): there awg0 IS the tunnel, and `cold` on it
                 # would take the home off the VPN while reporting «warm reserve restarted».
                 awg0)     case "$3" in ""|awg) echo main ;; *) echo warm-awg ;; esac ;;
-                awg[2-4]) rst_slot_of "${_rui#awg}" awg ;;
+                awg[2-7]) rst_slot_of "${_rui#awg}" awg ;;
                 # The home server's daemon only while the server is ON (its owner answers): a leftover awgs0 without the intent is
                 # an orphan — `vpn-server.sh restart` would do nothing, and the rescan would call it «still on the previous build».
                 awgs0)    if sh "$ENODIA_DIR/vpn-server.sh" enabled >/dev/null 2>&1; then echo server; else echo orphan; fi ;;
@@ -210,10 +210,10 @@ rst_unit() {   # $1 = pid, $2 = бинарь, $3 = активный трансп
             # earlier one's leftover.
             xray|hysteria|byedpi|hev)
                 case "$3:$_run" in xray:xray|xray:hev|hy2:hysteria|hy2:hev|byedpi:byedpi|byedpi:hev) echo main ;; *) echo orphan ;; esac ;;
-            xray-s[2-4])     rst_slot_of "${_run##*-s}" xray ;;
-            hysteria-s[2-4]) rst_slot_of "${_run##*-s}" hy2 ;;
-            byedpi-s[2-4])   rst_slot_of "${_run##*-s}" byedpi ;;
-            hev-s[2-4])      rst_slot_of "${_run##*-s}" xray hy2 byedpi ;;
+            xray-s[2-7])     rst_slot_of "${_run##*-s}" xray ;;
+            hysteria-s[2-7]) rst_slot_of "${_run##*-s}" hy2 ;;
+            byedpi-s[2-7])   rst_slot_of "${_run##*-s}" byedpi ;;
+            hev-s[2-7])      rst_slot_of "${_run##*-s}" xray hy2 byedpi ;;
             zapret-nfqws)    echo zapret ;;
             doh)             echo doh ;;
             panel-tls)       echo tls ;;
@@ -248,7 +248,7 @@ rst_comp() {   # $1 = unit, $2 = активный транспорт → id св
     case "$1" in
         main)              echo "${2:-awg}" ;;
         warm-awg|server)   echo awg ;;
-        slot[2-4])         sh "$ENODIA_DIR/slots.sh" show "${1#slot}" 2>/dev/null | cut -f3 ;;
+        slot[2-7])         sh "$ENODIA_DIR/slots.sh" show "${1#slot}" 2>/dev/null | cut -f3 ;;
         *)                 echo "$1" ;;
     esac
 }
@@ -276,7 +276,7 @@ rst_scan() {   # $@ = связки → RST_UNITS (в порядке RST_ORDER), 
 }
 rst_label() { case "$1" in
         main) echo "основной канал" ;; warm-awg) echo "тёплый резерв AmneziaWG" ;; server) echo "«доступ домой»" ;;
-        slot[2-4]) echo "дополнительный выход №${1#slot}" ;; zapret) echo "Zapret (nfqws)" ;;
+        slot[2-7]) echo "дополнительный выход №${1#slot}" ;; zapret) echo "Zapret (nfqws)" ;;
         doh) echo "шифрованный DNS" ;; tls) echo "HTTPS панели" ;; *) echo "$1" ;;
     esac; }
 # CAN A UNIT BE RESTARTED NOW — one answer for the offer (list-json `rst_units`) and the run (cmd_restart): the main carrier only while
@@ -299,7 +299,7 @@ rst_slot_iface() { _rsi=$(sh "$ENODIA_DIR/transport.sh" slot-iface "$1" 2>/dev/n
 # for its holder — otherwise «0 under any lock» made every ByeDPI restart «Готово», forwarding or not (review, round 2).
 rst_works() {   # $1 = unit
     case "$1" in
-        main|slot[2-4])
+        main|slot[2-7])
             _rwn=0
             while [ "$_rwn" -lt "$RST_HEALTH_TRIES" ]; do
                 if [ "$1" = main ]; then HEALTH_OWN_LOCK=1 sh "$ENODIA_DIR/transport.sh" health >/dev/null 2>&1; _rwc=$?
@@ -318,7 +318,7 @@ rst_one() {   # $1 = unit → код владельца (0 — перезапу�
     case "$1" in
         doh)       sh "$ENODIA_DIR/doh-lib.sh" restart >> "$RST_OWNER_LOG" 2>&1 ;;
         zapret)    sh "$ENODIA_DIR/zapret.sh" reload >> "$RST_OWNER_LOG" 2>&1 ;;                   # nfqws only: rules and set stay
-        slot[2-4]) sh "$ENODIA_DIR/transport.sh" slot-down "${1#slot}" >> "$RST_OWNER_LOG" 2>&1
+        slot[2-7]) sh "$ENODIA_DIR/transport.sh" slot-down "${1#slot}" >> "$RST_OWNER_LOG" 2>&1
                    sh "$ENODIA_DIR/transport.sh" slot-up "${1#slot}" >> "$RST_OWNER_LOG" 2>&1 ;;
         server)    sh "$ENODIA_DIR/vpn-server.sh" restart >> "$RST_OWNER_LOG" 2>&1 ;;
         # The warm reserve comes back AS a reserve (the watchdog notices the home server by its handshake): not `cold` alone.
@@ -822,7 +822,7 @@ do_install() {      # $1 = связка
         if in_list zapret "$P_UPD"; then
             bst_mark_fresh nfqws
             _ro=$(sh "$GH" bin-status nfqws 2>/dev/null | awk -F'\t' '$5 == "old" { print $1 }')
-            if [ -n "$_ro" ]; then log "Zapret обновлён. Сейчас работает прежняя сборка (nfqws) — новая заработает после перезапуска компонента; проще всего перезагрузить роутер."
+            if [ -n "$_ro" ]; then log "Zapret обновлён. Сейчас работает прежняя сборка (nfqws) — новая заработает после перезапуска компонента: кнопка «Перезапустить» в его строке, а где её нет — перезагрузка роутера."
             else log "Zapret обновлён."; fi
             return 0
         fi
@@ -870,7 +870,7 @@ do_install() {      # $1 = связка
     # иначе «обновил, а ничего не изменилось». Спрашиваем по факту (живой процесс исполняет заменённый файл), а не гадаем.
     if [ -n "$_upd_b" ] && [ -f "$GH" ]; then
         _ro=$(sh "$GH" bin-status $_upd_b 2>/dev/null | awk -F'\t' '$5 == "old" { printf "%s%s", s, $1; s=", " }')
-        [ -n "$_ro" ] && log "Сейчас работает прежняя сборка ($_ro) — новая заработает после перезапуска компонента; проще всего перезагрузить роутер."
+        [ -n "$_ro" ] && log "Сейчас работает прежняя сборка ($_ro) — новая заработает после перезапуска компонента: кнопка «Перезапустить» в его строке, а где её нет — перезагрузка роутера."
     fi
     # «Установлен ≠ активен» — про это надо СКАЗАТЬ, иначе «поставил и ничего не изменилось». Обновлению — не надо: оно не меняет,
     # включён ли компонент, и совет «включить — там-то» уводил бы человека включать уже включённое.

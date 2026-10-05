@@ -178,7 +178,7 @@ BYPASS_SETS="grp_out enodia_bypass geo_out"
 #   src    — IPv4 устройства-источника или `any` (правило на всю LAN)
 #   proto  — udp | tcp | both
 #   ports  — `all` или список через запятую: `7600`, `3478-3480`, `40000-65535`
-#   dir    — vpn (в основной туннель) | direct (напрямую) | s2|s3|s4 (в доп-выход)
+#   dir    — vpn (в основной туннель) | direct (напрямую) | s2..s7 (в доп-выход)
 #            | block (не выпускать вовсе)
 #
 # КАК ПРЕВРАЩАЕТСЯ В ПРАВИЛА. dir=vpn/sN — MARK+ACCEPT (парой, как в mark-core: ACCEPT
@@ -577,10 +577,10 @@ _ep_needed_elsewhere() {   # $1=ip  $2=свой store (исключить из �
     return 1
 }
 
-endpoint_slot_set() {   # $1 = id слота (2..4); $2 = IPv4 endpoint'а (пусто = снять)
+endpoint_slot_set() {   # $1 = id слота (2..7); $2 = IPv4 endpoint'а (пусто = снять)
     ensure_chain
     _sid="$1"; new="$2"
-    case "$_sid" in 2|3|4) ;; *) echo "[apply-bypass] endpoint-slot: id = 2..4"; return 1 ;; esac
+    case "$_sid" in [2-7]) ;; *) echo "[apply-bypass] endpoint-slot: id = 2..7"; return 1 ;; esac
     store="${STORE_EP_SLOT_PREFIX}${_sid}"
     # снять прежний endpoint этого слота (если он есть, отличается от нового и больше нигде не нужен)
     if [ -f "$store" ]; then
@@ -707,7 +707,7 @@ rebuild_force() {
             echo "$ip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || continue
             _fmk=$FWMARK
             case "$fslot" in
-                s[234])
+                s[2-7])
                     case "$_en_slots" in
                         *" ${fslot#s} "*) _fmk="0x${fslot#s}" ;;
                         *) _fdown="$_fdown $ip->$fslot" ;;
@@ -860,7 +860,7 @@ rebuild_ports() {
         [ -n "$_ldir" ] || continue
         case "$_ldir" in
             vpn)      _mk=$FWMARK ;;
-            s2|s3|s4) _mk="0x${_ldir#s}" ;;  # марка доп-выхода; ip rule под неё ставит mark-core
+            s[2-7]) _mk="0x${_ldir#s}" ;;  # марка доп-выхода; ip rule под неё ставит mark-core
             block)    _mk=block ;;           # не выпускать вовсе — DROP вместо MARK+ACCEPT
             *)        _mk="" ;;              # direct — без метки, main-таблица
         esac
@@ -1006,7 +1006,7 @@ rebuild_dev() {
                 # (зеркало rebuild_force: «марка есть, ip rule нет» = молча напрямую — не наш выбор).
                 _dmk=$FWMARK
                 case "$_dslot" in
-                    2|3|4) case "$_en_slots" in
+                    [2-7]) case "$_en_slots" in
                                *" $_dslot "*) _dmk="0x$_dslot" ;;
                                *) _ddown="$_ddown $_dip->s$_dslot" ;;
                            esac ;;
@@ -1170,14 +1170,14 @@ case "$1" in
     guest-off) rm -f "$STORE_GUEST"; guest_rule_del; conntrack_flush; echo "гостевая сеть → по правилам" ;;
     # --- «целиком через VPN» (force). Меняем хранилище -> пересобираем VPN_FORCE
     #     -> сбрасываем conntrack, чтобы применилось к текущим соединениям сразу.
-    # Третий аргумент — ВЫХОД: пусто/0/main = основной туннель, s2|s3|s4 = доп-выход.
+    # Третий аргумент — ВЫХОД: пусто/0/main = основной туннель, s2..s7 = доп-выход.
     # Выключенный выход не запрещаем: rebuild_force уводит такое устройство на основной
     # туннель (гейт по list-enabled), а привязка оживёт сама, когда выход включат.
     force-add-ip)  [ -z "$2" ] && { echo "нужен IP";    exit 1; }
         # Формат проверяем ЗДЕСЬ, а не только в CGI (зеркало keep-add-ip и port-add): из CLI движок
         # обязан быть так же безопасен, а мусор в хранилище потом молча выпадал бы из сборки.
         echo "$2" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { echo "нужен IPv4"; exit 1; }
-        _fs=""; case "$3" in s2|s3|s4) _fs="$3" ;; ''|0|main) _fs="" ;; *) echo "выход: s2|s3|s4 или пусто"; exit 1 ;; esac
+        _fs=""; case "$3" in s[2-7]) _fs="$3" ;; ''|0|main) _fs="" ;; *) echo "выход: s2..s7 или пусто"; exit 1 ;; esac
         # Явный отказ вместо тихого фолбэка: zapret-выход десинкает по адресу назначения и
         # марку не разбирает — «устройство целиком» через него не выразить (см. rebuild_force).
         if [ -n "$_fs" ] && [ -f "$ENODIA_DIR/slots.sh" ] &&
@@ -1248,20 +1248,20 @@ case "$1" in
     #     снимает прежнюю строку с тем же ключом (src+proto+ports), иначе в цепочке
     #     оказались бы два правила, и молча выигрывало бы верхнее.
     port-add)
-        [ -z "$5" ] && { echo "нужно: port-add <IP|any> <udp|tcp|both> <порты|all> <vpn|direct|block|s2|s3|s4>"; exit 1; }
+        [ -z "$5" ] && { echo "нужно: port-add <IP|any> <udp|tcp|both> <порты|all> <vpn|direct|block|s2..s7>"; exit 1; }
         command -v port_line_ok >/dev/null 2>&1 || { echo "нет port-lib.sh — обновите скрипты роутера"; exit 1; }
         _src="$2"; _pro="$3"; _pts=$(port_list_norm "$4"); _dir="$5"
         port_src_ok   "$_src" || { echo "src: нужен IPv4 или any"; exit 1; }
         port_proto_ok "$_pro" || { echo "proto: udp|tcp|both"; exit 1; }
         port_list_ok  "$_pts" || { echo "порты: all или список 80,443,40000-65535"; exit 1; }
-        port_dir_ok   "$_dir" || { echo "куда: vpn|direct|block|s2|s3|s4"; exit 1; }
+        port_dir_ok   "$_dir" || { echo "куда: vpn|direct|block|s2..s7"; exit 1; }
         # Зеркало гейта force-add-ip: zapret-выход единственный работает БЕЗ марки (ACCEPT +
         # scoped NFQUEUE по адресам НАЗНАЧЕНИЯ), `ip rule` под 0xN для него не создаётся ⇒
         # правило встало бы, а порты молча уехали бы напрямую и БЕЗ десинка. Fail-open
         # ВЫКЛЮЧЕННОГО выхода тут по-прежнему принят (правило узкое), а этот — не fail-open,
         # а вечно мёртвое правило: отказываем с причиной.
         case "$_dir" in
-            s[234])
+            s[2-7])
                 if [ -f "$ENODIA_DIR/slots.sh" ] && \
                    sh "$ENODIA_DIR/slots.sh" list 2>/dev/null | awk -F"$TAB" -v i="${_dir#s}" '$1==i && $3=="zapret"{f=1} END{exit !f}'; then
                     echo "выход №${_dir#s} — десинк (zapret): он работает по адресам назначения, направить в него порты нельзя"; exit 1
@@ -1367,7 +1367,7 @@ case "$1" in
         else echo "раздельный режим (split)"; fi
         ;;
     *)
-        echo "Использование: $0 {apply|dev-rebind|desync-add-ip IP|desync-del-ip IP|desync-list|desync-rebind|add-ip IP|del-ip IP|add-dst CIDR|del-dst CIDR|add-vpn-dst CIDR|del-vpn-dst CIDR|endpoint-set IP|endpoint-slot-set ID IP|add-if IFACE|del-if IFACE|guest-on|guest-off|force-add-ip IP [s2|s3|s4]|force-del-ip IP|force-rebind|force-add-if IFACE|force-del-if IFACE|force-guest-on|force-guest-off|forget-if СТРОКА|if-states|full-tunnel on|off|port-add SRC PROTO PORTS vpn|direct|block|sN|port-del SRC PROTO PORTS|port-list|keep-add-ip IP|keep-del-ip IP|keep-list|order|list}"
+        echo "Использование: $0 {apply|dev-rebind|desync-add-ip IP|desync-del-ip IP|desync-list|desync-rebind|add-ip IP|del-ip IP|add-dst CIDR|del-dst CIDR|add-vpn-dst CIDR|del-vpn-dst CIDR|endpoint-set IP|endpoint-slot-set ID IP|add-if IFACE|del-if IFACE|guest-on|guest-off|force-add-ip IP [s2..s7]|force-del-ip IP|force-rebind|force-add-if IFACE|force-del-if IFACE|force-guest-on|force-guest-off|forget-if СТРОКА|if-states|full-tunnel on|off|port-add SRC PROTO PORTS vpn|direct|block|sN|port-del SRC PROTO PORTS|port-list|keep-add-ip IP|keep-del-ip IP|keep-list|order|list}"
         exit 1
         ;;
 esac

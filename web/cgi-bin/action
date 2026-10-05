@@ -1322,11 +1322,11 @@ case "$act" in
 	# отсекая shell-метасимволы ($ ; | & ` ( ) < > " ' \ * ? и пр.) = защита от инъекции.
 	# Пусто → вернуть авто-дефолт (rm файла). Применяем сразу, если ByeDPI активен (reload
 	# перезапускает только ciadpi, несущая не рвётся); иначе сохраняем — применится при up.
-	# Поле slot=2|3|4 (опц.) переводит ту же ветку на стратегию ДОП-ВЫХОДА (.byedpi-args-s<id>):
+	# Поле slot=2..7 (опц.) переводит ту же ветку на стратегию ДОП-ВЫХОДА (.byedpi-args-s<id>):
 	# у каждого byedpi-выхода свой ciadpi со своим десинком, и подбирать его надо отдельно от
 	# основной несущей. Валидация/charset/перезапуск — ОДИН код на оба случая (разъехались бы).
 	# Пул проб браузер-свипа: список строк `url⇥w⇥h` (base64 — URL несут / ? & и в form-поле
-	# резались бы). Цель = slot: пусто (основная несущая byedpi) · 2|3|4 (доп-выход) · zapret
+	# резались бы). Цель = slot: пусто (основная несущая byedpi) · 2..7 (доп-выход) · zapret
 	# (общий nfqws). Пустой список = пул снят, и свип у этой цели идти НЕ будет: вшитых наборов
 	# больше нет — мерить домены, про которые неизвестно, едут ли они через десинк, значит врать.
 	# Схему пускаем ТОЛЬКО https: DPI режет TLS-хэндшейк по SNI, и проба по открытому http
@@ -1334,7 +1334,7 @@ case "$act" in
 	# Ссылка бывает двух видов — на картинку (сверяем размер) и на корень сайта (сверяем сам факт
 	# соединения); вид выводит панель ИЗ ССЫЛКИ, отдельного поля здесь намеренно нет.
 	set_probe_pool)
-		psl=$(field slot); case "$psl" in ''|2|3|4|zapret) ;; *) fail "битый id выхода" ;; esac
+		psl=$(field slot); case "$psl" in ''|[2-7]|zapret) ;; *) fail "битый id выхода" ;; esac
 		pf="$ENODIA_STATE/.probe-pool"
 		case "$psl" in '') ;; zapret) pf="$ENODIA_STATE/.probe-pool-zapret" ;; *) pf="$ENODIA_STATE/.probe-pool-s$psl" ;; esac
 		raw=$(urldecode "$(field data)" | base64 -d 2>/dev/null | tr -d '\r')
@@ -1360,7 +1360,7 @@ EOF
 		mv "$pf.new" "$pf" || fail "не удалось сохранить пул проб"
 		printf '{"ok":true,"code":0,"msg":"пул проб сохранён: %s","n":%s}\n' "$n" "$n"; exit 0 ;;
 	set_byedpi_args)
-		bsl=$(field slot); case "$bsl" in ''|2|3|4) ;; *) fail "битый id выхода" ;; esac
+		bsl=$(field slot); case "$bsl" in ''|[2-7]) ;; *) fail "битый id выхода" ;; esac
 		af="$ENODIA_STATE/.byedpi-args"; [ -n "$bsl" ] && af="$ENODIA_STATE/.byedpi-args-s$bsl"
 		args=$(urldecode "$(field args)")
 		args=$(printf '%s' "$args" | tr '\r\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\{1,\}/ /g')
@@ -2040,9 +2040,9 @@ EOF
 			dev_split)  sh "$ENODIA_DIR/apply-bypass.sh" del-ip "$ip" >/dev/null 2>&1; run apply-bypass.sh force-del-ip "$ip" ;;
 			dev_bypass) sh "$ENODIA_DIR/apply-bypass.sh" force-del-ip "$ip" >/dev/null 2>&1; run apply-bypass.sh add-ip "$ip" ;;
 			dev_desync) run apply-bypass.sh desync-add-ip "$ip" ;;
-			# slot — необязателен: пусто/0 = основной туннель, s2|s3|s4 = доп-выход.
+			# slot — необязателен: пусто/0 = основной туннель, s2..s7 = доп-выход.
 			# Выключенный выход движок сам уводит на основной (гейт в rebuild_force).
-			dev_force)  slot=$(field slot); case "$slot" in s[234]) ;; *) slot="" ;; esac
+			dev_force)  slot=$(field slot); case "$slot" in s[2-7]) ;; *) slot="" ;; esac
 			            sh "$ENODIA_DIR/apply-bypass.sh" del-ip "$ip" >/dev/null 2>&1; run apply-bypass.sh force-add-ip "$ip" "$slot" ;;
 		esac ;;
 
@@ -2076,10 +2076,10 @@ EOF
 			run groups.sh dev-del "$ip" "$val"
 		else
 			dir=$(field dir)
-			echo "$dir" | grep -qE '^(vpn|direct|block|s[234])$' || fail "куда: в VPN, напрямую, блокировать или в доп-выход"
+			echo "$dir" | grep -qE '^(vpn|direct|block|s[2-7])$' || fail "куда: в VPN, напрямую, блокировать или в доп-выход"
 			slot=0
 			case "$dir" in
-				s[234]) slot=${dir#s}; dir=vpn ;;
+				s[2-7]) slot=${dir#s}; dir=vpn ;;
 				direct) dir=bypass ;;
 			esac
 			owner_note "$ip" >/dev/null 2>&1
@@ -2116,7 +2116,7 @@ EOF
 			|| fail "порты: 443, 3478-3480 или «все»"
 		if [ "$act" = port_add ]; then
 			dir=$(field dir)
-			echo "$dir" | grep -qE '^(vpn|direct|block|s[234])$' || fail "куда: в VPN, напрямую, блокировать или в доп-выход"
+			echo "$dir" | grep -qE '^(vpn|direct|block|s[2-7])$' || fail "куда: в VPN, напрямую, блокировать или в доп-выход"
 			# `any` — правило на всю сеть, а не на устройство: владельца у него нет.
 			[ "$ip" = any ] || owner_note "$ip" >/dev/null 2>&1
 			run apply-bypass.sh port-add "$ip" "$proto" "$ports" "$dir"
@@ -2201,7 +2201,7 @@ EOF
 		# два do_apply на каждую из N групп). Ответ МАШИННЫЙ: {"ok",…,"id":"gN","n":<членов>};
 		# человеческий текст строит панель (её строки и так переводятся i18n-слоем).
 		dir=$(field dir); case "$dir" in vpn|bypass) ;; *) fail "направление: в VPN или мимо VPN" ;; esac
-		slot=$(field slot); case "$slot" in ''|0) slot=0 ;; 2|3|4) ;; *) fail "доп-выход: 0, 2, 3 или 4" ;; esac
+		slot=$(field slot); case "$slot" in ''|0) slot=0 ;; [2-7]) ;; *) fail "доп-выход: 0 или 2..7" ;; esac
 		name=$(urldecode "$(field name)"); [ -n "$name" ] || fail "нужно имя группы"
 		# Состав едет base64-блобом (как grp_members/bulk_*): в нём переводы строк, а тело формы urlencoded.
 		content=$(urldecode "$(field content)" | base64 -d 2>/dev/null)
@@ -2228,7 +2228,7 @@ EOF
 			            run groups.sh rename "$gid" "$name" ;;
 			grp_dir)    dir=$(field dir); case "$dir" in vpn|bypass) ;; *) fail "направление: в VPN или мимо VPN" ;; esac
 			            run groups.sh dir "$gid" "$dir" ;;
-			grp_slot)   slot=$(field slot); case "$slot" in 0|2|3|4) ;; *) fail "доп-выход: 0, 2, 3 или 4" ;; esac
+			grp_slot)   slot=$(field slot); case "$slot" in 0|[2-7]) ;; *) fail "доп-выход: 0 или 2..7" ;; esac
 			            run groups.sh slot "$gid" "$slot" ;;
 			grp_toggle) en=$(field enabled); case "$en" in 0|1) ;; *) fail "нужно 0|1" ;; esac
 			            run groups.sh toggle "$gid" "$en" ;;
@@ -2254,7 +2254,7 @@ EOF
 		run dev-names.sh set "$mac" "$name" ;;
 
 	# --- Доп-выходы (слоты мульти-транспорта, slots.sh) -----------------------
-	# id — строгий 2|3|4; транспорт/fallback — whitelist; config — имя файла (^[A-Za-z0-9._-]+$)
+	# id — строгий 2..7; транспорт/fallback — whitelist; config — имя файла (^[A-Za-z0-9._-]+$)
 	# или '-' (нет конфига). Имя НЕ валидируем — slots.sh хранит его base64 и в eval не подставляет.
 	slot_add)
 		name=$(urldecode "$(field name)")
@@ -2265,7 +2265,7 @@ EOF
 		fb=$(field fallback); case "$fb" in main|direct) ;; *) fb=main ;; esac
 		run slots.sh add "$name" "$tpt" "$cfg" "$fb" ;;
 	slot_toggle|slot_del|slot_set)
-		sid=$(field id); case "$sid" in 2|3|4) ;; *) fail "битый id выхода" ;; esac
+		sid=$(field id); case "$sid" in [2-7]) ;; *) fail "битый id выхода" ;; esac
 		case "$act" in
 			slot_toggle) en=$(field enabled); case "$en" in 0|1) ;; *) fail "нужно 0|1" ;; esac
 			             if [ "$en" = 1 ]; then run slots.sh enable "$sid"; else run slots.sh disable "$sid"; fi ;;
@@ -2284,9 +2284,9 @@ EOF
 		esac ;;
 	slot_pool)
 		# «Свой пул…» на десинк-выходе: создать «в VPN»-группу, СРАЗУ привязанную к слоту
-		# (домены юзер добавит в редакторе группы). id строгий 2|3|4; имя не валидируем —
+		# (домены юзер добавит в редакторе группы). id строгий 2..7; имя не валидируем —
 		# groups.sh санирует (san) и в eval не подставляет.
-		sid=$(field id); case "$sid" in 2|3|4) ;; *) fail "битый id выхода" ;; esac
+		sid=$(field id); case "$sid" in [2-7]) ;; *) fail "битый id выхода" ;; esac
 		name=$(urldecode "$(field name)")
 		[ -n "$name" ] || fail "нужно имя пула"
 		run groups.sh add-bound "$sid" "$name" ;;
@@ -2703,12 +2703,12 @@ EOF
 	# Цикл драйвит ФРОНТ (begin → apply×N → end). Возможен ТОЛЬКО когда byedpi несёт трафик (иначе
 	# браузер пойдёт мимо десинка = бессмысленно). Стратегия (args) санитизируется тем же charset'ом,
 	# что set_byedpi_args (идёт неквотированно в exec ciadpi). По end/протуху lock — исходная восстанавливается.
-	# ЦЕЛЬ свипа — slot=2|3|4 (ДОП-ВЫХОД со своей стратегией) либо пусто (основная несущая). Гард
+	# ЦЕЛЬ свипа — slot=2..7 (ДОП-ВЫХОД со своей стратегией) либо пусто (основная несущая). Гард
 	# у них РАЗНЫЙ и это принципиально: основной свип требует «byedpi = активный транспорт», а
 	# выход живёт своей несущей и при awg-основном, ему нужно лишь «выход включён».
 	byedpi_sweep_begin)
 		[ -f "$ENODIA_DIR/transport-byedpi.sh" ] || fail "transport-byedpi.sh не установлен (обновите панель)"
-		bsw=$(field slot); case "$bsw" in 2|3|4) ;; *) bsw="" ;; esac
+		bsw=$(field slot); case "$bsw" in [2-7]) ;; *) bsw="" ;; esac
 		if [ -n "$bsw" ]; then
 			sh "$ENODIA_DIR/slots.sh" list-enabled 2>/dev/null | grep -q "^$bsw	byedpi	" \
 				|| fail "браузер-свип выхода возможен только когда выход ВКЛЮЧЁН"
@@ -2722,7 +2722,7 @@ EOF
 			&& printf '{"ok":true,"code":0,"msg":"свип начат"}\n' || fail "не удалось начать свип"
 		exit 0 ;;
 	byedpi_sweep_apply)
-		bsw=$(field slot); case "$bsw" in 2|3|4) ;; *) bsw="" ;; esac
+		bsw=$(field slot); case "$bsw" in [2-7]) ;; *) bsw="" ;; esac
 		if [ -n "$bsw" ]; then
 			sh "$ENODIA_DIR/slots.sh" list-enabled 2>/dev/null | grep -q "^$bsw	byedpi	" || fail "выход выключен — свип прерван"
 		else
@@ -2738,7 +2738,7 @@ EOF
 		printf '{"ok":true,"code":0,"up":%s}\n' "$up"; exit 0 ;;
 	byedpi_sweep_end)
 		[ -f "$ENODIA_DIR/transport-byedpi.sh" ] || fail "transport-byedpi.sh не установлен"
-		bsw=$(field slot); case "$bsw" in 2|3|4) ;; *) bsw="" ;; esac
+		bsw=$(field slot); case "$bsw" in [2-7]) ;; *) bsw="" ;; esac
 		sh "$ENODIA_DIR/transport-byedpi.sh" sweep-end "$bsw" >/dev/null 2>&1
 		printf '{"ok":true,"code":0,"msg":"свип завершён, исходная стратегия восстановлена"}\n'; exit 0 ;;
 
@@ -3015,17 +3015,17 @@ EOF
 		# пересборку фронт зовёт следом (geo_apply), как после geo_set.
 		key=$(field key); slot=$(field slot)
 		echo "$key" | grep -qE '^[a-z0-9-]+$' || fail "недопустимый ключ"
-		case "$slot" in 0|2|3|4) ;; *) fail "доп-выход: 0, 2, 3 или 4" ;; esac
+		case "$slot" in 0|[2-7]) ;; *) fail "доп-выход: 0 или 2..7" ;; esac
 		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		run geo.sh slot "$key" "$slot" ;;
 	geo_preset)
 		# Чип-пресет на десинк-выходе (Ф1b): включить/выключить гео-категорию (v2fly-*) с привязкой
 		# к слоту одним действием. on=1: set vpn + slot (реестр, синхронно) → фоновая пересборка
 		# (do_build медленный при первом резолве v2fly-каталога). on=0: set off. Ключ — узкий
-		# whitelist пресетов (v2fly-youtube|discord|telegram), slot строгий 2|3|4.
+		# whitelist пресетов (v2fly-youtube|discord|telegram), slot строгий 2..7.
 		key=$(field key); slot=$(field slot); on=$(field on)
 		case "$key" in v2fly-youtube|v2fly-discord|v2fly-telegram) ;; *) fail "неизвестный пресет" ;; esac
-		case "$slot" in 2|3|4) ;; *) fail "битый выход" ;; esac
+		case "$slot" in [2-7]) ;; *) fail "битый выход" ;; esac
 		case "$on" in 0|1) ;; *) fail "нужно 0|1" ;; esac
 		[ -f "$ENODIA_DIR/geo.sh" ] || fail "geo.sh не установлен (обновите панель)"
 		if [ "$on" = 1 ]; then

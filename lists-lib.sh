@@ -371,7 +371,7 @@ collect_critical() {  # stdout: «IP/CIDR<TAB>причина[<TAB>уточнен
 	# endpoint активной несущей (VPS) — авто-файл apply-bypass (та же анти-петля, что для mangle).
 	[ -s "$ENODIA_STATE/.endpoint-bypass" ] && grep -E '^[0-9]' "$ENODIA_STATE/.endpoint-bypass" 2>/dev/null | sed "s/\$/${TAB}vps/"
 	# endpoint'ы доп-выходов (slots.sh, apply-bypass endpoint-slot-set) — у каждого свой сервер.
-	for _cs in 2 3 4; do
+	for _cs in 2 3 4 5 6 7; do
 		[ -s "$ENODIA_STATE/.endpoint-bypass-s$_cs" ] && grep -E '^[0-9]' "$ENODIA_STATE/.endpoint-bypass-s$_cs" 2>/dev/null | sed "s/\$/${TAB}exit${TAB}$_cs/"
 	done
 	# Имя WAN и шлюз — у владельца (ip-lib.sh); до 05.09.2026 тут жила своя копия wan_iface,

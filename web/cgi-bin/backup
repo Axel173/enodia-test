@@ -75,7 +75,7 @@ SETTINGS="$SETTINGS .fullvpn-ips .fullvpn-ifaces .fullvpn-guest"                
 SETTINGS="$SETTINGS .bypass-dst .vpn-dst .port-rules .keep-vpn-ips .enodia-custom.conf" # правила: IP (оба направления!), порты, исключения из выреза, домены
 SETTINGS="$SETTINGS groups geo/actions.tsv"                                          # группы правил и гео-категории
 SETTINGS="$SETTINGS .dhcp-static .dev-names"                                         # закреплённые за устройствами адреса (DHCP-резервации); свои имена устройств
-SETTINGS="$SETTINGS .slots .byedpi-args .byedpi-args-s2 .byedpi-args-s3 .byedpi-args-s4"  # доп-выходы и их стратегии десинка
+SETTINGS="$SETTINGS .slots .byedpi-args .byedpi-args-s2 .byedpi-args-s3 .byedpi-args-s4 .byedpi-args-s5 .byedpi-args-s6 .byedpi-args-s7"  # доп-выходы и их стратегии десинка
 # `.bin-keep` — ИМЕНА бинарей, закреплённых за роутером. В отличие от соседнего `.bin-store` (тот
 # исключён как «про железо») это ПРЕДПОЧТЕНИЕ человека, а не путь к конкретной флешке: список имён
 # переносим, и на роутере без накопителя он безвреден — bin_dest там и так отвечает «резидент».
@@ -87,7 +87,7 @@ SETTINGS="$SETTINGS .bin-keep"                                                  
 # Обратная сторона принята: бэкап ЕЩЁ НЕ мигрированной установки старый выбор не увозит
 # (переименованный `.zapret-cats.migrated` в архив тоже не входит) — миграция всё равно случится.
 SETTINGS="$SETTINGS .zapret-on .zapret-args .desync-ips"                             # Zapret (+ устройства целиком в десинк)
-SETTINGS="$SETTINGS .probe-pool .probe-pool-s2 .probe-pool-s3 .probe-pool-s4 .probe-pool-zapret"  # пулы проб браузер-свипа (+ эталоны калибровки)
+SETTINGS="$SETTINGS .probe-pool .probe-pool-s2 .probe-pool-s3 .probe-pool-s4 .probe-pool-s5 .probe-pool-s6 .probe-pool-s7 .probe-pool-zapret"  # пулы проб браузер-свипа (+ эталоны калибровки)
 SETTINGS="$SETTINGS .split-runet .notify-off .notify-mute"                           # раздельный резолв рунета; «уведомления выключены»; выключенные поводы писем
 SETTINGS="$SETTINGS .doh-on .doh-proto .doh-resolver .doh-auto .doh-nextdns-id"      # шифрованный DNS
 SETTINGS="$SETTINGS .doh-custom-url .doh-custom-sni .doh-custom-ips .doh-custom-dot-port"   # ...и СВОЙ резолвер (адрес + якоря + порт DoT)
@@ -577,11 +577,12 @@ RESTORE
 	# Экранируем ВЕСЬ вердикт разом: внутри него имена транспорта и выходов, приехавшие из чужого
 	# архива (см. шапку про jesc).
 	# ЛИМИТ У jesc — В БАЙТАХ (`cut -c` в busybox режет байтами), а текст кириллический: 2000 байт
-	# ≈ 1000 символов. Считаем по максимуму: транспорт + ТРИ доп-выхода (слоты 2..4) + DoH + TLS =
+	# ≈ 1000 символов. Считаем по максимуму: транспорт + ТРИ доп-выхода (до 05.10.2026) + DoH + TLS =
 	# шесть строк ≈ 1200 байт. С прежними 600 хвост молча обрезался бы, и человек не узнал бы ровно
 	# то, ради чего вердикт и заведён (замер: три предупреждения = уже ~500 байт).
+	# Since 05.10.2026 there are up to SIX exits (2..7): nine lines ≈ 1800 bytes, so the cap is 3000.
 	if [ -n "$_warn" ]; then
-		_warn=$(printf '%s' " ВНИМАНИЕ, здесь заработает не всё:$_warn" | jesc 2000)
+		_warn=$(printf '%s' " ВНИМАНИЕ, здесь заработает не всё:$_warn" | jesc 3000)
 	fi
 	# `cert` — судьба сертификата HTTPS (live/stored, разбор у сверки пары; bad уже в warns): экран «Бэкап» говорит о нём строкой,
 	# потому что браузер, не видевший этого сертификата, спросит о доверии заново — и без слова это читалось бы поломкой.

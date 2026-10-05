@@ -387,13 +387,13 @@ fi
 # «awg + xray», хотя разбирать чаще приходится ровно их: десинк, доп-выходы и «доступ домой».
 # Все три верба read-only и печатают состояние, а не секреты (ключи пиров дамп не читает — см.
 # шапку: у vpn-server.sh для этого есть `status`, который их не показывает).
-sec "ДОП-ВЫХОДЫ (слоты 2..4 — свой транспорт и свой сервер у каждого)"
+sec "ДОП-ВЫХОДЫ (слоты 2..7 — свой транспорт и свой сервер у каждого)"
 if [ -f "$ENODIA_DIR/slots.sh" ]; then
     sh "$ENODIA_DIR/slots.sh" state 2>/dev/null || echo "(state не отработал)"
     sub "несущие выходов (carriers)"
     sh "$ENODIA_DIR/slots.sh" carriers 2>/dev/null || echo "(нет)"
     sub "слот-марки и таблицы (ip rule)"
-    ip rule 2>/dev/null | grep -E 'fwmark 0x[2-4]' || echo "(слот-правил в ip rule нет)"
+    ip rule 2>/dev/null | grep -E 'fwmark 0x[2-7]' || echo "(слот-правил в ip rule нет)"
     # УЧЁТ ПО ВЫХОДАМ — сюда же, а не в «ресурсы»: разбирают его вместе с самими выходами
     # («карточка показывает не то»), и ответ на это ровно два файла: СЫРОЙ последний замер
     # (первая строка — несущая и WAN, ниже по строке на выход: "s<id> <iface> <rx> <tx>") и
@@ -1153,7 +1153,7 @@ for lg in $DUMP_LOGS; do
     tail -40 "/tmp/$lg.log" 2>/dev/null
 done
 # Пер-слотовые (у доп-выхода СВОЙ инстанс демона и свой лог) — их не было вовсе.
-for i in 2 3 4; do
+for i in 2 3 4 5 6 7; do
     for lg in xray hev hysteria byedpi; do
         [ -s "/tmp/$lg-s$i.log" ] || continue
         sub "$lg-s$i.log (доп-выход №$i)"

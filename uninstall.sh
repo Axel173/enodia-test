@@ -130,8 +130,8 @@ DAEMONS="amneziawg-go xray hysteria byedpi hev nfqws https-dns-proxy dot-proxy"
 # снимается, поэтому там он остаётся в списке — страховкой на случай, если web-ui.sh не отработал.
 DAEMONS_PURGE="panel-tls"
 # Интерфейсы: awg0/awgN/awgs0 (amneziawg) + xtun/xtunN (tun2socks). Свои таблицы — 1000 и 100N.
-IFACES="awg0 awg2 awg3 awg4 awgs0 xtun xtun2 xtun3 xtun4"
-TABLES="1000 1002 1003 1004"
+IFACES="awg0 awg2 awg3 awg4 awg5 awg6 awg7 awgs0 xtun xtun2 xtun3 xtun4 xtun5 xtun6 xtun7"
+TABLES="1000 1002 1003 1004 1005 1006 1007"
 # НАШИ `ip rule` ВНЕ $TABLES — их доборка по номеру таблицы не видит В ПРИНЦИПЕ: одно смотрит в
 # table 200, второе вообще в СТОКОВУЮ main. Обе строки пережили полное удаление на живом AX3600
 # (16.08.2026), при том что отчёт обещал «роутер вернулся к стоковому состоянию», а доборка
@@ -270,7 +270,7 @@ FW_ZONE=awg
 step_rules() {
     log "Снимаю правила…"
     run support.sh down                                   # удалённый доступ («режим поддержки»)
-    for _id in 2 3 4; do
+    for _id in 2 3 4 5 6 7; do
         run transport.sh slot-down "$_id"
         run slots.sh unwire "$_id"
     done
