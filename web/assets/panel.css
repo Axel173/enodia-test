@@ -886,6 +886,18 @@
   @container view (min-width:1150px){
     .vwrap{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
   }
+  /* A SCREEN BUILT OF «2+1» PAIRS (`.vwrap.c3`: the tasks screens): EXACTLY three columns, not as many as fit — at 1920 auto-fit
+     gave four (a full-row card keeps every track alive, so auto-fit collapses none), the pair took three, and an empty column
+     gaped on the right (BE7000 07.10.2026; the decision «no holes on desktop», 07.10). In two columns the pair stands 1+1: a
+     two-column card took the whole row there and left an empty half beside the single one. */
+  @container view (min-width:700px){
+    .vwrap.c3{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .vwrap.c3>.w2{grid-column:span 1}
+  }
+  @container view (min-width:1150px){
+    .vwrap.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .vwrap.c3>.w2{grid-column:span 2}
+  }
   /* ПЕРЕХОД МЕЖДУ ЭКРАНАМИ служит ОРИЕНТАЦИИ («откуда пришли»), а не украшению: 170 мс и
      7 px. Всё, что дольше ~200 мс, на панели ощущается задержкой, а не плавностью. */
   @keyframes vin{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}

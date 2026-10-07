@@ -330,11 +330,21 @@ tk_hist_last() {   # tk_hist_last <id> -> TH_* of the last history line; rc 1 wh
 	TH_TRIG=$(printf '%s' "$_hl" | cut -f4); TH_FLAG=$(printf '%s' "$_hl" | cut -f6)
 	return 0
 }
-tk_running_json() {   # tk_running_json <id> -> {"since":..,"trig":..} | null (by the runner's pid, not by a stale file)
+# tk_running_json <id> [out] -> {"since":..,"trig":..,"dur":..[,"out":..]} | null — by the runner's pid, not by a stale file.
+# dur comes from the uptime the runner noted (a clock step after boot would lie). `out` = the output SO FAR (the task screen
+# follows it; without it the screen said «running» above «no runs» for the whole run) — not in the list: 32 KB per task.
+tk_running_json() {
 	_rc=$(cat "$TK_RUN/$1.cur" 2>/dev/null)
 	_rp=$(printf '%s' "$_rc" | cut -f3)
 	if [ -n "$_rp" ] && [ -d "/proc/$_rp" ]; then
-		printf '{"since":"%s","trig":"%s"}' "$(printf '%s' "$_rc" | cut -f1)" "$(printf '%s' "$_rc" | cut -f4)"
+		_ru=$(uptime_s); _rd=$(( _ru - $(tk_num_or "$(printf '%s' "$_rc" | cut -f2)" "$_ru") )); [ "$_rd" -ge 0 ] || _rd=0
+		printf '{"since":"%s","trig":"%s","dur":%s' "$(printf '%s' "$_rc" | cut -f1)" "$(printf '%s' "$_rc" | cut -f4)" "$_rd"
+		if [ "$2" = out ]; then
+			_rs=$(printf '%s' "$_rc" | cut -f5)
+			case "$_rs" in ''|*[!0-9]*) printf ',"out":""' ;;
+				*) printf ',"out":"%s"' "$(tail -c "$TK_OUT_KEEP" "$TK_RUN/$1.out.$_rs.run" 2>/dev/null | b64)" ;; esac
+		fi
+		printf '}'
 	else printf 'null'; fi
 }
 tk_num_or() { case "$1" in ''|*[!0-9-]*) echo "$2" ;; *) echo "$1" ;; esac; }
@@ -399,7 +409,7 @@ cmd_get_json() {
 	printf '"prio":"%s","clockwait":%s,"keep":%s,"mail":"%s","journal":%s,"body":"%s","env":"%s"},' \
 		"$T_PRIO" "$([ "$T_CLOCK" = 1 ] && echo true || echo false)" "$(tk_num_or "$T_KEEP" 5)" "$T_MAIL" \
 		"$([ "$T_JOURNAL" = 1 ] && echo true || echo false)" "$_body" "$_env"
-	printf '"next":%s,"running":%s,"runs":[' "$([ "$T_ENABLED" = 1 ] && tk_next_json "$T_SCHED" 3 || printf '[]')" "$(tk_running_json "$1")"
+	printf '"next":%s,"running":%s,"runs":[' "$([ "$T_ENABLED" = 1 ] && tk_next_json "$T_SCHED" 3 || printf '[]')" "$(tk_running_json "$1" out)"
 	_gf=1
 	# newest first; a run's output is there only while its file lives (keep setting, RAM)
 	TK_TMP="$TK_RUN/.hist.$$"

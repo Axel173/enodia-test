@@ -4643,6 +4643,7 @@
       case 'stopped':    return ['', tkL('остановлена вручную','stopped by hand')];
       case 'skip-busy':  return ['', tkL('пропущен: прошлый запуск ещё шёл','skipped: the previous run was still going')];
       case 'skip-clock': return ['', tkL('пропущен: часы роутера не сверены','skipped: the router clock was not synced yet')];
+      case 'running':    return ['', tkL('идёт '+tkSec(r.dur),'running for '+tkSec(r.dur))];
       default:           return ['bd', tkL('ошибка · код '+r.code, 'error · code '+r.code)];
     }
   }
@@ -4704,7 +4705,7 @@
       + '<label class="sw tk-sw"><input type="checkbox" data-tkid="'+esc(t.id)+'" aria-label="'+esc(tkL('задача включена','task enabled'))+'"'+(on?' checked':'')+'><i></i></label>'+CHEV+'</div>';
   }
   function tkListHtml(d){
-    var h='<div class="vwrap">'
+    var h='<div class="vwrap c3">'
       + noteBox('<b>Задачи выполняются с правами root и без проверок:</b> ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.', 'bad')
       + '<div class="row wfull" style="gap:9px;flex-wrap:wrap;justify-content:flex-start"><div class="tabs2" id="tk-tabs" role="group" aria-label="Вид">'
       + dvSeg('data-tkt', '0', 'Задачи', String(_tkTab)) + dvSeg('data-tkt', '1', 'Файл crontab', String(_tkTab)) + '</div></div>';
@@ -4956,7 +4957,7 @@
         body=t ? b64toUtf8(t.body||'') : TK_EX[0].code[LANG==='en' ? 'en' : 'ru'],
         to=t ? (t.timeout|0) : 300, tos=[[60,'1 мин'],[300,'5 мин'],[1800,'30 мин'],[0,'нет']];
     if(!tos.some(function(o){ return o[0]===to; })) tos.push([to, tkSec(to)]);
-    var h='<div class="vwrap">'
+    var h='<div class="vwrap c3">'
       // name strip (mockup TaskHead): one row, no title — a short card beside the editor was a column of air
       + '<div class="card wfull" id="tk-head"><div class="row" style="gap:18px;flex-wrap:wrap;align-items:flex-end">'
       + '<div class="f grow" style="margin-top:0;min-width:210px;max-width:560px"><label for="tk-name">Название задачи</label><input id="tk-name" maxlength="80" value="'+esc(t ? t.name : '')+'" spellcheck="false" autocomplete="off" translate="no"></div>'
@@ -5025,10 +5026,14 @@
   }
   var _tkSel=0;
   function tkRunsHtml(d){
-    var rs=d.runs||[];
+    var rs=(d.runs||[]).slice();
+    // the run going on NOW leads the list with its output so far (follow() refreshes it): without it the block said «no runs»
+    // under «running since» for the whole run (BE7000 07.10.2026). Indices of finished runs stay put when it ends — it becomes row 0
+    if(d.running) rs.unshift({ts:d.running.since, trig:d.running.trig, dur:d.running.dur, flag:'running', kept:true, out:d.running.out||''});
     if(!rs.length) return '<div class="cline" style="margin-top:0">Запусков с загрузки роутера не было. История и вывод живут в оперативной памяти: после перезагрузки начинаются заново.</div>';
     if(_tkSel>=rs.length) _tkSel=0;
     var sel=rs[_tkSel], out=(sel && (sel.kept===true || sel.out)) ? b64toUtf8(sel.out||'') : null;   // kept: an empty output is still kept
+    var none=(sel && sel.flag==='running') ? tkL('(вывода пока нет)','(no output yet)') : tkL('(нет вывода)','(no output)');
     return '<div class="f2" style="align-items:start;gap:4px 20px"><div>'
       + rs.map(function(r, i){
           var e=tkEnd(r), dot=(r.flag==='ok') ? '' : ((r.flag||'').indexOf('skip')===0 || r.flag==='stopped') ? ' off' : ' bad';
@@ -5036,7 +5041,7 @@
             + '<div class="ds" translate="no">'+esc(tkTrig(r.trig)+(r.flag==='ok' || r.flag==='err' ? ' · '+tkSec(r.dur)+' · '+tkL('код ','code ')+r.code : '')+(r.flag==='ok' || r.flag==='err' ? '' : ' · '+e[1]))+'</div></div>'
             + (i===_tkSel ? '<span class="chip acc">'+esc(tkL('вывод справа','output on the right'))+'</span>' : '')+'</div>';
         }).join('')+'</div><div>'
-      + '<pre class="term" id="tk-term" tabindex="0" role="log" translate="no" aria-label="Вывод запуска">'+esc(out==null ? tkL('(вывод этого запуска не сохранён)','(this run\'s output was not kept)') : (out.replace(/\n$/,'') || tkL('(нет вывода)','(no output)')))+'</pre>'
+      + '<pre class="term" id="tk-term" tabindex="0" role="log" translate="no" aria-label="Вывод запуска">'+esc(out==null ? tkL('(вывод этого запуска не сохранён)','(this run\'s output was not kept)') : (out.replace(/\n$/,'') || none))+'</pre>'
       + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn sm gh" id="tk-cp">Копировать вывод</button></div></div></div>';
   }
   function tkFormShow(body, d){
@@ -5095,8 +5100,8 @@
         if(g!==_tkPoll || !screenAlive(body) || !navShows('rr-task')) return;
         tkPost('task_get', {id:t.id}).then(function(n){
           if(g!==_tkPoll || !screenAlive(body) || !n || n.ok!==true) return;
-          // only the parts the router changes — the form keeps what the human is typing
-          _tkSel=0; el('tk-runsb').innerHTML=tkRunsHtml(n); el('tk-state').textContent=tkStateText(n);
+          // only the parts the router changes — the form keeps what the human is typing, the runs block the run they picked
+          el('tk-runsb').innerHTML=tkRunsHtml(n); el('tk-state').textContent=tkStateText(n);
           var rb=el('tk-run'); if(rb && !n.running) rb.innerHTML=icUse('i-zap','s')+trNow('Запустить сейчас');
           d.running=n.running; follow(n);
         });
@@ -5158,7 +5163,7 @@
     var line=b64toUtf8(x.line), p=tkParse(line), kn=tkKnown(line);
     openModal(p ? tkLabel(p.cmd) : tkL('Строка crontab','Crontab line'), {transient:'чужую строку узнают по содержимому — адреса у неё нет', deck:true});
     var body=document.getElementById('modal-body');
-    var h='<div class="vwrap"><div class="card w2" id="tl-line"><div class="ct"><span translate="no">'+esc(p ? tkLabel(p.cmd) : tkL('непонятная строка','unreadable line'))+'</span>'+(kn ? ' <span class="badge">'+esc(trNow(kn.badge))+'</span>' : '')+'</div>'
+    var h='<div class="vwrap c3"><div class="card w2" id="tl-line"><div class="ct"><span translate="no">'+esc(p ? tkLabel(p.cmd) : tkL('непонятная строка','unreadable line'))+'</span>'+(kn ? ' <span class="badge">'+esc(trNow(kn.badge))+'</span>' : '')+'</div>'
       + '<pre class="term" translate="no">'+esc(line)+'</pre>'
       + (p && !x.bad ? '<div style="margin-top:6px">'+pnKv('Включена', 'выключенная остаётся в файле строкой с «#» в начале', pnSw('tl-on', 'Включена', !p.off, false), 'swrow')+'</div>' : '')
       + '<div class="cline">'+(x.bad || !p ? 'cron эту строку пропускает: в ней нет пяти полей расписания и команды. Исправьте её в поле ниже или удалите.'
@@ -5172,7 +5177,7 @@
         + noteBox('Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи.', 'info')
         + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn" id="tl-adoptb">Взять под управление</button></div></div>';
     } else {
-      h+='<div class="card w2" id="tl-fix"><div class="wt">Исправить строку</div><div class="f" style="margin-top:0"><input id="tl-raw" class="mono" value="'+esc(line)+'" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div></div>';
+      h+='<div class="card" id="tl-fix"><div class="wt">Исправить строку</div><div class="f" style="margin-top:0"><input id="tl-raw" class="mono" value="'+esc(line)+'" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div></div>';
     }
     h+='<div class="cline wr wfull" id="tl-err" role="alert"></div><div class="acts wfull" style="justify-content:flex-start;flex-wrap:wrap">'
       + '<button type="button" class="btn pri" id="tl-save">Сохранить строку</button>'
