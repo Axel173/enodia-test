@@ -5003,9 +5003,9 @@
       + '<div class="f"><label for="tk-env">Переменные — по одной в строке</label><textarea id="tk-env" spellcheck="false" placeholder="NAME=value" translate="no">'+esc(t ? b64toUtf8(t.env) : '')+'</textarea></div></details></div>';
     h+='<div class="card wfull" id="tk-out"><div class="wt">Вывод и письма</div><div class="fauto">'
       + '<div>'+tkSegRow('tk-keep', 'Хранить вывод', 'До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.', [[1,'последний'],[5,'5 запусков'],[0,'не хранить']], t ? t.keep : 5)+'</div>'
-      + '<div>'+tkSegRow('tk-mail', 'Письмо', 'Ошибка — ненулевой код выхода или обрыв по времени.', [['never','никогда'],['fail','при ошибке'],['always','каждый раз']], t ? t.mail : 'fail')
+      + '<div>'+tkSegRow('tk-mail', 'Письмо', 'Ошибка — ненулевой код выхода или обрыв по времени. О задаче — не чаще письма в час: повторы приходят числом в следующем.', [['never','никогда'],['fail','при ошибке'],['always','каждый раз']], t ? t.mail : 'fail')
       +   '<div class="cline">Почта настраивается в «Уведомлениях».</div><div class="acts" style="justify-content:flex-start;margin-top:6px">'+'<button type="button" class="btn sm gh" data-cact="notify">Уведомления</button></div></div>'
-      + '<div style="padding-top:6px">'+pnKv('Успешные — в журнал событий', 'ошибки и обрывы попадают туда всегда', pnSw('tk-journal', 'Успешные — в журнал событий', t ? !!t.journal : false, false), 'swrow')+'</div></div></div>';
+      + '<div style="padding-top:6px">'+pnKv('Успешные — в журнал событий', 'ошибки и обрывы попадают туда всегда; о задаче — не чаще раза в час', pnSw('tk-journal', 'Успешные — в журнал событий', t ? !!t.journal : false, false), 'swrow')+'</div></div></div>';
     if(t) h+='<div class="card wfull" id="tk-runs"><div class="wt">Последние запуски</div><div id="tk-runsb">'+tkRunsHtml(d)+'</div></div>';
     h+='<div class="cline wr wfull" id="tk-err" role="alert"></div>';
     h+= t ? '<div class="acts wfull" style="justify-content:flex-start;flex-wrap:wrap">'
@@ -5036,7 +5036,7 @@
     var none=(sel && sel.flag==='running') ? tkL('(вывода пока нет)','(no output yet)') : tkL('(нет вывода)','(no output)');
     return '<div class="f2" style="align-items:start;gap:4px 20px"><div>'
       + rs.map(function(r, i){
-          var e=tkEnd(r), dot=(r.flag==='ok') ? '' : ((r.flag||'').indexOf('skip')===0 || r.flag==='stopped') ? ' off' : ' bad';
+          var e=tkEnd(r), dot=(r.flag==='ok') ? '' : ((r.flag||'').indexOf('skip')===0 || r.flag==='stopped' || r.flag==='running') ? ' off' : ' bad';
           return '<div class="lrow cl'+(i===_tkSel?' on':'')+'" role="button" tabindex="0" data-tkr="'+i+'"'+(i===_tkSel?' aria-current="true"':'')+'><span class="dot'+dot+'"></span><div class="grow"><div class="nm" translate="no">'+esc(tkWhen(r.ts, d.now))+'</div>'
             + '<div class="ds" translate="no">'+esc(tkTrig(r.trig)+(r.flag==='ok' || r.flag==='err' ? ' · '+tkSec(r.dur)+' · '+tkL('код ','code ')+r.code : '')+(r.flag==='ok' || r.flag==='err' ? '' : ' · '+e[1]))+'</div></div>'
             + (i===_tkSel ? '<span class="chip acc">'+esc(tkL('вывод справа','output on the right'))+'</span>' : '')+'</div>';
@@ -6355,10 +6355,10 @@
     "последний":"the last one","5 запусков":"5 runs","не хранить":"don't keep",
     "До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.":"Up to 32 KB per run, in RAM: the router's flash is not spent on runs, after a reboot the history starts over.",
     "Письмо":"Letter","никогда":"never","при ошибке":"on failure","каждый раз":"every time",
-    "Ошибка — ненулевой код выхода или обрыв по времени.":"A failure is a non-zero exit code or a time-limit stop.",
+    "Ошибка — ненулевой код выхода или обрыв по времени. О задаче — не чаще письма в час: повторы приходят числом в следующем.":"A failure is a non-zero exit code or a time-limit stop. At most one letter an hour per task: repeats arrive as a count in the next one.",
     "Почта настраивается в «Уведомлениях».":"Mail is set up in «Notifications».",
     "Успешные — в журнал событий":"Successful runs — to the events journal",
-    "ошибки и обрывы попадают туда всегда":"failures and stops always go there","Последние запуски":"Recent runs","Запустить сейчас":"Run now",
+    "ошибки и обрывы попадают туда всегда; о задаче — не чаще раза в час":"failures and stops always go there; at most once an hour per task","Последние запуски":"Recent runs","Запустить сейчас":"Run now",
     "Дублировать":"Duplicate","Удалить задачу":"Delete the task","Создать и запустить":"Create and run",
     "Запусков с загрузки роутера не было. История и вывод живут в оперативной памяти: после перезагрузки начинаются заново.":"No runs since the router booted. History and output live in RAM: after a reboot they start over.",
     "Вывод запуска":"Run output","Заменить текст скрипта примером?":"Replace the script text with the example?",

@@ -49,6 +49,7 @@ TK_BODY_MAX=16384                   # script size (the CGI body is 32 KB, base64
 TK_OUT_KEEP=32768                   # output kept per run
 TK_OUT_CAP=524288                   # output allowed WHILE running; beyond it the run is cut (RAM)
 TK_FILE_MAX=65536                   # «open and edit the file» limit
+TK_NOTE_GAP=3600                    # one word (journal line / letter) per task and outcome per this many seconds
 
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 command -v uptime_s >/dev/null 2>&1 || uptime_s() { _cl_u=$(awk '{print int($1)}' /proc/uptime 2>/dev/null); case "$_cl_u" in ''|*[!0-9]*) _cl_u=999999999 ;; esac; echo "$_cl_u"; }
@@ -680,6 +681,27 @@ tk_hist_add() {   # <id> <ts> <dur> <code> <trig> <seq> <flag> — RAM history, 
 tk_kill_tree() { _kt=$(proc_tree "$1"); kill -TERM $_kt 2>/dev/null; sleep 1; kill -KILL $_kt 2>/dev/null; return 0; }
 # alive = a process that is not a zombie: our finished background child stays in /proc as Z until `wait`
 tk_alive() { [ -d "/proc/$1" ] && [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+# tk_note_gate <id> <ok|fail> — rc 0 = speak now (TK_NREP = runs of this outcome held back since the last word), rc 1 = hold.
+# Why: a task on a one-minute schedule spoke on EVERY run. The journal is a ring of 100 events, rewritten whole on /data once
+# full — a per-minute task evicted the VPN's events in 100 minutes and wrote ~29 MB a day; «каждый раз» meant 1440 letters a
+# day (decision 07.10.2026: one word an hour per task and outcome, the repeats as a count). The first word of an outcome goes
+# at once (the first failure, the first success after a boot — /tmp is empty then). The gate is THE throttle: notify-event
+# and events.sh get 0 — a second throttle on wall-clock stamps, taken a moment later, would swallow the hourly word
+# (3599 s < 3600) and then every next one. Age by uptime (a /tmp mark; the clock steps after a boot); RAM only.
+tk_note_gate() {
+	_ngf="$TK_RUN/$1.note-$2"; _ngu=$(uptime_s); _ngt=""; _ngn=0
+	[ -f "$_ngf" ] && read -r _ngt _ngn < "$_ngf" 2>/dev/null
+	case "$_ngn" in ''|*[!0-9]*) _ngn=0 ;; esac
+	case "$_ngt" in ''|*[!0-9]*) ;; *)
+		if [ "$_ngu" -ge "$_ngt" ] && [ $((_ngu - _ngt)) -lt "$TK_NOTE_GAP" ]; then
+			echo "$_ngt $((_ngn + 1))" > "$_ngf.$$" && mv -f "$_ngf.$$" "$_ngf"
+			return 1
+		fi ;;
+	esac
+	TK_NREP=$_ngn
+	echo "$_ngu 0" > "$_ngf.$$" && mv -f "$_ngf.$$" "$_ngf"
+	return 0
+}
 tk_notify() {   # <id> <ok|fail> <ts> <dur> <code> <flag> <trig> <outfile>
 	_nk="task-$2-$1"
 	if [ "$2" = fail ]; then
@@ -687,6 +709,7 @@ tk_notify() {   # <id> <ok|fail> <ts> <dur> <code> <flag> <trig> <outfile>
 	else
 		case "$T_MAIL" in always) _nhow=mail ;; *) [ "$T_JOURNAL" = 1 ] && _nhow=journal || return 0 ;; esac
 	fi
+	tk_rundir && tk_note_gate "$1" "$2" || return 0
 	NF_LANG=ru
 	if [ -f "$ENODIA_DIR/nf-i18n.sh" ]; then . "$ENODIA_DIR/nf-i18n.sh"; command -v nf_lang >/dev/null 2>&1 && NF_LANG=$(nf_lang); fi
 	_ntail=$(tail -n 15 "$8" 2>/dev/null)
@@ -694,22 +717,27 @@ tk_notify() {   # <id> <ok|fail> <ts> <dur> <code> <flag> <trig> <outfile>
 		cut) _nwhy=$( [ "$NF_LANG" = en ] && echo "output over 512 KB — the run was cut" || echo "вывод больше 512 КБ — оборвана") ;;
 		nodir) _nwhy=$( [ "$NF_LANG" = en ] && echo "no working directory" || echo "нет рабочего каталога") ;;
 		*) _nwhy="" ;; esac
+	_nrep=""
 	if [ "$NF_LANG" = en ]; then
+		[ "$TK_NREP" -gt 0 ] 2>/dev/null && _nrep="
+Since the previous message: $TK_NREP more such runs (one message an hour per task)."
 		_ntitle="BE7000: task «$T_NAME» $([ "$2" = fail ] && echo failed || echo done)"
-		_ntext="Task «$T_NAME» ($1), started $3 ($7): exit code $5, $4 s${_nwhy:+, $_nwhy}.
+		_ntext="Task «$T_NAME» ($1), started $3 ($7): exit code $5, $4 s${_nwhy:+, $_nwhy}.$_nrep
 ${_ntail:+Output (last lines):
 $_ntail}"
 	else
+		[ "$TK_NREP" -gt 0 ] 2>/dev/null && _nrep="
+С прошлого сообщения таких запусков ещё $TK_NREP (о задаче — не чаще раза в час)."
 		_ntitle="BE7000: задача «$T_NAME» $([ "$2" = fail ] && echo 'не удалась' || echo 'выполнена')"
-		_ntext="Задача «$T_NAME» ($1), запуск $3 ($7): код выхода $5, $4 с${_nwhy:+, $_nwhy}.
+		_ntext="Задача «$T_NAME» ($1), запуск $3 ($7): код выхода $5, $4 с${_nwhy:+, $_nwhy}.$_nrep
 ${_ntail:+Вывод (последние строки):
 $_ntail}"
 	fi
-	_nthr=0; [ "$2" = fail ] && _nthr=3600   # a task failing every minute must not send 60 letters an hour
+	# throttle 0: tk_note_gate above is the one throttle (why — at the gate)
 	if [ "$_nhow" = mail ] && [ -f "$ENODIA_DIR/notify-event.sh" ]; then
-		sh "$ENODIA_DIR/notify-event.sh" "$_nk" "$_nthr" "$_ntitle" "$_ntext" >/dev/null 2>&1
+		sh "$ENODIA_DIR/notify-event.sh" "$_nk" 0 "$_ntitle" "$_ntext" >/dev/null 2>&1
 	elif [ -f "$ENODIA_DIR/events.sh" ]; then
-		sh "$ENODIA_DIR/events.sh" add "$_nk" "$_nthr" "$_ntitle" "$_ntext" >/dev/null 2>&1
+		sh "$ENODIA_DIR/events.sh" add "$_nk" 0 "$_ntitle" "$_ntext" >/dev/null 2>&1
 	fi
 	return 0
 }
