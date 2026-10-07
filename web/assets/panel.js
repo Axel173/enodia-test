@@ -764,7 +764,7 @@
     if(exInd){
       var exBad=cur.exitsBad;
       exInd.style.display = exBad>0 ? 'inline-flex' : 'none';
-      if(exBad>0) exInd.querySelector('span').textContent = exBad>1 ? (exBad+' выхода не работают') : 'выход не работает';
+      if(exBad>0) exInd.querySelector('span').textContent = exBad>1 ? (exBad+' '+plu(exBad,['выход','выхода','выходов'])+' не работают') : 'выход не работает';   // up to 6 exits since 05.10: «5 выходов»
     }
     // РЯД индикаторов гасим ВМЕСТЕ с ними. Пустой ряд не «ничего»: он лежит в колонке с
     // зазором 14 px, и при обоих скрытых индикаторах над шапкой оставалась дырка ровно в этот
@@ -4568,7 +4568,7 @@
   // Foreign lines the panel recognises: their badge and the warning that also goes into the delete question.
   var TK_KNOWN=[{re:/\/etc\/crontabs\/patches\/ssh_patch\.sh/, badge:'держит SSH', ds:'без неё SSH закроется после перезагрузки'}];
   function tkKnown(line){ for(var i=0;i<TK_KNOWN.length;i++) if(TK_KNOWN[i].re.test(line)) return TK_KNOWN[i]; return null; }
-  var _tkTab=0, _tkFor=[], _tkRaw=null, _tkPoll=0;
+  var _tkTab=0, _tkFor=[], _tkRaw=null, _tkRawRev='', _tkPoll=0;
   function tkPl(n, one, few, many){ var a=Math.abs(n)%100, b=a%10; if(a>10&&a<20) return many; if(b>1&&b<5) return few; return b===1 ? one : many; }
   var TK_DN={sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
   var TK_DOW_RU=['воскресеньям','понедельникам','вторникам','средам','четвергам','пятницам','субботам'],
@@ -4689,8 +4689,8 @@
       tkListWire(body, d, rep);
     }, function(e){ if(screenAlive(body)) body.innerHTML=pnErrHtml('tk-list', 'Задачи', pnErrText(e)); });
   }
-  function tkTaskRow(t, now){
-    var on=!!t.enabled, run=t.running, last=t.last, badge='', ds=[tkWhenText(t)], dot=on ? 'ok' : 'off';
+  function tkTaskRow(t, now, off){
+    var on=!!t.enabled, run=t.running, last=t.last, badge='', ds=[tkWhenText(t)], dot=(on && !off) ? 'ok' : 'off';
     if(run){ badge=' <span class="badge acc">'+esc(tkL('идёт','running'))+'</span>'; }
     else if(last){
       var e=tkEnd(last);
@@ -4698,6 +4698,9 @@
       else ds.push(tkL('последний ','last ')+tkWhen(last.ts, now)+' — '+e[1]);
     }
     if(!on) ds.push(tkL('выключена — строки в cron нет','disabled — no cron line'));
+    // off: a task taken from crontab runs as a plain line of it (the router's `plain`: the line it wrote is active), the rest wait
+    else if(off) ds.push(t.plain ? tkL('работает обычной строкой crontab, пока Enodia снята с расписания','runs as a plain crontab line while Enodia is off the schedule')
+                                 : tkL('не запускается, пока Enodia снята с расписания','not run while Enodia is off the schedule'));
     else if(t.next && t.next[0]) ds.push(tkL('следующий ','next ')+tkWhen(t.next[0], now));
     if(t.lang==='lua') ds.push('Lua');
     return lrowGo('task:'+t.id, '')+'<span class="dot'+(dot==='ok'?'':' '+dot)+'"></span>'
@@ -4710,9 +4713,10 @@
       + '<div class="row wfull" style="gap:9px;flex-wrap:wrap;justify-content:flex-start"><div class="tabs2" id="tk-tabs" role="group" aria-label="Вид">'
       + dvSeg('data-tkt', '0', 'Задачи', String(_tkTab)) + dvSeg('data-tkt', '1', 'Файл crontab', String(_tkTab)) + '</div></div>';
     if(_tkTab===1) return h + tkRawHtml() + '</div>';
-    var ts=d.tasks;
+    var ts=d.tasks, off=(d.form==='off');
+    if(off) h+=noteBox('<b>Enodia снята с расписания:</b> в crontab нет её строки самовосстановления — задачи не запускаются, а строки, взятые под управление, работают в нём как обычные. После деактивации расписание возвращает «Включить VPN».', 'warn');
     h+='<div class="card w2" id="tk-mine"><div class="wt"><span>Ваши задачи</span><span class="sp"></span><span class="chip">'+ts.length+'</span></div>'
-      + (ts.length ? ts.map(function(t){ return tkTaskRow(t, d.now); }).join('')
+      + (ts.length ? ts.map(function(t){ return tkTaskRow(t, d.now, off); }).join('')
                    : '<div class="cline">Задач пока нет. Задача — свой скрипт, файл на роутере или команда; запускается по расписанию, при загрузке или кнопкой.</div>')
       + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" data-cact="tasknew">'+icUse('i-plus','s')+'Создать задачу</button></div></div>';
     var ours=Array.isArray(d.ours) ? d.ours : [];
@@ -4746,10 +4750,10 @@
   function tkRawHtml(){
     return '<div class="card wfull" id="tk-raw"><div class="wt"><span translate="no">/etc/crontabs/root</span></div>'
       + noteBox('Весь файл как есть — правьте что угодно. Строки Enodia подсистемы перепишут при установке, обновлении и включении VPN, а строки ваших задач панель выводит из их настроек: поправленные здесь, они вернутся при следующем сохранении задачи — меняйте их на вкладке «Задачи».', 'warn')
-      + '<div class="f"><textarea id="tk-rawtx" class="code" wrap="off" spellcheck="false" translate="no" style="min-height:420px" aria-label="crontab">'+(_tkRaw==null ? '' : esc(_tkRaw))+'</textarea></div>'
+      + '<div class="f"><textarea id="tk-rawtx" class="code" wrap="off" spellcheck="false" translate="no" style="min-height:420px" aria-label="crontab"></textarea></div>'
       + '<div class="cline wr" id="tk-rawerr" role="alert"></div>'
       + '<div class="cline">Перед записью роутер проверяет каждую строку: пять полей расписания и команда. Ошибка хотя бы в одной — файл не записывается, а номер строки и причина появляются здесь. Сохранение действует сразу, перезапускать ничего не нужно.</div>'
-      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" id="tk-rawsave">Сохранить файл</button>'
+      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" id="tk-rawsave" disabled>Сохранить файл</button>'
       + '<button type="button" class="btn gh" id="tk-rawre">Вернуть как было</button><button type="button" class="btn sm gh" id="tk-rawcp">Копировать</button></div></div>';
   }
   function tkPost(action, params){   // a verb whose answer the screen reads itself (not a toast-and-reload postAction)
@@ -4775,26 +4779,34 @@
       el.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); openFor(el); } });
     });
     if(_tkTab===1) tkRawWire(body, d, rep);
-    // a task is running — the list follows it (only while THIS screen is shown)
+    // a task is running — the list follows it (only while THIS screen is shown, and not on the file tab: a redraw there wiped what
+    // the human was typing every 3 s — review s.106; the file tab shows no run state anyway)
     var g=++_tkPoll;
-    if(d.tasks.some(function(t){ return !!t.running; })) setTimeout(function(){ if(g===_tkPoll && screenAlive(body) && navShows('rr-tasks')) rep(); }, 3000);
+    if(_tkTab===0 && d.tasks.some(function(t){ return !!t.running; })) setTimeout(function(){ if(g===_tkPoll && screenAlive(body) && navShows('rr-tasks')) rep(); }, 3000);
   }
   function tkRawWire(body, d, rep){
-    var tx=document.getElementById('tk-rawtx'), er=document.getElementById('tk-rawerr');
+    var tx=document.getElementById('tk-rawtx'), er=document.getElementById('tk-rawerr'), sv=document.getElementById('tk-rawsave');
+    // Saving is possible only from a text the router GAVE: the editor is empty while reading, and an empty text saved against
+    // the previous version wiped every line of the file but the task lines (review s.106, round 2).
     function rawLoad(){
-      tx.value=''; tx.placeholder=trNow('читаю crontab…');
+      tx.value=''; tx.placeholder=trNow('читаю crontab…'); _tkRawRev=''; sv.disabled=true;
       tkPost('cron_raw_get', {}).then(function(r){
         if(!screenAlive(tx)) return;
-        if(!r || r.ok!==true){ er.textContent=trNow((r && r.msg) || 'роутер ответил не то'); return; }
-        _tkRaw=b64toUtf8(r.text||''); tx.value=_tkRaw; tx.placeholder='';
+        if(!r || r.ok!==true || !r.rev){ er.textContent=trNow((r && r.msg) || 'роутер ответил не то'); return; }
+        _tkRaw=b64toUtf8(r.text||''); _tkRawRev=String(r.rev); tx.value=_tkRaw; tx.placeholder=''; sv.disabled=false;
       }, function(){ if(screenAlive(tx)) er.textContent=trNow('роутер не ответил — откройте вкладку ещё раз'); });
     }
-    if(_tkRaw==null) rawLoad();
-    document.getElementById('tk-rawre').addEventListener('click', function(){ _tkRaw=null; er.textContent=''; rawLoad(); });
+    // Read from the router on EVERY showing: a text kept from an earlier visit was older than the file, and saving it wiped what
+    // changed since (a task saved, a line toggled — review s.106). The save goes against the version read (`rev`): the router
+    // refuses it when the file has changed meanwhile.
+    rawLoad();
+    document.getElementById('tk-rawre').addEventListener('click', function(){ er.textContent=''; rawLoad(); });
     document.getElementById('tk-rawcp').addEventListener('click', function(){ copyToClip(tx.value, 'crontab скопирован'); });
-    document.getElementById('tk-rawsave').addEventListener('click', function(){
+    sv.addEventListener('click', function(){
       er.textContent='';
-      postAction('cron_raw_save', null, 'сохраняю crontab…', {text:b64utf8(tx.value)}, function(r){
+      if(!_tkRawRev) return;
+      postAction('cron_raw_save', tx.value.trim() ? null : 'Сохранить пустой crontab?\n\nИз файла уйдут все строки — прошивки, Enodia и ваши. Без строки самовосстановления Enodia задачи перестанут запускаться, а взятые под управление вернутся в файл обычными строками.',
+        'сохраняю crontab…', {text:b64utf8(tx.value), rev:_tkRawRev}, function(r){
         if(r && r.ok){ _tkRaw=null; rep(); }
         else if(r && r.msg && screenAlive(er)){ er.textContent=trNow(r.msg); }
       });
@@ -5000,7 +5012,7 @@
       + '<div style="margin-top:8px">'+pnKv('Ждать сверки часов<span class="help-slot" data-tip="После перезагрузки часы роутера стоят на прошлом, пока не сверятся с интернетом."></span>', 'до сверки запуск по расписанию пропускается', pnSw('tk-clock', 'Ждать сверки часов', t ? !!t.clockwait : true, false), 'swrow')+'</div>'
       + '<details style="margin-top:4px"><summary class="act mut">Рабочий каталог и переменные окружения</summary>'
       + '<div class="f"><label for="tk-wd">Рабочий каталог</label><input id="tk-wd" class="mono" value="'+esc(t ? b64toUtf8(t.workdir) : '')+'" placeholder="/tmp" spellcheck="false" autocomplete="off" translate="no"></div>'
-      + '<div class="f"><label for="tk-env">Переменные — по одной в строке</label><textarea id="tk-env" spellcheck="false" placeholder="NAME=value" translate="no">'+esc(t ? b64toUtf8(t.env) : '')+'</textarea></div></details></div>';
+      + '<div class="f"><label for="tk-env">Переменные — по одной в строке<span class="help-slot" data-tip="Пароли и токены держите здесь, а не в тексте скрипта: в бэкап без ключей переменные не попадают."></span></label><textarea id="tk-env" spellcheck="false" placeholder="NAME=value" translate="no">'+esc(t ? b64toUtf8(t.env) : '')+'</textarea></div></details></div>';
     h+='<div class="card wfull" id="tk-out"><div class="wt">Вывод и письма</div><div class="fauto">'
       + '<div>'+tkSegRow('tk-keep', 'Хранить вывод', 'До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.', [[1,'последний'],[5,'5 запусков'],[0,'не хранить']], t ? t.keep : 5)+'</div>'
       + '<div>'+tkSegRow('tk-mail', 'Письмо', 'Ошибка — ненулевой код выхода или обрыв по времени. О задаче — не чаще письма в час: повторы приходят числом в следующем.', [['never','никогда'],['fail','при ошибке'],['always','каждый раз']], t ? t.mail : 'fail')
@@ -5046,7 +5058,7 @@
   }
   function tkFormShow(body, d){
     body.innerHTML=tkFormHtml(d);
-    var t=d.task, rep=t ? navIfShown('rr-task', taskScrOpen) : null, cb=cronBWire('tkc');
+    var t=d.task, cb=cronBWire('tkc');
     wireCacts(body);
     function el(id){ return document.getElementById(id); }
     function err(x, id){ el('tk-err').textContent=x ? trNow(x) : ''; if(id && el(id)) try{ el(id).focus(); }catch(e){} }
@@ -5108,6 +5120,16 @@
       }, 2000);
     }
     if(t) follow(d);
+    // after «run» / «stop»: only the runs, the state and the button — the form keeps what the human is typing (a full redraw
+    // dropped unsaved edits — review s.106); the run is registered before the router answers, so the first read already sees it
+    function runsNow(){
+      tkPost('task_get', {id:t.id}).then(function(n){
+        if(!screenAlive(body) || !n || n.ok!==true) return;
+        el('tk-runsb').innerHTML=tkRunsHtml(n); el('tk-state').textContent=tkStateText(n);
+        var rb=el('tk-run'); if(rb) rb.innerHTML=icUse('i-zap','s')+trNow(n.running ? 'Остановить' : 'Запустить сейчас');
+        d.running=n.running; g=++_tkPoll; follow(n);
+      });
+    }
     function collect(){
       var name=el('tk-name').value.trim(), p={};
       if(!name) return err('введите название задачи', 'tk-name');
@@ -5147,8 +5169,8 @@
     if(el('tk-cancel')) el('tk-cancel').addEventListener('click', function(){ navUp(); });
     if(t){
       el('tk-run').addEventListener('click', function(){
-        if(d.running) postAction('task_stop', null, 'останавливаю задачу…', {id:t.id}, rep);
-        else postAction('task_run', null, 'запускаю задачу…', {id:t.id}, function(){ _tkSel=0; rep(); });
+        if(d.running) postAction('task_stop', null, 'останавливаю задачу…', {id:t.id}, function(){ runsNow(); });
+        else postAction('task_run', null, 'запускаю задачу…', {id:t.id}, function(r){ if(r && r.ok) _tkSel=0; runsNow(); });
       });
       el('tk-dup').addEventListener('click', function(){ postAction('task_dup', null, 'копирую задачу…', {id:t.id}, function(r){ if(r && r.ok && r.id) taskScrOpen(r.id); }); });
       el('tk-del').addEventListener('click', function(){
@@ -5174,7 +5196,7 @@
         + '<div class="cline" id="tl-out" translate="no"></div></div>'
         + '<div class="card w2" id="tl-when"><div class="wt">Когда</div>'+cronBHtml('tlc', p.f.join(' '))+'</div>'
         + '<div class="card" id="tl-adopt"><div class="wt">Взять под управление</div>'
-        + noteBox('Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи.', 'info')
+        + noteBox('Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи, а при удалении или отключении Enodia вернётся обычной строкой — закомментированной, если задача выключена или без Enodia работать не может.', 'info')
         + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn" id="tl-adoptb">Взять под управление</button></div></div>';
     } else {
       h+='<div class="card" id="tl-fix"><div class="wt">Исправить строку</div><div class="f" style="margin-top:0"><input id="tl-raw" class="mono" value="'+esc(line)+'" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div></div>';
@@ -6306,6 +6328,9 @@
     "Задачи":"Tasks","Новая задача":"New task","Задача":"Task","Задачи выполняются с правами root и без проверок:":"Tasks run as root, unchecked:",
     "ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.":"a wrong script or an edit of a foreign line can break the router, the VPN or the internet. They are your responsibility.",
     "Файл crontab":"Crontab file","Ваши задачи":"Your tasks","Создать задачу":"Create a task",
+    "Enodia снята с расписания:":"Enodia is off the schedule:",
+    "эту строку уже ведёт одна из ваших задач — откройте её в списке":"one of your tasks already runs this line — open it in the list",
+    "в crontab нет её строки самовосстановления — задачи не запускаются, а строки, взятые под управление, работают в нём как обычные. После деактивации расписание возвращает «Включить VPN».":"its self-healing line is not in the crontab — tasks do not run, and the lines taken under management run in it as plain ones. After a deactivation, «Turn the VPN on» brings the schedule back.",
     "Задач пока нет. Задача — свой скрипт, файл на роутере или команда; запускается по расписанию, при загрузке или кнопкой.":"No tasks yet. A task is your own script, a file on the router or a command; it runs on a schedule, at boot or by a button.",
     "Эти строки подсистемы переписывают сами — при установке, обновлении и включении VPN: правка здесь продержалась бы до первого такого события. Менять можно то расписание, у которого есть дорога; в текстовой вкладке «Файл crontab» правятся и они.":"These lines are rewritten by their subsystems — on install, update and turning the VPN on: an edit here would last until the first such event. A schedule with a door can be changed there; in the «Crontab file» tab they are editable too.",
     "Строк Enodia в crontab нет — переустановите систему или нажмите «Починить правила».":"No Enodia lines in the crontab — reinstall the system or press «Repair rules».",
@@ -6351,7 +6376,7 @@
     "После перезагрузки часы роутера стоят на прошлом, пока не сверятся с интернетом.":"After a reboot the router's clock is in the past until it syncs with the internet.",
     "до сверки запуск по расписанию пропускается":"scheduled runs are skipped until the sync",
     "Рабочий каталог и переменные окружения":"Working directory and environment variables","Рабочий каталог":"Working directory",
-    "Переменные — по одной в строке":"Variables — one per line","Вывод и письма":"Output and letters","Хранить вывод":"Keep output",
+    "Переменные — по одной в строке":"Variables — one per line","Пароли и токены держите здесь, а не в тексте скрипта: в бэкап без ключей переменные не попадают.":"Keep passwords and tokens here rather than in the script: variables are left out of a backup without keys.","Вывод и письма":"Output and letters","Хранить вывод":"Keep output",
     "последний":"the last one","5 запусков":"5 runs","не хранить":"don't keep",
     "До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.":"Up to 32 KB per run, in RAM: the router's flash is not spent on runs, after a reboot the history starts over.",
     "Письмо":"Letter","никогда":"never","при ошибке":"on failure","каждый раз":"every time",
@@ -6371,7 +6396,7 @@
     "создаю задачу…":"creating the task…","останавливаю задачу…":"stopping the task…","запускаю задачу…":"starting the task…",
     "копирую задачу…":"copying the task…","удаляю задачу…":"deleting the task…","включаю задачу…":"enabling the task…",
     "выключаю задачу…":"disabling the task…",
-    "Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи.":"The line becomes a task: a run history with output, a time limit, a letter on failure, a run at boot and a place in the backup. The file stays where it is, the crontab line is replaced by the task's line.",
+    "Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи, а при удалении или отключении Enodia вернётся обычной строкой — закомментированной, если задача выключена или без Enodia работать не может.":"The line becomes a task: a run history with output, a time limit, a letter on failure, a run at boot and a place in the backup. The file stays where it is; the crontab line is replaced by the task's line and comes back as a plain line when Enodia is removed or deactivated — commented out if the task is disabled or can't work without Enodia.",
     "Взять под управление":"Take over","Исправить строку":"Fix the line","Сохранить строку":"Save the line","Удалить строку":"Delete the line",
     "Чужая строка — не задача панели: её вывод и ошибки cron выбрасывает, и что она делает и удаётся ли, отсюда не видно.":"A foreign line is not a panel task: cron throws away its output and errors, so what it does and whether it succeeds can't be seen from here.",
     "cron эту строку пропускает: в ней нет пяти полей расписания и команды. Исправьте её в поле ниже или удалите.":"cron skips this line: it has no five schedule fields and a command. Fix it in the field below or delete it.",
@@ -6401,6 +6426,39 @@
     "строки-переменные cron этого роутера не понимает — переменные задаются в настройках задачи":"this router's cron does not understand variable lines — variables are set in the task settings",
     "нужны пять полей расписания и команда":"five schedule fields and a command are needed","нет команды":"no command",
     "задача из crontab":"a task from crontab","нет расписания":"no schedule",
+    // the router's other refusals (tasks.sh, the task CGI) — every one is checked by dev/tasks-i18n-test.js
+    "в расписании — только цифры, названия, пробелы и * / , -":"a schedule has only digits, names, spaces and * / , -",
+    "в строке #! нет интерпретатора":"the #! line names no interpreter","нет данных задачи":"no task data",
+    "неверный номер задачи":"invalid task number","неверный вид задачи":"invalid task kind","неверный язык":"invalid language",
+    "неверная настройка наложения":"invalid overlap setting","неверный приоритет":"invalid priority",
+    "неверная настройка писем":"invalid email setting","неверная настройка вывода":"invalid output setting",
+    "задержка — число секунд":"the delay is a number of seconds","задержка — не больше 3600 секунд":"the delay is at most 3600 seconds",
+    "ограничение по времени — число секунд":"the time limit is a number of seconds",
+    "ограничение по времени — не больше суток":"the time limit is at most a day",
+    "рабочий каталог — полный путь, от /":"the working directory is a full path, from /",
+    "путь, команда и аргументы — одной строкой":"the path, the command and the arguments are one line each",
+    "не удалось создать каталог задач в памяти":"could not create the tasks folder in RAM",
+    "не удалось создать временный каталог":"could not create a temporary folder",
+    "команда длиннее 2000 знаков — сделайте её скриптом":"the command is longer than 2000 characters — make it a script",
+    "переменных больше 4 КБ":"the variables are over 4 KB",
+    "такой задачи нет — её удалили, пока вы правили":"no such task — it was deleted while you were editing",
+    "не удалось записать скрипт на флеш — места нет?":"could not write the script to flash — out of space?",
+    "не удалось записать переменные на флеш — места нет?":"could not write the variables to flash — out of space?",
+    "не удалось записать задачу на флеш":"could not write the task to flash","не удалось записать задачу":"could not write the task",
+    "задача сохранена, но расписание не записалось (crontab)":"the task is saved, but the schedule was not written (crontab)",
+    "задача удалена, но расписание не записалось (crontab)":"the task is deleted, but the schedule was not written (crontab)",
+    "неверное действие":"invalid action","не удалось записать копию":"could not write the copy","нет строки":"no line",
+    "пустая строка — для удаления есть своя кнопка":"an empty line — deleting has its own button",
+    "строку задачи так не завести — создайте задачу":"a task line can't be added this way — create a task",
+    "не удалось записать crontab":"could not write the crontab","нет текста":"no text",
+    "файл больше 16 КБ — правьте его по SSH":"the file is over 16 KB — edit it over SSH",
+    "crontab изменился, пока вы его правили — откройте вкладку заново":"the crontab changed while you were editing it — open the tab again",
+    "путь — полный, от /":"the path is a full one, from /","файл не текстовый":"the file is not text","неверная строка":"invalid line",
+    "неверный текст":"invalid text","неверная версия файла":"invalid file version","нет пути к файлу":"no file path",
+    "путь — одной строкой":"the path is one line",
+    "Сохранить пустой crontab?\n\nИз файла уйдут все строки — прошивки, Enodia и ваши. Без строки самовосстановления Enodia задачи перестанут запускаться, а взятые под управление вернутся в файл обычными строками.":
+      "Save an empty crontab?\n\nEvery line leaves the file — the firmware's, Enodia's and yours. Without Enodia's self-healing line the tasks stop running, and the ones taken under management come back into the file as plain lines.",
+    "нет версии файла — откройте вкладку заново":"no file version — open the tab again",
     // ─── Экран сервера (cn-server, 25.09.2026): карточки, числа, имя, отказы роутера rename_config / get_config_info ───
     "читаю конфиг…":"reading the config…","Конфиг целиком":"The whole config",
     "не удалось обновить экран сервера":"could not refresh the server screen",
@@ -6468,7 +6526,7 @@
     ", вставленный вместо ссылки, тоже принимается.":" pasted instead of a link is accepted too.",
     "Редактора конфига у AmneziaWG нет":"AmneziaWG has no config editor",
     "принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — панель спросит, заменить ли им прежний. Endpoint и MTU — на экране сервера.":"accepts a config only as a whole, and a partial edit would leave the interface without a handshake. Upload the fixed config again — the panel will ask whether to replace the old one. Endpoint and MTU are on the server screen.",
-    "Дополнительные выходы (второй и третий путь наружу) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.":"Additional exits (a second and third way out) live on their own screen in «Connection»: the server list and the exit list answer different questions.",
+    "Дополнительные выходы (ещё пути наружу, до шести) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.":"Additional exits (more ways out, up to six) live on their own screen in «Connection»: the server list and the exit list answer different questions.",
     "Поиск сервера или группы":"Search servers or groups",
     "Активный закреплён сверху и не уезжает при поиске и сортировке. Бейдж собирается из самого конфига: протокол · защита · транспорт · flow.":"The active server is pinned on top and stays put when you search or sort. The badge is built from the config itself: protocol · security · transport · flow.",
     "добавлены вручную":"added manually","ещё не скачивалась":"not downloaded yet","Показать или скрыть серверы группы":"Show or hide the group's servers",
@@ -6669,7 +6727,7 @@
     // — раздел «Соединение»: двери и карточка «Сейчас» (шаг 3b переноса) —
     "Транспорт":"Transport","чем выходим: 5 движков, что установлено":"what we go out with: 5 engines, what is installed",
     "пулы vless:// · автообновление по расписанию":"vless:// pools · scheduled auto-update",
-    "второй и третий путь наружу для части трафика":"a second and a third way out for part of the traffic",
+    "ещё пути наружу для части трафика":"more ways out for part of the traffic",
     "Сменить протокол":"Change protocol","Сменить сервер":"Change server",
     // — экран «Транспорт» —
     "Чем выходим наружу":"How traffic leaves",
@@ -6946,7 +7004,7 @@
     // Что показывает каждая карточка (таблица CARD_INFO) — подписи строк экрана.
     "доли выходов и кто через них ходит":"exit shares and who goes through them",
     "объём за период и график по дням":"volume per period and the per-day chart",
-    "состояние второго и третьего пути":"the state of the second and third path",
+    "состояние дополнительных путей наружу":"the state of the additional ways out",
     "остаток трафика и срок действия":"traffic left and the expiry date",
     "кто подключён и куда идёт его трафик":"who is connected and where their traffic goes",
     "последние записи центра уведомлений":"the latest entries from the notification centre",
@@ -9991,13 +10049,31 @@
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
     // ─── «Задачи» (07.10.2026): the router's composed answers (tasks.sh) — FIRST, before the short tokens below ───
+    // Its REASONS as rules, not only keys: an exact key matches a whole string, and the router puts a reason after a wrapper
+    // («строка 3: », «расписание: », «минута: ») — the whole toast stayed Russian (review s.106, round 2; dev/tasks-i18n-test.js).
+    [/(^|: )в расписании — только цифры, названия, пробелы и \* \/ , -$/,"$1a schedule has only digits, names, spaces and * / , -"],
+    [/(^|: )в расписании нужно ровно пять полей: минута, час, день месяца, месяц, день недели$/,"$1a schedule needs exactly five fields: minute, hour, day of month, month, weekday"],
+    [/(^|: )@-сокращения busybox cron не понимает — нужны пять полей; «при загрузке» — настройка задачи$/,"$1busybox cron does not understand @-shortcuts — five fields are needed; «at boot» is a task setting"],
+    [/(^|: )строки-переменные cron этого роутера не понимает — переменные задаются в настройках задачи$/,"$1this router's cron does not understand variable lines — variables are set in the task settings"],
+    [/(^|: )нужны пять полей расписания и команда$/,"$1five schedule fields and a command are needed"],
+    [/(^|: )нет команды$/,"$1no command"],
+    [/(^|: )Lua на этом роутере нет$/,"$1there is no Lua on this router"],
+    [/(^|: )в строке #! нет интерпретатора$/,"$1the #! line names no interpreter"],
+    // the panel's own delete questions: the task's name and the crontab line are DATA, the words around them are ours
+    [/^Удалить задачу «([^»]*)»\?\n\nСкрипт и настройки удалятся с роутера, строка уйдёт из crontab\.$/,"Delete task «$1»?\n\nThe script and settings are removed from the router, its line leaves crontab."],
+    [/^Удалить строку из crontab\?\n\n/,"Delete the line from crontab?\n\n"],
+    [/\n\nбез неё SSH закроется после перезагрузки$/,"\n\nwithout it SSH closes after a reboot"],
     [/^расписание: /,"schedule: "],
     [/^строка (\d+): /,"line $1: "],
     [/^файла нет: /,"no such file: "],
-    [/^ошибка синтаксиса: строка (\d+)/,"syntax error: line $1"],
-    [/^ошибка синтаксиса: /,"syntax error: "],
+    [/(^|: )ошибка синтаксиса: строка (\d+)/,"$1syntax error: line $2"],
+    [/(^|: )ошибка синтаксиса: /,"$1syntax error: "],
     [/^после снятия «#» строка не годится: /,"without «#» the line is not valid: "],
-    [/^интерпретатора из строки #! на роутере нет: /,"the #! interpreter is not on the router: "],
+    [/(^|: )интерпретатора из строки #! на роутере нет: /,"$1the #! interpreter is not on the router: "],
+    [/^переменная — ИМЯ=значение, латиницей: /,"a variable is NAME=value, in Latin letters: "],
+    [/^строку не разобрать: /,"the line can't be parsed: "],
+    [/^это ссылка на (.*) — откройте сам файл$/,"this is a link to $1 — open the file itself"],
+    [/^неверные данные задачи \(([a-z_0-9]+)\)$/,"invalid task data ($1)"],
     [/день недели \(0–6, воскресенье — 0\): /,"weekday (0–6, Sunday is 0): "],
     [/день месяца: /,"day of month: "],
     [/минута: /,"minute: "],
@@ -10478,7 +10554,7 @@
     ["связи ещё не было","no connection yet"],["на связи","connected"],
     ["Заблокированные домены","Blocked domains"],
     // Пилюля шапки при 2-3 сломанных выходах (одиночная форма — точным ключом выше).
-    [/(\d+) выхода не работают/g,"$1 exits are down"],
+    [/(\d+) (?:выхода|выходов) не работают/g,"$1 exits are down"],
     ["Переключить транспорт на","Switch the transport to"],
     ["VPN сейчас выключен — переключение включит его.","The VPN is currently off — switching will turn it on."],
     ["VPN сейчас выключен и останется выключенным — туннель поднимется, когда вы его включите.","The VPN is currently off and stays off — the tunnel comes up when you turn it on."],
@@ -13522,7 +13598,7 @@
         + '<div class="tiny srv-hint" data-tab="xray"'+(tab==='xray'?'':' hidden')+'>Клик по серверу — активировать. Действия — в меню «⋮».</div>'
         + '<div class="tiny srv-hint" data-tab="other"'+(tab==='xray'?' hidden':'')+'>Клик по серверу — активировать; «›» — экран сервера.</div>'
         + srvPanes('awg', d.awg, d.subs, tab, subInfo, subNow) + srvPanes('xray', d.xray, d.subs, tab, subInfo, subNow) + srvPanes('hy2', d.hy2, d.subs, tab, subInfo, subNow)
-        + noteBox('Дополнительные выходы (второй и третий путь наружу) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.','info')
+        + noteBox('Дополнительные выходы (ещё пути наружу, до шести) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.','info')
         + '</div>';
       // Переключение вкладок: показать выбранную, скрыть остальные; «Проверить все» — по числу конфигов выбранной.
       Array.prototype.forEach.call(body.querySelectorAll('.srv-tab'), function(tb){
@@ -15231,7 +15307,7 @@
   }
   // Чип — в своём узле (`data-dvc`): опрос статуса и тик Wi-Fi перерисовывают его поверх, не трогая строку с кнопкой и форму.
   function dvChipBox(key, html){ return '<span class="dv-c" data-dvc="'+key+'">'+html+'</span>'; }
-  // dir хранится машинно (vpn|direct|block|s2..s4) — подпись доп-выхода берём из его ИМЕНИ,
+  // dir хранится машинно (vpn|direct|block|s2..s7) — подпись доп-выхода берём из его ИМЕНИ,
   // а не из номера: в карточке выходов человек назвал его сам, номер ему ни о чём не говорит.
   // Подпись — для тоста: чип строки рисует dvDirChip.
   function dpDirLabel(dir){
@@ -24901,7 +24977,7 @@
   // Та же карточка обслуживает ОСНОВНУЮ несущую byedpi и ДОП-ВЫХОД (слот) — у выхода свой ciadpi
   // со своей стратегией (.byedpi-args-s<id>), но пресеты, тестер и таблица результатов общие.
   // Отдельная копия карточки под выход разъехалась бы с этой при первой же правке.
-  var bpSlot='';            // '' = основная несущая; '2'|'3'|'4' = доп-выход
+  var bpSlot='';            // '' = основная несущая; '2'..'7' = доп-выход
   var bpSlotName='';        // имя выхода для заголовка экрана
   function bpSlotOk(s){ return /^[2-7]$/.test(s); }
   function openByedpi(slot, name, named){
@@ -26254,7 +26330,7 @@
   var CARD_INFO={
     flow:    'доли выходов и кто через них ходит',
     traffic: 'объём за период и график по дням',
-    exits:   'состояние второго и третьего пути',
+    exits:   'состояние дополнительных путей наружу',
     subs:    'остаток трафика и срок действия',
     devices: 'кто подключён и куда идёт его трафик',
     events:  'последние записи центра уведомлений',

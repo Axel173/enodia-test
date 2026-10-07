@@ -15,13 +15,20 @@
 #     EXACT CONTENT, not by line number: the file can change between the panel's read and its write (another writer,
 #     a firmware update), and a number would then hit a different line.
 # The raw tab saves the whole file, but every line is validated FIRST: busybox crond silently skips a line it cannot
-# parse, so a typo would look like «the task just never runs».
+# parse, so a typo would look like «the task just never runs». It saves against the version it was opened on (`rev`): a
+# file changed meanwhile (a task saved, another tab, update-sched) is refused, not overwritten; and task lines in it are
+# derived as on every save — the answer carries the file as it now is, so the tab shows what cron really has.
 #
 # Cron syntax = what busybox 1.25 crond ACCEPTS, not vixie: lists, ranges, `*/n`, `a-b/n`, 3-letter names; NO @macros,
 # NO `VAR=value` lines, day of week 0..6 (7 is rejected by crond), a step only after `*` or a range (busybox reads `5/10`
 # as just 5 — vixie as 5..59/10; rejecting it beats a schedule that silently means something else), ranges ascending.
-# Day-of-month and day-of-week combine like busybox FixDayDow: one of them restricted ⇒ only it counts, both ⇒ OR.
+# Day-of-month and day-of-week combine like busybox FixDayDow: one of them restricted ⇒ only it counts, both ⇒ OR. crond keeps
+# days in slots 0..31 and a `*` fills them FROM 0: `*/2` is days 0,2,4… (even), `*/7` — 7,14,21,28 (slot 0 never matches);
+# «restricted» = some slot of 0..31 empty, so `*,5` is NOT restricted and `1-31` IS (review s.106: the panel showed odd days).
 # The next runs are computed HERE, in the router's own calendar (its TZ), so the panel shows them without arithmetic.
+#
+# Adopted lines («Взять под управление») and the «off» form of the crontab — see «adopted lines» below the registry.
+# Task ids are never reused (`.last-id`): a delete's delayed cleanup of RAM state would otherwise hit a task born in its place.
 #
 # Runner (`run <id> <sched|boot|manual>`): per-task lock (skip / wait / run alongside), optional wait for sane clocks
 # (after a reboot the clock sits in the past until synced — clock-lib.sh), timeout that kills the WHOLE process tree
@@ -33,7 +40,7 @@
 #   tasks.sh save <specfile> | del <id> | toggle <id> on|off | dup <id> | run-bg <id> | stop <id>
 #   tasks.sh line-set <old_b64> <new_b64> | line-toggle <old_b64> | adopt <old_b64> | raw-save <b64file>
 #   tasks.sh file-get <path> | file-put <path> <b64file>
-#   tasks.sh apply | boot | run <id> <trigger> | run-delayed <id> <sec>
+#   tasks.sh apply [<prepared crontab>] | import <archive tasks dir> <full 0|1> | boot | run <id> <trigger> | run-delayed <id> <sec>
 # JSON verbs print one JSON object; messages are Russian (the panel translates them by its dictionary).
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
@@ -41,15 +48,19 @@ ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 ENODIA_BOOT=${ENODIA_BOOT:-/data/usr/app/enodia-boot}
 TK_DIR="$ENODIA_STATE/tasks"
 TK_RUN=/tmp/enodia-tasks            # RAM: locks, history, outputs — gone with a reboot by design
-TK_LOCK=/tmp/enodia-tasks.lock      # serialises registry + crontab writes of this owner
+TK_LOCK="$TK_RUN/registry.lock"     # serialises registry + crontab writes of this owner; inside the 700 RAM dir (tk_rundir):
+                                    # on a shared /tmp name, anything laid there by another process held the lock for good
 CRON=/etc/crontabs/root
 CRON_RUN="$ENODIA_BOOT/boot.sh"
 TK_SIG="boot.sh tasks.sh run "      # signature of task lines: the owner key for `apply`
 TK_BODY_MAX=16384                   # script size (the CGI body is 32 KB, base64 adds a third)
 TK_OUT_KEEP=32768                   # output kept per run
 TK_OUT_CAP=524288                   # output allowed WHILE running; beyond it the run is cut (RAM)
-TK_FILE_MAX=65536                   # «open and edit the file» limit
+TK_FILE_MAX=16384                   # «open and edit the file» / raw crontab: what a save can carry back (the CGI body is 32 KB)
 TK_NOTE_GAP=3600                    # one word (journal line / letter) per task and outcome per this many seconds
+TK_CR=$(printf '\r')
+TK_TAB=$(printf '\t')
+TK_OFF="$ENODIA_STATE/.tasks-off"   # exists only in the «off» form: the plain lines we wrote (see «adopted lines»)
 
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 command -v uptime_s >/dev/null 2>&1 || uptime_s() { _cl_u=$(awk '{print int($1)}' /proc/uptime 2>/dev/null); case "$_cl_u" in ''|*[!0-9]*) _cl_u=999999999 ;; esac; echo "$_cl_u"; }
@@ -81,21 +92,54 @@ tk_rundir() {
 	[ -d "$TK_RUN" ] || ( umask 077; mkdir "$TK_RUN" ) 2>/dev/null
 	[ -d "$TK_RUN" ] && [ ! -L "$TK_RUN" ]
 }
-TK_LOCKED=0; TK_TMP=""
-tk_exit() { _xr=$?; [ "$TK_LOCKED" = 1 ] && rm -rf "$TK_LOCK" 2>/dev/null; [ -n "$TK_TMP" ] && rm -rf "$TK_TMP" 2>/dev/null; return "$_xr"; }
-# mkdir + pid: a killed holder is recognised by /proc, not by age
+TK_LOCKED=0; TK_TMP=""; TK_DROP=""
+tk_exit() { _xr=$?; [ "$TK_LOCKED" = 1 ] && tk_link_drop "$TK_LOCK"; [ -n "$TK_TMP" ] && rm -rf "$TK_TMP" 2>/dev/null; return "$_xr"; }
+# tk_link_take <path> -> rc 0 = the lock is ours now, rc 1 = a live process holds it. Every lock of this file (registry, a task's
+# run, its wait place) is a SYMBOLIC LINK whose target is the holder's pid, made in one step: a lock never exists without its pid
+# (a mkdir-then-echo lock had that moment — a reader took a live lock then, or a TERM in it left a lock nobody removed; review
+# s.106). A dead holder's lock is moved aside under our OWN name before it goes: of two takers that saw the same dead pid only one
+# moves it, and the other finds it moved the winner's fresh lock and puts it back (a remove by name removed that live lock — two
+# runs together, round 4). Left open: a THIRD taker grabbing the name in the microseconds of that put-back.
+# A DIRECTORY on the name is an older version's lock (mkdir + `pid` inside): held while that pid lives, cleared otherwise. It is
+# checked FIRST — busybox `ln -s` makes the link INSIDE an existing directory and returns 0, so the lock «succeeded» for everyone
+# and the run went alongside a live one (round 5). `-n`: a link to a directory is a name, not a place to write into.
+tk_link_take() {
+	_kn=0
+	while [ "$_kn" -lt 50 ]; do
+		_kn=$((_kn + 1))
+		if [ -d "$1" ] && [ ! -L "$1" ]; then
+			_kd=$(cat "$1/pid" 2>/dev/null)
+			case "$_kd" in ''|*[!0-9]*) ;; *) [ -d "/proc/$_kd" ] && return 1 ;; esac
+			rm -rf "$1" 2>/dev/null; continue
+		fi
+		ln -sn "$$" "$1" 2>/dev/null && return 0
+		_kh=$(readlink "$1" 2>/dev/null)
+		case "$_kh" in
+			'') { [ -e "$1" ] || [ -L "$1" ]; } && rm -rf "$1" 2>/dev/null; continue ;;
+			*[!0-9]*) rm -f "$1" 2>/dev/null; continue ;;
+		esac
+		[ -d "/proc/$_kh" ] && return 1
+		mv -f "$1" "$1.x$$" 2>/dev/null || continue
+		_kg=$(readlink "$1.x$$" 2>/dev/null)
+		[ "$_kg" = "$_kh" ] || ln -sn "$_kg" "$1" 2>/dev/null
+		rm -f "$1.x$$"
+	done
+	return 1
+}
+tk_link_drop() { [ "$(readlink "$1" 2>/dev/null)" = "$$" ] && rm -f "$1"; return 0; }
+# tk_lock [soft] — the registry and crontab writes of this owner. soft: rc 1 when busy (system callers: uninstall, heal, the
+# backup import read the code), otherwise a JSON refusal for the panel
 tk_lock() {
 	_lw=0
-	[ -L "$TK_LOCK" ] && rm -f "$TK_LOCK" 2>/dev/null
-	while ! mkdir "$TK_LOCK" 2>/dev/null; do
-		_lp=$(cat "$TK_LOCK/pid" 2>/dev/null)
-		if [ -n "$_lp" ] && [ ! -d "/proc/$_lp" ]; then rm -rf "$TK_LOCK" 2>/dev/null; continue; fi
-		_lw=$((_lw + 1)); [ "$_lw" -gt 20 ] && jfail "задачи сейчас меняет другой запрос — повторите через минуту"
+	tk_rundir || { [ "${1:-}" = soft ] && return 1; jfail "не удалось создать каталог задач в памяти"; }
+	until tk_link_take "$TK_LOCK"; do
+		_lw=$((_lw + 1))
+		if [ "$_lw" -gt 20 ]; then [ "${1:-}" = soft ] && return 1; jfail "задачи сейчас меняет другой запрос — повторите через минуту"; fi
 		sleep 1
 	done
-	echo $$ > "$TK_LOCK/pid"; TK_LOCKED=1
+	TK_LOCKED=1
 }
-tk_unlock() { [ "$TK_LOCKED" = 1 ] && rm -rf "$TK_LOCK" 2>/dev/null; TK_LOCKED=0; return 0; }
+tk_unlock() { [ "$TK_LOCKED" = 1 ] && tk_link_drop "$TK_LOCK"; TK_LOCKED=0; return 0; }
 
 # ---- cron field expansion (busybox 1.25 grammar, see the header) --------------------------------------------------
 # tk_num <token> <kind> -> number (names allowed for mon/dow), rc 1 on garbage
@@ -128,14 +172,15 @@ tk_expand() {
 			_xst=$(tk_num "$_xst" min) || { TKE="шаг — число: $_xf"; return 1; }
 			[ "$_xst" -ge 1 ] || { TKE="шаг — от 1: $_xf"; return 1; } ;;
 		esac
+		_xstar=0
 		case "$_xit" in
-			'*') _xa=$_xlo; _xb=$_xhi ;;
+			'*') _xa=$_xlo; _xb=$_xhi; _xstar=1; [ "$_xk" = dom ] && _xa=0 ;;   # crond's day slots start at 0 (see the header)
 			*-*) _xa=$(tk_num "${_xit%%-*}" "$_xk") || { TKE="не число: $_xf"; return 1; }
 			     _xb=$(tk_num "${_xit#*-}" "$_xk") || { TKE="не число: $_xf"; return 1; } ;;
 			*)   [ "$_xhas" = 1 ] && { TKE="шаг — только после «*» или диапазона (например 0-59/10): $_xf"; return 1; }
 			     _xa=$(tk_num "$_xit" "$_xk") || { TKE="не число: $_xf"; return 1; }; _xb=$_xa ;;
 		esac
-		{ [ "$_xa" -ge "$_xlo" ] && [ "$_xb" -le "$_xhi" ]; } || { TKE="вне диапазона $_xlo–$_xhi: $_xf"; return 1; }
+		[ "$_xstar" = 1 ] || { [ "$_xa" -ge "$_xlo" ] && [ "$_xb" -le "$_xhi" ]; } || { TKE="вне диапазона $_xlo–$_xhi: $_xf"; return 1; }
 		[ "$_xa" -le "$_xb" ] || { TKE="диапазон — по возрастанию: $_xf"; return 1; }
 		_xi=$_xa
 		while [ "$_xi" -le "$_xb" ]; do
@@ -149,6 +194,8 @@ tk_expand() {
 }
 # tk_sched_parse "<m h dom mon dow>" -> TK_M TK_H TK_D TK_MO TK_W lists, TK_DU/TK_WU «restricted» flags; TKE on failure
 tk_sched_parse() {
+	# the alphabet first: a newline would split into a 5-field «valid» schedule and then into a SECOND crontab line
+	case "$1" in *[!0-9A-Za-z\ \*/,-]*) TKE="в расписании — только цифры, названия, пробелы и * / , -"; return 1 ;; esac
 	set -f; set -- $1; set +f
 	[ "$#" -eq 5 ] || { TKE="в расписании нужно ровно пять полей: минута, час, день месяца, месяц, день недели"; return 1; }
 	tk_expand "$1" 0 59 min || { TKE="минута: $TKE"; return 1; }; TK_M=$TKX
@@ -156,8 +203,8 @@ tk_sched_parse() {
 	tk_expand "$3" 1 31 dom || { TKE="день месяца: $TKE"; return 1; }; TK_D=$TKX
 	tk_expand "$4" 1 12 mon || { TKE="месяц: $TKE"; return 1; }; TK_MO=$TKX
 	tk_expand "$5" 0 6 dow || { TKE="день недели (0–6, воскресенье — 0): $TKE"; return 1; }; TK_W=$TKX
-	# busybox FixDayDow: «used» = not every slot set. For days crond's array has a slot 0 nothing but `*` fills.
-	case "$3" in '*'|'*/1') TK_DU=0 ;; *) TK_DU=1 ;; esac
+	# busybox FixDayDow: «used» = not every slot set — for days, slots 0..31 (32 values), slot 0 filled only by a `*`
+	set -- $TK_D; if [ "$#" -ge 32 ]; then TK_DU=0; else TK_DU=1; fi
 	if [ "$TK_W" = " 0 1 2 3 4 5 6 " ]; then TK_WU=0; else TK_WU=1; fi
 	return 0
 }
@@ -239,12 +286,15 @@ restart_cron() {
 	/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1 \
 		|| killall -HUP crond 2>/dev/null || true
 }
-# tk_cron_put <newfile> — replace the crontab if it changed (atomic: rename in /etc/crontabs), restart crond
+# tk_cron_put <newfile in RAM> — replace the crontab if it changed, restart crond. The new file is built in RAM and copied next to
+# the crontab, COMPARED, and only then renamed over it (tk_put): /etc/crontabs is the small cfg volume (4.7 MB on BE10000), and a
+# derivation written straight there was renamed over the live file cut short when the volume was full — the firmware's lines and
+# every foreign one gone (review s.106, round 4).
 tk_cron_put() {
 	mkdir -p "${CRON%/*}" 2>/dev/null
 	if [ -f "$CRON" ] && cmp -s "$1" "$CRON"; then rm -f "$1"; return 0; fi
-	mv -f "$1" "$CRON" || { rm -f "$1"; return 1; }
-	restart_cron; return 0
+	tk_put "$1" "$CRON" || { rm -f "$1"; return 1; }
+	rm -f "$1"; restart_cron; return 0
 }
 tk_each_line() {   # print the crontab line by line, the last line too even without a trailing newline
 	[ -f "$CRON" ] || return 0
@@ -255,19 +305,37 @@ tk_each_line() {   # print the crontab line by line, the last line too even with
 tk_defaults() {
 	T_NAME=""; T_ENABLED=1; T_KIND=script; T_LANG=sh; T_TARGET=""; T_ARGS=""; T_SCHED=""; T_BOOT=0; T_DELAY=60
 	T_TIMEOUT=300; T_OVERLAP=skip; T_PRIO=low; T_CLOCK=1; T_WORKDIR=""; T_KEEP=5; T_MAIL=fail; T_JOURNAL=0
+	T_ORIGIN=""   # base64 of the crontab line the task was adopted from (see «adopted lines»)
 }
 tk_load() {   # tk_load <id> -> T_* ; rc 1 when there is no such task
 	tk_defaults
 	[ -f "$TK_DIR/$1.task" ] || return 1
 	while IFS= read -r _tl || [ -n "$_tl" ]; do
-		_tv=${_tl#*=}
+		_tl=${_tl%"$TK_CR"}; _tv=${_tl#*=}   # a hand edit or an imported archive may carry CR; it would go raw into the JSON
 		case "${_tl%%=*}" in
 			name) T_NAME=$_tv ;; enabled) T_ENABLED=$_tv ;; kind) T_KIND=$_tv ;; lang) T_LANG=$_tv ;;
 			target) T_TARGET=$_tv ;; args) T_ARGS=$_tv ;; sched) T_SCHED=$_tv ;; boot) T_BOOT=$_tv ;; delay) T_DELAY=$_tv ;;
 			timeout) T_TIMEOUT=$_tv ;; overlap) T_OVERLAP=$_tv ;; prio) T_PRIO=$_tv ;; clockwait) T_CLOCK=$_tv ;;
 			workdir) T_WORKDIR=$_tv ;; keep) T_KEEP=$_tv ;; mail) T_MAIL=$_tv ;; journal) T_JOURNAL=$_tv ;;
+			origin) T_ORIGIN=$_tv ;;
 		esac
 	done < "$TK_DIR/$1.task"
+	# The file is ours only by convention (hand edits, archives): every enum and flag goes into JSON and decisions unquoted,
+	# so a value outside its set reads as the default, and a schedule outside cron's alphabet as «no schedule».
+	case "$T_ENABLED" in 0|1) ;; *) T_ENABLED=0 ;; esac
+	case "$T_KIND" in script|file|cmd) ;; *) T_KIND=cmd ;; esac
+	case "$T_LANG" in sh|lua|auto) ;; *) T_LANG=sh ;; esac
+	case "$T_OVERLAP" in skip|wait|par) ;; *) T_OVERLAP=skip ;; esac
+	case "$T_PRIO" in normal|low) ;; *) T_PRIO=low ;; esac
+	case "$T_MAIL" in never|fail|always) ;; *) T_MAIL=fail ;; esac
+	case "$T_BOOT" in 0|1) ;; *) T_BOOT=0 ;; esac
+	case "$T_CLOCK" in 0|1) ;; *) T_CLOCK=1 ;; esac
+	case "$T_JOURNAL" in 0|1) ;; *) T_JOURNAL=0 ;; esac
+	case "$T_KEEP" in 0|1|5) ;; *) T_KEEP=5 ;; esac
+	case "$T_DELAY" in ''|*[!0-9]*) T_DELAY=60 ;; esac
+	case "$T_TIMEOUT" in ''|*[!0-9]*) T_TIMEOUT=300 ;; esac
+	case "$T_SCHED" in *[!0-9A-Za-z\ \*/,-]*) T_SCHED="" ;; esac
+	case "$T_ORIGIN" in *[!A-Za-z0-9+/=]*) T_ORIGIN="" ;; esac
 	return 0
 }
 tk_write() {   # tk_write <id> — registry file atomically (write next to it + mv)
@@ -275,22 +343,230 @@ tk_write() {   # tk_write <id> — registry file atomically (write next to it + 
 	{ printf 'name=%s\nenabled=%s\nkind=%s\nlang=%s\ntarget=%s\nargs=%s\nsched=%s\nboot=%s\ndelay=%s\n' \
 		"$T_NAME" "$T_ENABLED" "$T_KIND" "$T_LANG" "$T_TARGET" "$T_ARGS" "$T_SCHED" "$T_BOOT" "$T_DELAY"
 	  printf 'timeout=%s\noverlap=%s\nprio=%s\nclockwait=%s\nworkdir=%s\nkeep=%s\nmail=%s\njournal=%s\n' \
-		"$T_TIMEOUT" "$T_OVERLAP" "$T_PRIO" "$T_CLOCK" "$T_WORKDIR" "$T_KEEP" "$T_MAIL" "$T_JOURNAL"; } > "$TK_DIR/$1.task.new" \
+		"$T_TIMEOUT" "$T_OVERLAP" "$T_PRIO" "$T_CLOCK" "$T_WORKDIR" "$T_KEEP" "$T_MAIL" "$T_JOURNAL"
+	  if [ -n "$T_ORIGIN" ]; then printf 'origin=%s\n' "$T_ORIGIN"; fi; } > "$TK_DIR/$1.task.new" \
 		&& mv -f "$TK_DIR/$1.task.new" "$TK_DIR/$1.task"
 }
+# tk_put <src> <dst> — a copy that ARRIVED (compared byte for byte) next to its place, then a rename on the same file system:
+# /tmp → /data is a copy, not a rename, so a plain `mv` could leave a cut script on a full flash under «saved», and a run
+# starting that moment would read half of it.
+# The staging name is this process's own: `root.new` is uninstall's draft beside the crontab, and a refused copy removed it (round 5).
+tk_put() { cp "$1" "$2.tk$$" 2>/dev/null && cmp -s "$1" "$2.tk$$" && mv -f "$2.tk$$" "$2" && return 0; rm -f "$2.tk$$"; return 1; }
 tk_ids() { for _f in "$TK_DIR"/t*.task; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.task}"; done | sed 's/^t//' | sort -n | sed 's/^/t/'; }
-tk_new_id() { _ni=$(tk_ids | sed 's/^t//' | tail -n 1); echo "t$(( ${_ni:-0} + 1 ))"; }
+tk_new_id() {   # under the lock; the highest id ever given (`.last-id`) + 1, never a deleted one's
+	_ni=$(tk_ids | sed 's/^t//' | tail -n 1); _nl=$(cat "$TK_DIR/.last-id" 2>/dev/null)
+	case "$_nl" in ''|*[!0-9]*) _nl=0 ;; esac
+	[ "${_ni:-0}" -ge "$_nl" ] || _ni=$_nl
+	_ni=$(( ${_ni:-0} + 1 )); mkdir -p "$TK_DIR" 2>/dev/null; echo "$_ni" > "$TK_DIR/.last-id"
+	echo "t$_ni"
+}
 
-# apply: our task lines rewritten from the registry, every other line kept in place and order (call under the lock)
-tk_apply() {
-	_ta="$CRON.tk.$$"
-	{ tk_each_line | grep -vF "$TK_SIG"
-	  for _ai in $(tk_ids); do
+# ---- adopted lines and the «off» form ---------------------------------------------------------------------------------
+# A task taken over from a crontab line keeps that line (`origin`). While Enodia is deactivated or removed, our task lines are
+# gone (`cron_ours`), and the line the task replaced must live on without us — the firmware's SSH-access patch among them. So
+# the crontab has TWO forms, derived from the same registry:
+#   * on  — a task line for every enabled task with a schedule (the runner gives history, timeout, letters);
+#   * off — NO task lines at all, and every adopted task as a plain cron line: its current command and schedule when cron can
+#           run it alone (a command, a schedule, no variables, no working dir), commented out when the task is disabled or
+#           cannot live without Enodia (a script, variables, no schedule) — a trace of the line, never a run nobody kept.
+# THE FORM IS A FACT OF THE CRONTAB ITSELF: «on» while Enodia's own schedule is in it (an active heal.sh line of ours — the line
+# uninstall removes on deactivate and purge, and cron-restore, install and update put back), «off» otherwise (tk_sys_on). Two
+# switch verbs that callers had to remember were the defect class of round 4: a failed or skipped `activate` left every task
+# silent on an active router for good, and boot tasks ran on a deactivated one. Now every derivation — boot, update, import,
+# any edit — reads the form from what it derives, and uninstall hands its stripped crontab to `apply` in the SAME write.
+# Which plain line is whose. A line we write carries the MARK of its task's family: `#enodia-task:<hash of the adopted line>`, a
+# shell comment at the end of the command. The mark is what survives us — a purge leaves the line, and an archive imported after
+# a reinstall (an older one too, the schedule edited since) is recognised by it, not by its text (round 4: the leftover ran beside
+# the re-imported task). A hash of the LINE, not of a task id: ids are per router, and the same firmware line adopted on two
+# routers is one family. The record $TK_OFF (exists only in the «off» form) holds what we wrote per task, with its mark — so the
+# next derivation replaces exactly those lines, and an entry counts only while the task under that id carries the same mark
+# (an import may have put another task there — the line is then just a line, never removed: round 4 lost the SSH patch so).
+# The family's UNMARKED lines — the task's job word for word, and the line it came from while the task still runs that command
+# (the firmware putting its line back, the human copying it, another schedule or spacing of the same line) — are taken back by
+# the task whenever its own line runs, in BOTH forms: they are the same job, never a reason to disable it (round 5: the off form
+# let them stand and wrote ours beside the same command with another text — twice, for good). Per adopted task, from the record
+# and the file, «another line of the family» = one with the mark that is not ours as written (the human's edit, a leftover):
+#   ours  — our line is there as written (or as we would write it now: a write that never got its record) → written anew; with
+#           the human's ACTIVE version beside it, that one stands and the task is disabled;
+#   gone  — not there: the human edited it (another line of the family) or removed an active one → the task is disabled —
+#           theirs, never run beside it; a removed trace stays removed;
+#   taken — written nothing last time (the human's line stood) → nothing, unless the human enabled the task again and no active
+#           line of the family is left (a trace is never written again);
+#   new   — no record: written, unless an active line of the family is there (a purge's leftover — that one stands; enabled, the
+#           task takes it back in the «on» form).
+# In the «on» form an enabled task takes back every line of its family — the marked ones and the unmarked ones (edited to another
+# command, it covers the line it came from no more: round 4). One family has one task: a second enabled task of the same mark (an
+# import, a hand-edited registry) is disabled, never run beside the first. The record lives outside the tasks dir and the backup:
+# it describes THIS router's crontab. Nothing is marked before the crontab is written: the record and the disables follow a
+# successful write — and the derived file must hold exactly the lines it was built from (a full RAM cut it short, round 5).
+TK_MARK="#enodia-task:"
+
+# tk_sys_on <crontab file> -> rc 0 when Enodia's own schedule is in it: the form of the derivation (see above)
+tk_sys_on() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qF -e "$CRON_RUN heal.sh" -e "$ENODIA_DIR/heal.sh"; }
+# tk_origin_line <origin b64> -> the adopted line itself: uncommented, without a mark (a line given back once and adopted again)
+tk_origin_line() { b64d "$1" | sed 's/^[[:space:]]*#[[:space:]]*//; s/[[:space:]]*#enodia-task:[0-9a-f]*[[:space:]]*$//'; }
+# tk_mark <origin b64> -> TKM = the mark of the line's family
+tk_mark() { TKM="$TK_MARK$(printf '%s\n' "$(tk_origin_line "$1")" | md5sum 2>/dev/null | cut -c1-8)"; }
+# tk_plain <id> (after tk_load) -> TKP = the task as one plain cron line for the «off» form, TKM its mark; "" = not adopted.
+# A command ending in «\» would swallow the mark into its last word — such a one is written as a trace.
+tk_plain() {
+	TKP=""; TKM=""
+	[ -n "$T_ORIGIN" ] || return 0
+	tk_mark "$T_ORIGIN"
+	case "$T_TARGET" in *\\) _pq=0 ;; *) _pq=1 ;; esac
+	if [ "$_pq" = 1 ] && [ "$T_KIND" = cmd ] && [ -n "$T_SCHED" ] && [ -z "$T_WORKDIR" ] && [ ! -s "$TK_DIR/$1.env" ] && tk_sched_parse "$T_SCHED"; then
+		TKP="$T_SCHED $T_TARGET $TKM"; [ "$T_ENABLED" = 1 ] || TKP="# $TKP"
+	else
+		TKP="# $(tk_origin_line "$T_ORIGIN") $TKM"
+	fi
+	return 0
+}
+tk_drop_first() {   # stdin without the FIRST line equal to $1
+	_fd=0
+	while IFS= read -r _fl || [ -n "$_fl" ]; do
+		if [ "$_fd" = 0 ] && [ "$_fl" = "$1" ]; then _fd=1; continue; fi
+		printf '%s\n' "$_fl"
+	done
+}
+# <file> <line>: the first equal line out, in place; TKD counts the lines dropped (the derivation's own bookkeeping, see below)
+tk_drop_in() { tk_drop_first "$2" < "$1" > "$1.n" && mv -f "$1.n" "$1" && [ "$_fd" = 1 ] && TKD=$((TKD + 1)); return 0; }
+tk_drop_all() {   # <file> <text>: every line with it (rc 1 of grep = none left)
+	_dac=$(grep -cF -- "$2" "$1" 2>/dev/null); case "$_dac" in ''|*[!0-9]*) _dac=0 ;; esac
+	grep -vF -- "$2" "$1" > "$1.n"; mv -f "$1.n" "$1" && TKD=$((TKD + _dac)); return 0
+}
+# tk_fam_plain (after tk_load) -> TKF_JOB, TKF_ORG: the UNMARKED lines of the task's family — its job word for word, and the line
+# it came from while the task still runs that command (spaces at the end aside); "" = none
+tk_fam_plain() {
+	TKF_JOB=""; TKF_ORG=""
+	[ "$T_KIND" = cmd ] && [ -n "$T_ORIGIN" ] || return 0
+	[ -n "$T_SCHED" ] && [ -n "$T_TARGET" ] && TKF_JOB="$T_SCHED $T_TARGET"
+	_fo=$(tk_origin_line "$T_ORIGIN")
+	if tk_line_check "$_fo" && [ "$TKL" = cron ] \
+		&& [ "$(printf '%s' "$TKL_C" | sed 's/[[:space:]]*$//')" = "$(printf '%s' "$T_TARGET" | sed 's/[[:space:]]*$//')" ]; then
+		TKF_ORG=$_fo
+	fi
+	return 0
+}
+tk_fam_take() {   # <file>: the unmarked family lines out (an enabled task whose own line runs takes them back)
+	[ -z "$TKF_JOB" ] || ! grep -qxF -- "$TKF_JOB" "$1" || tk_drop_in "$1" "$TKF_JOB"
+	[ -z "$TKF_ORG" ] || ! grep -qxF -- "$TKF_ORG" "$1" || tk_drop_in "$1" "$TKF_ORG"
+	return 0
+}
+# tk_derive <src> <out> — the crontab derived from <src>, in the form <src> itself says (tk_sys_on), written to <out>. Side files
+# next to <src>: .rec — the record of the «off» form, .dis — ids the human took over (disabled after the write). Call under the
+# lock. rc 1 = the derived file is not whole: it must hold exactly the source's lines, minus the task lines and every line dropped,
+# plus every line added — a write cut short by a full RAM went through the checked copy as it was (round 5).
+tk_derive() {
+	_dsrc=$1; _dtk="$_dsrc.d"; _dst="$_dsrc.st"; : > "$_dsrc.rec"; : > "$_dsrc.dis"; : > "$_dst"; TKD=0; _dadd=0; _dfam=" "
+	if tk_sys_on "$_dsrc"; then _dfm=on; else _dfm=off; fi
+	_dn=$(( $(wc -l < "$_dsrc") )); _dsig=$(grep -cF "$TK_SIG" "$_dsrc"); case "$_dsig" in ''|*[!0-9]*) _dsig=0 ;; esac
+	grep -vF "$TK_SIG" "$_dsrc" > "$_dtk"   # task lines are always derived anew
+	if [ -f "$TK_OFF" ]; then
+		while IFS="$TK_TAB" read -r _di _dm _db || [ -n "$_di" ]; do
+			id_ok "$_di" || continue
+			_dok=0
+			if tk_load "$_di" && [ -n "$T_ORIGIN" ]; then tk_mark "$T_ORIGIN"; [ "$TKM" = "$_dm" ] && _dok=1; fi
+			if [ "$_db" = - ]; then [ "$_dok" = 1 ] && printf '%s\ttaken\t0\n' "$_di" >> "$_dst"; continue; fi
+			_dl=$(b64d "$_db"); [ -n "$_dl" ] || continue
+			if [ "$_dok" = 0 ]; then
+				# not this task's any more: deleted NOW — its line goes with it; replaced by an import — the line stays, a line like any
+				case "$TK_DROP" in *" $_di "*) tk_drop_in "$_dtk" "$_dl" ;; esac
+				continue
+			fi
+			if grep -qxF -- "$_dl" "$_dtk"; then tk_drop_in "$_dtk" "$_dl"; printf '%s\tours\t0\n' "$_di" >> "$_dst"
+			else case "$_dl" in '#'*) _dwa=0 ;; *) _dwa=1 ;; esac; printf '%s\tgone\t%s\n' "$_di" "$_dwa" >> "$_dst"; fi
+		done < "$TK_OFF"
+	fi
+	for _ai in $(tk_ids); do
 		tk_load "$_ai" || continue
-		[ "$T_ENABLED" = 1 ] && [ -n "$T_SCHED" ] || continue
-		printf '%s %s tasks.sh run %s sched >/dev/null 2>&1\n' "$T_SCHED" "$CRON_RUN" "$_ai"
-	  done; } > "$_ta"
-	tk_cron_put "$_ta"
+		if [ -n "$T_ORIGIN" ]; then
+			tk_plain "$_ai"
+			_dS=new; _dwa=0
+			_dsl=$(grep "^$_ai$TK_TAB" "$_dst" | head -n 1)
+			if [ -n "$_dsl" ]; then _dS=$(printf '%s' "$_dsl" | cut -f2); _dwa=$(printf '%s' "$_dsl" | cut -f3); fi
+			# the line as we would write it now is ours whatever the record says (a write whose record never came: power, full flash)
+			if [ "$_dS" != ours ] && grep -qxF -- "$TKP" "$_dtk"; then tk_drop_in "$_dtk" "$TKP"; _dS=ours; fi
+			# gone, but the task's own task line is in the source: our «on» form replaced it (a write the record did not follow)
+			if [ "$_dS" = gone ] && grep -qF "$TK_SIG$_ai " "$_dsrc"; then _dS=ours; fi
+			# another line of the mark left in the file, not ours as written: the human's version of our line (or a purge's leftover) —
+			# _dEa any, _dEc an ACTIVE one; a commented one only tells that the human touched ours
+			_dEa=0; _dEc=0
+			if grep -qF -- "$TKM" "$_dtk"; then _dEa=1; grep -v '^[[:space:]]*#' "$_dtk" | grep -qF -- "$TKM" && _dEc=1; fi
+			case "$_dS" in   # the human took it over: theirs, and the task is disabled rather than run beside it
+				gone) if [ "$_dEa" = 1 ] || [ "$_dwa" = 1 ]; then echo "$_ai" >> "$_dsrc.dis"; T_ENABLED=0; fi ;;
+				ours) if [ "$_dEc" = 1 ]; then echo "$_ai" >> "$_dsrc.dis"; T_ENABLED=0; fi ;;
+			esac
+			# one family, one task: a second enabled task of the same mark is disabled, never run beside the first
+			if [ "$T_ENABLED" = 1 ]; then
+				case "$_dfam" in *" $TKM "*) echo "$_ai" >> "$_dsrc.dis"; T_ENABLED=0 ;; *) _dfam="$_dfam$TKM " ;; esac
+			fi
+			tk_plain "$_ai"   # its line as of the decisions above (a disabled task is written as a trace)
+			# the family's unmarked lines are taken back whenever the task's own line runs — in both forms (see the header)
+			_drun=0
+			if [ "$T_ENABLED" = 1 ]; then
+				if [ "$_dfm" = off ]; then case "$TKP" in '#'*|'') ;; *) _drun=1 ;; esac
+				elif [ -n "$T_SCHED" ] && tk_sched_parse "$T_SCHED"; then _drun=1; fi
+			fi
+			tk_fam_plain
+			[ "$_drun" = 1 ] && tk_fam_take "$_dtk"
+			if [ "$_dfm" = off ]; then
+				_dw=0
+				case "$_dS" in
+					ours|new) [ "$_dEc" = 0 ] && _dw=1 ;;
+					taken) [ "$_dEc" = 0 ] && case "$TKP" in '#'*) ;; *) _dw=1 ;; esac ;;
+				esac
+				if [ "$_dw" = 1 ]; then
+					printf '%s\n' "$TKP" >> "$_dtk"; _dadd=$((_dadd + 1))
+					printf '%s\t%s\t%s\n' "$_ai" "$TKM" "$(printf '%s' "$TKP" | b64)" >> "$_dsrc.rec"
+				else printf '%s\t%s\t-\n' "$_ai" "$TKM" >> "$_dsrc.rec"; fi
+				continue
+			fi
+		fi
+		[ "$_dfm" = on ] || continue   # the «off» form has no task lines at all
+		[ "$T_ENABLED" = 1 ] && [ -n "$T_SCHED" ] && tk_sched_parse "$T_SCHED" || continue
+		if [ -n "$T_ORIGIN" ]; then
+			tk_drop_all "$_dtk" "$TKM"
+		fi
+		printf '%s %s tasks.sh run %s sched >/dev/null 2>&1\n' "$T_SCHED" "$CRON_RUN" "$_ai" >> "$_dtk"; _dadd=$((_dadd + 1))
+	done
+	_dgot=$(( $(wc -l < "$_dtk" 2>/dev/null || echo -1) ))
+	if [ "${_dgot:-x}" != "$((_dn - _dsig - TKD + _dadd))" ]; then
+		echo "tasks.sh: the derived crontab is not whole (lines $_dgot, expected $((_dn - _dsig - TKD + _dadd))) — not written" >&2
+		rm -f "$_dtk" "$_dtk.n" "$_dst"; return 1
+	fi
+	rm -f "$_dtk.n" "$_dst"; mv -f "$_dtk" "$2"
+}
+# tk_apply [source] — derive and write (source: a prepared crontab — uninstall's, the raw tab's, adopt's —, default the live one),
+# all of it in RAM until the checked copy (tk_cron_put). After a SUCCESSFUL write: the record follows the form, the human's tasks
+# are disabled. A record that could not be written is not fatal: the next derivation knows our lines as «as we would write them».
+tk_apply() {
+	tk_rundir || return 1
+	_ta="$TK_RUN/.apply.$$"
+	# the source line by line: a prepared file without its last newline would count one line short
+	if [ -n "${1:-}" ]; then
+		while IFS= read -r _tal || [ -n "$_tal" ]; do printf '%s\n' "$_tal"; done < "$1" > "$_ta.src" || { rm -f "$_ta.src"; return 1; }
+	else tk_each_line > "$_ta.src" || { rm -f "$_ta.src"; return 1; }; fi
+	tk_derive "$_ta.src" "$_ta" || { rm -f "$_ta" "$_ta.src" "$_ta.src.rec" "$_ta.src.dis"; return 1; }
+	tk_cron_put "$_ta" || { rm -f "$_ta.src" "$_ta.src.rec" "$_ta.src.dis"; return 1; }
+	if [ -s "$_ta.src.rec" ]; then tk_put "$_ta.src.rec" "$TK_OFF" || echo "tasks.sh: the record of the off form was not written" >&2
+	else rm -f "$TK_OFF"; fi
+	while read -r _tdi; do tk_load "$_tdi" && { T_ENABLED=0; tk_write "$_tdi"; }; done < "$_ta.src.dis"
+	rm -f "$_ta.src" "$_ta.src.rec" "$_ta.src.dis"
+	return 0
+}
+# apply [<prepared crontab>] — boot (heal), install/update, uninstall (its stripped crontab: the «off» form in the same write),
+# cron-restore. Exit 1 = not written (busy past 20 s, the volume refused): the caller says so instead of a silent «done».
+cmd_apply() {
+	[ -z "${1:-}" ] || [ -f "$1" ] || { echo "нет файла $1"; return 1; }
+	tk_lock soft || { echo "задачи сейчас меняет другой запрос — расписание задач не выведено"; return 1; }
+	tk_apply "${1:-}"; _apr=$?
+	tk_unlock
+	[ "$_apr" = 0 ] || { echo "не удалось записать crontab — расписание задач не выведено"; return 1; }
+	if [ -s "$TK_OFF" ]; then
+		_apn=$(grep -vc "$TK_TAB-\$" "$TK_OFF" 2>/dev/null || true)
+		[ "${_apn:-0}" -gt 0 ] 2>/dev/null && echo "Enodia снята с расписания — задачи не запускаются; строк, взятых задачами из crontab, отдано обратно: $_apn"
+	fi
+	return 0
 }
 
 # ---- interpreters -----------------------------------------------------------------------------------------------
@@ -334,10 +610,21 @@ tk_hist_last() {   # tk_hist_last <id> -> TH_* of the last history line; rc 1 wh
 # tk_running_json <id> [out] -> {"since":..,"trig":..,"dur":..[,"out":..]} | null — by the runner's pid, not by a stale file.
 # dur comes from the uptime the runner noted (a clock step after boot would lie). `out` = the output SO FAR (the task screen
 # follows it; without it the screen said «running» above «no runs» for the whole run) — not in the list: 32 KB per task.
+# tk_cur <id> -> _rc = the line of the NEWEST live run (runs alongside each have their own `.cur.<seq>`: one shared file was
+# removed by the first to finish, and the other looked stopped); rc 1 when nothing runs
+tk_cur() {
+	_rc=""; _rcs=-1
+	for _cf in "$TK_RUN/$1".cur.*; do
+		[ -f "$_cf" ] || continue
+		_cs=${_cf##*.}; case "$_cs" in ''|*[!0-9]*) continue ;; esac
+		_cl=$(cat "$_cf" 2>/dev/null); _cp=$(printf '%s' "$_cl" | cut -f3)
+		[ -n "$_cp" ] && [ -d "/proc/$_cp" ] || continue
+		[ "$_cs" -gt "$_rcs" ] && { _rc=$_cl; _rcs=$_cs; }
+	done
+	[ -n "$_rc" ]
+}
 tk_running_json() {
-	_rc=$(cat "$TK_RUN/$1.cur" 2>/dev/null)
-	_rp=$(printf '%s' "$_rc" | cut -f3)
-	if [ -n "$_rp" ] && [ -d "/proc/$_rp" ]; then
+	if tk_cur "$1"; then
 		_ru=$(uptime_s); _rd=$(( _ru - $(tk_num_or "$(printf '%s' "$_rc" | cut -f2)" "$_ru") )); [ "$_rd" -ge 0 ] || _rd=0
 		printf '{"since":"%s","trig":"%s","dur":%s' "$(printf '%s' "$_rc" | cut -f1)" "$(printf '%s' "$_rc" | cut -f4)" "$_rd"
 		if [ "$2" = out ]; then
@@ -350,20 +637,27 @@ tk_running_json() {
 }
 tk_num_or() { case "$1" in ''|*[!0-9-]*) echo "$2" ;; *) echo "$1" ;; esac; }
 cmd_list_json() {
-	printf '{"ok":true,"now":"%s","langs":[%s],"tasks":[' "$(now_local)" "$(tk_langs)"
+	# form: «off» = Enodia is off the schedule (deactivated) — no task runs, adopted ones live as plain lines; the panel says so
+	printf '{"ok":true,"now":"%s","langs":[%s],"form":"%s","tasks":[' "$(now_local)" "$(tk_langs)" "$(tk_sys_on "$CRON" && echo on || echo off)"
 	_lf=1
 	for _li in $(tk_ids); do
 		tk_load "$_li" || continue
 		[ "$_lf" = 1 ] || printf ','; _lf=0
 		printf '{"id":"%s","name":"%s","enabled":%s,"kind":"%s","lang":"%s","sched":"%s","boot":%s,"next":%s' \
-			"$_li" "$(jstr "$T_NAME" 120)" "$([ "$T_ENABLED" = 1 ] && echo true || echo false)" "$T_KIND" "$T_LANG" \
-			"$T_SCHED" "$([ "$T_BOOT" = 1 ] && echo true || echo false)" \
+			"$_li" "$(jstr "$T_NAME" 400)" "$([ "$T_ENABLED" = 1 ] && echo true || echo false)" "$T_KIND" "$T_LANG" \
+			"$(jstr "$T_SCHED" 120)" "$([ "$T_BOOT" = 1 ] && echo true || echo false)" \
 			"$([ "$T_ENABLED" = 1 ] && tk_next_json "$T_SCHED" 1 || printf '[]')"
 		if tk_hist_last "$_li"; then
 			printf ',"last":{"ts":"%s","dur":%s,"code":%s,"trig":"%s","flag":"%s"}' "$TH_TS" "$(tk_num_or "$TH_DUR" 0)" \
 				"$(tk_num_or "$TH_CODE" 0)" "$TH_TRIG" "$TH_FLAG"
 		else printf ',"last":null'; fi
-		printf ',"running":%s}' "$(tk_running_json "$_li")"
+		# «off» form: the line we wrote for it is ACTIVE — it runs without Enodia (the row must not say «not run»)
+		_lpl=false
+		if [ -f "$TK_OFF" ]; then
+			_lpb=$(grep "^$_li$TK_TAB" "$TK_OFF" 2>/dev/null | head -n 1 | cut -f3)
+			case "$_lpb" in ''|-) ;; *) case "$(b64d "$_lpb")" in '#'*|'') ;; *) _lpl=true ;; esac ;; esac
+		fi
+		printf ',"plain":%s,"running":%s}' "$_lpl" "$(tk_running_json "$_li")"
 	done
 	printf '],"ours":['
 	_lf=1
@@ -403,13 +697,13 @@ cmd_get_json() {
 	_body=""; [ -f "$TK_DIR/$1.body" ] && _body=$(b64 < "$TK_DIR/$1.body")
 	_env=""; [ -f "$TK_DIR/$1.env" ] && _env=$(b64 < "$TK_DIR/$1.env")
 	printf '{"ok":true,"now":"%s","langs":[%s],"task":{"id":"%s","name":"%s","enabled":%s,"kind":"%s","lang":"%s",' \
-		"$(now_local)" "$(tk_langs)" "$1" "$(jstr "$T_NAME" 120)" "$([ "$T_ENABLED" = 1 ] && echo true || echo false)" "$T_KIND" "$T_LANG"
+		"$(now_local)" "$(tk_langs)" "$1" "$(jstr "$T_NAME" 400)" "$([ "$T_ENABLED" = 1 ] && echo true || echo false)" "$T_KIND" "$T_LANG"
 	printf '"target":"%s","args":"%s","workdir":"%s","sched":"%s","boot":%s,"delay":%s,"timeout":%s,"overlap":"%s",' \
-		"$(printf '%s' "$T_TARGET" | b64)" "$(printf '%s' "$T_ARGS" | b64)" "$(printf '%s' "$T_WORKDIR" | b64)" "$T_SCHED" \
-		"$([ "$T_BOOT" = 1 ] && echo true || echo false)" "$(tk_num_or "$T_DELAY" 60)" "$(tk_num_or "$T_TIMEOUT" 300)" "$T_OVERLAP"
-	printf '"prio":"%s","clockwait":%s,"keep":%s,"mail":"%s","journal":%s,"body":"%s","env":"%s"},' \
+		"$(printf '%s' "$T_TARGET" | b64)" "$(printf '%s' "$T_ARGS" | b64)" "$(printf '%s' "$T_WORKDIR" | b64)" "$(jstr "$T_SCHED" 120)" \
+		"$([ "$T_BOOT" = 1 ] && echo true || echo false)" "$T_DELAY" "$T_TIMEOUT" "$T_OVERLAP"
+	printf '"prio":"%s","clockwait":%s,"keep":%s,"mail":"%s","journal":%s,"adopted":%s,"body":"%s","env":"%s"},' \
 		"$T_PRIO" "$([ "$T_CLOCK" = 1 ] && echo true || echo false)" "$(tk_num_or "$T_KEEP" 5)" "$T_MAIL" \
-		"$([ "$T_JOURNAL" = 1 ] && echo true || echo false)" "$_body" "$_env"
+		"$([ "$T_JOURNAL" = 1 ] && echo true || echo false)" "$([ -n "$T_ORIGIN" ] && echo true || echo false)" "$_body" "$_env"
 	printf '"next":%s,"running":%s,"runs":[' "$([ "$T_ENABLED" = 1 ] && tk_next_json "$T_SCHED" 3 || printf '[]')" "$(tk_running_json "$1" out)"
 	_gf=1
 	# newest first; a run's output is there only while its file lives (keep setting, RAM)
@@ -459,7 +753,8 @@ cmd_save() {
 	done < "$1"
 	[ -n "$_sid" ] && { id_ok "$_sid" || jfail "неверный номер задачи"; }
 	[ -n "$T_NAME" ] || jfail "введите название задачи"
-	[ "${#T_NAME}" -le 240 ] || jfail "название длиннее 80 знаков"
+	# characters, not bytes: UTF-8 continuation bytes (0x80..0xBF) are not characters (80 emoji are 320 bytes, review s.106)
+	[ "$(printf '%s' "$T_NAME" | tr -d '\200-\277' | wc -c)" -le 80 ] || jfail "название длиннее 80 знаков"
 	case "$T_ENABLED$T_BOOT$T_CLOCK$T_JOURNAL" in *[!01]*) jfail "неверные данные задачи" ;; esac
 	[ "${#T_ENABLED}${#T_BOOT}${#T_CLOCK}${#T_JOURNAL}" = 1111 ] || jfail "неверные данные задачи"
 	case "$T_KIND" in script|file|cmd) ;; *) jfail "неверный вид задачи" ;; esac
@@ -503,10 +798,19 @@ cmd_save() {
 	esac
 	tk_lock
 	if [ -z "$_sid" ]; then _sid=$(tk_new_id); _snew=1
-	else [ -f "$TK_DIR/$_sid.task" ] || jfail "такой задачи нет — её удалили, пока вы правили"; fi
+	else
+		[ -f "$TK_DIR/$_sid.task" ] || jfail "такой задачи нет — её удалили, пока вы правили"
+		# the spec does not carry it: dropped, an adopted task lost the line `release` gives back at uninstall (round 2)
+		T_ORIGIN=$(sed -n 's/^origin=//p' "$TK_DIR/$_sid.task" | tr -d '\r' | head -n 1)
+		case "$T_ORIGIN" in *[!A-Za-z0-9+/=]*) T_ORIGIN="" ;; esac
+	fi
 	mkdir -p "$TK_DIR" 2>/dev/null
-	if [ "$T_KIND" = script ]; then mv -f "$_stmp/body" "$TK_DIR/$_sid.body"; else rm -f "$TK_DIR/$_sid.body"; fi
-	case "$_sset" in *env*) if [ -s "$_stmp/env" ]; then mv -f "$_stmp/env" "$TK_DIR/$_sid.env"; else rm -f "$TK_DIR/$_sid.env"; fi ;; esac
+	if [ "$T_KIND" = script ]; then tk_put "$_stmp/body" "$TK_DIR/$_sid.body" || jfail "не удалось записать скрипт на флеш — места нет?"
+	else rm -f "$TK_DIR/$_sid.body"; fi
+	case "$_sset" in *env*)
+		if [ -s "$_stmp/env" ]; then tk_put "$_stmp/env" "$TK_DIR/$_sid.env" || jfail "не удалось записать переменные на флеш — места нет?"
+		else rm -f "$TK_DIR/$_sid.env"; fi ;;
+	esac
 	tk_write "$_sid" || jfail "не удалось записать задачу на флеш"
 	tk_apply || jfail "задача сохранена, но расписание не записалось (crontab)"
 	tk_unlock
@@ -515,12 +819,13 @@ cmd_save() {
 }
 cmd_del() {
 	id_ok "$1" && [ -f "$TK_DIR/$1.task" ] || jfail "такой задачи нет"
-	tk_rundir && : > "$TK_RUN/$1.stop"   # a running copy stops itself (the runner reads the flag)
 	tk_lock
+	tk_rundir && echo 999999999 > "$TK_RUN/$1.stop"   # every running copy stops itself (the runner reads the flag)
 	rm -f "$TK_DIR/$1.task" "$TK_DIR/$1.body" "$TK_DIR/$1.env"
-	tk_apply || jfail "задача удалена, но расписание не записалось (crontab)"
+	TK_DROP=" $1 "; tk_apply; _dap=$?   # in the «off» form its plain line goes too — a delete stops the command, as a task line would
 	tk_unlock
-	( sleep 3; rm -f "$TK_RUN/$1".* ) >/dev/null 2>&1 &
+	( sleep 3; rm -f "$TK_RUN/$1".* ) >/dev/null 2>&1 &   # the id is never given again (tk_new_id) — nothing else's state
+	[ "$_dap" = 0 ] || jfail "задача удалена, но расписание не записалось (crontab)"
 	jok '"msg":"задача удалена"'
 }
 cmd_toggle() {
@@ -528,21 +833,101 @@ cmd_toggle() {
 	id_ok "$1" || jfail "такой задачи нет"
 	tk_lock
 	tk_load "$1" || jfail "такой задачи нет"
-	if [ "$2" = on ]; then T_ENABLED=1; else T_ENABLED=0; fi
+	if [ "$2" = on ]; then T_ENABLED=1; _tgw='задача включена'; else T_ENABLED=0; _tgw='задача выключена'; fi
 	tk_write "$1" && tk_apply || jfail "не удалось записать задачу"
 	tk_unlock
-	jok "\"msg\":\"$([ "$T_ENABLED" = 1 ] && echo 'задача включена' || echo 'задача выключена')\""
+	jok "\"msg\":\"$_tgw\""
 }
 cmd_dup() {   # a copy is born DISABLED: two identical tasks running side by side is never what a click on «copy» meant
 	id_ok "$1" && tk_load "$1" || jfail "такой задачи нет"
 	tk_lock
 	_nid=$(tk_new_id); tk_load "$1"
-	T_NAME="$T_NAME (копия)"; T_ENABLED=0
+	T_NAME="$T_NAME (копия)"; T_ENABLED=0; T_ORIGIN=""   # a copy did not come from the line: release must not write it twice
 	[ -f "$TK_DIR/$1.body" ] && cp "$TK_DIR/$1.body" "$TK_DIR/$_nid.body"
 	[ -f "$TK_DIR/$1.env" ] && cp "$TK_DIR/$1.env" "$TK_DIR/$_nid.env"
 	tk_write "$_nid" || jfail "не удалось записать копию"
 	tk_unlock
 	jok "\"id\":\"$_nid\",\"msg\":\"копия создана выключенной\""
+}
+
+# import <archive tasks dir> <full 0|1> — a backup's tasks into the registry (cgi-bin/backup; the owner decides, the CGI carries).
+# A task arrives WHOLE: settings, script and variables of one id are one task (a merge by file left the router's old script or
+# variables under an imported task of the same id — review s.106). Variables travel only in a full backup (they hold passwords):
+# a SETTINGS archive of the very same task — the same file but for `enabled=`, the same script — keeps the router's variables
+# (round 2); a name alone is no identity (round 3). A task of this router replaced by an archive task of the same id is not lost
+# if it held a crontab line of another family (adopted, another mark): that line is given back into the crontab, in the same
+# write — ids are per router, and another router's t1 erased the firmware's SSH patch held by this one's t1 (round 4). Ids: the
+# higher `.last-id` wins (an older archive would bring back ids already given). Exit 1 = nothing imported or not written.
+cmd_import() {
+	[ -d "${1:-}" ] || { echo "нет каталога задач"; return 1; }
+	_isrc=$1; _ifull=${2:-0}
+	tk_rundir || { echo "не удалось создать каталог задач в памяти"; return 1; }
+	tk_lock soft || { echo "задачи сейчас меняет другой запрос — задачи не импортированы"; return 1; }
+	mkdir -p "$TK_DIR" 2>/dev/null
+	_ig="$TK_RUN/.import.$$"; : > "$_ig"; tk_each_line > "$_ig.work"; _in=0; _iids=" "
+	for _itk in "$_isrc"/t*.task; do
+		[ -f "$_itk" ] || continue
+		_ii=${_itk##*/}; _ii=${_ii%.task}; id_ok "$_ii" || continue
+		if tk_load "$_ii"; then
+			if [ -n "$T_ORIGIN" ]; then
+				tk_plain "$_ii"; _imr=$TKM; _ima=""
+				_iao=$(sed -n 's/^origin=//p' "$_itk" | tr -d '\r' | head -n 1)
+				case "$_iao" in ''|*[!A-Za-z0-9+/=]*) ;; *) tk_mark "$_iao"; _ima=$TKM ;; esac
+				# After the import no task holds this family: exactly ONE line of it must stay. An active line of its mark (the «off» form
+				# wrote it; the record no longer claims it) stands, and its unmarked twins (the firmware put the line back meanwhile) go —
+				# no task is left to take them back, the command would run twice for good (round 5). Otherwise a line of the family in
+				# the file stands as it is; with none, the task's line is given back without a mark.
+				if [ "$_ima" != "$_imr" ]; then
+					_igb=$(printf '%s\n' "$TKP" | sed 's/[[:space:]]*#enodia-task:[0-9a-f]*$//'); tk_fam_plain
+					if grep -v '^[[:space:]]*#' "$_ig.work" | grep -qF -- "$_imr"; then
+						for _igt in "$TKF_JOB" "$TKF_ORG"; do
+							[ -n "$_igt" ] && grep -qxF -- "$_igt" "$_ig.work" && tk_drop_in "$_ig.work" "$_igt"
+						done
+					elif ! grep -qF -- "$_imr" "$_ig.work" && ! grep -qxF -- "$_igb" "$_ig.work" \
+						&& { [ -z "$TKF_JOB" ] || ! grep -qxF -- "$TKF_JOB" "$_ig.work"; } \
+						&& { [ -z "$TKF_ORG" ] || ! grep -qxF -- "$TKF_ORG" "$_ig.work"; }; then
+						printf '%s\n' "$_igb" >> "$_ig"
+					fi
+				fi
+			fi
+			_ikeep=0
+			if [ "$_ifull" = 0 ] && [ ! -f "$_isrc/$_ii.env" ]; then
+				grep -v '^enabled=' "$_itk" | tr -d '\r' > "$_ig.a"; grep -v '^enabled=' "$TK_DIR/$_ii.task" | tr -d '\r' > "$_ig.b"
+				cmp -s "$_ig.a" "$_ig.b" && _ikeep=1
+				if [ -f "$_isrc/$_ii.body" ] || [ -f "$TK_DIR/$_ii.body" ]; then cmp -s "$_isrc/$_ii.body" "$TK_DIR/$_ii.body" || _ikeep=0; fi
+			fi
+			rm -f "$TK_DIR/$_ii.task" "$TK_DIR/$_ii.body"
+			[ "$_ikeep" = 1 ] || rm -f "$TK_DIR/$_ii.env"
+		fi
+		tk_put "$_itk" "$TK_DIR/$_ii.task" || continue
+		[ -f "$_isrc/$_ii.body" ] && tk_put "$_isrc/$_ii.body" "$TK_DIR/$_ii.body"
+		if [ -f "$_isrc/$_ii.env" ]; then tk_put "$_isrc/$_ii.env" "$TK_DIR/$_ii.env" && chmod 600 "$TK_DIR/$_ii.env" 2>/dev/null; fi
+		_in=$((_in + 1)); _iids="$_iids $_ii "
+	done
+	# One family, one task: an imported adopted task whose line another task here already holds comes in DISABLED — the router's
+	# own task keeps running it (an old backup after the line was re-adopted, another router's backup of the same firmware line:
+	# two task lines, the command twice — round 5). The derivation's own guard would disable the LOWER id, often the router's.
+	_ifam=" "
+	for _ifi in $(tk_ids); do
+		case "$_iids" in *" $_ifi "*) continue ;; esac
+		tk_load "$_ifi" && [ -n "$T_ORIGIN" ] && [ "$T_ENABLED" = 1 ] || continue
+		tk_mark "$T_ORIGIN"; _ifam="$_ifam$TKM "
+	done
+	for _ifi in $(tk_ids); do
+		case "$_iids" in *" $_ifi "*) ;; *) continue ;; esac
+		tk_load "$_ifi" && [ -n "$T_ORIGIN" ] && [ "$T_ENABLED" = 1 ] || continue
+		tk_mark "$T_ORIGIN"
+		case "$_ifam" in *" $TKM "*) T_ENABLED=0; tk_write "$_ifi" ;; *) _ifam="$_ifam$TKM " ;; esac
+	done
+	_ial=$(cat "$_isrc/.last-id" 2>/dev/null); _irl=$(cat "$TK_DIR/.last-id" 2>/dev/null)
+	case "$_ial" in ''|*[!0-9]*) _ial=0 ;; esac; case "$_irl" in ''|*[!0-9]*) _irl=0 ;; esac
+	[ "$_ial" -gt "$_irl" ] && echo "$_ial" > "$TK_DIR/.last-id"
+	cat "$_ig.work" "$_ig" > "$_ig.src"; tk_apply "$_ig.src"; _iap=$?
+	tk_unlock
+	rm -f "$_ig" "$_ig.work" "$_ig.work.n" "$_ig.a" "$_ig.b" "$_ig.src"
+	[ "$_iap" = 0 ] || { echo "задачи импортированы ($_in), но расписание не записалось (crontab)"; return 1; }
+	echo "задач импортировано: $_in"
+	[ "$_in" -gt 0 ]
 }
 
 # ---- foreign lines ------------------------------------------------------------------------------------------------
@@ -562,7 +947,8 @@ tk_line_guard() {   # refuse lines this owner does not own: tasks (edit the task
 }
 # tk_line_replace <old> <new|""> -> new crontab with the FIRST exact match replaced (empty = removed)
 tk_line_replace() {
-	_rt="$CRON.tk.$$"; _rdone=0
+	tk_rundir || return 1
+	_rt="$TK_RUN/.line.$$"; _rdone=0
 	tk_each_line > "$_rt.src"
 	while IFS= read -r _rl || [ -n "$_rl" ]; do
 		if [ "$_rdone" = 0 ] && [ "$_rl" = "$1" ]; then
@@ -612,31 +998,40 @@ cmd_adopt() {
 	case "$(printf '%s' "$_old" | sed 's/^[[:space:]]*//')" in '#'*) _aon=0; _al=$(printf '%s' "$_old" | sed 's/^[[:space:]]*#[[:space:]]*//') ;; esac
 	tk_line_check "$_al" && [ "$TKL" = cron ] || jfail "строку не разобрать: $TKE"
 	tk_defaults
-	T_KIND=cmd; T_TARGET=$TKL_C; T_SCHED=$TKL_S; T_ENABLED=$_aon; T_TIMEOUT=0; T_PRIO=normal
+	# behaves as the line did: no time limit, normal priority, no wait for the clock (a firmware line — the SSH patch — must
+	# run after a reboot without internet too), no letters; the line itself is kept for `release` (see the header)
+	T_KIND=cmd; T_TARGET=$TKL_C; T_SCHED=$TKL_S; T_ENABLED=$_aon; T_TIMEOUT=0; T_PRIO=normal; T_CLOCK=0; T_MAIL=never; T_JOURNAL=0
+	T_ORIGIN=$(printf '%s' "$_old" | b64)
 	T_NAME=$(printf '%s' "$TKL_C" | sed 's/^.*&&[[:space:]]*//; s/[[:space:]].*$//; s#^.*/##')
 	[ -n "$T_NAME" ] || T_NAME="задача из crontab"
 	tk_lock
 	tk_line_find "$_old" || jfail "строка изменилась с тех пор, как вы открыли экран — обновите его"
+	# one family, one task: the firmware put back the line a task already holds — the task takes it back at the next derivation
+	tk_mark "$T_ORIGIN"; _afam=$TKM
+	for _afi in $(tk_ids); do
+		_afo=$(sed -n 's/^origin=//p' "$TK_DIR/$_afi.task" 2>/dev/null | tr -d '\r' | head -n 1)
+		case "$_afo" in ''|*[!A-Za-z0-9+/=]*) continue ;; esac
+		tk_mark "$_afo"; [ "$TKM" = "$_afam" ] && jfail "эту строку уже ведёт одна из ваших задач — откройте её в списке"
+	done
 	_aid=$(tk_new_id)
 	tk_write "$_aid" || jfail "не удалось записать задачу"
-	_at="$CRON.tk.$$"
-	{ tk_lines_without "$_old" | grep -vF "$TK_SIG"
-	  for _ai in $(tk_ids); do
-		tk_load "$_ai" || continue
-		[ "$T_ENABLED" = 1 ] && [ -n "$T_SCHED" ] || continue
-		printf '%s %s tasks.sh run %s sched >/dev/null 2>&1\n' "$T_SCHED" "$CRON_RUN" "$_ai"
-	  done; } > "$_at"
-	tk_cron_put "$_at" || { rm -f "$TK_DIR/$_aid.task"; jfail "не удалось записать crontab"; }
+	tk_rundir || { rm -f "$TK_DIR/$_aid.task"; jfail "не удалось создать каталог задач в памяти"; }
+	_at="$TK_RUN/.adopt.$$"
+	tk_lines_without "$_old" > "$_at"
+	tk_apply "$_at" || { rm -f "$_at" "$TK_DIR/$_aid.task"; jfail "не удалось записать crontab"; }
+	rm -f "$_at"
+
 	tk_unlock
 	jok "\"id\":\"$_aid\",\"msg\":\"строка стала задачей\""
 }
-cmd_raw_get() { printf '{"ok":true,"text":"%s"}\n' "$(tk_each_line | b64)"; }
-cmd_raw_save() {
+tk_rev() { tk_each_line | md5sum 2>/dev/null | cut -c1-32; }
+cmd_raw_get() { printf '{"ok":true,"rev":"%s","text":"%s"}\n' "$(tk_rev)" "$(tk_each_line | b64)"; }
+cmd_raw_save() {   # <b64file> <rev the panel opened>
 	[ -f "$1" ] || jfail "нет текста"
 	tk_rundir || jfail "не удалось создать каталог задач в памяти"
 	_rw="$TK_RUN/.raw.$$"; TK_TMP=$_rw
 	base64 -d < "$1" 2>/dev/null | tr -d '\r' > "$_rw"
-	[ "$(wc -c < "$_rw")" -le 65536 ] || { rm -f "$_rw"; jfail "файл больше 64 КБ"; }
+	[ "$(wc -c < "$_rw")" -le "$TK_FILE_MAX" ] || { rm -f "$_rw"; jfail "файл больше 16 КБ — правьте его по SSH"; }
 	_rn=0
 	while IFS= read -r _rl || [ -n "$_rl" ]; do
 		_rn=$((_rn + 1))
@@ -644,27 +1039,34 @@ cmd_raw_save() {
 	done < "$_rw"
 	[ -n "$(tail -c 1 "$_rw")" ] && echo >> "$_rw"
 	tk_lock
-	cp "$_rw" "$CRON.tk.$$"
-	tk_cron_put "$CRON.tk.$$" || jfail "не удалось записать crontab"
+	[ -n "$2" ] && [ "$2" != "$(tk_rev)" ] && jfail "crontab изменился, пока вы его правили — откройте вкладку заново" '"stale":true'
+	tk_apply "$_rw" || jfail "не удалось записать crontab"
 	tk_unlock
-	jok '"msg":"crontab сохранён"'
+	jok "\"msg\":\"crontab сохранён\",\"rev\":\"$(tk_rev)\",\"text\":\"$(tk_each_line | b64)\""
 }
 
 # ---- «open and edit the file» --------------------------------------------------------------------------------------
+# A symbolic link is refused with its target named: a save renames a new file over the PATH, and that would replace the link
+# itself with a copy — the file it pointed to unchanged, the link gone.
+tk_file_link() { [ -L "$1" ] && jfail "это ссылка на $(readlink "$1" 2>/dev/null) — откройте сам файл"; return 0; }
 cmd_file_get() {
 	case "$1" in /*) ;; *) jfail "путь — полный, от /" ;; esac
+	tk_file_link "$1"
 	[ -f "$1" ] || jfail "файла нет: $1"
-	_fs=$(wc -c < "$1" | tr -d ' '); [ "$_fs" -le "$TK_FILE_MAX" ] || jfail "файл больше 64 КБ — правьте его по SSH"
+	_fs=$(wc -c < "$1" | tr -d ' '); [ "$_fs" -le "$TK_FILE_MAX" ] || jfail "файл больше 16 КБ — правьте его по SSH"
 	[ "$(tr -d '\000' < "$1" | wc -c | tr -d ' ')" = "$_fs" ] || jfail "файл не текстовый"
 	printf '{"ok":true,"size":%s,"text":"%s"}\n' "$_fs" "$(b64 < "$1")"
 }
 cmd_file_put() {
 	case "$1" in /*) ;; *) jfail "путь — полный, от /" ;; esac
+	tk_file_link "$1"
 	[ -f "$1" ] || jfail "файла нет: $1"
 	[ -f "$2" ] || jfail "нет текста"
-	_ft="$1.enodia-new.$$"
+	# created EXCLUSIVELY (mktemp): the file may sit in /tmp, shared with stock daemons — a link laid on a predictable name would
+	# turn our write as root into a write into its target (the class tk_rundir and cap_run are built against)
+	_ft=$(mktemp "$1.enodia-new.XXXXXX" 2>/dev/null) || jfail "не удалось записать файл"
 	base64 -d < "$2" 2>/dev/null | tr -d '\r' > "$_ft" || { rm -f "$_ft"; jfail "не удалось записать файл"; }
-	[ "$(wc -c < "$_ft")" -le "$TK_FILE_MAX" ] || { rm -f "$_ft"; jfail "файл больше 64 КБ"; }
+	[ "$(wc -c < "$_ft")" -le "$TK_FILE_MAX" ] || { rm -f "$_ft"; jfail "файл больше 16 КБ — правьте его по SSH"; }
 	cp -p "$1" "$1.bak" 2>/dev/null
 	chmod --reference="$1" "$_ft" 2>/dev/null || chmod "$(stat -c %a "$1" 2>/dev/null || echo 644)" "$_ft" 2>/dev/null
 	mv -f "$_ft" "$1" || { rm -f "$_ft"; jfail "не удалось записать файл"; }
@@ -751,22 +1153,37 @@ cmd_run() {
 	if [ "$_trig" = sched ] && [ "$T_CLOCK" = 1 ] && ! clock_sane; then
 		tk_hist_add "$_id" "$_ts" 0 0 "$_trig" - skip-clock; exit 0
 	fi
-	# overlap: the lock is a directory with the runner's pid; a dead holder's lock is taken over
-	_lk="$TK_RUN/$_id.lock"; _mine=0
+	# overlap: the run lock and the wait place are pid links (tk_link_take: never without a pid, a dead holder's taken over once)
+	_lk="$TK_RUN/$_id.lock"; _mine=0; _qd=0
 	if [ "$T_OVERLAP" != par ]; then
 		_ww=0
 		while :; do
-			if mkdir "$_lk" 2>/dev/null; then echo $$ > "$_lk/pid"; _mine=1; break; fi
-			_lp=$(cat "$_lk/pid" 2>/dev/null)
-			if [ -z "$_lp" ] || [ ! -d "/proc/$_lp" ]; then rm -rf "$_lk" 2>/dev/null; continue; fi
+			if tk_link_take "$_lk"; then _mine=1; break; fi
 			if [ "$T_OVERLAP" = skip ]; then tk_hist_add "$_id" "$_ts" 0 0 "$_trig" - skip-busy; exit 0; fi
-			_ww=$((_ww + 2)); [ "$_ww" -gt 86400 ] && exit 0
+			# wait: ONE run queued behind the current one, every further tick folds into it — a per-minute task behind a hung
+			# run queued a sleeping shell a minute, 1440 a day on a 176-MB router (review s.106). Its place is a link like the lock.
+			if [ "$_qd" = 0 ]; then
+				if tk_link_take "$_lk.q"; then _qd=1
+				else tk_hist_add "$_id" "$_ts" 0 0 "$_trig" - skip-busy; exit 0; fi
+			fi
+			_ww=$((_ww + 2)); [ "$_ww" -gt 86400 ] && { rm -f "$_lk.q"; exit 0; }
 			sleep 2
 		done
+		[ "$_qd" = 1 ] && rm -f "$_lk.q"
+		# a run that WAITED reads its task again: deleted, disabled or edited meanwhile — the queued tick still held the old
+		# settings and ran a deleted task's command once more (review s.106, round 2)
+		if [ "$_ww" -gt 0 ]; then
+			tk_load "$_id" || { rm -rf "$_lk"; exit 0; }
+			if [ "$_trig" != manual ] && [ "$T_ENABLED" != 1 ]; then rm -rf "$_lk"; exit 0; fi
+		fi
 	fi
-	_seq=$(( $(cat "$TK_RUN/$_id.seq" 2>/dev/null || echo 0) + 1 )); echo "$_seq" > "$TK_RUN/$_id.seq"
-	_out="$TK_RUN/$_id.out.$_seq"; _rcf="$TK_RUN/$_id.rc.$_seq"; rm -f "$TK_RUN/$_id.stop" "$_rcf"
-	trap 'rm -f "$TK_RUN/$_id.cur" "$_rcf" "$_out.run"; [ "$_mine" = 1 ] && rm -rf "$_lk"' EXIT
+	# the run number: runs alongside take it at the same moment, so under a lock of its own (a dead taker's lock is stolen
+	# after ~3 s — the section is one read and one write)
+	_sl="$TK_RUN/$_id.seqlock"; _sw=0
+	while ! mkdir "$_sl" 2>/dev/null; do _sw=$((_sw + 1)); [ "$_sw" -gt 3 ] && rm -rf "$_sl"; sleep 1; done
+	_seq=$(( $(cat "$TK_RUN/$_id.seq" 2>/dev/null || echo 0) + 1 )); echo "$_seq" > "$TK_RUN/$_id.seq"; rm -rf "$_sl"
+	_out="$TK_RUN/$_id.out.$_seq"; _rcf="$TK_RUN/$_id.rc.$_seq"; rm -f "$_rcf"
+	trap 'rm -f "$TK_RUN/$_id.cur.$_seq" "$_rcf" "$_out.run"; [ "$_mine" = 1 ] && rm -rf "$_lk"' EXIT
 	trap 'exit 1' INT TERM HUP PIPE
 	# what to execute: one command line for `sh -c` — the user's own shell syntax around a quoted file path
 	case "$T_KIND" in
@@ -786,10 +1203,13 @@ cmd_run() {
 		$_nice sh -c "$_cl" </dev/null; echo $? > "$_rcf"
 	) > "$_out.run" 2>&1 &
 	_wp=$!
-	printf '%s\t%s\t%s\t%s\t%s\n' "$_ts" "$_up0" "$$" "$_trig" "$_seq" > "$TK_RUN/$_id.cur"
+	printf '%s\t%s\t%s\t%s\t%s\n' "$_ts" "$_up0" "$$" "$_trig" "$_seq" > "$TK_RUN/$_id.cur.$_seq"
 	_flag=""
 	while [ ! -s "$_rcf" ]; do
-		if [ -e "$TK_RUN/$_id.stop" ]; then _flag=stopped; tk_kill_tree "$_wp"; break; fi
+		# «stop» holds the last run number it applies to: a run started after the click is not stopped by it (a flag removed
+		# by the next start cancelled a stop meant for a run alongside), and nothing has to remove it
+		_sv=""; [ -f "$TK_RUN/$_id.stop" ] && read -r _sv < "$TK_RUN/$_id.stop" 2>/dev/null
+		case "$_sv" in ''|*[!0-9]*) ;; *) if [ "$_seq" -le "$_sv" ]; then _flag=stopped; tk_kill_tree "$_wp"; break; fi ;; esac
 		if [ "$T_TIMEOUT" -gt 0 ] 2>/dev/null && [ $(( $(uptime_s) - _up0 )) -ge "$T_TIMEOUT" ]; then _flag=killed; tk_kill_tree "$_wp"; break; fi
 		if [ "$(wc -c < "$_out.run" 2>/dev/null)" -gt "$TK_OUT_CAP" ] 2>/dev/null; then _flag=cut; tk_kill_tree "$_wp"; break; fi
 		tk_alive "$_wp" || { sleep 1; [ -s "$_rcf" ] || { _flag=err; break; }; }
@@ -823,23 +1243,35 @@ cmd_run_bg() {
 	id_ok "$1" && [ -f "$TK_DIR/$1.task" ] || { [ "$2" = quiet ] && return 0; jfail "такой задачи нет"; }
 	tk_rundir || { [ "$2" = quiet ] && return 0; jfail "не удалось создать каталог задач в памяти"; }
 	_bp="$TK_RUN/$1.bg.pid"
-	if [ -s "$TK_RUN/$1.cur" ] && _bc=$(cut -f3 "$TK_RUN/$1.cur") && [ -n "$_bc" ] && [ -d "/proc/$_bc" ]; then
+	if tk_cur "$1"; then
 		[ "$2" = quiet ] && return 0; jfail "задача уже выполняется"
 	fi
 	rm -f "$_bp"
 	start-stop-daemon -S -b -m -p "$_bp" -x /bin/sh -- "$ENODIA_DIR/tasks.sh" run "$1" "${3:-manual}" >/dev/null 2>&1 \
 		|| ( sh "$ENODIA_DIR/tasks.sh" run "$1" "${3:-manual}" >/dev/null 2>&1 & )
+	# Answer once the run has REGISTERED (or its runner is already gone — refused, skipped): the panel asks for the task right
+	# after this answer, and a run not yet registered read as «not running», so the screen never followed it (review s.106).
+	# The wait is the runner's life, not a stopwatch; the ceiling only bounds a runner that hangs before registering.
+	# busybox start-stop-daemon -b returns BEFORE its grandchild writes the pidfile: an empty one is «not started yet»
+	_bw=0
+	while [ "$_bw" -lt 10 ]; do
+		tk_cur "$1" && break
+		_bpid=$(cat "$_bp" 2>/dev/null); if [ -n "$_bpid" ] && [ ! -d "/proc/$_bpid" ]; then break; fi
+		sleep 1; _bw=$((_bw + 1))
+	done
 	[ "$2" = quiet ] && return 0
 	jok '"msg":"задача запущена"'
 }
-cmd_stop() {
+cmd_stop() {   # every run started so far: the flag holds the last run number (see the runner)
 	id_ok "$1" || jfail "такой задачи нет"
-	_sc=$(cut -f3 "$TK_RUN/$1.cur" 2>/dev/null)
-	[ -n "$_sc" ] && [ -d "/proc/$_sc" ] || jfail "задача сейчас не выполняется"
-	: > "$TK_RUN/$1.stop"
+	tk_cur "$1" || jfail "задача сейчас не выполняется"
+	cat "$TK_RUN/$1.seq" > "$TK_RUN/$1.stop" 2>/dev/null
 	jok '"msg":"останавливаю задачу"'
 }
 cmd_boot() {   # heal.sh at boot: every enabled task with «at boot» — each in its own background with its own delay
+	# the «off» form: nothing of ours runs, «at boot» neither — heal reaches here on a deactivated router too (a USB drive plugged in
+	# runs it from hotplug in the `full` layout; review s.106, round 4)
+	tk_sys_on "$CRON" || { echo "Enodia снята с расписания — задачи «при загрузке» не запускаются"; return 0; }
 	for _bi in $(tk_ids); do
 		tk_load "$_bi" || continue
 		[ "$T_ENABLED" = 1 ] && [ "$T_BOOT" = 1 ] || continue
@@ -865,13 +1297,14 @@ case "$1" in
 	line-set)    cmd_line_set "$2" "$3" ;;
 	line-toggle) cmd_line_toggle "$2" ;;
 	adopt)       cmd_adopt "$2" ;;
-	raw-save)    cmd_raw_save "$2" ;;
+	raw-save)    cmd_raw_save "$2" "$3" ;;
 	file-get)    cmd_file_get "$2" ;;
 	file-put)    cmd_file_put "$2" "$3" ;;
-	apply)       tk_lock; tk_apply; tk_unlock ;;
+	apply)       cmd_apply "$2" ;;
+	import)      cmd_import "$2" "$3" ;;
 	boot)        cmd_boot ;;
 	run)         cmd_run "$2" "$3" ;;
 	run-delayed) case "$3" in ''|*[!0-9]*) ;; *) sleep "$3" ;; esac; cmd_run "$2" boot ;;
-	*) echo "usage: tasks.sh list-json|get-json <id>|explain \"<m h dom mon dow>\"|raw-get|save <spec>|del|toggle|dup|run-bg|stop <id>|line-set|line-toggle|adopt|raw-save|file-get|file-put|apply|boot|run <id> <trigger>" >&2
+	*) echo "usage: tasks.sh list-json|get-json <id>|explain \"<m h dom mon dow>\"|raw-get|save <spec>|del|toggle|dup|run-bg|stop <id>|line-set|line-toggle|adopt|raw-save|file-get|file-put|apply [<crontab>]|import <dir> <full>|boot|run <id> <trigger>" >&2
 	   exit 2 ;;
 esac

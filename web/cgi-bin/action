@@ -497,9 +497,12 @@ case "$act" in
 		[ -f "$ENODIA_DIR/tasks.sh" ] || fail "на роутере нет tasks.sh — обновите скрипты роутера"
 		# relay the owner's JSON: printed through cap_run (a file, not a pipe — uhttpd's SIGKILL of a lost client must not cut a
 		# crontab write halfway on SIGPIPE); an answer that is not JSON becomes a refusal with its last line
+		# The owner prints ONE JSON line; cap_run merges stderr into the same file, so a stray warning (`mv: …`) before it must not
+		# turn a real answer into «error: {…}» — the last line that is a JSON object is the answer (review s.106).
 		tk_relay() {
 			cap_run tasks.sh "$@"
-			case "$CAP_OUT" in '{'*) printf '%s\n' "$CAP_OUT" ;; *) fail "$(printf '%s' "$CAP_OUT" | tail -n 1 | jesc 300)" ;; esac
+			_tkj=$(printf '%s\n' "$CAP_OUT" | grep '^{' | tail -n 1)
+			case "$_tkj" in '{'*) printf '%s\n' "$_tkj" ;; *) fail "$(printf '%s' "$CAP_OUT" | tail -n 1 | jesc 300)" ;; esac
 			exit 0
 		}
 		# the base64 alphabet; EMPTY passes — an optional field the panel leaves out («свой скрипт» sends no target_b64).
@@ -527,7 +530,9 @@ case "$act" in
 				done
 				for _k in name_b64 target_b64 args_b64 sched_b64 workdir_b64 body_b64 env_b64; do
 					_v=$(urldecode "$(field "$_k")"); b64f "$_v" || fail "неверные данные задачи ($_k)"
-					[ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v" >> "$tkin/spec"
+					# a SENT empty field is a value too: «no variables» clears them — dropped, it read as «not sent» and the old
+					# variables stayed (review s.106); an absent field stays absent (the owner keeps what it has)
+					if [ -n "$_v" ] || printf '%s' "$body" | tr '&' '\n' | grep -q "^$_k="; then printf '%s=%s\n' "$_k" "$_v" >> "$tkin/spec"; fi
 				done
 				tk_relay save "$tkin/spec" ;;
 			task_del)    tk_relay del "$tid" ;;
@@ -546,7 +551,9 @@ case "$act" in
 				esac ;;
 			cron_raw_save)
 				_v=$(urldecode "$(field text)"); b64f "$_v" || fail "неверный текст"
-				printf '%s' "$_v" > "$tkin/text"; tk_relay raw-save "$tkin/text" ;;
+				# the version the tab READ is required: without it an empty editor (still reading) saved over the whole file (round 2)
+				_rv=$(field rev); case "$_rv" in '') fail "нет версии файла — откройте вкладку заново" ;; *[!0-9a-f]*) fail "неверная версия файла" ;; esac
+				printf '%s' "$_v" > "$tkin/text"; tk_relay raw-save "$tkin/text" "$_rv" ;;
 			task_file_get|task_file_put)
 				_p=$(urldecode "$(field path)"); b64f "$_p" && [ -n "$_p" ] || fail "нет пути к файлу"
 				_p=$(printf '%s' "$_p" | base64 -d 2>/dev/null); one_line "$_p" || fail "путь — одной строкой"

@@ -374,7 +374,7 @@ sweep_run() {        # $1 = count|del ; $2 = keep → цепочки ПАНЕЛ�
         done
     done
     # `ip rule` в наши таблицы. Судим по НОМЕРУ таблицы: форм записи две (базовая fwmark 0x1 и
-    # слотовые 0x2..0x4), а номер таблицы общий у обеих. Цикл — потому что дубли реальны
+    # слотовые 0x2..0x7), а номер таблицы общий у обеих. Цикл — потому что дубли реальны
     # (прерванный прогон ставит правило второй раз); потолок 20 — страховка от вечного цикла,
     # если `ip rule del` в этой сборке не умеет селектор `table`.
     for _tb in $TABLES; do
@@ -546,6 +546,16 @@ step_cron() {        # $1 = keep → строку панели оставляе�
         cron_ours "$_ct" 2>/dev/null | grep -F "$CRON_PANEL" >> "$_ct.new" 2>/dev/null
         _kept=" (строка панели оставлена — ею панель поднимается после ребута)"
     fi
+    # Adopted lines. A task line is ours, the line it replaced was not — the firmware's SSH-access patch among them: removed with
+    # ours, SSH closed after the next reboot (review s.106). The crontab without our lines goes to `tasks.sh apply`, and it writes
+    # it in the SAME write in the tasks' «off» form — the form is the fact «Enodia's schedule is not in the file» (no task lines,
+    # every adopted task as a plain line); cron-restore, install and update put the schedule back, and the next derivation is «on».
+    # Not written (busy, volume full) — our lines go anyway, and the report says what the tasks could not give back.
+    if [ -f "$_ct.new" ] && [ -f "$ENODIA_DIR/tasks.sh" ] && [ -d "$ENODIA_STATE/tasks" ]; then
+        _rel=$(ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" ENODIA_BOOT="$ENODIA_BOOT" sh "$ENODIA_DIR/tasks.sh" apply "$_ct.new" 2>/dev/null)
+        if [ $? = 0 ]; then rm -f "$_ct.new"; [ -z "$_rel" ] || log "$_rel"
+        else log "ВНИМАНИЕ: ${_rel:-tasks.sh не ответил} — строки, взятые задачами из crontab, не отданы: верните их в «Задачах» или по SSH."; fi
+    fi
     [ -f "$_ct.new" ] && mv "$_ct.new" "$_ct"
     /etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1
     log "Cron: снято строк $_was$_kept."
@@ -561,14 +571,21 @@ cmd_cron_restore() {
     # «Доступ домой», включённый до деактивации, возвращается ТЕМ ЖЕ шагом, что и расписание (разбор у cmd_deactivate): намерение
     # снова становится флагом, поднимет сервер переигрыш вызывателя. Отдельно от cron-строк: их могло и не быть.
     if [ -f "$ENODIA_STATE/server/.on-deact" ]; then mv -f "$ENODIA_STATE/server/.on-deact" "$ENODIA_STATE/server/.on" 2>/dev/null; fi
-    [ -s "$CRON_SAVE" ] || { echo "расписание не снималось — возвращать нечего"; return 0; }
     _ct=/etc/crontabs/root
     mkdir -p /etc/crontabs 2>/dev/null
     [ -f "$_ct" ] || : > "$_ct"
-    _n=0
+    _n=0; _ctw=""
+    if [ -s "$CRON_SAVE" ]; then
+    # A working copy next to the file: the restored lines and the tasks' derivation reach the crontab in ONE write (below). Copied
+    # line by line — a file without a trailing \n would glue the first restored line onto its last one.
+    _ctw="$_ct.restore"
+    while IFS= read -r _l || [ -n "$_l" ]; do printf '%s\n' "$_l"; done < "$_ct" > "$_ctw" || { rm -f "$_ctw"; echo "не удалось записать crontab"; return 1; }
     # `|| [ -n "$_l" ]` — файл без хвостового \n иначе потерял бы ПОСЛЕДНЮЮ строку (грабля busybox).
     while IFS= read -r _l || [ -n "$_l" ]; do
         [ -n "$_l" ] || continue
+        # Task lines are DERIVED: `tasks.sh apply` below makes every one of them (and takes back the plain lines given back at
+        # deactivation). By the script key below they all read «tasks.sh», so only the first one ever came back (review s.106).
+        case "$_l" in *"boot.sh tasks.sh run "*) continue ;; esac
         # Сверяем ПО СКРИПТУ, а не по строке целиком. Пока система стояла деактивированной, задачу
         # мог переписать её ВЛАДЕЛЕЦ (панель-то жива: `update-sched.sh` меняет расписание списков и
         # подписок прямо оттуда), и дословный возврат нашей копии дал бы ДВЕ строки на одну задачу —
@@ -590,14 +607,34 @@ cmd_cron_restore() {
             esac
         done
         set +f
-        [ -n "$_sc" ] || _sc="$_l"
-        grep -qF "$_sc" "$_ct" 2>/dev/null && continue
-        printf '%s\n' "$_l" >> "$_ct"
+        # «Already there» = an ACTIVE line of OURS (cron_ours: the bootstrap or the code dir) naming this script as a WHOLE word. A
+        # substring anywhere matched a foreign `/root/autoheal.sh` (or a comment): heal never came back, and the tasks — their form
+        # is the fact «heal's line is in the file» — stayed off on an active router (review s.106, round 5).
+        if [ -n "$_sc" ]; then
+            _scre=$(printf '%s' "$_sc" | sed 's/\./\\./g')
+            grep -v '^[[:space:]]*#' "$_ctw" 2>/dev/null | cron_ours | grep -qE "[ /]${_scre}( |\$)" && continue
+        else
+            grep -qxF -- "$_l" "$_ctw" 2>/dev/null && continue
+        fi
+        printf '%s\n' "$_l" >> "$_ctw"
         _n=$((_n+1))
     done < "$CRON_SAVE"
-    if [ "$_n" != 0 ]; then
-        /etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1
     fi
+    # The user's tasks: their form is the fact «Enodia's schedule is in the file» — with it back, task lines return and the plain
+    # lines given back at deactivation are taken back (tasks.sh apply writes the working copy itself, restarting crond on a change).
+    # Called with nothing remembered too: a deactivation that could not write its memory (full flash) must not leave the tasks
+    # silent on an active router (review s.106, round 4). Not written — our lines go in anyway; the next derivation (any task
+    # save, heal at boot) brings the tasks back.
+    if [ -f "$ENODIA_DIR/tasks.sh" ] && [ -d "$ENODIA_STATE/tasks" ]; then
+        if ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" ENODIA_BOOT="$ENODIA_BOOT" sh "$ENODIA_DIR/tasks.sh" apply ${_ctw:+"$_ctw"} >/dev/null 2>&1; then
+            [ -z "$_ctw" ] || rm -f "$_ctw"; _ctw=""
+        fi
+    fi
+    if [ -n "$_ctw" ]; then
+        if [ "$_n" != 0 ]; then mv -f "$_ctw" "$_ct"; /etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1
+        else rm -f "$_ctw"; fi
+    fi
+    [ -s "$CRON_SAVE" ] || { echo "расписание не снималось — возвращать нечего"; return 0; }
     rm -f "$CRON_SAVE"
     echo "Расписание возвращено: строк $_n (сторож, самовосстановление, обновление списков)."
     return 0
@@ -880,7 +917,8 @@ step_verify() {      # $1 = дополнительные демоны (как у
     done
     # Маркировка без цепочек так же смертельна: живое `ip rule` в нашу таблицу = трафик уходит
     # в несуществующую несущую (чёрная дыра вместо «прямого режима»).
-    ip rule show 2>/dev/null | grep -q 'lookup 100[0-4]' && _left="$_left ip-rule"
+    # By $TABLES, the list the removal itself walks: a literal table range here (it stopped at 1004) passed exits 5..7's rules as «clean».
+    ip rule show 2>/dev/null | grep -qE "lookup ($(echo $TABLES | tr ' ' '|'))( |\$)" && _left="$_left ip-rule"
     # Гостевые правила (см. $GUEST_*_SHOW) вердикт тоже касаются: доборка их снимает, значит
     # уцелевшее = снятие отработало не до конца, а не «так и было».
     ip rule show 2>/dev/null | grep -q "$GUEST_RULE_SHOW" && _left="$_left ip-rule/guest"

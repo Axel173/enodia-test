@@ -94,7 +94,7 @@ SETTINGS="$SETTINGS .doh-custom-url .doh-custom-sni .doh-custom-ips .doh-custom-
 SETTINGS="$SETTINGS .dns-hosts .ipv6-block .tun-mtu .go-memlimit"                    # DNS-hosts, IPv6-блок, MTU, потолок ОЗУ демона
 SETTINGS="$SETTINGS iplist.conf iplist.custom lists"                                 # списки и их источники
 SETTINGS="$SETTINGS .gh-ref .gh-bin-tag .update-interval .subs-interval"  # обновления
-SETTINGS="$SETTINGS tasks"                                                           # «Задачи»: registry, scripts, variables (cron lines are derived)
+SETTINGS="$SETTINGS tasks"                                                           # «Задачи»: registry, scripts (cron lines are derived); variables — full backup only (export below)
 SETTINGS="$SETTINGS .prefs .panel-layout"                                            # язык, тема, порядок карточек
 SETTINGS="$SETTINGS .traffic-daily"                                                  # история трафика (посуточно)
 # --- ЧТО НЕ ВХОДИТ И ПОЧЕМУ ------------------------------------------------------------------
@@ -108,6 +108,8 @@ SETTINGS="$SETTINGS .traffic-daily"                                             
 # EXCLUDE: .panel-pass — хэш пароля панели: тот же класс, что .totp* (бэкап ≠ обход входа), а хэш из архива вскрывают офлайн; пароль задают на месте
 # EXCLUDE: .panel-tls .panel-wan .panel-wan-ip — восстановление НЕ должно само открывать роутер в интернет (тот же класс, что server/.on)
 # EXCLUDE: .support-key .support-relay — канал «режима поддержки»; импорт не должен его воскрешать
+# EXCLUDE: .tasks-off — the «off» form of THIS router's crontab (tasks.sh): it describes the plain lines written into this file,
+#          and carried to another router or back in time it would remove or disable what is not there (review s.106, round 3)
 # EXCLUDE: .srv-checks — кэш проверок серверов, протухает за минуты
 # EXCLUDE: xray-s*.json hysteria-s*.yaml hev-s*.yaml — рабочие конфиги доп-выходов: плагин собирает их из конфига реестра `.slots` на подъёме выхода и снимает на спуске
 # EXCLUDE: awg_setup.log — вывод вендоренного установщика AWG: журнал, а не настройка
@@ -291,8 +293,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
 	# Копируем ТОЛЬКО известные имена (из кода). Файл -> заменяем; каталог -> вливаем содержимое.
 	restored=0
+	# a FULL backup (any secret in it) carries a task's variables when the task has any: there, a task without them has none
+	_tfull=0; for _sf in $SECRETS; do [ -e "$tmp/$_sf" ] && { _tfull=1; break; }; done
 	for f in $SETTINGS $SECRETS; do
 		[ -e "$tmp/$f" ] || continue
+		# «Задачи»: the OWNER merges a task whole (settings, script, variables of one id), keeps the router's variables for a settings
+		# archive of the very same task, gives back a crontab line held by a task the archive replaces, keeps the higher id counter —
+		# and writes the schedule (tasks.sh import; review s.106). The directories are passed IN THE CALL: the owner must write where
+		# this CGI reads, not into its own default — a sandboxed copy of this CGI (dev/backup-import-test.sh) would hit the live registry.
+		if [ "$f" = tasks ] && [ -d "$tmp/tasks" ]; then
+			[ -f "$ENODIA_DIR/tasks.sh" ] && ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/tasks.sh" import "$tmp/tasks" "$_tfull" >/dev/null 2>&1 \
+				&& restored=$((restored+1))
+			continue
+		fi
 		if [ -d "$tmp/$f" ]; then
 			mkdir -p "$ENODIA_STATE/$f" 2>/dev/null
 			# Обычные имена — ОДНИМ `cp` (как было): в xray-configs бывает под сотню файлов, и
@@ -438,8 +451,9 @@ fi
 #     истина для cron наступает только после `update-sched.sh apply`. Без него человек видел в
 #     панели свой интервал, а роутер продолжал жить по установочному расписанию.
 [ -f ./update-sched.sh ] && sh ./update-sched.sh apply >/dev/null 2>&1
-#     The same for the user's tasks: the registry came in the archive, their cron lines are derived from it (tasks.sh apply).
-[ -f ./tasks.sh ] && [ -d "$ENODIA_STATE/tasks" ] && sh "$ENODIA_DIR/tasks.sh" apply >/dev/null 2>&1
+#     The user's tasks: `tasks.sh import` above already wrote their lines; derived once more AFTER update-sched's own write of the
+#     crontab (a no-op when nothing changed) — the task lines are the registry's, whoever wrote the file last.
+[ -f ./tasks.sh ] && [ -d "$ENODIA_STATE/tasks" ] && ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/tasks.sh" apply >/dev/null 2>&1
 # 5c. Пулы менеджера источников — ОФЛАЙН-подъём из снимков, приехавших в архиве (каталог `lists`
 #     входит в whitelist). Иначе после импорта источники в панели есть, а сами пулы пусты до
 #     ближайшего планового обновления — у zapret-cidr/zapret-dom это неделя. Сеть здесь НЕ нужна:
@@ -624,7 +638,19 @@ case "$QUERY_STRING" in *secrets=1*) withsec=1 ;; esac
 list="$SETTINGS"
 [ "$withsec" = 1 ] && list="$SETTINGS $SECRETS"
 present=""
-for f in $list; do [ -e "$ENODIA_STATE/$f" ] && present="$present $f"; done
+for f in $list; do
+	[ -e "$ENODIA_STATE/$f" ] || continue
+	# Task variables are where passwords and tokens go (the form says so): only in a full backup, the rest of `tasks` in both.
+	# By file, not by a tar exclude: busybox tar has --exclude only in some builds.
+	if [ "$f" = tasks ] && [ "$withsec" != 1 ]; then
+		for _tf in "$ENODIA_STATE"/tasks/*; do
+			case "$_tf" in *.env|*.new) continue ;; esac
+			[ -f "$_tf" ] && present="$present tasks/${_tf##*/}"
+		done
+		continue
+	fi
+	present="$present $f"
+done
 
 ts=$(date +%Y%m%d-%H%M%S 2>/dev/null)
 case "$ts" in ''|*[!0-9-]*) ts=backup ;; esac

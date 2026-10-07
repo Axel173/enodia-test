@@ -8,7 +8,7 @@
 # so this numbering stops at 8; MAX_ID is the one ceiling, every other literal of the range is checked against it (C130).
 #
 # Дизайн целиком: заметки разработки «мультитранспорт-дизайн». Ключевое:
-#   * марка слота = его id (0x2..0x4) -> ip rule pref 9<id> -> table 100<id>;
+#   * марка слота = его id (0x2..0x7) -> ip rule pref 9<id> -> table 100<id>;
 #   * слот-сеты grp_vpn_s<id> / geo_vpn_s<id> МЕТИТ mark-core.sh (инвариант проекта: логика
 #     «выше miwifi/NFQUEUE» живёт в ОДНОМ месте — там). Этот скрипт правила НЕ СТАВИТ;
 #   * а вот СНИМАЕТ правила своего слота — он (unwire): del/disable обязаны прибрать за собой,
@@ -359,32 +359,29 @@ cmd_state() {
     done < "$SLOTS_FILE"
 }
 
-cmd_list_json() {
-    _gtsv="$ENODIA_STATE/groups/groups.tsv"
-    _c2=0; _c3=0; _c4=0
+# Bindings of ONE exit -> _bc (groups), _be (geo «в VPN»), _bk (geo keys as a JSON list body). Asked per exit, not
+# tallied into per-id variables: a tally keeps one branch per id and silently drops every id the branches do not name
+# (exits 5..7 read as «0 groups, 0 geo» while bound — review s.106). Group rows count whatever their state, as before.
+# Geo: 5th column of geo/actions.tsv (key⇥action⇥cnt⇥ts⇥slot); the slot is valid only with action=vpn (geo.sh keeps it).
+# Keys are [a-z0-9._!-] (no JSON escape needed; the CGI sanitises the charset again) — the panel lights preset chips by them.
+slot_bindings() {   # $1 = id
+    _bc=0; _be=0; _bk=''
     if [ -f "$_gtsv" ]; then
         while IFS="$TAB" read -r _gid _gen _gdir _gslot _gname _gsrc; do
-            case "$_gslot" in 2) _c2=$((_c2+1)) ;; 3) _c3=$((_c3+1)) ;; 4) _c4=$((_c4+1)) ;; esac
+            [ "$_gslot" = "$1" ] && _bc=$((_bc+1))
         done < "$_gtsv"
     fi
-    # Гео-привязки (Ф1b): 5-я колонка geo/actions.tsv (key⇥action⇥cnt⇥ts⇥slot); считаем только
-    # действующие строки (в реестре нет off), slot валиден лишь при action=vpn — geo.sh это блюдёт.
-    # Заодно СОБИРАЕМ сами ключи на слот (geo_keys) — панель по ним подсвечивает чипы-пресеты
-    # (v2fly-youtube/… привязан ли к этому выходу). Ключи гео = [a-z0-9._!-] (JSON-эскейп не нужен,
-    # как и для name_b64: кавычек/бэкслешей в наборе нет; CGI дополнительно санирует их charset'ом).
-    _g2=0; _g3=0; _g4=0
-    _gk2=''; _gk3=''; _gk4=''
-    _geor="$ENODIA_STATE/geo/actions.tsv"
     if [ -f "$_geor" ]; then
-        while IFS="$TAB" read -r _gk _ga _gc _gt _gs; do
-            [ "$_ga" = vpn ] || continue
-            case "$_gs" in
-                2) _g2=$((_g2+1)); _gk2="$_gk2${_gk2:+,}\"$_gk\"" ;;
-                3) _g3=$((_g3+1)); _gk3="$_gk3${_gk3:+,}\"$_gk\"" ;;
-                4) _g4=$((_g4+1)); _gk4="$_gk4${_gk4:+,}\"$_gk\"" ;;
-            esac
+        while IFS="$TAB" read -r _bkey _ga _gcnt _gt _gs; do
+            [ "$_ga" = vpn ] && [ "$_gs" = "$1" ] || continue
+            _be=$((_be+1)); _bk="$_bk${_bk:+,}\"$_bkey\""
         done < "$_geor"
     fi
+}
+
+cmd_list_json() {
+    _gtsv="$ENODIA_STATE/groups/groups.tsv"
+    _geor="$ENODIA_STATE/geo/actions.tsv"
     _n=0; _first=1; _krlx=0; _krix=0   # держатели ключей — один раз на ответ, а не на выход (живой ключ = вызовы awg)
     printf '{"slots":['
     if [ -s "$SLOTS_FILE" ]; then
@@ -393,9 +390,7 @@ cmd_list_json() {
             _n=$((_n+1))
             [ "$_first" = 1 ] || printf ','
             _first=0
-            case "$id" in 2) _gc=$_c2 ;; 3) _gc=$_c3 ;; 4) _gc=$_c4 ;; *) _gc=0 ;; esac
-            case "$id" in 2) _ge=$_g2 ;; 3) _ge=$_g3 ;; 4) _ge=$_g4 ;; *) _ge=0 ;; esac
-            case "$id" in 2) _gk=$_gk2 ;; 3) _gk=$_gk3 ;; 4) _gk=$_gk4 ;; *) _gk='' ;; esac
+            slot_bindings "$id"
             # state — честный статус (см. slot_state): панель красит точку и объясняет, почему
             # включённый выход не везёт трафик. Выключенный не щупаем (правил у него нет).
             if [ "$en" = on ]; then _st=$(slot_state "$id" "$t" "$fb"); else _st=off; fi
@@ -411,7 +406,7 @@ cmd_list_json() {
                 _kcl=$(awg_ids "$AWG_CONFIGS/$cfg.conf" | key_match "$_kr" "s$id" | head -n1 | cut -f2)
             fi
             printf '{"id":%s,"name_b64":"%s","transport":"%s","config":"%s","fallback":"%s","enabled":%s,"state":"%s","groups":%s,"geo":%s,"geo_keys":[%s],"key_clash":"%s"}' \
-                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_gc" "$_ge" "$_gk" "$_kcl"
+                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_bc" "$_be" "$_bk" "$_kcl"
         done < "$SLOTS_FILE"
     fi
     # Транспорты, готовые нести ДОП-ВЫХОД, — от ОРКЕСТРАТОРА (`transport.sh slot-list`),

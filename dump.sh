@@ -397,7 +397,7 @@ if [ -f "$ENODIA_DIR/slots.sh" ]; then
     # УЧЁТ ПО ВЫХОДАМ — сюда же, а не в «ресурсы»: разбирают его вместе с самими выходами
     # («карточка показывает не то»), и ответ на это ровно два файла: СЫРОЙ последний замер
     # (первая строка — несущая и WAN, ниже по строке на выход: "s<id> <iface> <rx> <tx>") и
-    # СЕГОДНЯШНЯЯ строка посуточной истории (поля $7..$12 — те же выходы по номерам).
+    # СЕГОДНЯШНЯЯ строка посуточной истории (exit k = fields $(2k+3)/$(2k+4), up to $18 for exit 7).
     # Строки выхода НЕТ = «считать нечем»: у zapret-выхода своей несущей не бывает вовсе, а у
     # выключенного её уже нет — и это ОТВЕТ, а не пропажа.
     sub "учёт трафика по выходам (сырой замер + сегодня)"
@@ -960,11 +960,20 @@ if [ -d "$ENODIA_STATE/tasks" ]; then
         _ti=${_tf##*/}; _ti=${_ti%.task}
         printf '%s: %s\n' "$_ti" "$(grep -E '^(enabled|kind|lang|sched|boot|delay|timeout|overlap|prio|clockwait|keep|mail)=' "$_tf" | tr '\n' ' ')"
         [ -f "$ENODIA_STATE/tasks/$_ti.body" ] && echo "    скрипт: $(wc -c < "$ENODIA_STATE/tasks/$_ti.body" | tr -d ' ') Б"
+        if grep -q '^origin=' "$_tf"; then echo "    взята из строки crontab"; fi
         _th=/tmp/enodia-tasks/$_ti.hist
         if [ -s "$_th" ]; then echo "    последние запуски (время, с, код, повод, №, итог):"; tail -n 3 "$_th" | sed 's/^/      /'
         else echo "    запусков с загрузки не было"; fi
     done
     ls "$ENODIA_STATE/tasks"/t*.task >/dev/null 2>&1 || echo "(задач нет)"
+    # The form — the OWNER's answer (tasks.sh list-json): «off» = Enodia's heal line is not in the crontab (deactivated, removed by
+    # hand) — no task lines, adopted tasks live as plain lines with their mark. A «nothing runs» report starts here.
+    _tform=$(sh "$ENODIA_DIR/tasks.sh" list-json 2>/dev/null | sed -n 's/.*"form":"\([a-z]*\)".*/\1/p')
+    case "$_tform" in
+        on)  echo "форма crontab задач: on (строки задач в crontab)" ;;
+        off) echo "форма crontab задач: off — строки самовосстановления Enodia в crontab нет: задачи не запускаются, взятые из crontab строки работают обычными (метка #enodia-task:)" ;;
+        *)   echo "форма crontab задач: tasks.sh не ответил" ;;
+    esac
 else
     echo "(задач нет)"
 fi
@@ -1170,9 +1179,10 @@ for lg in $DUMP_LOGS; do
     sub "$lg.log"
     tail -40 "/tmp/$lg.log" 2>/dev/null
 done
-# Пер-слотовые (у доп-выхода СВОЙ инстанс демона и свой лог) — их не было вовсе.
+# Пер-слотовые (у доп-выхода СВОЙ инстанс демона и свой лог) — их не было вовсе. Names = clean.sh RAM_LOGS_SLOT (the
+# owners' slot_*_log): hev/hysteria/byedpi carry the `enodia-` prefix, and the bare names found only xray (review s.106).
 for i in 2 3 4 5 6 7; do
-    for lg in xray hev hysteria byedpi; do
+    for lg in xray enodia-hev enodia-hysteria enodia-byedpi; do
         [ -s "/tmp/$lg-s$i.log" ] || continue
         sub "$lg-s$i.log (доп-выход №$i)"
         tail -25 "/tmp/$lg-s$i.log" 2>/dev/null

@@ -570,8 +570,10 @@ _ep_needed_elsewhere() {   # $1=ip  $2=свой store (исключить из �
     # проверки он всегда находил бы адрес «нужным» в собственном файле и не снимал бы правило НИКОГДА.
     [ "$STORE_EP" != "$_self" ] && grep -qxF "$_ip" "$STORE_EP" 2>/dev/null && return 0   # основной endpoint
     grep -qxF "$_ip" "$STORE_DST" 2>/dev/null && return 0     # осознанный юзер-вырез «мимо VPN»
-    for _f in "${STORE_EP_SLOT_PREFIX}2" "${STORE_EP_SLOT_PREFIX}3" "${STORE_EP_SLOT_PREFIX}4"; do
-        [ "$_f" = "$_self" ] && continue
+    # Every exit's store that EXISTS (glob, not an id list: a list of ids dropped exits 5..7, and the
+    # rule of a VPS shared with exit 6 was removed on the main server's failover — review s.106).
+    for _f in "${STORE_EP_SLOT_PREFIX}"*; do
+        [ -f "$_f" ] && [ "$_f" != "$_self" ] || continue
         grep -qxF "$_ip" "$_f" 2>/dev/null && return 0        # endpoint другого слота
     done
     return 1
@@ -658,7 +660,7 @@ mark_slots() {
 # (ревью 04.08.2026: эта цепочка была ЕДИНСТВЕННОЙ с голым MARK). Две причины, обе молчаливые:
 #   * VPN_FORCE стоит ПОСЛЕДНЕЙ в порядке цепочек, а ниже неё идёт базовый цикл mark-core
 #     (`enodia_list iplist_set grp_vpn enodia_ip_vpn geo_vpn` → MARK 0x1). Без ACCEPT марка ДОП-ВЫХОДА
-#     (0x2..0x4) переписывается на 0x1 ровно для тех адресов, ради которых выход и заводили
+#     (0x2..0x7) переписывается на 0x1 ровно для тех адресов, ради которых выход и заводили
 #     (iplist_set = тысячи подсетей заблок-сервисов) ⇒ «устройство целиком в выход №N» едет
 #     ОСНОВНЫМ туннелем: правило в цепочке есть, счётчики растут, эффекта нет;
 #   * на роутерах с mipctld/ipt_compiler метку стирает стоковый NFQUEUE (грабля mipctld, от
@@ -1104,7 +1106,7 @@ apply_all() {
     # boot их обычно переигрывает slot-up (heal 5.13b), но repair/standalone apply зовут и нас —
     # держим правила и здесь (идемпотентно). Store остаётся только у живших слотов.
     eps=""
-    for _f in "${STORE_EP_SLOT_PREFIX}2" "${STORE_EP_SLOT_PREFIX}3" "${STORE_EP_SLOT_PREFIX}4"; do
+    for _f in "${STORE_EP_SLOT_PREFIX}"*; do   # stores that exist, whatever the id (see _ep_needed_elsewhere)
         [ -s "$_f" ] || continue
         _e=$(head -1 "$_f" | tr -d ' \r\n')
         [ -n "$_e" ] && { rule_add_dst "$_e"; eps="$eps${eps:+,}$_e"; }

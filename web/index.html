@@ -31,7 +31,7 @@
 <!-- ?v= обязателен и здесь: icons.css — единственный подресурс, который был ВНЕ инварианта
      кэш-бастера (и вне проверки build-dev-archive.ps1), хотя кэшируется браузером ровно так же.
      Цена всплыла на этой же правке: добавьте в него класс — и правка часами не доезжает. -->
-<link rel="stylesheet" href="assets/icons.css?v=100010">
+<link rel="stylesheet" href="assets/icons.css?v=100011">
 <script>
   /* Тема из localStorage-кэша — ДО первого кадра (в <head>, не в общем скрипте внизу):
      истина живёт на роутере (.prefs theme), но её fetch асинхронный, и страница успела бы
@@ -60,7 +60,7 @@
      (~10% возраста файла) и после деплоя способен часами держать СТАРЫЙ panel.js рядом с
      новым index.html = «панель сломалась на ровном месте». Смена ?v= рвёт этот кэш.
      Бампится вместе с CODE (build-dev-archive.ps1 синкает и проверяет). -->
-<link rel="stylesheet" href="assets/panel.css?v=100010">
+<link rel="stylesheet" href="assets/panel.css?v=100011">
 <!-- БЕЗ JAVASCRIPT ПАНЕЛИ НЕТ ВОВСЕ: заставку снимает скрипт, и она висела бы вечно, а её строка через
      10 с просила бы «обновить страницу» — неправда (независимое ревью шага 2k, круг 5). Каркас без
      скрипта — кости, которые никто не снимет. Показываем одно: что нужно включить (плашка в <body>). -->
@@ -421,7 +421,7 @@
     <div class="door" id="card-transport" role="button" tabindex="0"><span class="bar" style="background:var(--g1)"></span><span class="sq" style="background:var(--g1)"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg></span><div class="grow"><div class="nm">Транспорт</div><div class="ds">чем выходим: 5 движков, что установлено</div></div><span class="chip acc" id="card-transport-chip" style="display:none"></span><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
     <div class="door" id="card-servers" role="button" tabindex="0"><span class="bar" style="background:var(--g1)"></span><span class="sq" style="background:var(--g1)"><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg></span><div class="grow"><div class="nm">Серверы и конфиги</div><div class="ds">awg · xray · hy2 · импорт ссылок и QR</div></div><span class="chip" id="card-servers-chip" style="display:none"></span><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
     <div class="door" id="card-subs" role="button" tabindex="0"><span class="bar" style="background:var(--g1)"></span><span class="sq" style="background:var(--g1)"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></span><div class="grow"><div class="nm">Подписки</div><div class="ds">пулы vless:// · автообновление по расписанию</div></div><span class="chip" id="card-subs-chip" style="display:none"></span><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
-    <div class="door" id="card-exits" role="button" tabindex="0"><span class="bar" style="background:var(--g2)"></span><span class="sq" style="background:var(--g2)"><svg class="ic" aria-hidden="true"><use href="#i-route"/></svg></span><div class="grow"><div class="nm">Дополнительные выходы</div><div class="ds">второй и третий путь наружу для части трафика</div></div><span class="chip" id="card-exits-chip" style="display:none"></span><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
+    <div class="door" id="card-exits" role="button" tabindex="0"><span class="bar" style="background:var(--g2)"></span><span class="sq" style="background:var(--g2)"><svg class="ic" aria-hidden="true"><use href="#i-route"/></svg></span><div class="grow"><div class="nm">Дополнительные выходы</div><div class="ds">ещё пути наружу для части трафика</div></div><span class="chip" id="card-exits-chip" style="display:none"></span><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
     <div class="door" id="card-mode" role="button" tabindex="0"><span class="bar" style="background:var(--g1)"></span><span class="sq" style="background:var(--g1)"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg></span><div class="grow"><div class="nm">Режим и резервирование</div><div class="ds" id="card-mode-sub">—</div></div><svg class="ic s chev" aria-hidden="true"><use href="#i-chev"/></svg></div>
     <!-- ДВЕРИ РАЗДЕЛА «СЕТЬ» (шаг 5a переноса). Id `card-wifi` и `card-blocking` прежние (по ним вешает переход
          wireCard); «Шифрованный DNS», «Свои имена» и «Параметры сети» — новые экраны, до шага 5a они жили внутри
@@ -501,7 +501,7 @@
 <div id="toast" role="status" aria-live="polite"><span id="toast-sp" class="sp"></span><span id="toast-msg"></span></div>
 
 
-<script src="assets/panel.js?v=100010"></script>
+<script src="assets/panel.js?v=100011"></script>
 <!-- СТРАХОВКА ОТ СМЕШАННОГО НАБОРА ФАЙЛОВ (шаг 2k, найдено независимым ревью, круг 4). Этот скрипт
      исполняется СТРОГО после panel.js (скрипты без async идут по порядку) и смотрит на его маркер.
      Маркера нет — скрипт панели не пришёл, не разобрался или ОСТАЛСЯ ОТ ПРОШЛОЙ ВЕРСИИ (обновление

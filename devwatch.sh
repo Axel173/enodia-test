@@ -318,7 +318,7 @@ load_marks() {   # $1 = IP клиента
 	done
 	IFS=$_lmI
 }
-mark_go() {   # $1 = метка (0x1..0x4) → GO = vpn | slotN | direct
+mark_go() {   # $1 = метка (0x1..0x7) → GO = vpn | slotN | direct
 	case "$MARK_GO" in *" $1:"*) GO=${MARK_GO#*" $1:"}; GO=${GO%% *} ;; *) GO=direct ;; esac
 }
 
