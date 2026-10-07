@@ -502,7 +502,10 @@ case "$act" in
 			case "$CAP_OUT" in '{'*) printf '%s\n' "$CAP_OUT" ;; *) fail "$(printf '%s' "$CAP_OUT" | tail -n 1 | jesc 300)" ;; esac
 			exit 0
 		}
-		b64f() { printf '%s' "$1" | grep -qE '^[A-Za-z0-9+/=]*$'; }
+		# the base64 alphabet; EMPTY passes — an optional field the panel leaves out («свой скрипт» sends no target_b64).
+		# `grep` cannot say that: empty input has no line to match, so every «свой скрипт» save was refused (BE7000
+		# 07.10.2026; the mock server validated in Python and never ran this line). A newline is outside the class too.
+		b64f() { case "$1" in *[!A-Za-z0-9+/=]*) return 1 ;; esac; return 0; }
 		tid=$(field id)
 		case "$act" in task_save) ;; task_del|task_toggle|task_dup|task_run|task_stop|task_get)
 			printf '%s' "$tid" | grep -qE '^t[0-9]{1,6}$' || fail "неверный номер задачи" ;; esac
