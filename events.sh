@@ -103,7 +103,8 @@ level_of() {
 		# «fail» ГДЕ УГОДНО в ключе, а не только в конце: ключ доп-выхода — `slot-fail-2`, он
 		# кончается НОМЕРОМ, и прежние глобы (*-fail|*fail) его не брали ⇒ письмо «доп-выход
 		# недоступен» лежало в центре уведомлений нейтральным info. Замерено на AX3600 17.08.2026.
-		*fail*|awg0-down|awg-noraise|subs-nospace) echo err ;;
+		task-ok-*)                echo info ;;   # the user's task finished (tasks.sh): «fail» is not in it, named for C33 anyway
+		*fail*|awg0-down|awg-noraise|subs-nospace) echo err ;;   # task-fail-<id> (tasks.sh) lands here too
 		# Ключи, у которых беда не названа словом «fail». Их НЕ выводит никакой глоб — только
 		# перечисление, и новый ключ по умолчанию попадает в info: заводя событие о поломке или
 		# деградации, впиши его СЮДА, иначе панель покажет его наравне с «подписки обновлены».
@@ -126,7 +127,7 @@ level_of() {
 # написали. Загрузка, после которой VPN НЕ поднялся (boot-fail), — сбой VPN, а не «роутер загрузился».
 # Ключ без своей ветки уходит в `system`, и C107 краснеет на таком ключе у любого вызывателя: молчаливый
 # дефолт сделал бы новый ключ о поломке «служебным», и выключенное «служебное» глушило бы его письмо.
-CLASSES="down switch wan boot addr subs lists system"
+CLASSES="down switch wan boot addr subs lists tasks system"
 class_of() {
 	case "$1" in
 		vpn-failopen|switch-failopen|failover-fail|awg0-down|awg-noraise|transport-missing|boot-fail|vpn-restored|slot-fail-*|slot-ok-*) echo down ;;
@@ -136,6 +137,7 @@ class_of() {
 		panel-wan-ip)             echo addr ;;   # шлёт только открытый «вход снаружи»: в письме — новая ссылка на панель
 		subs-*)                   echo subs ;;
 		iplist-*|ipblock-*|geo-*) echo lists ;;
+		task-*)                   echo tasks ;;   # the user's own tasks (tasks.sh): failure / done — the mail choice is also per task
 		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*) echo system ;;
 		*)                        echo system ;;
 	esac

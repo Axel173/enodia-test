@@ -951,6 +951,24 @@ fi
 sec "CRON (автозапуск — без него после ребута не поднимется)"
 cat /etc/crontabs/root 2>/dev/null || echo "(crontab пуст?!)"
 
+sec "ЗАДАЧИ (свои задачи из панели — tasks.sh; тексты скриптов НЕ читаем)"
+# The registry answers «what should run», the RAM history «what did run and how it ended». A script's body and variables can
+# hold passwords — only their size goes into a dump that people send for analysis.
+if [ -d "$ENODIA_STATE/tasks" ]; then
+    for _tf in "$ENODIA_STATE/tasks"/t*.task; do
+        [ -f "$_tf" ] || continue
+        _ti=${_tf##*/}; _ti=${_ti%.task}
+        printf '%s: %s\n' "$_ti" "$(grep -E '^(enabled|kind|lang|sched|boot|delay|timeout|overlap|prio|clockwait|keep|mail)=' "$_tf" | tr '\n' ' ')"
+        [ -f "$ENODIA_STATE/tasks/$_ti.body" ] && echo "    скрипт: $(wc -c < "$ENODIA_STATE/tasks/$_ti.body" | tr -d ' ') Б"
+        _th=/tmp/enodia-tasks/$_ti.hist
+        if [ -s "$_th" ]; then echo "    последние запуски (время, с, код, повод, №, итог):"; tail -n 3 "$_th" | sed 's/^/      /'
+        else echo "    запусков с загрузки не было"; fi
+    done
+    ls "$ENODIA_STATE/tasks"/t*.task >/dev/null 2>&1 || echo "(задач нет)"
+else
+    echo "(задач нет)"
+fi
+
 sec "РАСКЛАДКА (в каком режиме стоит система и откуда идёт cron)"
 # ЗАЧЕМ ЭТА СЕКЦИЯ. Дамп присылают, когда «что-то не работает», а раскладок теперь три: всё на
 # флеше роутера (data), бинари на накопителе (bins) и ВСЁ на накопителе (full). В последней

@@ -1290,9 +1290,29 @@ emit_checks() {
 	printf '}\n'
 }
 
+# «ЗАДАЧИ» (cron manager): every view is built by tasks.sh — the owner validates and answers in JSON, this CGI only carries.
+# A free-form argument (the schedule) comes base64url-encoded: no URL decoding, and it reaches tasks.sh as one quoted
+# argument. The charset is checked here, the meaning — by tasks.sh.
+qv() { printf '%s' "$QUERY_STRING" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2; }
+b64url_dec() {
+	case "$1" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+	printf '%s' "$1" | tr '_-' '/+' | awk '{ l = length($0) % 4; if (l == 2) $0 = $0 "=="; else if (l == 3) $0 = $0 "="; print }' | base64 -d 2>/dev/null
+}
+tasks_relay() {   # tasks_relay <verb> [args] — the owner's JSON, or a refusal the panel can read
+	if [ -f "$D/tasks.sh" ]; then sh "$D/tasks.sh" "$@"
+	else printf '{"ok":false,"msg":"на роутере нет tasks.sh — обновите скрипты роутера"}\n'; fi
+}
+
 case "$sec" in
 	devices)  emit_devices ;;
 	checks)   emit_checks ;;
+	# Only what holds no secrets is read here: the list (names, schedules, statuses) and the schedule preview. A script's body,
+	# the raw crontab and a file's text can carry passwords — those are POST verbs under CSRF in cgi-bin/action, like get_config_raw.
+	tasks)    tasks_relay list-json ;;
+	tasks_explain)
+	          tsc=$(b64url_dec "$(qv s)")
+	          if [ -n "$tsc" ] && [ "$(printf '%s' "$tsc" | wc -l | tr -d ' ')" = 0 ]; then tasks_relay explain "$tsc"
+	          else printf '{"ok":false,"msg":"нет расписания"}\n'; fi ;;
 	# «Что запрашивает устройство»: наблюдаем ли + домены (query-log) + активные соединения
 	# (conntrack) для ?ip=<клиент>. Весь срез строит devwatch.sh view (он же валидирует ip).
 	# &ifc=<интерфейс станции Wi-Fi> — панель знает его из wifi-stats и по нему рисует режим сети; без него

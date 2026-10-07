@@ -94,6 +94,7 @@ SETTINGS="$SETTINGS .doh-custom-url .doh-custom-sni .doh-custom-ips .doh-custom-
 SETTINGS="$SETTINGS .dns-hosts .ipv6-block .tun-mtu .go-memlimit"                    # DNS-hosts, IPv6-блок, MTU, потолок ОЗУ демона
 SETTINGS="$SETTINGS iplist.conf iplist.custom lists"                                 # списки и их источники
 SETTINGS="$SETTINGS .gh-ref .gh-bin-tag .update-interval .subs-interval"  # обновления
+SETTINGS="$SETTINGS tasks"                                                           # «Задачи»: registry, scripts, variables (cron lines are derived)
 SETTINGS="$SETTINGS .prefs .panel-layout"                                            # язык, тема, порядок карточек
 SETTINGS="$SETTINGS .traffic-daily"                                                  # история трафика (посуточно)
 # --- ЧТО НЕ ВХОДИТ И ПОЧЕМУ ------------------------------------------------------------------
@@ -437,6 +438,8 @@ fi
 #     истина для cron наступает только после `update-sched.sh apply`. Без него человек видел в
 #     панели свой интервал, а роутер продолжал жить по установочному расписанию.
 [ -f ./update-sched.sh ] && sh ./update-sched.sh apply >/dev/null 2>&1
+#     The same for the user's tasks: the registry came in the archive, their cron lines are derived from it (tasks.sh apply).
+[ -f ./tasks.sh ] && [ -d "$ENODIA_STATE/tasks" ] && sh "$ENODIA_DIR/tasks.sh" apply >/dev/null 2>&1
 # 5c. Пулы менеджера источников — ОФЛАЙН-подъём из снимков, приехавших в архиве (каталог `lists`
 #     входит в whitelist). Иначе после импорта источники в панели есть, а сами пулы пусты до
 #     ближайшего планового обновления — у zapret-cidr/zapret-dom это неделя. Сеть здесь НЕ нужна:

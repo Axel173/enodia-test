@@ -1075,6 +1075,13 @@
      ширину карточки, моноширинным: в нём домены и адреса, их сверяют посимвольно. */
   .f input,.f select,.inrow input{max-width:560px}
   .f textarea{min-height:78px;font-family:var(--font-mono);font-size:12.5px;resize:vertical}
+  /* «Задачи» (07.10.2026, by the mockup): the five cron fields stay in ONE row on a phone too — a cron line reads only as a
+     whole. The code editor has no soft wrap: a wrapped shell line reads as two. Settings side by side in a full-width strip —
+     `.fauto` (one column on a phone, two to three on a desk). */
+  .cron5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;align-items:end}
+  .cron5 .f input{padding:8px 4px;text-align:center}
+  .f textarea.code{min-height:190px;line-height:1.55;white-space:pre;overflow:auto;tab-size:2}
+  .fauto{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 24px;align-items:start}
   .f input:focus,.f select:focus,.f textarea:focus,.inrow input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
   .inrow{display:flex;gap:8px;align-items:center;min-width:0}
   .inrow input{flex:1;min-width:0;width:auto}
@@ -1376,6 +1383,9 @@
      в оперативной памяти (оранжевый = «это стоит памяти», у каждой скачанной категории). */
   .badge.inh{background:var(--info-soft);color:var(--info);text-transform:none;letter-spacing:0;font-weight:500;font-size:11px}
   .badge.ram{background:var(--warn-soft);color:var(--warn);text-transform:none;letter-spacing:0}
+  /* Status by a name (task rows of «Задачи»): a failure and «running» — words, not capitals, like `.inh` */
+  .badge.bd{background:var(--bad-soft);color:var(--bad);text-transform:none;letter-spacing:0;font-weight:500;font-size:11px}
+  .badge.acc{background:var(--acc-soft);color:var(--acc-deep);text-transform:none;letter-spacing:0;font-weight:500;font-size:11px}
   .lrow .rp-ck{width:16px;height:16px;margin:0;flex:none;cursor:pointer}
   .lrow .rp-mac{font-size:11px;font-weight:400;color:var(--ink3)}
   /* На узкой карточке MAC в строке не показываем (макет его не рисует вовсе): он уводил строку в четыре линии, а сверить его можно

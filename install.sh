@@ -1117,6 +1117,12 @@ if [ -f "$ENODIA_DIR/iplist-update.sh" ]; then
         ok "Cron-задача iplist-update зарегистрирована (5:00 ежедневно, со сводкой на почту)"
     fi
 fi
+# The user's tasks («Задачи» in the panel): their registry lives in $ENODIA_STATE and survives the update, but their cron lines
+# are DERIVED — an install that rewrote the crontab (or a firmware that reset it) must get them back from the registry, the
+# same way the update schedule above comes back from its marker. No registry ⇒ `apply` writes nothing.
+if [ -f "$ENODIA_DIR/tasks.sh" ] && [ -d "$ENODIA_STATE/tasks" ]; then
+    if sh "$ENODIA_DIR/tasks.sh" apply >/dev/null 2>&1; then ok "Расписание задач восстановлено из настроек"; fi
+fi
 
 # watchdog.sh — сторож VPN: каждые 2 минуты проверяет живость VPS, при
 # падении переводит трафик в прямой режим (safety-off) и шлёт письмо. Добавлен

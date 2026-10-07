@@ -745,6 +745,12 @@
     // Чип двери «Режим поддержки» (шаг 6a) — то же поле, что пилюля шапки: доступ открыт — видно и из раздела.
     var supC=document.getElementById('card-support-chip');
     if(supC){ var sOn=(d.support_active===1||d.support_active==='1'); supC.textContent=sOn ? 'включён' : ''; supC.className='chip'+(sOn ? ' acc' : ''); supC.style.display=sOn ? '' : 'none'; }
+    // Чип двери «Задачи» — тем же опросом: сколько задач, а упавшие последним запуском — красным словом (ночная задача, которая
+    // не удалась, видна из раздела, не открывая экран). Старый CGI поля не знает — чипа нет.
+    var tkC=document.getElementById('card-tasks-chip');
+    if(tkC){ var tkN=(d.tasks_n|0), tkB=(d.tasks_bad|0);
+      tkC.textContent=tkB ? tkL('не удалось: '+tkB, 'failed: '+tkB) : (tkN ? String(tkN) : '');
+      tkC.className='chip'+(tkB ? ' bd' : ''); tkC.style.display=(tkN||tkB) ? '' : 'none'; }
     // Индикатор «выход не работает»: включённый доп-выход, чья несущая не поднялась, до этого
     // выглядел зелёным ВЕЗДЕ (реестр говорит on) — а его сайты втихую ехали основным туннелем
     // либо, при fallback=direct, вообще напрямую мимо VPN. Счётчик считает cgi-bin/status по
@@ -2092,6 +2098,7 @@
     if(a.indexOf('exit:')===0){ exitScrOpen(a.slice(5)); return; }
     if(a.indexOf('peer:')===0){ vsPeerOpen(a.slice(5)); return; }
     if(a.indexOf('grp:')===0){ grpScrOpen(a.slice(4)); return; }
+    if(a.indexOf('task:')===0){ taskScrOpen(a.slice(5)); return; }   // «Задачи»: строка задачи — в её экран
     // Категория хаба «Источники списков» — по своему адресу (строки «Категорий» и дверь пула с экрана Zapret).
     if(a.indexOf('src:')===0){ openSources(a.slice(4)); return; }
     // Строка события — к СВОЕМУ событию экрана «События»: раскрыто и в фокусе (разбор у evRowHtml).
@@ -2126,6 +2133,8 @@
       case 'mode':    openMode();    break;
       case 'events':  openEvents();  break;
       case 'notify':  openNotify();  break;   // «События» ↔ «Уведомления»: история и письма о ней
+      case 'tasks':   openTasks();   break;
+      case 'tasknew': openTaskNew(); break;
       case 'ram':     openRam();  break;
       case 'disk':    openDisk(); break;
       case 'disk:clean': openAt(openDisk, 'dk-clean'); break;   // к чистке: логи в /tmp — это память (экран «Память и процессы»)
@@ -4540,6 +4549,670 @@
     setTimeout(function(){ if(screenAlive(inp)) inp.focus(); }, 50);
   }
 
+  /* ---- «ЗАДАЧИ» — cron manager (`rr-tasks`, `rr-task/<id>`, `rr-task-new`; чужая строка — шаг без адреса; 07.10.2026) ----
+     By the mockup (rr-tasks · rr-task · rr-task-new · rr-cron-line). EVERYTHING IS THE ROUTER'S (tasks.sh): the list, whether a
+     schedule is valid, the next runs (in ITS calendar and time zone), the syntax check, which languages exist. The panel owns
+     words and layout only: the phrase of a schedule is a reading of the five fields the human typed (cronSay), and «today /
+     tomorrow» is a reading of two router strings (tkWhen) — no clock of the browser is involved.
+     Enodia lines are a DOOR to their owner (owners rewrite them); foreign lines are edited BY CONTENT — the line itself (base64)
+     is the key, so a file changed meanwhile is refused by the router instead of editing a different line.
+     Composed phrases (schedule, times, statuses) are built in the panel's language right here (`tkL`): a sentence glued from
+     numbers cannot be a dictionary key. Fixed labels are Russian with their I18N_EN entries, like the rest of the panel. */
+  function tkL(ru, en){ return LANG==='en' ? en : ru; }
+  // Enodia's own lines: name, what it does, the door (cardGo action) where its schedule IS changed.
+  var TK_OURS={'heal.sh':['Самовосстановление','после перезагрузки поднимает всё обратно, дальше молчит'],
+    'watchdog.sh':['Сторож','следит за туннелем и уводит на резерв'], 'traffic-acct.sh':['Учёт трафика',''],
+    'web-ui.sh':['Панель','поднимает панель, если она упала'],
+    'iplist-update.sh':['Обновление списков','меняется в «Источниках списков»','sources'],
+    'subs-update.sh':['Обновление подписок','меняется в «Подписках»','subs']};
+  // Foreign lines the panel recognises: their badge and the warning that also goes into the delete question.
+  var TK_KNOWN=[{re:/\/etc\/crontabs\/patches\/ssh_patch\.sh/, badge:'держит SSH', ds:'без неё SSH закроется после перезагрузки'}];
+  function tkKnown(line){ for(var i=0;i<TK_KNOWN.length;i++) if(TK_KNOWN[i].re.test(line)) return TK_KNOWN[i]; return null; }
+  var _tkTab=0, _tkFor=[], _tkRaw=null, _tkPoll=0;
+  function tkPl(n, one, few, many){ var a=Math.abs(n)%100, b=a%10; if(a>10&&a<20) return many; if(b>1&&b<5) return few; return b===1 ? one : many; }
+  var TK_DN={sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
+  var TK_DOW_RU=['воскресеньям','понедельникам','вторникам','средам','четвергам','пятницам','субботам'],
+      TK_DOW_RS=['вс','пн','вт','ср','чт','пт','сб'], TK_DOW_EN=['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'],
+      TK_DOW_ES=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  function tkInt(x){ return /^\d{1,2}$/.test(x) ? +x : null; }
+  function tkDows(f){   // '1-5' · '0,6' · 'mon' → ascending days, or null for anything else
+    var out=[], ok=true;
+    String(f).split(',').forEach(function(it){
+      var m=/^([a-z0-9]+)(?:-([a-z0-9]+))?$/i.exec(it); if(!m){ ok=false; return; }
+      function n(x){ x=x.toLowerCase(); return TK_DN.hasOwnProperty(x) ? TK_DN[x] : (/^\d$/.test(x) ? +x : null); }
+      var a=n(m[1]), b=(m[2]!=null) ? n(m[2]) : a;
+      if(a==null || b==null || a>b || b>6){ ok=false; return; }
+      for(var i=a;i<=b;i++) if(out.indexOf(i)<0) out.push(i);
+    });
+    return ok ? out.sort(function(x,y){ return x-y; }) : null;
+  }
+  function tkHm(h, m){ return h+':'+(m<10?'0':'')+m; }
+  function tkList(a){ return a.length<2 ? a.join('') : a.slice(0,-1).join(', ')+tkL(' и ',' and ')+a[a.length-1]; }
+  // The phrase of a schedule — or '' when it is not one of the common shapes (the expression is then shown as is).
+  function cronSay(expr){
+    var f=String(expr||'').trim().split(/\s+/);
+    if(f.length!==5 || f[3]!=='*') return '';
+    var M=f[0], H=f[1], D=f[2], W=f[4], mi=tkInt(M), hi=tkInt(H), di=tkInt(D), pm, sm, sh, t;
+    if(D==='*' && W==='*'){
+      if(M==='*' && H==='*') return tkL('каждую минуту','every minute');
+      sm=/^\*\/(\d+)$/.exec(M);
+      if(sm && H==='*'){ var n=+sm[1]; return n===1 ? tkL('каждую минуту','every minute') : tkL('каждые '+n+' '+tkPl(n,'минуту','минуты','минут'), 'every '+n+' minutes'); }
+      if(mi!=null) pm=(mi<10?'0':'')+mi;
+      if(mi!=null && H==='*') return tkL('каждый час в :'+pm, 'every hour at :'+pm);
+      sh=/^\*\/(\d+)$/.exec(H);
+      if(mi!=null && sh){ var k=+sh[1]; return k===1 ? tkL('каждый час в :'+pm, 'every hour at :'+pm)
+        : tkL('каждые '+k+' '+tkPl(k,'час','часа','часов')+', в :'+pm, 'every '+k+' hours at :'+pm); }
+      if(mi!=null && /^\d{1,2}(,\d{1,2})*$/.test(H)) return tkL('ежедневно в ','daily at ')+tkList(H.split(',').map(function(h){ return tkHm(+h, mi); }));
+      return '';
+    }
+    if(mi==null || hi==null) return '';
+    t=tkHm(hi, mi);
+    if(D==='*'){
+      var wl=tkDows(W); if(!wl) return '';
+      if(wl.join()==='1,2,3,4,5') return tkL('по будням в '+t, 'on weekdays at '+t);
+      if(wl.join()==='0,6') return tkL('по выходным в '+t, 'on weekends at '+t);
+      if(wl.length===1) return tkL('по '+TK_DOW_RU[wl[0]]+' в '+t, 'on '+TK_DOW_EN[wl[0]]+' at '+t);
+      return tkL('по дням '+wl.map(function(d){ return TK_DOW_RS[d]; }).join(', ')+' в '+t, 'on '+wl.map(function(d){ return TK_DOW_ES[d]; }).join(', ')+' at '+t);
+    }
+    if(W==='*' && di!=null) return tkL('ежемесячно, '+di+'-го, в '+t, 'monthly on day '+di+' at '+t);
+    return '';
+  }
+  // 'YYYY-MM-DD HH:MM[:SS]' of the router against the router's «now» → «сегодня 15:00» / «завтра 4:30» / «12.10 4:00»
+  function tkWhen(ts, now){
+    var a=/^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(ts||''), b=/^(\d{4})-(\d\d)-(\d\d)/.exec(now||'');
+    if(!a) return String(ts||'');
+    var t=(+a[4])+':'+a[5];
+    if(b){
+      var d=Math.round((Date.UTC(+a[1],+a[2]-1,+a[3])-Date.UTC(+b[1],+b[2]-1,+b[3]))/864e5);
+      if(d===0) return tkL('сегодня ','today ')+t;
+      if(d===1) return tkL('завтра ','tomorrow ')+t;
+      if(d===-1) return tkL('вчера ','yesterday ')+t;
+    }
+    return a[3]+'.'+a[2]+((b && a[1]!==b[1]) ? '.'+a[1] : '')+' '+t;
+  }
+  function tkSec(n){ n=n|0; return n<60 ? tkL(n+' с', n+' s') : tkL(Math.round(n/60)+' мин', Math.round(n/60)+' min'); }
+  var TK_TRIG={sched:['по расписанию','on schedule'], boot:['при загрузке','at boot'], manual:['вручную','manually']};
+  function tkTrig(t){ var w=TK_TRIG[t]||TK_TRIG.manual; return tkL(w[0], w[1]); }
+  // the end of a run in words: [badge-class|'', words]; ok has no badge — the dot says it
+  function tkEnd(r){
+    switch(r.flag){
+      case 'ok':         return ['', tkL('успешно','succeeded')];
+      case 'killed':     return ['bd', tkL('оборвана по времени','stopped by the time limit')];
+      case 'cut':        return ['bd', tkL('оборвана: вывод больше 512 КБ','cut: output over 512 KB')];
+      case 'nodir':      return ['bd', tkL('нет рабочего каталога','no working directory')];
+      case 'stopped':    return ['', tkL('остановлена вручную','stopped by hand')];
+      case 'skip-busy':  return ['', tkL('пропущен: прошлый запуск ещё шёл','skipped: the previous run was still going')];
+      case 'skip-clock': return ['', tkL('пропущен: часы роутера не сверены','skipped: the router clock was not synced yet')];
+      default:           return ['bd', tkL('ошибка · код '+r.code, 'error · code '+r.code)];
+    }
+  }
+  function tkWhenText(t){   // «при загрузке и каждые 3 часа» / «только вручную»
+    var s=t.sched ? (cronSay(t.sched) || t.sched) : '';
+    if(t.boot && s) return tkL('при загрузке и ','at boot and ')+s;
+    if(t.boot) return tkL('при загрузке','at boot');
+    return s || tkL('только вручную','manually only');
+  }
+  function tkParse(line){   // a crontab line → {off, f:[5], cmd} or null
+    var l=String(line||''), off=false;
+    if(/^\s*#/.test(l)){ off=true; l=l.replace(/^\s*#\s*/, ''); }
+    var m=/^\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/.exec(l);
+    return m ? {off:off, f:[m[1],m[2],m[3],m[4],m[5]], cmd:m[6]} : null;
+  }
+  function tkLabel(cmd){   // «led_ctl led_on ethled» out of «/usr/sbin/led_ctl led_on ethled> /dev/null 2>&1»
+    var c=String(cmd||'').replace(/^.*&&\s*/, ''), w=c.split(/\s+/), out=[];
+    if(!w.length || !w[0]) return c.slice(0, 40);
+    out.push(w[0].replace(/^.*\//, '').replace(/[>|<`].*$/, ''));
+    for(var i=1;i<w.length && out.length<3;i++){
+      var x=w[i];
+      if(/^-/.test(x)) continue;
+      if(/^[\/>|<`$&]/.test(x) || /^\d*>/.test(x)) break;
+      x=x.replace(/[>|<`].*$/, '');
+      if(!/^[A-Za-z0-9_.-]+$/.test(x)) break;
+      out.push(x);
+      if(w[i].indexOf('>')>=0) break;
+    }
+    return out.join(' ') || c.slice(0, 40);
+  }
+
+  // ---- the list ----
+  function openTasks(){
+    var fsig=focusMark();
+    openModal(null, {route:'rr-tasks', deck:true});
+    var body=document.getElementById('modal-body'), rep=navIfShown('rr-tasks', openTasks); loading(body);
+    fetchJson('/cgi-bin/data?section=tasks').then(function(d){
+      if(!screenAlive(body)) return;
+      if(!d || d.ok!==true || !Array.isArray(d.tasks)){ body.innerHTML=pnErrHtml('tk-list', 'Задачи', (d && d.msg) ? trNow(String(d.msg)) : pnErrText(null)); return; }
+      _tkFor=Array.isArray(d.foreign) ? d.foreign : [];
+      body.innerHTML=tkListHtml(d);
+      nwFocusBack(body, fsig);
+      tkListWire(body, d, rep);
+    }, function(e){ if(screenAlive(body)) body.innerHTML=pnErrHtml('tk-list', 'Задачи', pnErrText(e)); });
+  }
+  function tkTaskRow(t, now){
+    var on=!!t.enabled, run=t.running, last=t.last, badge='', ds=[tkWhenText(t)], dot=on ? 'ok' : 'off';
+    if(run){ badge=' <span class="badge acc">'+esc(tkL('идёт','running'))+'</span>'; }
+    else if(last){
+      var e=tkEnd(last);
+      if(e[0]){ badge=' <span class="badge '+e[0]+'">'+esc(e[1])+'</span>'; if(on) dot='bad'; }
+      else ds.push(tkL('последний ','last ')+tkWhen(last.ts, now)+' — '+e[1]);
+    }
+    if(!on) ds.push(tkL('выключена — строки в cron нет','disabled — no cron line'));
+    else if(t.next && t.next[0]) ds.push(tkL('следующий ','next ')+tkWhen(t.next[0], now));
+    if(t.lang==='lua') ds.push('Lua');
+    return lrowGo('task:'+t.id, '')+'<span class="dot'+(dot==='ok'?'':' '+dot)+'"></span>'
+      + '<div class="grow"><div class="nm"><span translate="no">'+esc(t.name)+'</span>'+badge+'</div><div class="ds" translate="no">'+esc(ds.join(' · '))+'</div></div>'
+      + '<label class="sw tk-sw"><input type="checkbox" data-tkid="'+esc(t.id)+'" aria-label="'+esc(tkL('задача включена','task enabled'))+'"'+(on?' checked':'')+'><i></i></label>'+CHEV+'</div>';
+  }
+  function tkListHtml(d){
+    var h='<div class="vwrap">'
+      + noteBox('<b>Задачи выполняются с правами root и без проверок:</b> ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.', 'bad')
+      + '<div class="row wfull" style="gap:9px;flex-wrap:wrap;justify-content:flex-start"><div class="tabs2" id="tk-tabs" role="group" aria-label="Вид">'
+      + dvSeg('data-tkt', '0', 'Задачи', String(_tkTab)) + dvSeg('data-tkt', '1', 'Файл crontab', String(_tkTab)) + '</div></div>';
+    if(_tkTab===1) return h + tkRawHtml() + '</div>';
+    var ts=d.tasks;
+    h+='<div class="card w2" id="tk-mine"><div class="wt"><span>Ваши задачи</span><span class="sp"></span><span class="chip">'+ts.length+'</span></div>'
+      + (ts.length ? ts.map(function(t){ return tkTaskRow(t, d.now); }).join('')
+                   : '<div class="cline">Задач пока нет. Задача — свой скрипт, файл на роутере или команда; запускается по расписанию, при загрузке или кнопкой.</div>')
+      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" data-cact="tasknew">'+icUse('i-plus','s')+'Создать задачу</button></div></div>';
+    var ours=Array.isArray(d.ours) ? d.ours : [];
+    h+='<div class="card" id="tk-ours"><div class="wt"><span>Enodia</span><span class="help-slot" data-tip="Эти строки подсистемы переписывают сами — при установке, обновлении и включении VPN: правка здесь продержалась бы до первого такого события. Менять можно то расписание, у которого есть дорога; в текстовой вкладке «Файл crontab» правятся и они."></span><span class="sp"></span><span class="chip">'+ours.length+'</span></div>'
+      + ours.map(function(o){
+          var sc=String(o.cmd||'').split(/\s+/)[0], w=TK_OURS[sc], say=cronSay(o.sched) || o.sched,
+              ds=say+(w && w[1] ? ' · '+trNow(w[1]) : '')+((!w || !w[2]) ? ' · '+sc : '');
+          return (w && w[2] ? lrowGo(w[2], '') : '<div class="lrow">')
+            + '<div class="grow"><div class="nm">'+esc(w ? w[0] : sc)+'</div><div class="ds" translate="no">'+esc(ds)+'</div></div>'+(w && w[2] ? CHEV : '')+'</div>';
+        }).join('')
+      + (ours.length ? '' : '<div class="cline">Строк Enodia в crontab нет — переустановите систему или нажмите «Починить правила».</div>')+'</div>';
+    var fl=_tkFor, cut=Math.ceil(fl.length/3)||1, cols=[fl.slice(0,cut), fl.slice(cut,2*cut), fl.slice(2*cut)];
+    h+='<div class="card wfull" id="tk-for"><div class="wt"><span>Чужие строки</span><span class="help-slot" data-tip="Прошивка Xiaomi и всё, что добавлено не через панель. Вывод и ошибки этих строк cron выбрасывает; «Взять под управление» на экране строки сделает из неё задачу — с историей запусков и письмом при ошибке. Часть строк прошивки она может вернуть при своём обновлении."></span><span class="sp"></span><span class="chip">'+fl.length+'</span></div>'
+      + (fl.length ? '<div class="fauto">'+cols.map(function(c, ci){
+          return '<div>'+c.map(function(x, i){ return tkForRow(x, ci*cut+i); }).join('')+'</div>';
+        }).join('')+'</div>' : '<div class="cline">Чужих строк нет.</div>')+'</div>';
+    return h+'</div>';
+  }
+  function tkForRow(x, idx){
+    var line=b64toUtf8(x.line), p=tkParse(line), kn=tkKnown(line), badge='', nm, ds;
+    if(x.bad || !p){ nm=tkL('непонятная строка','unreadable line'); ds=line; badge=' <span class="badge bd">'+esc(tkL('cron её пропускает','cron skips it'))+'</span>'; }
+    else {
+      nm=tkLabel(p.cmd); ds=(cronSay(p.f.join(' ')) || p.f.join(' '))+(kn ? ' · '+trNow(kn.ds) : '');
+      if(kn) badge=' <span class="badge">'+esc(trNow(kn.badge))+'</span>';
+      if(!x.on) badge+=' <span class="badge">'+esc(tkL('выключена','disabled'))+'</span>';
+    }
+    return '<div class="lrow cl lr-fit" role="button" tabindex="0" data-tkl="'+idx+'">'
+      + '<div class="grow"><div class="nm"><span translate="no">'+esc(nm)+'</span>'+badge+'</div>'
+      + '<div class="ds" translate="no">'+esc(ds)+(p && !x.bad ? ' · <span class="mono">'+esc(line)+'</span>' : '')+'</div></div>'+CHEV+'</div>';
+  }
+  function tkRawHtml(){
+    return '<div class="card wfull" id="tk-raw"><div class="wt"><span translate="no">/etc/crontabs/root</span></div>'
+      + noteBox('Весь файл как есть — правьте что угодно. Строки Enodia подсистемы перепишут при установке, обновлении и включении VPN, а строки ваших задач панель выводит из их настроек: поправленные здесь, они вернутся при следующем сохранении задачи — меняйте их на вкладке «Задачи».', 'warn')
+      + '<div class="f"><textarea id="tk-rawtx" class="code" wrap="off" spellcheck="false" translate="no" style="min-height:420px" aria-label="crontab">'+(_tkRaw==null ? '' : esc(_tkRaw))+'</textarea></div>'
+      + '<div class="cline wr" id="tk-rawerr" role="alert"></div>'
+      + '<div class="cline">Перед записью роутер проверяет каждую строку: пять полей расписания и команда. Ошибка хотя бы в одной — файл не записывается, а номер строки и причина появляются здесь. Сохранение действует сразу, перезапускать ничего не нужно.</div>'
+      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" id="tk-rawsave">Сохранить файл</button>'
+      + '<button type="button" class="btn gh" id="tk-rawre">Вернуть как было</button><button type="button" class="btn sm gh" id="tk-rawcp">Копировать</button></div></div>';
+  }
+  function tkPost(action, params){   // a verb whose answer the screen reads itself (not a toast-and-reload postAction)
+    return tokPost('/cgi-bin/action', function(tok){
+      var b='action='+encodeURIComponent(action)+'&token='+encodeURIComponent(tok);
+      for(var k in params) if(params.hasOwnProperty(k)) b+='&'+encodeURIComponent(k)+'='+encodeURIComponent(params[k]);
+      return b;
+    });
+  }
+  function tkListWire(body, d, rep){
+    wireCacts(body);
+    wireSeg('tk-tabs', 'data-tkt', function(v){ _tkTab=+v; body.innerHTML=tkListHtml(d); tkListWire(body, d, rep); });
+    Array.prototype.forEach.call(body.querySelectorAll('.tk-sw'), function(l){
+      l.addEventListener('click', function(e){ e.stopPropagation(); });   // the switch must not open the task
+      var inp=l.querySelector('input');
+      inp.addEventListener('change', function(){
+        swPost(inp, 'task_toggle', null, inp.checked ? 'включаю задачу…' : 'выключаю задачу…', {id:inp.getAttribute('data-tkid'), on:inp.checked ? 1 : 0}, rep);
+      });
+    });
+    function openFor(el){ var x=_tkFor[+el.getAttribute('data-tkl')]; if(x) openCronLine(x); }
+    Array.prototype.forEach.call(body.querySelectorAll('[data-tkl]'), function(el){
+      el.addEventListener('click', function(){ openFor(el); });
+      el.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); openFor(el); } });
+    });
+    if(_tkTab===1) tkRawWire(body, d, rep);
+    // a task is running — the list follows it (only while THIS screen is shown)
+    var g=++_tkPoll;
+    if(d.tasks.some(function(t){ return !!t.running; })) setTimeout(function(){ if(g===_tkPoll && screenAlive(body) && navShows('rr-tasks')) rep(); }, 3000);
+  }
+  function tkRawWire(body, d, rep){
+    var tx=document.getElementById('tk-rawtx'), er=document.getElementById('tk-rawerr');
+    function rawLoad(){
+      tx.value=''; tx.placeholder=trNow('читаю crontab…');
+      tkPost('cron_raw_get', {}).then(function(r){
+        if(!screenAlive(tx)) return;
+        if(!r || r.ok!==true){ er.textContent=trNow((r && r.msg) || 'роутер ответил не то'); return; }
+        _tkRaw=b64toUtf8(r.text||''); tx.value=_tkRaw; tx.placeholder='';
+      }, function(){ if(screenAlive(tx)) er.textContent=trNow('роутер не ответил — откройте вкладку ещё раз'); });
+    }
+    if(_tkRaw==null) rawLoad();
+    document.getElementById('tk-rawre').addEventListener('click', function(){ _tkRaw=null; er.textContent=''; rawLoad(); });
+    document.getElementById('tk-rawcp').addEventListener('click', function(){ copyToClip(tx.value, 'crontab скопирован'); });
+    document.getElementById('tk-rawsave').addEventListener('click', function(){
+      er.textContent='';
+      postAction('cron_raw_save', null, 'сохраняю crontab…', {text:b64utf8(tx.value)}, function(r){
+        if(r && r.ok){ _tkRaw=null; rep(); }
+        else if(r && r.msg && screenAlive(er)){ er.textContent=trNow(r.msg); }
+      });
+    });
+  }
+
+  // ---- a task: resolver, form, runs ----
+  function taskScrOpen(id){
+    var rep=(id==null);
+    if(rep) id=navSplit(_navKey).a;
+    id=String(id==null?'':id);
+    if(!/^t[0-9]{1,6}$/.test(id)){ if(!rep) openTasks(); return; }
+    var g=++_navGen;
+    _navPend=true;
+    function back(msg){
+      if(rep){ showToast(msg || 'не удалось обновить экран задачи', false); return; }
+      showToast(msg || 'роутер не ответил — открываю список задач', false); if(navSplit(location.hash).r==='rr-task') navReplace('rr-tasks'); openTasks();
+    }
+    tkPost('task_get', {id:id}).then(function(d){
+      if(g!==_navGen) return;   // the human left while the router answered — their choice wins
+      _navPend=false;
+      if(rep && !navShows('rr-task')) return;
+      if(!d || d.ok!==true || !d.task){ back(d && d.msg ? String(d.msg) : null); return; }
+      openTask(d);
+    }, function(){ if(g!==_navGen) return; _navPend=false; back(); });
+  }
+  function openTaskNew(){
+    openModal(null, {route:'rr-task-new', deck:true});
+    var body=document.getElementById('modal-body'); loading(body);
+    // languages are the router's: the list endpoint answers them without a task
+    fetchJson('/cgi-bin/data?section=tasks').then(function(d){
+      if(!screenAlive(body)) return;
+      tkFormShow(body, {langs:(d && d.langs) || ['sh'], now:(d && d.now) || '', task:null});
+    }, function(){ if(screenAlive(body)) tkFormShow(body, {langs:['sh'], now:'', task:null}); });
+  }
+  function openTask(d){
+    var t=d.task;
+    openModal(String(t.name||t.id), {route:'rr-task', arg:String(t.id), deck:true, sens:true});
+    tkFormShow(document.getElementById('modal-body'), d);
+  }
+  var TK_EX=[
+    {ru:'Пустой скрипт', lang:'sh', code:{ru:'#!/bin/sh\n# Что делает задача — одной строкой.\necho "задача запущена: $(date +%H:%M)"\n', en:'#!/bin/sh\n# What the task does — in one line.\necho "task started: $(date +%H:%M)"\n'}},
+    {ru:'sh · Остановить облачные сервисы Xiaomi', lang:'sh', code:{
+      ru:'#!/bin/sh\n# Останавливает облачные сервисы Xiaomi: загрузка роутера падает.\n# Mi Home и mesh перестанут видеть роутер — VPN и интернет это не трогает.\nfor s in mosquitto miwifi-roam smartcontroller xq_info_sync_mqtt cab_meshd miio_client; do\n  if [ -x /etc/init.d/$s ]; then\n    /etc/init.d/$s stop && echo "остановлен: $s"\n  fi\ndone\n',
+      en:'#!/bin/sh\n# Stops Xiaomi cloud services: the router load drops.\n# Mi Home and mesh stop seeing the router — VPN and internet are not affected.\nfor s in mosquitto miwifi-roam smartcontroller xq_info_sync_mqtt cab_meshd miio_client; do\n  if [ -x /etc/init.d/$s ]; then\n    /etc/init.d/$s stop && echo "stopped: $s"\n  fi\ndone\n'}},
+    {ru:'sh · Перезапустить Wi-Fi', lang:'sh', code:{ru:'#!/bin/sh\n# Перезапускает Wi-Fi: клиенты переподключатся за полминуты.\nwifi down\nsleep 5\nwifi up\n', en:'#!/bin/sh\n# Restarts Wi-Fi: clients reconnect within half a minute.\nwifi down\nsleep 5\nwifi up\n'}},
+    {ru:'sh · Перезагрузить роутер', lang:'sh', code:{ru:'#!/bin/sh\n# Плановая перезагрузка роутера.\nlogger -t enodia-task "плановая перезагрузка"\nsleep 5\nreboot\n', en:'#!/bin/sh\n# Planned router reboot.\nlogger -t enodia-task "planned reboot"\nsleep 5\nreboot\n'}},
+    {ru:'Lua · Записать строку в системный журнал', lang:'lua', code:{ru:'-- Lua 5.1: пишет строку в системный журнал (logread)\nos.execute([[logger -t enodia-task "задача отработала"]])\nprint(os.date("%H:%M:%S") .. " готово")\n', en:'-- Lua 5.1: writes a line to the system log (logread)\nos.execute([[logger -t enodia-task "task done"]])\nprint(os.date("%H:%M:%S") .. " done")\n'}}
+  ];
+  // CRON BUILDER — ONE for the task and the foreign line (mockup `CronB`): a preset writes the five fields, editing a field
+  // makes it «own expression»; the verdict and the next runs are asked from the router (debounced), the phrase is read here.
+  var TK_MODES=[['min','Каждые N минут'],['hour','Каждые N часов'],['day','Ежедневно'],['week','По дням недели'],['month','Ежемесячно'],['own','Своё выражение']];
+  function tkModeOf(f){
+    var M=f[0], H=f[1], D=f[2], Mo=f[3], W=f[4], mi=tkInt(M), hi=tkInt(H);
+    if(Mo!=='*') return {m:'own'};
+    if(/^\*\/\d+$/.test(M) && H==='*' && D==='*' && W==='*') return {m:'min', n:M.slice(2)};
+    if(mi!=null && /^\*\/\d+$/.test(H) && D==='*' && W==='*') return {m:'hour', n:H.slice(2), mm:mi};
+    if(mi!=null && hi!=null && D==='*' && W==='*') return {m:'day', h:hi, mm:mi};
+    if(mi!=null && hi!=null && D==='*' && tkDows(W)) return {m:'week', h:hi, mm:mi, w:tkDows(W)};
+    if(mi!=null && hi!=null && tkInt(D)!=null && W==='*') return {m:'month', h:hi, mm:mi, d:+D};
+    return {m:'own'};
+  }
+  function tkTime(h, m){ return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
+  function cronBHtml(p, sched){
+    var f=(sched||'0 */3 * * *').trim().split(/\s+/); if(f.length!==5) f=['0','*/3','*','*','*'];
+    var st=tkModeOf(f);
+    var h='<div class="segbar sm" id="'+p+'-mode" role="group" aria-label="Расписание">'
+      + TK_MODES.map(function(x){ return dvSeg('data-'+p+'m', x[0], x[1], st.m); }).join('')+'</div>'
+      + '<div class="f2" style="align-items:end"><div id="'+p+'-sub">'+cronSubHtml(p, st)+'</div><div class="cron5">'
+      + [['минута',0],['час',1],['день месяца',2],['месяц',3],['день недели',4]].map(function(x){
+          return '<div class="f"><label for="'+p+'-f'+x[1]+'">'+x[0]+'</label><input id="'+p+'-f'+x[1]+'" class="mono" value="'+esc(f[x[1]])+'" spellcheck="false" autocapitalize="off" autocomplete="off"></div>';
+        }).join('')+'</div></div>'
+      + '<div class="cline" id="'+p+'-say" role="status" translate="no"></div>';
+    return h;
+  }
+  function cronSubHtml(p, st){
+    function fld(id, l, v, ty){ return '<div class="f"><label for="'+p+'-'+id+'">'+l+'</label><input id="'+p+'-'+id+'"'+(ty?' type="'+ty+'"':' inputmode="numeric"')+' value="'+esc(v)+'" autocomplete="off"></div>'; }
+    var t=tkTime(st.h==null?4:st.h, st.mm==null?0:st.mm);
+    switch(st.m){
+      case 'min':   return fld('n', 'Каждые, минут', st.n||'15');
+      case 'hour':  return '<div class="f2">'+fld('n', 'Каждые, часов', st.n||'3')+fld('mm', 'В минуту', st.mm==null?0:st.mm)+'</div>';
+      case 'day':   return fld('t', 'Время', t, 'time');
+      case 'week':  return '<div class="segbar sm" id="'+p+'-days" role="group" aria-label="Дни недели">'+[1,2,3,4,5,6,0].map(function(d){
+                      return '<div class="seg'+((st.w||[1]).indexOf(d)>=0?' on':'')+'" data-'+p+'d="'+d+'">'+['Вс','Пн','Вт','Ср','Чт','Пт','Сб'][d]+'</div>'; }).join('')+'</div>'+fld('t', 'Время', t, 'time');
+      case 'month': return '<div class="f2">'+fld('d', 'День месяца', st.d||1)+fld('t', 'Время', t, 'time')+'</div>';
+      default:      return '<div class="cline" style="margin-top:0">Пять полей справа — как в crontab: списки через запятую, диапазоны через дефис, шаг — «*/N» или «a-b/N». День недели 0–6, воскресенье — 0.</div>';
+    }
+  }
+  // wire the builder; get() → the five fields as one string. Router verdict lands in `<p>-say`.
+  function cronBWire(p, onChange){
+    var mode=null, tm=null, gen=0;
+    function v(id){ var e=document.getElementById(p+'-'+id); return e ? String(e.value||'').trim() : ''; }
+    function fields(){ return [0,1,2,3,4].map(function(i){ return v('f'+i); }); }
+    function setF(a){ for(var i=0;i<5;i++){ var e=document.getElementById(p+'-f'+i); if(e) e.value=a[i]; } }
+    function fromSub(){
+      var tt=/^(\d{1,2}):(\d{2})$/.exec(v('t')||''), h=tt ? +tt[1] : 4, m=tt ? +tt[2] : 0;
+      switch(mode){
+        case 'min':   setF(['*/'+(v('n')||'15'),'*','*','*','*']); break;
+        case 'hour':  setF([v('mm')||'0','*/'+(v('n')||'3'),'*','*','*']); break;
+        case 'day':   setF([String(m),String(h),'*','*','*']); break;
+        case 'week':  var ds=Array.prototype.map.call(document.querySelectorAll('#'+p+'-days .seg.on'), function(s){ return s.getAttribute('data-'+p+'d'); }).sort();
+                      setF([String(m),String(h),'*','*',ds.length ? ds.join(',') : '1']); break;
+        case 'month': setF([String(m),String(h),v('d')||'1','*','*']); break;
+      }
+    }
+    function ask(){
+      clearTimeout(tm);
+      var expr=fields().join(' '), say=document.getElementById(p+'-say'), g=++gen;
+      if(!say) return;
+      var ph=cronSay(expr);
+      say.textContent=(ph ? ph+' · ' : '')+tkL('проверяю…','checking…');
+      tm=setTimeout(function(){
+        var s=b64utf8(expr).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+        fetchJson('/cgi-bin/data?section=tasks_explain&s='+s).then(function(r){
+          if(g!==gen || !screenAlive(say)) return;
+          if(!r || r.ok!==true){ say.innerHTML='<span class="wr">'+esc(trNow((r && r.msg) || 'роутер ответил не то'))+'</span>'; return; }
+          var nx=(r.next||[]).map(function(x){ return tkWhen(x, r.now); });
+          say.innerHTML=(ph ? '<b>'+esc(ph)+'</b> · ' : '')+esc(nx.length ? tkL('ближайшие запуски: ','next runs: ')+nx.join(', ') : tkL('в ближайшие четыре года не сработает','will not fire within four years'));
+        }, function(){ if(g===gen && screenAlive(say)) say.textContent=(ph ? ph+' · ' : '')+tkL('роутер не ответил — проверка при сохранении','the router did not respond — checked on save'); });
+      }, 350);
+      if(onChange) onChange();
+    }
+    function wireSub(){
+      var sub=document.getElementById(p+'-sub'); if(!sub) return;
+      Array.prototype.forEach.call(sub.querySelectorAll('input'), function(e){ e.addEventListener('input', function(){ fromSub(); ask(); }); });
+      var days=document.getElementById(p+'-days');
+      if(days) days.addEventListener('click', function(e){
+        var s=e.target.closest ? e.target.closest('.seg') : null; if(!s) return;
+        s.classList.toggle('on'); segMark(s, s.classList.contains('on')); fromSub(); ask();
+      });
+      if(days) Array.prototype.forEach.call(days.querySelectorAll('.seg'), function(s){ s.setAttribute('role','button'); s.setAttribute('tabindex','0'); segMark(s, s.classList.contains('on')); });
+    }
+    var bar=document.getElementById(p+'-mode');
+    var cur=bar && bar.querySelector('.seg.on'); mode=cur ? cur.getAttribute('data-'+p+'m') : 'own';
+    wireSeg(bar, 'data-'+p+'m', function(m){
+      mode=m;
+      var f=fields(), st=tkModeOf(f); if(st.m!==m) st={m:m, h:tkInt(f[1]), mm:tkInt(f[0]), n:'', d:tkInt(f[2])};
+      document.getElementById(p+'-sub').innerHTML=cronSubHtml(p, st); wireSub();
+      if(m!=='own') fromSub();
+      ask();
+    });
+    [0,1,2,3,4].forEach(function(i){
+      var e=document.getElementById(p+'-f'+i); if(!e) return;
+      e.addEventListener('input', function(){
+        if(mode!=='own'){ mode='own'; Array.prototype.forEach.call(bar.querySelectorAll('.seg'), function(s){ segMark(s, s.getAttribute('data-'+p+'m')==='own'); });
+          document.getElementById(p+'-sub').innerHTML=cronSubHtml(p, {m:'own'}); }
+        ask();
+      });
+    });
+    wireSub(); ask();
+    return {get:function(){ return fields().join(' '); }};
+  }
+  function tkSegRow(id, label, help, opts, cur){
+    return '<div class="f"><label>'+label+(help ? '<span class="help-slot" data-tip="'+help+'"></span>' : '')+'</label></div>'
+      + '<div class="segbar sm" id="'+id+'" role="group" aria-label="'+label+'">'+opts.map(function(o){ return dvSeg('data-v', String(o[0]), o[1], String(cur)); }).join('')+'</div>';
+  }
+  function tkSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-v') : ''; }
+  function tkFormHtml(d){
+    var t=d.task, isNew=!t, kind=t ? t.kind : 'script', lang=t ? t.lang : 'sh', langs=d.langs||['sh'],
+        body=t ? b64toUtf8(t.body||'') : TK_EX[0].code[LANG==='en' ? 'en' : 'ru'],
+        to=t ? (t.timeout|0) : 300, tos=[[60,'1 мин'],[300,'5 мин'],[1800,'30 мин'],[0,'нет']];
+    if(!tos.some(function(o){ return o[0]===to; })) tos.push([to, tkSec(to)]);
+    var h='<div class="vwrap">'
+      // name strip (mockup TaskHead): one row, no title — a short card beside the editor was a column of air
+      + '<div class="card wfull" id="tk-head"><div class="row" style="gap:18px;flex-wrap:wrap;align-items:flex-end">'
+      + '<div class="f grow" style="margin-top:0;min-width:210px;max-width:560px"><label for="tk-name">Название задачи</label><input id="tk-name" maxlength="80" value="'+esc(t ? t.name : '')+'" spellcheck="false" autocomplete="off" translate="no"></div>'
+      + '<div class="row" style="gap:10px;padding-bottom:5px"><span style="font-size:14px;font-weight:500">Включена</span><span class="help-slot" data-tip="Выключенная задача остаётся в списке, а её строки в cron нет."></span>'+pnSw('tk-on', 'Включена', t ? !!t.enabled : true, false)+'</div></div>'
+      + (t ? '<div class="cline" id="tk-state" role="status" translate="no">'+esc(tkStateText(d))+'</div>' : '')+'</div>';
+    // what to run
+    h+='<div class="card wfull" id="tk-what"><div class="wt">Что запускать</div>'
+      + '<div class="tabs2" id="tk-src" role="group" aria-label="Что запускать">'+dvSeg('data-tks','script','Свой скрипт',kind)+dvSeg('data-tks','file','Файл на роутере',kind)+dvSeg('data-tks','cmd','Команда',kind)+'</div>'
+      + '<div id="tk-p-script"'+(kind==='script'?'':' hidden')+'><div class="f2" style="align-items:end"><div>'
+      +   tkSegRow('tk-lang', 'Язык', langs.indexOf('lua')>=0 ? 'Список — от роутера: на этом есть sh (busybox ash) и Lua 5.1. «По первой строке #!» — интерпретатор из неё.'
+                                                             : 'Список — от роутера: на этом есть только sh (busybox ash). «По первой строке #!» — интерпретатор из неё.',
+              [['sh','sh · busybox']].concat(langs.indexOf('lua')>=0 ? [['lua','Lua 5.1']] : []).concat([['auto','по первой строке #!']]), lang)+'</div>'
+      +   '<div class="f"><label for="tk-ex">Начать с примера</label><div class="inrow"><select id="tk-ex" style="flex:1;min-width:0">'
+      +   TK_EX.map(function(x, i){ return (x.lang==='lua' && langs.indexOf('lua')<0) ? '' : '<option value="'+i+'">'+esc(trNow(x.ru))+'</option>'; }).join('')
+      +   '</select><button type="button" class="btn gh" id="tk-exins">Вставить</button></div></div></div>'
+      +   '<div class="f"><label for="tk-body">Скрипт</label><textarea id="tk-body" class="code" wrap="off" spellcheck="false" autocapitalize="off" translate="no">'+esc(body)+'</textarea></div>'
+      +   '<div class="cline" id="tk-chk">'+(t ? esc(tkL('Синтаксис проверен роутером при сохранении · ', 'Syntax checked by the router on save · ')+body.split('\n').filter(function(x){ return x!==''; }).length+tkL(' строк',' lines'))
+                                                : 'Синтаксис роутер проверит при сохранении. Переводы строк Windows — если вставили из Блокнота — уберутся сами.')+'</div></div>'
+      + '<div id="tk-p-file"'+(kind==='file'?'':' hidden')+'><div class="f2" style="align-items:end">'
+      +   '<div class="f"><label for="tk-path">Путь к файлу</label><div class="inrow"><input id="tk-path" class="mono" value="'+esc(t && kind==='file' ? b64toUtf8(t.target) : '')+'" placeholder="/data/overlay/script.sh" spellcheck="false" autocomplete="off" translate="no"><button type="button" class="btn gh" id="tk-pathchk">Проверить</button></div></div>'
+      +   '<div class="f2"><div class="f"><label for="tk-args">Аргументы</label><input id="tk-args" class="mono" value="'+esc(t ? b64toUtf8(t.args) : '')+'" spellcheck="false" autocomplete="off" translate="no"></div>'
+      +   '<div class="f"><label for="tk-flang">Запускать как</label><select id="tk-flang">'
+      +   [['auto','по первой строке #!'],['sh','sh · busybox']].concat(langs.indexOf('lua')>=0 ? [['lua','Lua 5.1']] : []).map(function(o){ return '<option value="'+o[0]+'"'+((kind==='file' && lang===o[0]) || (kind!=='file' && o[0]==='auto') ? ' selected' : '')+'>'+esc(trNow(o[1]))+'</option>'; }).join('')
+      +   '</select></div></div></div><div class="cline" id="tk-pathst" translate="no"></div>'
+      +   '<details id="tk-fdet" style="margin-top:9px"><summary class="act mut">Открыть и изменить сам файл</summary>'
+      +   '<div class="f"><textarea id="tk-ftext" class="code" wrap="off" spellcheck="false" translate="no"></textarea></div>'
+      +   '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn" id="tk-fsave">Сохранить файл</button><span class="cline" style="margin:0">пишется прямо в файл на роутере; прежняя версия остаётся рядом с суффиксом .bak</span></div></details></div>'
+      + '<div id="tk-p-cmd"'+(kind==='cmd'?'':' hidden')+'><div class="f"><label for="tk-cmd">Команда — одной строкой, как в crontab</label><input id="tk-cmd" class="mono" value="'+esc(t && kind==='cmd' ? b64toUtf8(t.target) : '')+'" placeholder="/etc/init.d/mosquitto stop" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div>'
+      +   '<div class="cline">Выполняется через sh: работают и &&, и перенаправления. Длинную команду удобнее сделать скриптом.</div></div></div>';
+    // when (2) + how (1): one row of near height
+    h+='<div class="card w2" id="tk-when"><div class="wt"><span>Когда</span><span class="sp"></span><span class="cline" style="margin:0">по расписанию</span>'+pnSw('tk-son', 'По расписанию', t ? !!t.sched : true, false)+'</div>'
+      + '<div id="tk-sbody"'+((t && !t.sched) ? ' hidden' : '')+'>'+cronBHtml('tkc', t && t.sched ? t.sched : (isNew ? '30 4 * * *' : '0 */3 * * *'))+'</div>'
+      + '<div style="margin-top:6px">'+pnKv('При загрузке роутера', 'один раз после перезагрузки — когда поднимутся сеть и VPN', pnSw('tk-boot', 'При загрузке роутера', t ? !!t.boot : false, false), 'swrow')+'</div>'
+      + '<div class="f2" style="align-items:end"><div class="f" id="tk-delayf"'+((t && t.boot) ? '' : ' hidden')+'><label for="tk-delay">Задержка после загрузки, секунд</label><input id="tk-delay" inputmode="numeric" value="'+(t ? (t.delay|0) : 60)+'" autocomplete="off"></div>'
+      + '<div class="cline" style="padding-bottom:10px">Выключите и расписание, и загрузку — задача будет запускаться только кнопкой.</div></div></div>';
+    h+='<div class="card" id="tk-how"><div class="wt">Как запускать</div>'
+      + tkSegRow('tk-to', 'Ограничение по времени', 'Не уложилась — роутер обрывает задачу вместе со всем, что она запустила.', tos, to)
+      + tkSegRow('tk-ov', 'Если прошлый запуск ещё идёт', '', [['skip','пропустить'],['wait','дождаться'],['par','рядом']], t ? t.overlap : 'skip')
+      + tkSegRow('tk-pr', 'Приоритет', 'Низкий не отнимает процессор у VPN и панели.', [['normal','обычный'],['low','низкий']], t ? t.prio : 'low')
+      + '<div style="margin-top:8px">'+pnKv('Ждать сверки часов<span class="help-slot" data-tip="После перезагрузки часы роутера стоят на прошлом, пока не сверятся с интернетом."></span>', 'до сверки запуск по расписанию пропускается', pnSw('tk-clock', 'Ждать сверки часов', t ? !!t.clockwait : true, false), 'swrow')+'</div>'
+      + '<details style="margin-top:4px"><summary class="act mut">Рабочий каталог и переменные окружения</summary>'
+      + '<div class="f"><label for="tk-wd">Рабочий каталог</label><input id="tk-wd" class="mono" value="'+esc(t ? b64toUtf8(t.workdir) : '')+'" placeholder="/tmp" spellcheck="false" autocomplete="off" translate="no"></div>'
+      + '<div class="f"><label for="tk-env">Переменные — по одной в строке</label><textarea id="tk-env" spellcheck="false" placeholder="NAME=value" translate="no">'+esc(t ? b64toUtf8(t.env) : '')+'</textarea></div></details></div>';
+    h+='<div class="card wfull" id="tk-out"><div class="wt">Вывод и письма</div><div class="fauto">'
+      + '<div>'+tkSegRow('tk-keep', 'Хранить вывод', 'До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.', [[1,'последний'],[5,'5 запусков'],[0,'не хранить']], t ? t.keep : 5)+'</div>'
+      + '<div>'+tkSegRow('tk-mail', 'Письмо', 'Ошибка — ненулевой код выхода или обрыв по времени.', [['never','никогда'],['fail','при ошибке'],['always','каждый раз']], t ? t.mail : 'fail')
+      +   '<div class="cline">Почта настраивается в «Уведомлениях».</div><div class="acts" style="justify-content:flex-start;margin-top:6px">'+'<button type="button" class="btn sm gh" data-cact="notify">Уведомления</button></div></div>'
+      + '<div style="padding-top:6px">'+pnKv('Успешные — в журнал событий', 'ошибки и обрывы попадают туда всегда', pnSw('tk-journal', 'Успешные — в журнал событий', t ? !!t.journal : false, false), 'swrow')+'</div></div></div>';
+    if(t) h+='<div class="card wfull" id="tk-runs"><div class="wt">Последние запуски</div><div id="tk-runsb">'+tkRunsHtml(d)+'</div></div>';
+    h+='<div class="cline wr wfull" id="tk-err" role="alert"></div>';
+    h+= t ? '<div class="acts wfull" style="justify-content:flex-start;flex-wrap:wrap">'
+            + '<button type="button" class="btn pri" id="tk-save">Сохранить</button>'
+            + '<button type="button" class="btn" id="tk-run">'+icUse('i-zap','s')+(d.running ? 'Остановить' : 'Запустить сейчас')+'</button>'
+            + '<button type="button" class="btn gh" id="tk-dup">Дублировать</button><button type="button" class="btn gh" id="tk-del">'+icUse('i-trash','s')+'Удалить задачу</button></div>'
+          : '<div class="acts wfull" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn pri" id="tk-save">Создать задачу</button>'
+            + '<button type="button" class="btn" id="tk-saverun">'+icUse('i-zap','s')+'Создать и запустить</button><button type="button" class="btn gh" id="tk-cancel">Отмена</button></div>';
+    return h+'</div>';
+  }
+  function tkStateText(d){
+    var t=d.task, r=(d.runs||[])[0], s=[];
+    if(d.running) s.push(tkL('выполняется с ','running since ')+tkWhen(d.running.since, d.now));
+    else if(r){ var e=tkEnd(r); s.push(tkL('последний запуск — ','last run — ')+tkWhen(r.ts, d.now)+', '+e[1]+(r.flag==='ok' || r.flag==='err' ? ', '+tkSec(r.dur) : '')); }
+    else s.push(tkL('запусков с загрузки роутера не было','no runs since the router booted'));
+    if(t.enabled && d.next && d.next[0]) s.push(tkL('следующий — ','next — ')+tkWhen(d.next[0], d.now));
+    return s.join(' · ');
+  }
+  var _tkSel=0;
+  function tkRunsHtml(d){
+    var rs=d.runs||[];
+    if(!rs.length) return '<div class="cline" style="margin-top:0">Запусков с загрузки роутера не было. История и вывод живут в оперативной памяти: после перезагрузки начинаются заново.</div>';
+    if(_tkSel>=rs.length) _tkSel=0;
+    var sel=rs[_tkSel], out=(sel && (sel.kept===true || sel.out)) ? b64toUtf8(sel.out||'') : null;   // kept: an empty output is still kept
+    return '<div class="f2" style="align-items:start;gap:4px 20px"><div>'
+      + rs.map(function(r, i){
+          var e=tkEnd(r), dot=(r.flag==='ok') ? '' : ((r.flag||'').indexOf('skip')===0 || r.flag==='stopped') ? ' off' : ' bad';
+          return '<div class="lrow cl'+(i===_tkSel?' on':'')+'" role="button" tabindex="0" data-tkr="'+i+'"'+(i===_tkSel?' aria-current="true"':'')+'><span class="dot'+dot+'"></span><div class="grow"><div class="nm" translate="no">'+esc(tkWhen(r.ts, d.now))+'</div>'
+            + '<div class="ds" translate="no">'+esc(tkTrig(r.trig)+(r.flag==='ok' || r.flag==='err' ? ' · '+tkSec(r.dur)+' · '+tkL('код ','code ')+r.code : '')+(r.flag==='ok' || r.flag==='err' ? '' : ' · '+e[1]))+'</div></div>'
+            + (i===_tkSel ? '<span class="chip acc">'+esc(tkL('вывод справа','output on the right'))+'</span>' : '')+'</div>';
+        }).join('')+'</div><div>'
+      + '<pre class="term" id="tk-term" tabindex="0" role="log" translate="no" aria-label="Вывод запуска">'+esc(out==null ? tkL('(вывод этого запуска не сохранён)','(this run\'s output was not kept)') : (out.replace(/\n$/,'') || tkL('(нет вывода)','(no output)')))+'</pre>'
+      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn sm gh" id="tk-cp">Копировать вывод</button></div></div></div>';
+  }
+  function tkFormShow(body, d){
+    body.innerHTML=tkFormHtml(d);
+    var t=d.task, rep=t ? navIfShown('rr-task', taskScrOpen) : null, cb=cronBWire('tkc');
+    wireCacts(body);
+    function el(id){ return document.getElementById(id); }
+    function err(x, id){ el('tk-err').textContent=x ? trNow(x) : ''; if(id && el(id)) try{ el(id).focus(); }catch(e){} }
+    var kind=t ? t.kind : 'script';
+    wireSeg('tk-src', 'data-tks', function(v){ kind=v; ['script','file','cmd'].forEach(function(k){ el('tk-p-'+k).hidden=(k!==v); }); });
+    ['tk-lang','tk-to','tk-ov','tk-pr','tk-keep','tk-mail'].forEach(function(id){ wireSeg(id, 'data-v', function(){}); });
+    el('tk-son').addEventListener('change', function(){ el('tk-sbody').hidden=!el('tk-son').checked; });
+    el('tk-boot').addEventListener('change', function(){ el('tk-delayf').hidden=!el('tk-boot').checked; });
+    el('tk-exins').addEventListener('click', function(){
+      var x=TK_EX[+el('tk-ex').value]; if(!x) return;
+      var cur=el('tk-body').value, code=x.code[LANG==='en' ? 'en' : 'ru'];
+      if(cur.trim() && cur!==code && !askConfirm('Заменить текст скрипта примером?')) return;
+      el('tk-body').value=code;
+      var ls=document.querySelector('#tk-lang .seg[data-v="'+x.lang+'"]'); if(ls) ls.click();
+    });
+    // file: «check» asks the router about the path; «open» loads the text lazily (a file can be big or secret)
+    function fileInfo(){
+      var p=el('tk-path').value.trim(), st=el('tk-pathst'); if(!p){ st.textContent=''; return; }
+      st.textContent=tkL('проверяю…','checking…');
+      tkPost('task_file_get', {path:b64utf8(p)}).then(function(r){
+        if(!screenAlive(st)) return;
+        if(!r || r.ok!==true){ st.innerHTML='<span class="wr">'+esc(trNow((r && r.msg) || 'роутер ответил не то'))+'</span>'; return; }
+        var txt=b64toUtf8(r.text||''), first=txt.split('\n')[0];
+        st.textContent=tkL('файл есть · ','the file exists · ')+r.size+tkL(' Б',' B')+(/^#!/.test(first) ? ' · '+first : '')
+          +(/^\/tmp\//.test(p) ? tkL(' · лежит в /tmp — исчезнет при перезагрузке',' · in /tmp — gone after a reboot') : '');
+        el('tk-ftext').value=txt; el('tk-ftext').setAttribute('data-p', p);
+      }, function(){ if(screenAlive(st)) st.textContent=tkL('роутер не ответил','the router did not respond'); });
+    }
+    el('tk-pathchk').addEventListener('click', fileInfo);
+    el('tk-fdet').addEventListener('toggle', function(){ if(el('tk-fdet').open && el('tk-ftext').getAttribute('data-p')!==el('tk-path').value.trim()) fileInfo(); });
+    el('tk-fsave').addEventListener('click', function(){
+      var p=el('tk-ftext').getAttribute('data-p'); if(!p){ err('сначала откройте файл кнопкой «Проверить»', 'tk-path'); return; }
+      postAction('task_file_put', 'Записать файл на роутере?\n\nПрежняя версия останется рядом с суффиксом .bak.', 'сохраняю файл…', {path:b64utf8(p), text:b64utf8(el('tk-ftext').value)});
+    });
+    if(t && t.kind==='file') fileInfo();
+    // runs: a click shows that run's output; a running task is followed while THIS screen is shown
+    function wireRuns(dd){
+      var rb=el('tk-runsb'); if(!rb) return;
+      Array.prototype.forEach.call(rb.querySelectorAll('[data-tkr]'), function(r){
+        function pick(){ _tkSel=+r.getAttribute('data-tkr'); rb.innerHTML=tkRunsHtml(dd); wireRuns(dd); }
+        r.addEventListener('click', pick);
+        r.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); pick(); } });
+      });
+      var cp=el('tk-cp'); if(cp) cp.addEventListener('click', function(){ copyToClip(el('tk-term').textContent, 'вывод скопирован'); });
+    }
+    var g=++_tkPoll;
+    function follow(dd){
+      wireRuns(dd);
+      if(!dd.running) return;
+      setTimeout(function(){
+        if(g!==_tkPoll || !screenAlive(body) || !navShows('rr-task')) return;
+        tkPost('task_get', {id:t.id}).then(function(n){
+          if(g!==_tkPoll || !screenAlive(body) || !n || n.ok!==true) return;
+          // only the parts the router changes — the form keeps what the human is typing
+          _tkSel=0; el('tk-runsb').innerHTML=tkRunsHtml(n); el('tk-state').textContent=tkStateText(n);
+          var rb=el('tk-run'); if(rb && !n.running) rb.innerHTML=icUse('i-zap','s')+trNow('Запустить сейчас');
+          d.running=n.running; follow(n);
+        });
+      }, 2000);
+    }
+    if(t) follow(d);
+    function collect(){
+      var name=el('tk-name').value.trim(), p={};
+      if(!name) return err('введите название задачи', 'tk-name');
+      p.name_b64=b64utf8(name); p.enabled=el('tk-on').checked ? 1 : 0; p.kind=kind;
+      if(kind==='script'){
+        var b=el('tk-body').value;
+        if(!b.trim()) return err('скрипт пустой', 'tk-body');
+        if(b64utf8(b).length>21800) return err('скрипт больше 16 КБ — положите его файлом на роутер', 'tk-body');
+        p.lang=tkSegVal('tk-lang')||'sh'; p.body_b64=b64utf8(b);
+      } else if(kind==='file'){
+        var fp=el('tk-path').value.trim(); if(!/^\//.test(fp)) return err('путь к файлу — полный, от /', 'tk-path');
+        p.lang=el('tk-flang').value; p.target_b64=b64utf8(fp); p.args_b64=b64utf8(el('tk-args').value.trim());
+      } else {
+        var c=el('tk-cmd').value.trim(); if(!c) return err('введите команду', 'tk-cmd');
+        p.lang='sh'; p.target_b64=b64utf8(c);
+      }
+      p.sched_b64=el('tk-son').checked ? b64utf8(cb.get()) : '';
+      p.boot=el('tk-boot').checked ? 1 : 0;
+      var dl=el('tk-delay').value.trim(); if(!/^\d{1,4}$/.test(dl) || +dl>3600) return err('задержка — число секунд, не больше 3600', 'tk-delay');
+      p.delay=dl; p.timeout=tkSegVal('tk-to')||'300'; p.overlap=tkSegVal('tk-ov')||'skip'; p.prio=tkSegVal('tk-pr')||'low';
+      p.clockwait=el('tk-clock').checked ? 1 : 0; p.keep=tkSegVal('tk-keep')||'5'; p.mail=tkSegVal('tk-mail')||'fail';
+      p.journal=el('tk-journal').checked ? 1 : 0; p.workdir_b64=b64utf8(el('tk-wd').value.trim()); p.env_b64=b64utf8(el('tk-env').value);
+      if(t) p.id=t.id;
+      err(''); return p;
+    }
+    function save(run){
+      var p=collect(); if(!p) return;
+      if(run) p.run=1;
+      postAction('task_save', null, t ? 'сохраняю задачу…' : 'создаю задачу…', p, function(r){
+        if(!r || !r.ok){ if(r && r.msg && screenAlive(body)) err(String(r.msg)); return; }
+        if(!t || run) _tkSel=0;
+        taskScrOpen(r.id);
+      });
+    }
+    el('tk-save').addEventListener('click', function(){ save(false); });
+    if(el('tk-saverun')) el('tk-saverun').addEventListener('click', function(){ save(true); });
+    if(el('tk-cancel')) el('tk-cancel').addEventListener('click', function(){ navUp(); });
+    if(t){
+      el('tk-run').addEventListener('click', function(){
+        if(d.running) postAction('task_stop', null, 'останавливаю задачу…', {id:t.id}, rep);
+        else postAction('task_run', null, 'запускаю задачу…', {id:t.id}, function(){ _tkSel=0; rep(); });
+      });
+      el('tk-dup').addEventListener('click', function(){ postAction('task_dup', null, 'копирую задачу…', {id:t.id}, function(r){ if(r && r.ok && r.id) taskScrOpen(r.id); }); });
+      el('tk-del').addEventListener('click', function(){
+        postAction('task_del', 'Удалить задачу «'+t.name+'»?\n\nСкрипт и настройки удалятся с роутера, строка уйдёт из crontab.', 'удаляю задачу…', {id:t.id},
+          function(r){ if(r && r.ok){ navReplace('rr-tasks'); openTasks(); } });
+      });
+    }
+  }
+
+  // ---- a foreign crontab line: a step without an address (the line is identified by its content, not by a URL) ----
+  function openCronLine(x){
+    var line=b64toUtf8(x.line), p=tkParse(line), kn=tkKnown(line);
+    openModal(p ? tkLabel(p.cmd) : tkL('Строка crontab','Crontab line'), {transient:'чужую строку узнают по содержимому — адреса у неё нет', deck:true});
+    var body=document.getElementById('modal-body');
+    var h='<div class="vwrap"><div class="card w2" id="tl-line"><div class="ct"><span translate="no">'+esc(p ? tkLabel(p.cmd) : tkL('непонятная строка','unreadable line'))+'</span>'+(kn ? ' <span class="badge">'+esc(trNow(kn.badge))+'</span>' : '')+'</div>'
+      + '<pre class="term" translate="no">'+esc(line)+'</pre>'
+      + (p && !x.bad ? '<div style="margin-top:6px">'+pnKv('Включена', 'выключенная остаётся в файле строкой с «#» в начале', pnSw('tl-on', 'Включена', !p.off, false), 'swrow')+'</div>' : '')
+      + '<div class="cline">'+(x.bad || !p ? 'cron эту строку пропускает: в ней нет пяти полей расписания и команды. Исправьте её в поле ниже или удалите.'
+                                           : 'Чужая строка — не задача панели: её вывод и ошибки cron выбрасывает, и что она делает и удаётся ли, отсюда не видно.')+'</div>'
+      + (kn ? '<div class="cline wr">'+esc(trNow(kn.ds))+'</div>' : '')+'</div>';
+    if(p && !x.bad){
+      h+='<div class="card" id="tl-cmd"><div class="wt">Что запускать</div><div class="f" style="margin-top:0"><label for="tl-c">Команда</label><input id="tl-c" class="mono" value="'+esc(p.cmd)+'" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div>'
+        + '<div class="cline" id="tl-out" translate="no"></div></div>'
+        + '<div class="card w2" id="tl-when"><div class="wt">Когда</div>'+cronBHtml('tlc', p.f.join(' '))+'</div>'
+        + '<div class="card" id="tl-adopt"><div class="wt">Взять под управление</div>'
+        + noteBox('Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи.', 'info')
+        + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn" id="tl-adoptb">Взять под управление</button></div></div>';
+    } else {
+      h+='<div class="card w2" id="tl-fix"><div class="wt">Исправить строку</div><div class="f" style="margin-top:0"><input id="tl-raw" class="mono" value="'+esc(line)+'" spellcheck="false" autocomplete="off" translate="no" style="max-width:none"></div></div>';
+    }
+    h+='<div class="cline wr wfull" id="tl-err" role="alert"></div><div class="acts wfull" style="justify-content:flex-start;flex-wrap:wrap">'
+      + '<button type="button" class="btn pri" id="tl-save">Сохранить строку</button>'
+      + (p && !x.bad ? '<button type="button" class="btn" id="tl-run">'+icUse('i-zap','s')+'Запустить сейчас</button>' : '')
+      + '<button type="button" class="btn gh" id="tl-del">'+icUse('i-trash','s')+'Удалить строку</button></div></div>';
+    body.innerHTML=h;
+    function el(id){ return document.getElementById(id); }
+    function err(m){ el('tl-err').textContent=m ? trNow(m) : ''; }
+    function done(r){ if(r && r.ok){ navUp(); } else if(r && r.msg && screenAlive(body)) err(String(r.msg)); }
+    var cb=(p && !x.bad) ? cronBWire('tlc') : null;
+    if(el('tl-on')) el('tl-on').addEventListener('change', function(){
+      var on=el('tl-on');
+      swPost(on, 'cron_line_toggle', null, on.checked ? 'включаю строку…' : 'выключаю строку…', {old:x.line}, done);
+    });
+    el('tl-save').addEventListener('click', function(){
+      var nl;
+      if(cb){ var c=el('tl-c').value.trim(); if(!c){ err('введите команду'); return; } nl=(p.off ? '# ' : '')+cb.get()+' '+c; }
+      else nl=el('tl-raw').value.trim();
+      if(!nl){ err('строка пустая — для удаления есть своя кнопка'); return; }
+      if(nl===line){ navUp(); return; }
+      err(''); postAction('cron_line_set', null, 'сохраняю строку…', {old:x.line, new:b64utf8(nl)}, done);
+    });
+    el('tl-del').addEventListener('click', function(){
+      postAction('cron_line_set', 'Удалить строку из crontab?\n\n'+line+(kn ? '\n\n'+kn.ds : ''), 'удаляю строку…', {old:x.line, new:''}, done);
+    });
+    if(el('tl-adoptb')) el('tl-adoptb').addEventListener('click', function(){
+      postAction('cron_adopt', null, 'делаю задачу из строки…', {old:x.line}, function(r){ if(r && r.ok && r.id) taskScrOpen(r.id); else done(r); });
+    });
+    // «run now» — the console's verb: the same root command line, its output shown here (one copy of «run and capture»)
+    if(el('tl-run')) el('tl-run').addEventListener('click', function(){
+      var c=el('tl-c').value.trim(), out=el('tl-out'); if(!c) return;
+      out.textContent=tkL('выполняю…','running…');
+      tkPost('console', {cmd:c}).then(function(r){
+        if(!screenAlive(out)) return;
+        var o=(r && typeof r.out==='string') ? r.out.replace(/\n$/,'') : '';
+        out.innerHTML='<pre class="term" translate="no" style="margin-top:6px">'+esc((o || tkL('(нет вывода)','(no output)'))+'\n'+tkL('(код выхода: ','(exit code: ')+((r && r.code!=null) ? r.code : '?')+')')+'</pre>';
+      }, function(){ if(screenAlive(out)) out.textContent=tkL('роутер не ответил','the router did not respond'); });
+    });
+  }
+
   // ---- КЭШ проверок серверов (пинг/доступность/скорость) — ПЕРСИСТ НА РОУТЕРЕ (.srv-checks),
   // виден со всех устройств и переживает перерисовку/перезагрузку панели. Ключ "<tpt>|<имя>".
   // Значение сбрасывается ТОЛЬКО новой проверкой (перезапись), обновлением/удалением подписки
@@ -5621,6 +6294,108 @@
   var I18N_ATTRS=['title','placeholder','aria-label','data-tip'];
   var _i18nOrig=(typeof WeakMap!=='undefined')?new WeakMap():null;   // текстовый узел → ru-оригинал
   var I18N_EN={
+    "расписание cron · свои скрипты":"cron schedule · your own scripts",
+    "Список — от роутера: на этом есть sh (busybox ash) и Lua 5.1. «По первой строке #!» — интерпретатор из неё.":"The list is the router's: this one has sh (busybox ash) and Lua 5.1. «By the #! line» — the interpreter from that line.",
+    "Список — от роутера: на этом есть только sh (busybox ash). «По первой строке #!» — интерпретатор из неё.":"The list is the router's: this one has only sh (busybox ash). «By the #! line» — the interpreter from that line.",
+    // ─── «Задачи» — cron manager (07.10.2026): screens, labels, the router's fixed answers (tasks.sh) ───
+    "Задачи":"Tasks","Новая задача":"New task","Задача":"Task","Задачи выполняются с правами root и без проверок:":"Tasks run as root, unchecked:",
+    "ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.":"a wrong script or an edit of a foreign line can break the router, the VPN or the internet. They are your responsibility.",
+    "Файл crontab":"Crontab file","Ваши задачи":"Your tasks","Создать задачу":"Create a task",
+    "Задач пока нет. Задача — свой скрипт, файл на роутере или команда; запускается по расписанию, при загрузке или кнопкой.":"No tasks yet. A task is your own script, a file on the router or a command; it runs on a schedule, at boot or by a button.",
+    "Эти строки подсистемы переписывают сами — при установке, обновлении и включении VPN: правка здесь продержалась бы до первого такого события. Менять можно то расписание, у которого есть дорога; в текстовой вкладке «Файл crontab» правятся и они.":"These lines are rewritten by their subsystems — on install, update and turning the VPN on: an edit here would last until the first such event. A schedule with a door can be changed there; in the «Crontab file» tab they are editable too.",
+    "Строк Enodia в crontab нет — переустановите систему или нажмите «Починить правила».":"No Enodia lines in the crontab — reinstall the system or press «Repair rules».",
+    "Чужие строки":"Foreign lines",
+    "Прошивка Xiaomi и всё, что добавлено не через панель. Вывод и ошибки этих строк cron выбрасывает; «Взять под управление» на экране строки сделает из неё задачу — с историей запусков и письмом при ошибке. Часть строк прошивки она может вернуть при своём обновлении.":"Xiaomi firmware and everything added outside the panel. Cron throws away the output and errors of these lines; «Take over» on the line's screen turns it into a task — with a run history and a letter on failure. The firmware may bring some of its lines back on its update.",
+    "Чужих строк нет.":"No foreign lines.","Самовосстановление":"Self-healing",
+    "после перезагрузки поднимает всё обратно, дальше молчит":"brings everything back after a reboot, then stays quiet","Сторож":"Watchdog",
+    "следит за туннелем и уводит на резерв":"watches the tunnel and moves to a backup","Учёт трафика":"Traffic accounting",
+    "поднимает панель, если она упала":"brings the panel up if it went down","меняется в «Источниках списков»":"changed in «List sources»",
+    "Обновление подписок":"Subscription updates","меняется в «Подписках»":"changed in «Subscriptions»","держит SSH":"keeps SSH",
+    "без неё SSH закроется после перезагрузки":"without it SSH closes after a reboot",
+    "Весь файл как есть — правьте что угодно. Строки Enodia подсистемы перепишут при установке, обновлении и включении VPN, а строки ваших задач панель выводит из их настроек: поправленные здесь, они вернутся при следующем сохранении задачи — меняйте их на вкладке «Задачи».":"The whole file as is — edit anything. Enodia lines will be rewritten by their subsystems on install, update and turning the VPN on, and your tasks' lines are derived from their settings: edited here, they come back on the task's next save — change them on the «Tasks» tab.",
+    "Перед записью роутер проверяет каждую строку: пять полей расписания и команда. Ошибка хотя бы в одной — файл не записывается, а номер строки и причина появляются здесь. Сохранение действует сразу, перезапускать ничего не нужно.":"Before writing, the router checks every line: five schedule fields and a command. An error in any line — the file is not written, and the line number and the reason appear here. Saving takes effect at once, nothing needs a restart.",
+    "Сохранить файл":"Save the file","Копировать":"Copy","читаю crontab…":"reading the crontab…",
+    "роутер не ответил — откройте вкладку ещё раз":"the router did not respond — open the tab again","crontab скопирован":"crontab copied",
+    "сохраняю crontab…":"saving the crontab…","не удалось обновить экран задачи":"could not refresh the task screen",
+    "роутер не ответил — открываю список задач":"the router did not respond — opening the task list","Пустой скрипт":"Empty script",
+    "sh · Остановить облачные сервисы Xiaomi":"sh · Stop Xiaomi cloud services","sh · Перезапустить Wi-Fi":"sh · Restart Wi-Fi",
+    "sh · Перезагрузить роутер":"sh · Reboot the router","Lua · Записать строку в системный журнал":"Lua · Write a line to the system log",
+    "Каждые N минут":"Every N minutes","Каждые N часов":"Every N hours","Ежедневно":"Daily","По дням недели":"By weekday","Ежемесячно":"Monthly",
+    "Своё выражение":"Own expression","Расписание":"Schedule","минута":"minute","час":"hour","день месяца":"day of month","месяц":"month",
+    "день недели":"weekday","Каждые, минут":"Every, minutes","Каждые, часов":"Every, hours","В минуту":"At minute","Время":"Time",
+    "Дни недели":"Weekdays","День месяца":"Day of month","Вс":"Su","Пн":"Mo","Вт":"Tu","Ср":"We","Чт":"Th","Пт":"Fr","Сб":"Sa",
+    "Пять полей справа — как в crontab: списки через запятую, диапазоны через дефис, шаг — «*/N» или «a-b/N». День недели 0–6, воскресенье — 0.":"The five fields on the right are as in a crontab: lists with commas, ranges with a hyphen, a step is «*/N» or «a-b/N». Weekday 0–6, Sunday is 0.",
+    "Название задачи":"Task name","Включена":"Enabled",
+    "Выключенная задача остаётся в списке, а её строки в cron нет.":"A disabled task stays in the list, but it has no cron line.",
+    "Что запускать":"What to run","Свой скрипт":"Own script","Файл на роутере":"A file on the router","Язык":"Language",
+    "по первой строке #!":"by the #! line","Начать с примера":"Start from an example","Вставить":"Insert","Скрипт":"Script",
+    "Синтаксис роутер проверит при сохранении. Переводы строк Windows — если вставили из Блокнота — уберутся сами.":"The router checks the syntax on save. Windows line breaks — if you pasted from Notepad — are removed automatically.",
+    "Путь к файлу":"File path","Аргументы":"Arguments","Запускать как":"Run as","Открыть и изменить сам файл":"Open and edit the file itself",
+    "пишется прямо в файл на роутере; прежняя версия остаётся рядом с суффиксом .bak":"written straight into the file on the router; the previous version stays next to it with a .bak suffix",
+    "Команда — одной строкой, как в crontab":"Command — one line, as in a crontab",
+    "Выполняется через sh: работают и &&, и перенаправления. Длинную команду удобнее сделать скриптом.":"Runs through sh: && and redirections work. A long command is easier as a script.",
+    "Когда":"When","по расписанию":"on schedule","По расписанию":"On schedule","При загрузке роутера":"At router boot",
+    "один раз после перезагрузки — когда поднимутся сеть и VPN":"once after a reboot — when the network and VPN are up",
+    "Задержка после загрузки, секунд":"Delay after boot, seconds",
+    "Выключите и расписание, и загрузку — задача будет запускаться только кнопкой.":"Turn off both the schedule and boot — the task will run by the button only.",
+    "Как запускать":"How to run","Ограничение по времени":"Time limit",
+    "Не уложилась — роутер обрывает задачу вместе со всем, что она запустила.":"Over the limit — the router stops the task along with everything it started.",
+    "1 мин":"1 min","30 мин":"30 min","Если прошлый запуск ещё идёт":"If the previous run is still going","дождаться":"wait","рядом":"alongside",
+    "Приоритет":"Priority","Низкий не отнимает процессор у VPN и панели.":"Low does not take the CPU from the VPN and the panel.","обычный":"normal",
+    "низкий":"low","Ждать сверки часов":"Wait for the clock sync",
+    "После перезагрузки часы роутера стоят на прошлом, пока не сверятся с интернетом.":"After a reboot the router's clock is in the past until it syncs with the internet.",
+    "до сверки запуск по расписанию пропускается":"scheduled runs are skipped until the sync",
+    "Рабочий каталог и переменные окружения":"Working directory and environment variables","Рабочий каталог":"Working directory",
+    "Переменные — по одной в строке":"Variables — one per line","Вывод и письма":"Output and letters","Хранить вывод":"Keep output",
+    "последний":"the last one","5 запусков":"5 runs","не хранить":"don't keep",
+    "До 32 КБ на запуск, в оперативной памяти: флеш роутера на запуски не тратится, после перезагрузки история начинается заново.":"Up to 32 KB per run, in RAM: the router's flash is not spent on runs, after a reboot the history starts over.",
+    "Письмо":"Letter","никогда":"never","при ошибке":"on failure","каждый раз":"every time",
+    "Ошибка — ненулевой код выхода или обрыв по времени.":"A failure is a non-zero exit code or a time-limit stop.",
+    "Почта настраивается в «Уведомлениях».":"Mail is set up in «Notifications».",
+    "Успешные — в журнал событий":"Successful runs — to the events journal",
+    "ошибки и обрывы попадают туда всегда":"failures and stops always go there","Последние запуски":"Recent runs","Запустить сейчас":"Run now",
+    "Дублировать":"Duplicate","Удалить задачу":"Delete the task","Создать и запустить":"Create and run",
+    "Запусков с загрузки роутера не было. История и вывод живут в оперативной памяти: после перезагрузки начинаются заново.":"No runs since the router booted. History and output live in RAM: after a reboot they start over.",
+    "Вывод запуска":"Run output","Заменить текст скрипта примером?":"Replace the script text with the example?",
+    "сначала откройте файл кнопкой «Проверить»":"open the file with «Check» first",
+    "Записать файл на роутере?\n\nПрежняя версия останется рядом с суффиксом .bak.":"Write the file on the router?\n\nThe previous version will stay next to it with a .bak suffix.",
+    "сохраняю файл…":"saving the file…","введите название задачи":"enter the task name","скрипт пустой":"the script is empty",
+    "скрипт больше 16 КБ — положите его файлом на роутер":"the script is over 16 KB — put it on the router as a file",
+    "путь к файлу — полный, от /":"the file path must be full, from /","введите команду":"enter the command",
+    "задержка — число секунд, не больше 3600":"the delay is a number of seconds, at most 3600","сохраняю задачу…":"saving the task…",
+    "создаю задачу…":"creating the task…","останавливаю задачу…":"stopping the task…","запускаю задачу…":"starting the task…",
+    "копирую задачу…":"copying the task…","удаляю задачу…":"deleting the task…","включаю задачу…":"enabling the task…",
+    "выключаю задачу…":"disabling the task…",
+    "Строка станет задачей: история запусков с выводом, ограничение по времени, письмо при ошибке, запуск при загрузке и место в бэкапе. Файл останется где лежит, строка в crontab заменится строкой задачи.":"The line becomes a task: a run history with output, a time limit, a letter on failure, a run at boot and a place in the backup. The file stays where it is, the crontab line is replaced by the task's line.",
+    "Взять под управление":"Take over","Исправить строку":"Fix the line","Сохранить строку":"Save the line","Удалить строку":"Delete the line",
+    "Чужая строка — не задача панели: её вывод и ошибки cron выбрасывает, и что она делает и удаётся ли, отсюда не видно.":"A foreign line is not a panel task: cron throws away its output and errors, so what it does and whether it succeeds can't be seen from here.",
+    "cron эту строку пропускает: в ней нет пяти полей расписания и команды. Исправьте её в поле ниже или удалите.":"cron skips this line: it has no five schedule fields and a command. Fix it in the field below or delete it.",
+    "выключенная остаётся в файле строкой с «#» в начале":"a disabled one stays in the file as a line starting with «#»",
+    "включаю строку…":"enabling the line…","выключаю строку…":"disabling the line…","сохраняю строку…":"saving the line…",
+    "удаляю строку…":"deleting the line…","делаю задачу из строки…":"turning the line into a task…",
+    "строка пустая — для удаления есть своя кнопка":"the line is empty — deleting has its own button",
+    "чужую строку узнают по содержимому — адреса у неё нет":"a foreign line is identified by its content — it has no address",
+    "ваша задача не удалась или оборвана по времени; успешные — если так выбрано у самой задачи":"your task failed or hit its time limit; successful runs — if chosen in the task itself",
+    "задача сохранена":"task saved","задача создана":"task created","задача создана и запущена":"task created and started",
+    "задача сохранена и запущена":"task saved and started","задача удалена":"task deleted","задача включена":"task enabled",
+    "задача выключена":"task disabled","копия создана выключенной":"the copy was created disabled","задача запущена":"task started",
+    "останавливаю задачу":"stopping the task","строка сохранена":"line saved","строка удалена":"line deleted","строка включена":"line enabled",
+    "строка выключена":"line disabled","строка стала задачей":"the line became a task","crontab сохранён":"crontab saved",
+    "файл сохранён, прежняя версия — рядом с суффиксом .bak":"file saved, the previous version is next to it with a .bak suffix",
+    "такой задачи нет":"no such task",
+    "задачи сейчас меняет другой запрос — повторите через минуту":"tasks are being changed by another request — try again in a minute",
+    "название длиннее 80 знаков":"the name is longer than 80 characters","неверные данные задачи":"invalid task data",
+    "скрипт больше 16 КБ":"the script is over 16 KB","Lua на этом роутере нет":"there is no Lua on this router",
+    "задача уже выполняется":"the task is already running","задача сейчас не выполняется":"the task is not running now",
+    "строка изменилась с тех пор, как вы открыли экран — обновите его":"the line changed since you opened the screen — refresh it",
+    "строки Enodia меняет их владелец — расписание правится на их экране":"Enodia lines are changed by their owner — the schedule is edited on its screen",
+    "это строка задачи — меняйте саму задачу":"this is a task's line — change the task itself",
+    "на роутере нет tasks.sh — обновите скрипты роутера":"there is no tasks.sh on the router — update the router scripts",
+    "в расписании нужно ровно пять полей: минута, час, день месяца, месяц, день недели":"a schedule needs exactly five fields: minute, hour, day of month, month, weekday",
+    "@-сокращения busybox cron не понимает — нужны пять полей; «при загрузке» — настройка задачи":"busybox cron does not understand @-shortcuts — five fields are needed; «at boot» is a task setting",
+    "строки-переменные cron этого роутера не понимает — переменные задаются в настройках задачи":"this router's cron does not understand variable lines — variables are set in the task settings",
+    "нужны пять полей расписания и команда":"five schedule fields and a command are needed","нет команды":"no command",
+    "задача из crontab":"a task from crontab","нет расписания":"no schedule",
     // ─── Экран сервера (cn-server, 25.09.2026): карточки, числа, имя, отказы роутера rename_config / get_config_info ───
     "читаю конфиг…":"reading the config…","Конфиг целиком":"The whole config",
     "не удалось обновить экран сервера":"could not refresh the server screen",
@@ -9210,6 +9985,27 @@
   // буквы внутри слов). i18nStr применяет их подряд и, если в итоге остаётся кириллица, ВОЗВРАЩАЕТ
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
+    // ─── «Задачи» (07.10.2026): the router's composed answers (tasks.sh) — FIRST, before the short tokens below ───
+    [/^расписание: /,"schedule: "],
+    [/^строка (\d+): /,"line $1: "],
+    [/^файла нет: /,"no such file: "],
+    [/^ошибка синтаксиса: строка (\d+)/,"syntax error: line $1"],
+    [/^ошибка синтаксиса: /,"syntax error: "],
+    [/^после снятия «#» строка не годится: /,"without «#» the line is not valid: "],
+    [/^интерпретатора из строки #! на роутере нет: /,"the #! interpreter is not on the router: "],
+    [/день недели \(0–6, воскресенье — 0\): /,"weekday (0–6, Sunday is 0): "],
+    [/день месяца: /,"day of month: "],
+    [/минута: /,"minute: "],
+    [/час: /,"hour: "],
+    [/месяц: /,"month: "],
+    [/вне диапазона /,"out of range "],
+    [/не число: /,"not a number: "],
+    [/пустой элемент списка: /,"empty list item: "],
+    [/шаг — только после «\*» или диапазона \(например 0-59\/10\): /,"a step only after «*» or a range (e.g. 0-59/10): "],
+    [/шаг — число: /,"a step is a number: "],
+    [/шаг — от 1: /,"a step starts at 1: "],
+    [/диапазон — по возрастанию: /,"a range must ascend: "],
+    [/пустое поле/,"empty field"],
     // Строка ожидания перезапуска в «Компонентах» — ЦЕЛИКОМ и первой: короткие правила ниже переводят её куски раньше.
     [/^Жду, пока роутер закончит свою работу с туннелем \(проверка сторожа, восстановление или другая смена\), — до (\d+) мин$/,
      "Waiting for the router to finish its own work with the tunnel (a watchdog check, a recovery or another switch) — up to $1 min"],
@@ -20198,6 +20994,7 @@
     addr:   ['Сменился внешний адрес', 'только при открытом входе снаружи: в письме — новая ссылка на панель'],
     subs:   ['Подписки', 'активный сервер сменился или пропал из подписки, обновление не прошло, не хватило места'],
     lists:  ['Списки адресов', 'утренняя сводка, сбой обновления, блокировка по адресам снята автоматически'],
+    tasks:  ['Задачи', 'ваша задача не удалась или оборвана по времени; успешные — если так выбрано у самой задачи'],
     system: ['Служебное', 'роутер сам вернул снесённые правила, шифрованный DNS не включился или перестал отвечать, раскладка накопителя не сменилась']
   };
   var NF_KEYS=['nt-host', 'nt-port', 'nt-tls', 'nt-user', 'nt-to', 'nt-pass'];
@@ -25632,6 +26429,7 @@
   wireCard('card-support', openSupport);
   wireCard('card-diag',    function(){ openDiag(); });
   wireCard('card-console', openConsole);
+  wireCard('card-tasks', openTasks);
   wireCard('card-info',    openSysinfo);
   wireCard('card-uninstall', openUninstall);
   wireCard('card-access',  function(){ openAccess(); });
@@ -25682,7 +26480,7 @@
     rt:[],
     nw:['card-wifi','card-dns','card-hosts','card-blocking','card-tune'],
     // «Роутер» (шаг 6a) — двери порядком макета; бэкап переехал сюда из «Панели», удаление — из «Настроек».
-    rr:['card-packages','card-update','card-disk','card-ram','card-backup','card-diag','card-support','card-console','card-info','card-uninstall'],
+    rr:['card-packages','card-update','card-disk','card-ram','card-backup','card-diag','card-support','card-console','card-tasks','card-info','card-uninstall'],
     // «Панель» (шаг 7a) — двери; экрана «Настройки» больше нет: его куски разошлись по разделам. «Журнал действий» — шаг 7b.
     pn:['card-access','card-view','card-notify','card-events','card-actlog']
   };
@@ -26072,6 +26870,11 @@
     'rr-support':  {back:'rr', t:'Режим поддержки',               open:function(){ openSupport(); }},
     'rr-diag':     {back:'rr', t:'Диагностика',                   open:function(){ openDiag(); }},
     'rr-console':  {back:'rr', t:'Консоль',                       open:function(){ openConsole(); }},
+    'rr-tasks':    {back:'rr', t:'Задачи',                        open:function(){ openTasks(); }},
+    // Задача — по номеру `tN`; имя и настройки знает роутер, разрешитель сперва спрашивает его (как у группы). Открытие
+    // ничего на роутере не меняет — адрес законен. Чужая строка crontab адреса не получает: её узнают по содержимому.
+    'rr-task':     {back:'rr-tasks', t:'Задача', need:1, via:'openTask', arg:function(a){ return /^t[0-9]{1,6}$/.test(a); }, open:function(a){ taskScrOpen(a); }},
+    'rr-task-new': {back:'rr-tasks', t:'Новая задача',            open:function(){ openTaskNew(); }},
     'pn-notify':   {back:'pn', t:'Уведомления',                   open:function(){ openNotify(); }},
     'rr-backup':   {back:'rr', t:'Бэкап настроек',                open:function(){ openBackup(); }},
     'pn-events':   {back:'pn', t:'События',                       open:function(){ openEvents(); }},

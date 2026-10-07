@@ -488,6 +488,70 @@ case "$act" in
 		printf '{"ok":true,"code":0,"msg":"Роутер перезагружается… панель вернётся через ~40-60 с (обновите страницу)."}\n'
 		exit 0 ;;
 
+	# --- «ЗАДАЧИ» (cron manager, tasks.sh). Like the console, the user's own code runs as root BY DESIGN (decision 07.10.2026:
+	# risk is on the user, no extra confirmation — the gate is the panel login + CSRF). The CGI only CARRIES: fields go into a
+	# spec file in a private 700 directory (the cap_run class: /tmp is shared, a symlink laid on a predictable name would turn
+	# our write into a write into its target), free text stays base64 all the way to tasks.sh, and every value is validated
+	# THERE — the owner. Answers are the owner's JSON, relayed as is (they carry the new task's id).
+	task_save|task_del|task_toggle|task_dup|task_run|task_stop|task_get|cron_line_set|cron_line_toggle|cron_adopt|cron_raw_get|cron_raw_save|task_file_get|task_file_put)
+		[ -f "$ENODIA_DIR/tasks.sh" ] || fail "на роутере нет tasks.sh — обновите скрипты роутера"
+		# relay the owner's JSON: printed through cap_run (a file, not a pipe — uhttpd's SIGKILL of a lost client must not cut a
+		# crontab write halfway on SIGPIPE); an answer that is not JSON becomes a refusal with its last line
+		tk_relay() {
+			cap_run tasks.sh "$@"
+			case "$CAP_OUT" in '{'*) printf '%s\n' "$CAP_OUT" ;; *) fail "$(printf '%s' "$CAP_OUT" | tail -n 1 | jesc 300)" ;; esac
+			exit 0
+		}
+		b64f() { printf '%s' "$1" | grep -qE '^[A-Za-z0-9+/=]*$'; }
+		tid=$(field id)
+		case "$act" in task_save) ;; task_del|task_toggle|task_dup|task_run|task_stop|task_get)
+			printf '%s' "$tid" | grep -qE '^t[0-9]{1,6}$' || fail "неверный номер задачи" ;; esac
+		# private input dir; dirs of killed CGIs (dead pid in the name) are swept here, as cap_run does with its own
+		for _tkd in /tmp/enodia-cgi-in.*; do
+			[ -e "$_tkd" ] || [ -L "$_tkd" ] || continue
+			[ -d "/proc/${_tkd##*.}" ] || rm -rf "$_tkd" 2>/dev/null
+		done
+		tkin="/tmp/enodia-cgi-in.$$"; rm -rf "$tkin" 2>/dev/null
+		case "$act" in task_save|cron_raw_save|task_file_put)
+			( umask 077; mkdir "$tkin" ) 2>/dev/null || fail "не удалось создать временный каталог"
+			trap 'rm -rf "$tkin"' EXIT ;; esac
+		case "$act" in
+			task_save)
+				: > "$tkin/spec"
+				for _k in id run enabled kind lang boot delay timeout overlap prio clockwait keep mail journal; do
+					_v=$(field "$_k"); case "$_v" in *[!A-Za-z0-9]*) fail "неверные данные задачи ($_k)" ;; esac
+					[ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v" >> "$tkin/spec"
+				done
+				for _k in name_b64 target_b64 args_b64 sched_b64 workdir_b64 body_b64 env_b64; do
+					_v=$(urldecode "$(field "$_k")"); b64f "$_v" || fail "неверные данные задачи ($_k)"
+					[ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v" >> "$tkin/spec"
+				done
+				tk_relay save "$tkin/spec" ;;
+			task_del)    tk_relay del "$tid" ;;
+			task_toggle) case "$(field on)" in 1) tk_relay toggle "$tid" on ;; 0) tk_relay toggle "$tid" off ;; *) fail "нужно 0|1" ;; esac ;;
+			task_dup)    tk_relay dup "$tid" ;;
+			task_run)    tk_relay run-bg "$tid" ;;
+			task_stop)   tk_relay stop "$tid" ;;
+			task_get)    tk_relay get-json "$tid" ;;
+			cron_raw_get) tk_relay raw-get ;;
+			cron_line_set|cron_line_toggle|cron_adopt)
+				_old=$(urldecode "$(field old)"); b64f "$_old" && [ -n "$_old" ] || fail "нет строки"
+				case "$act" in
+					cron_line_set) _new=$(urldecode "$(field new)"); b64f "$_new" || fail "неверная строка"; tk_relay line-set "$_old" "$_new" ;;
+					cron_line_toggle) tk_relay line-toggle "$_old" ;;
+					*) tk_relay adopt "$_old" ;;
+				esac ;;
+			cron_raw_save)
+				_v=$(urldecode "$(field text)"); b64f "$_v" || fail "неверный текст"
+				printf '%s' "$_v" > "$tkin/text"; tk_relay raw-save "$tkin/text" ;;
+			task_file_get|task_file_put)
+				_p=$(urldecode "$(field path)"); b64f "$_p" && [ -n "$_p" ] || fail "нет пути к файлу"
+				_p=$(printf '%s' "$_p" | base64 -d 2>/dev/null); one_line "$_p" || fail "путь — одной строкой"
+				if [ "$act" = task_file_get ]; then tk_relay file-get "$_p"; fi
+				_v=$(urldecode "$(field text)"); b64f "$_v" || fail "неверный текст"
+				printf '%s' "$_v" > "$tkin/text"; tk_relay file-put "$_p" "$tkin/text" ;;
+		esac ;;
+
 	# --- SSH-КОНСОЛЬ (root). Полный доступ ПО ЯВНОМУ ВЫБОРУ пользователя: команда исполняется
 	# как есть (sh -c) с правами root — это НЕ инъекция, а назначение фичи (гейт = HTTP-Basic +
 	# CSRF-токен + доверенная LAN). Предупреждение об осторожности показывает панель. Неинтерактивно
@@ -533,16 +597,22 @@ case "$act" in
 			done
 			if [ ! -s "$cof.rc" ]; then
 				[ -e "$cof.cut" ] || : > "$cof.k"
-				ctree="$cpid"; cq="$cpid"
-				while [ -n "$cq" ]; do
-					cn=""
-					for cp in $cq; do
-						for cf in $(grep -l "^PPid:[[:space:]]*$cp\$" /proc/[0-9]*/status 2>/dev/null); do
-							cc=${cf#/proc/}; cc=${cc%/status}; cn="$cn $cc"
+				# The tree walk's owner — daemon-lib.sh::proc_tree (shared with the task runner); an older library without it — the
+				# former walk.
+				[ -n "$CBN_LIB" ] || { CBN_LIB=1; if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi; }
+				if command -v proc_tree >/dev/null 2>&1; then ctree=$(proc_tree "$cpid")
+				else
+					ctree="$cpid"; cq="$cpid"
+					while [ -n "$cq" ]; do
+						cn=""
+						for cp in $cq; do
+							for cf in $(grep -l "^PPid:[[:space:]]*$cp\$" /proc/[0-9]*/status 2>/dev/null); do
+								cc=${cf#/proc/}; cc=${cc%/status}; cn="$cn $cc"
+							done
 						done
+						ctree="$ctree$cn"; cq=$cn
 					done
-					ctree="$ctree$cn"; cq=$cn
-				done
+				fi
 				kill -TERM $ctree 2>/dev/null; sleep 1; kill -KILL $ctree 2>/dev/null
 			fi
 			# CGI жив — он прочтёт вывод и уберёт времянки сам; мёртв — убираем мы (запас на чтение живым CGI).

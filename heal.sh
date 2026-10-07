@@ -865,6 +865,17 @@ if [ -f ./web-ui.sh ] && ip -4 addr show "$(lan_if)" 2>/dev/null | grep -q 'inet
     sh ./web-ui.sh start 2>&1 3>&- || true
 fi
 
+# 5.18. THE USER'S TASKS («Задачи», tasks.sh). The cron lines are DERIVED from the registry on /data: replayed here on boot and in
+# `replay` (a backup import or a reinstall may have brought the registry without the lines). «At boot» is not cron — busybox crond
+# has no @reboot — so the boot-time tasks start HERE, LAST: the user's script must find the network, DNS and VPN already up, and
+# it must not hold heal (each one in its own background with its own delay; a hanging script is the runner's timeout's business).
+# Not in replay: the router did not reboot. Not under «VPN off»: tasks are not VPN, the human's schedule keeps running.
+if [ -f "$ENODIA_DIR/tasks.sh" ] && [ -d "$ENODIA_STATE/tasks" ]; then
+    echo "--- задачи: расписание из настроек ---"
+    sh "$ENODIA_DIR/tasks.sh" apply 2>&1 3>&- || true
+    [ "$REPLAY" = 0 ] && sh "$ENODIA_DIR/tasks.sh" boot 2>&1 3>&- || true
+fi
+
 # КОНЕЦ REPLAY. Дальше — только бутовое: диагностический срез в лог и письмо «загрузка OK».
 # Первое в переигрыше не нужно, второе было бы ложью (роутер не перезагружался).
 if [ "$REPLAY" = 1 ]; then
