@@ -190,7 +190,7 @@ DUMP_LOGS="enodia-startup enodia-watchdog enodia-switch-vpn-setup enodia-transpo
 enodia-iplist-update enodia-subs-update enodia-notify enodia-notify-event enodia-hev
 enodia-hysteria enodia-byedpi enodia-byedpi-test-run enodia-byedpi-fetch enodia-zapret-nfqws
 enodia-doh enodia-panel-tls enodia-support enodia-xiaomi-bypass enodia-dnsq enodia-restore
-enodia-store-mode enodia-pkg-restart xray xray-access hytest ussl-dbg
+enodia-store-mode enodia-pkg-restart enodia-dns-filter xray xray-access hytest ussl-dbg
 switch-vpn-setup transport-awg-setup iplist-update subs-update notify notify-event hev hysteria
 byedpi byedpi-test-run zapret-nfqws doh panel-tls support xiaomi-bypass"
 # ХВОСТ — имена ДО 02.09.2026 (префикс `enodia-`), и он тут не ради симметрии со списком чистки:
@@ -1049,7 +1049,7 @@ command -v bin_on_store >/dev/null 2>&1 || bin_on_store() { return 1; }
 # накопителем показывает «xray · роутер» и не объясняет НИЧЕГО: читатель решает, что переезд
 # сломался, и лечит здоровое. Шим на старую библиотеку: «не закреплён».
 command -v bin_pinned >/dev/null 2>&1 || bin_pinned() { return 1; }
-DMP_BINS="amneziawg-go awg xray hysteria hev byedpi nfqws https-dns-proxy dot-proxy panel-tls"
+DMP_BINS="amneziawg-go awg xray hysteria hev byedpi nfqws https-dns-proxy dot-proxy panel-tls dns-filter"
 # СВЕЖА ЛИ СБОРКА — вопрос с одним владельцем (gh-update.sh bin-status: sha стоящего против манифеста, без сети). Без него
 # дамп отвечал «какая версия кода», но не «какая сборка бинаря»: жалоба «DoT уводит на DoH» на dot-proxy до 1.2 и после
 # выглядела одинаково. Прежний апдейтер верба не знает — тогда колонки нет, а не выдуманный ответ.

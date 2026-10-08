@@ -615,6 +615,14 @@ if [ -f "$ENODIA_DIR/bin/panel-tls.user" ]; then
     chmod +x "$ENODIA_BIN/panel-tls"
     ok "panel-tls (HTTPS панели) установлен"
 fi
+# dns-filter (фильтр по категориям) — DNS-фильтр «ограничено» расписаний доступа (static musl, ~40 KB). Runs only while some
+# device is limited; the schedule tick starts and stops it.
+if [ -f "$ENODIA_DIR/bin/dns-filter.user" ]; then
+    log "Найден dns-filter.user (фильтр по категориям), ставлю..."
+    mv "$ENODIA_DIR/bin/dns-filter.user" "$ENODIA_BIN/dns-filter"
+    chmod +x "$ENODIA_BIN/dns-filter"
+    ok "dns-filter (фильтр по категориям) установлен"
+fi
 # ИТОГ ПО БИНАРЯМ — ОБЯЗАТЕЛЕН. Десять блоков выше гейтятся на СТЕЙДЖ-файл `bin/<имя>.user`, а
 # ставится бинарь через `mv`/bin_install, то есть стейдж ИСЧЕЗАЕТ. Ветки else у блоков нет ⇒
 # отсутствие строки «[ OK ] X установлен» НЕОТЛИЧИМО от успеха: повторный прогон установщика (или
@@ -622,7 +630,7 @@ fi
 # установке. Отсюда и жалоба «половину пакетов будто не видит». Печатаем ФАКТ, и спрашиваем его у
 # bin_path — он знает про внешний накопитель, поэтому «нет на /data» ≠ «нет вообще».
 _have=""; _miss=""
-for _b in amneziawg-go awg xray hev hysteria byedpi nfqws https-dns-proxy dot-proxy panel-tls; do
+for _b in amneziawg-go awg xray hev hysteria byedpi nfqws https-dns-proxy dot-proxy panel-tls dns-filter; do
     if [ -x "$(bin_path "$_b")" ]; then _have="$_have $_b"; else _miss="$_miss $_b"; fi
 done
 ok "Бинари на роутере:${_have:- (ни одного!)}"

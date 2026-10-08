@@ -107,6 +107,9 @@ CHAINS_MANGLE="VPN_EXCLUDE VPN_FORCE VPN_PORTS VPN_KEEP VPN_DEV ENODIA_ZAPRET"
 # ENODIA_SCHED — access schedules (REJECT per MAC); its owner `access-sched.sh unwire` takes both families in step_rules, the
 # word here is the IPv4 safety net for a missing owner (the IPv6 one is a line in step_rules).
 CHAINS_FILTER="ENODIA_BLK ENODIA_GEOBLK ENODIA_SCHED VPNSRV_IN VPNSRV_FWD VPNSRV_WAN"
+# nat: ENODIA_SCHED_DNS — the DNS of «limited» devices REDIRECTed to the schedules' filter (the same owner unwires it; this is
+# the net for a missing one, both families, with the IPv6 INPUT fallback ENODIA_SCHED_IN6)
+CHAINS_NAT="ENODIA_SCHED_DNS"
 # Родители, из которых вызываются наши filter-цепочки: штатные INPUT/FORWARD + пустой хук fw3
 # `input_wan_rule` (в него вешаются правила «снаружи» — панели и «доступа домой»).
 CHAIN_PARENTS="INPUT FORWARD input_wan_rule"
@@ -125,7 +128,7 @@ SET_PREFIXES="enodia_ iplist_ grp_ geo_ zapret_ blocklist_ xiaomi_"
 # переживший демон будет уже нечем.
 DAEMON_DIRS="$ENODIA_DIR $ENODIA_BIN"
 [ "${BIN_DIR:-$ENODIA_BIN}" != "$ENODIA_BIN" ] && DAEMON_DIRS="$DAEMON_DIRS $BIN_DIR"
-DAEMONS="amneziawg-go xray hysteria byedpi hev nfqws https-dns-proxy dot-proxy"
+DAEMONS="amneziawg-go xray hysteria byedpi hev nfqws https-dns-proxy dot-proxy dns-filter"
 # panel-tls — инфраструктура ПАНЕЛИ, а не VPN. `deactivate` обещает «панель работает», а вход в
 # неё мог идти по HTTPS: убив терминатор, мы рвём сессию человеку ровно в тот момент, когда он
 # нажал кнопку, и вернёт его только cron `web-ui.sh start` (до 5 минут). На `purge` панель и так
@@ -281,7 +284,16 @@ step_rules() {
     if command -v ip6tables >/dev/null 2>&1; then         # …and the IPv6 net for a missing owner (CHAINS_FILTER is IPv4)
         while ip6tables -D FORWARD -j ENODIA_SCHED 2>/dev/null; do :; done
         ip6tables -F ENODIA_SCHED 2>/dev/null; ip6tables -X ENODIA_SCHED 2>/dev/null
+        while ip6tables -D INPUT -j ENODIA_SCHED_IN6 2>/dev/null; do :; done
+        ip6tables -F ENODIA_SCHED_IN6 2>/dev/null; ip6tables -X ENODIA_SCHED_IN6 2>/dev/null
     fi
+    for _f in iptables ip6tables; do
+        command -v "$_f" >/dev/null 2>&1 || continue
+        for _c in $CHAINS_NAT; do
+            while "$_f" -t nat -D PREROUTING -j "$_c" 2>/dev/null; do :; done
+            "$_f" -t nat -F "$_c" 2>/dev/null; "$_f" -t nat -X "$_c" 2>/dev/null
+        done
+    done
     run zapret.sh src-clear                               # NFQUEUE устройств «целиком в десинк» (по источнику)
     run zapret.sh down                                    # nfqws + NFQUEUE + dnsmasq-сниппет
     _t=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
@@ -921,6 +933,10 @@ step_verify() {      # $1 = дополнительные демоны (как у
     for _c in $CHAINS_FILTER; do
         iptables -n -L "$_c" >/dev/null 2>&1
         case $? in 0) _left="$_left filter/$_c" ;; 1) ;; *) _left="$_left filter/$_c(?)" ;; esac
+    done
+    for _c in $CHAINS_NAT; do
+        iptables -t nat -n -L "$_c" >/dev/null 2>&1
+        case $? in 0) _left="$_left nat/$_c" ;; 1) ;; *) _left="$_left nat/$_c(?)" ;; esac
     done
     # Маркировка без цепочек так же смертельна: живое `ip rule` в нашу таблицу = трафик уходит
     # в несуществующую несущую (чёрная дыра вместо «прямого режима»).

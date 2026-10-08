@@ -5299,7 +5299,9 @@
   // the panel only words them (no calendar arithmetic here, as with the tasks' next runs; «через 20 мин» is one subtraction of two
   // router epochs). A schedule = devices by MAC + windows of a week + the state outside them. «Ограничено» is not OFFERED until the
   // router can do it (its per-category sets are a later phase) — a window that already has it (a hand edit) is still shown.
-  var SCH_LIM=false;
+  // «Ограничено» is offered when the router has its filter (component «Фильтр по категориям» — `filter.inst` of the answer); a
+  // window that already has it (a backup, a hand edit, the component removed afterwards) is still shown.
+  function schLimOn(d){ return !!(d && d.filter && d.filter.inst); }
   var SCH_LIM_OPT=[0, 30, 60, 90, 120, 180, 240, 360, 480];   // the day limit's choices, minutes (0 = none)
   var _sch=null;   // the last list answer (section=sched): the device screen, the device rows and the home card read it
   var SCH_ST={open:['Открыто','Open','opn'], limited:['Ограничено','Limited','lim'], closed:['Закрыто','Closed','blk']};
@@ -5409,7 +5411,7 @@
         + (now ? '<b style="left:'+pct(nmin)+'" title="'+esc(tkL('сейчас на роутере: ','now on the router: ')+nm[1]+':'+nm[2])+'"></b>' : '')+'</div>';
     });
     h+='<span></span><div class="ax">'+[0,6,12,18,24].map(function(x){ return '<span style="left:'+(x/24*100)+'%">'+x+'</span>'; }).join('')+'</div></div>';
-    var lg=[['open','var(--wk-op)'],['limited','var(--st-warn)'],['closed','var(--st-bad)']].filter(function(x){ return x[0]!=='limited' || SCH_LIM || used.limited; });
+    var lg=[['open','var(--wk-op)'],['limited','var(--st-warn)'],['closed','var(--st-bad)']].filter(function(x){ return x[0]!=='limited' || schLimOn(d) || used.limited; });
     return h+'<div class="legend" translate="no">'+lg.map(function(x){ return '<span class="lg"><i style="background:'+x[1]+'"></i>'+esc(schStWord(x[0]).toLowerCase())+'</span>'; }).join('')+'</div>';
   }
   // «вне окон открыто · 2 окна» — the list row's summary
@@ -5460,6 +5462,7 @@
     h+='<div class="card"><div class="wt">Как это работает</div>'
       + schKv('Устройство узнаётся по MAC', 'правило не уедет на соседа, когда сменится адрес')
       + schKv('«Закрыто» — закрыто всё', 'сильнее всей маршрутизации: ни правила по портам, ни свой VPN на устройстве не выпустят наружу. Домашняя сеть остаётся')
+      + (schLimOn(d) ? schKv('«Ограничено» — закрыто выбранное', 'категории и сайты из расписания, остальное работает') : '')
       + schKv('Не остановит', 'мобильный интернет телефона и новый MAC')+'</div>';
     h+='<div class="card w2"><div class="wt">Начать с готового</div><div class="opt c2">'
       + SCH_TPL.map(function(t){ return optTile('data-sctpl', t.k, false, t.ic, t.t, t.d); }).join('')+'</div></div>';
@@ -5541,9 +5544,10 @@
     if(_schDraft && _schDraft.key===key && (!it || _schDraft.ver===it.ver)) return _schDraft;
     var t=_schNewTpl;
     _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(),
-                    lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0}, dirty:false}
+                    lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0},
+                    lmode:it.lmode||'block', cats:(it.cats||[]).slice(), sites:(it.sites||[]).join('\n'), dirty:false}
                  : {key:key, ver:0, name:t ? trNow(t.t) : '', on:1, base:t ? t.base : 'open', wins:t ? t.wins.map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }) : [],
-                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, dirty:!!(t || _schNewDev)};
+                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, lmode:'block', cats:[], sites:'', dirty:!!(t || _schNewDev)};
     return _schDraft;
   }
   function schShow(d, it, devs){
@@ -5629,8 +5633,8 @@
         + '<button type="button" class="btn sm gh" data-scwdel="'+i+'" aria-label="'+esc(tkL('убрать окно','remove the window'))+'">✕</button></div>';
     }).join('');
   }
-  function schStSeg(id, cur){
-    var st=['open'].concat(SCH_LIM || cur==='limited' ? ['limited'] : []).concat(['closed']);
+  function schStSeg(id, cur, d){
+    var st=['open'].concat(schLimOn(d) || cur==='limited' ? ['limited'] : []).concat(['closed']);
     return '<div class="segbar sm" id="'+id+'" role="group">'+st.map(function(s){ return dvSeg('data-'+id, s, '<span>'+(s==='open'?'открыто':s==='limited'?'ограничено':'закрыто')+'</span>', cur); }).join('')+'</div>';
   }
   function schFormHtml(d, it, dr, devs){
@@ -5641,15 +5645,16 @@
       + '<div id="sc-bars" style="margin-top:12px">'+schWeekHtml({base:dr.base, wins:dr.wins}, d)+'</div>'
       + '<div id="sc-wins" style="margin-top:12px">'+schWinRows(dr)+'</div></div>';
     h+='<div class="card" id="sc-edit"><div class="wt">Изменить неделю</div>'
-      + '<div class="cline" style="margin-top:0">Вне окон</div>'+schStSeg('sc-base', dr.base)
+      + '<div class="cline" style="margin-top:0">Вне окон</div>'+schStSeg('sc-base', dr.base, d)
       + '<div class="cline">Новое окно</div>'
       + '<div class="segbar sm" id="sc-days" role="group" aria-label="Дни недели">'+SCH_ORD.map(function(x){ return '<div class="seg'+(x>=1 && x<=5 ? ' on' : '')+'" data-scd="'+x+'">'+SCH_DN[x]+'</div>'; }).join('')+'</div>'
       + '<div class="f2 keep" style="margin-top:11px"><div class="f"><label for="sc-a">С</label><input id="sc-a" type="time" value="19:00" autocomplete="off"></div>'
       + '<div class="f"><label for="sc-b">До</label><input id="sc-b" type="time" value="21:00" autocomplete="off"></div></div>'
-      + '<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap">'+schStSeg('sc-ws', dr.base==='closed' ? 'open' : 'closed')
+      + '<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap">'+schStSeg('sc-ws', dr.base==='closed' ? 'open' : 'closed', d)
       + '<button type="button" class="btn pri" id="sc-wadd">Добавить окно</button></div>'
       + '<div class="cline wr" id="sc-werr" role="alert"></div>'
       + '<div class="cline">Пересеклись окна — действует более строгое. Окно, которое кончается раньше, чем началось, идёт через полночь.</div></div>';
+    h+=schLimHtml(d, it, dr);
     var mine=dr.devs, other=devs.filter(function(v){ var m=String(v.mac||'').toLowerCase(), o=m && schOfMac(m, d); return m && mine.indexOf(m)<0 && (!o || (it && o.id===it.id)); });
     var priv=mine.filter(function(m){ return schMacPriv(m); });
     h+='<div class="card" id="sc-devs"><div class="wt"><span>Устройства</span><span class="sp"></span><span class="chip">'+mine.length+'</span></div>'
@@ -5676,7 +5681,7 @@
     h+='<div class="card" id="sc-lim"><div class="wt">Лимит в день</div>'
       + '<div class="kv"><div class="grow"><div class="k">Будни</div><div class="v">не больше стольких минут в интернете</div></div><div class="f">'+limSel('sc-lwd', dr.lim.wd)+'</div></div>'
       + '<div class="kv"><div class="grow"><div class="k">Выходные</div><div class="v">суббота и воскресенье</div></div><div class="f">'+limSel('sc-lwe', dr.lim.we)+'</div></div>'
-      + '<div class="cline">Считаются минуты, когда устройство действительно качало, — фоновая синхронизация не в счёт. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.</div></div>';
+      + '<div class="cline">Считаются минуты, когда устройство действительно качало: видео, соцсети, загрузки. Фоновая синхронизация, переписка и лёгкие игры качают мало и в счёт не идут. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.</div></div>';
     h+='<div class="card"><div class="wt">Что расписание не остановит</div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Мобильный интернет</div><div class="ds">телефон с выключенным Wi-Fi роутеру не виден</div></div></div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Новый MAC</div><div class="ds">частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет</div></div></div></div>';
@@ -5686,13 +5691,37 @@
     return h+'</div>';
   }
   function schMacPriv(m){ return /^.[26ae]/i.test(String(m||'')); }   // the locally administered bit (lease-lib.sh::mac_is_random)
+  // «ОГРАНИЧЕНО — ЧТО ЗАКРЫТО» (mockup): the categories the ROUTER offers (`d.cats`: its table, the panel only words them) as pills
+  // like the days of a window, own sites a line each, and what it cannot do said on the card. Data of a category comes from the geo
+  // catalogue (the router downloads it after a save): until then the pill says «скачивается» — `it.pend`. No filter on the router ⇒
+  // the card says what is missing and leads to «Компоненты»: «ограничено» is not offered in the week then (schLimOn).
+  // «Только разрешённое» of the mockup is a spike there («скоро») — the panel draws what works.
+  function schLimHtml(d, it, dr){
+    var cats=Array.isArray(d.cats) ? d.cats : [], pend=(it && it.pend) || [];
+    var h='<div class="card w2" id="sc-lmt"><div class="wt">Ограничено — что закрыто</div>';
+    if(!schLimOn(d)) h+=noteBox('<b>Нужен компонент «Фильтр по категориям».</b> Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.', 'warn')
+      + '<div class="acts" style="justify-content:flex-start;margin-top:9px"><button type="button" class="btn" data-cact="rr-pkg">Компоненты</button></div>';
+    h+='<div class="cline" style="margin-top:'+(schLimOn(d) ? '0' : '13px')+'">Категории — из каталога гео-категорий</div>'
+      + '<div class="segbar sm" id="sc-cats" role="group" aria-label="'+esc(tkL('Категории','Categories'))+'">'
+      + cats.map(function(c){ var on=dr.cats.indexOf(c.id)>=0, pd=on && pend.indexOf(c.id)>=0;
+          return '<div class="seg'+(on ? ' on' : '')+'" data-sccat="'+esc(c.id)+'" role="button" tabindex="0" aria-pressed="'+(on ? 'true' : 'false')+'">'
+            + '<span>'+esc(trNow(String(c.name)))+'</span>'+(pd ? '<span class="sub">'+esc(tkL(' · скачивается',' · downloading'))+'</span>' : '')+'</div>'; }).join('')
+      + '</div>'
+      + '<div class="f" style="margin-top:12px"><label for="sc-sites">Свои сайты — по одному в строке</label>'
+      + '<textarea id="sc-sites" spellcheck="false" autocapitalize="off" translate="no" placeholder="roblox.com">'+esc(dr.sites)+'</textarea></div>'
+      + noteBox('«Ограничено» закрывает через DNS роутера: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.', 'info');
+    return h+'</div>';
+  }
   // THE save of a schedule — the editor and the device tab (add / remove a device) send the whole schedule against its version, in
   // the form cgi-bin/action carries: windows «days.HHMM.HHMM.o|l|c» by `;`, devices by `,`, the name base64.
   // `lim` — {wd, we} minutes of the day limit (weekdays / weekend, 0 = none).
-  function schSpec(id, ver, name, on, base, wins, devs, lim){
-    return {id:id, ver:ver, name_b64:b64utf8(String(name)), enabled:on ? 1 : 0, base:base,
+  // `lx` — {lmode, cats, sites} of «limited» (the editor); absent ⇒ the keys are not sent and the router keeps the schedule's own.
+  function schSpec(id, ver, name, on, base, wins, devs, lim, lx){
+    var p={id:id, ver:ver, name_b64:b64utf8(String(name)), enabled:on ? 1 : 0, base:base,
             wins:wins.map(function(w){ return w.d+'.'+w.a.replace(':','')+'.'+w.b.replace(':','')+'.'+w.s.charAt(0); }).join(';'), devs:devs.join(','),
             lim_wd:(lim && lim.wd)|0, lim_we:(lim && lim.we)|0};
+    if(lx){ p.lmode=lx.lmode||'block'; p.cats=(lx.cats||[]).join(','); p.sites_b64=b64utf8(String(lx.sites||'')); }
+    return p;
   }
   function schSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-'+id) : ''; }
   function schFormWire(body, d, it, dr, devs){
@@ -5710,6 +5739,18 @@
     // the name — a draft on `input` (not `change`: Chrome sends `change` to a field the redraw carries away, after the success)
     el('sc-name').addEventListener('input', function(){ dr.name=this.value; dr.dirty=true; });
     el('sc-lwd').addEventListener('change', function(){ dr.lim.wd=+this.value||0; dr.dirty=true; });
+    // own sites — a draft on `input` (see the name above)
+    el('sc-sites').addEventListener('input', function(){ dr.sites=this.value; dr.dirty=true; });
+    Array.prototype.forEach.call(body.querySelectorAll('#sc-cats [data-sccat]'), function(s){
+      function flip(){
+        var c=s.getAttribute('data-sccat'), i=dr.cats.indexOf(c);
+        if(i>=0) dr.cats.splice(i, 1); else dr.cats.push(c);
+        s.classList.toggle('on', i<0); s.setAttribute('aria-pressed', i<0 ? 'true' : 'false'); dr.dirty=true;
+      }
+      s.addEventListener('click', flip);
+      s.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); flip(); } });
+    });
+    wireCacts(el('sc-lmt'));
     el('sc-lwe').addEventListener('change', function(){ dr.lim.we=+this.value||0; dr.dirty=true; });
     wireSeg('sc-base', 'data-sc-base', function(v){ dr.base=v; dr.dirty=true; repaintWeek(); });
     wireSeg('sc-ws', 'data-sc-ws', function(){});
@@ -5740,9 +5781,11 @@
       var nm=String(dr.name||'').trim(), er=el('sc-err');
       if(!nm){ er.textContent=trNow('нужно имя расписания'); el('sc-name').focus(); return; }
       er.textContent='';
-      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim);
+      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, sites:dr.sites});
       postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
         if(!r || !r.ok){ if(r && r.msg && screenAlive(er)) er.textContent=trNow(String(r.msg)); return; }
+        // lines of «Свои сайты» the router could not read as a site — said, not silently lost
+        if((r.dropped|0)>0) showToast(tkL('не похожи на сайт и пропущены — строк: ','not a site and skipped — lines: ')+(r.dropped|0), false);
         _schDraft=null; _schNewTpl=null; _schNewDev='';
         if(!it) navReplace(navKey('rt-sched-p', r.id));
         schScrOpen(r.id);
@@ -6911,7 +6954,7 @@
     "Все расписания":"All schedules",
     "Лимит в день":"Daily limit","Будни":"Weekdays","Выходные":"Weekend","не больше стольких минут в интернете":"at most this much time online",
     "суббота и воскресенье":"Saturday and Sunday",
-    "Считаются минуты, когда устройство действительно качало, — фоновая синхронизация не в счёт. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.":"Only the minutes the device really transferred count — background sync does not. When the limit runs out it is closed till the end of the day; «Open for…» adds time.",
+    "Считаются минуты, когда устройство действительно качало: видео, соцсети, загрузки. Фоновая синхронизация, переписка и лёгкие игры качают мало и в счёт не идут. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.":"Only the minutes the device really transferred count: video, social networks, downloads. Background sync, chats and light games transfer little and do not count. When the limit runs out it is closed till the end of the day; «Open for…» adds time.",
     "неверный лимит":"wrong limit","лимит — не больше суток":"a limit is at most a day",
     // the router's refusals (access-sched.sh, cgi-bin/action): fixed answers; the ones with a value inside are rules below
     "на роутере нет access-sched.sh — обновите скрипты роутера":"access-sched.sh is not on the router — update the router scripts",
@@ -6925,6 +6968,16 @@
     "сейчас не открыто — откладывать нечего":"not open now — nothing to postpone","закрытия впереди нет":"no closing ahead",
     "у этого расписания закрытое время не кончается — выберите срок":"this schedule's closed time does not end — choose a term",
     "не удалось записать расписание":"could not write the schedule","неверное имя расписания":"wrong schedule name",
+    "неверный режим «ограничено»":"wrong «limited» mode",
+    // «Ограничено — что закрыто» (the DNS filter of schedules); category names come from the router's table (access-sched.sh SC_CATS)
+    "Ограничено — что закрыто":"Limited — what is closed",
+    "«Ограничено» — закрыто выбранное":"«Limited» — the chosen is closed","категории и сайты из расписания, остальное работает":"the schedule's categories and sites, the rest works",
+    "Нужен компонент «Фильтр по категориям».":"The «Category filter» component is needed.",
+    "Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.":"Without it «limited» closes nothing — the device stays fully open.",
+    "Категории — из каталога гео-категорий":"Categories — from the geo-category catalogue",
+    "Видео":"Video","Игры":"Games","Развлечения":"Entertainment","Для взрослых":"Adult",
+    "Свои сайты — по одному в строке":"Own sites — one per line",
+    "«Ограничено» закрывает через DNS роутера: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.":"«Limited» closes through the router's DNS: a VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it. «Closed» cannot be got past — it closes the whole device. It takes a few minutes to act: the device remembers the addresses it has already learned.",
     // ─── «Задачи» — cron manager (07.10.2026): screens, labels, the router's fixed answers (tasks.sh) ───
     "Задачи":"Tasks","Новая задача":"New task","Задача":"Task","Задачи выполняются с правами root и без проверок:":"Tasks run as root, unchecked:",
     "ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.":"a wrong script or an edit of a foreign line can break the router, the VPN or the internet. They are your responsibility.",
@@ -8173,6 +8226,8 @@
     "обход блокировок без VPN-сервера — пакеты правит сам роутер, без прокси":"bypassing blocks without a VPN server — the router itself rewrites the packets, no proxy",
     "шифрует DNS-запросы всей сети":"encrypts the DNS queries of the whole network",
     "вход в панель по HTTPS, в том числе снаружи":"panel sign-in over HTTPS, from outside too",
+    "закрывает детям выбранные категории сайтов в окнах «ограничено» расписаний доступа":"closes the chosen site categories for children in the «limited» windows of access schedules",
+    "Фильтр по категориям":"Category filter","фильтр по категориям":"category filter",
     "поставим":"will install","доставим":"will complete","снимем":"will remove",
     "не хватает части файлов — такой протокол не поднимется; план доставит недостающее":"some of its files are missing — such a protocol will not come up; the plan will add what is missing",
     "установлен ≠ включён: включить протокол — здесь":"installed ≠ enabled: turn a protocol on here",
@@ -11639,7 +11694,7 @@
     ["Перезапущено, но не отвечает: ","Restarted but not responding: "],[" — сторож проверит и починит на своём тике"," — the watchdog will check and repair it on its tick"],
     ["Перезапуск не удался: ","Restart failed: "],["Не вышло: ","Did not work: "],["Готово: ","Done: "],
     ["тёплый резерв AmneziaWG","AmneziaWG warm reserve"],["основной канал","main channel"],   // «дополнительный выход №» — выше, до «выход №»
-    ["шифрованный DNS","encrypted DNS"],
+    ["шифрованный DNS","encrypted DNS"],["фильтр по категориям","category filter"],
     ["Перезапуск запущен — ход виден на экране «Компоненты»","Restart started — progress is shown on the «Components» screen"],
     ["→ перезапуск: ","→ restart: "],["Перезапустить ","Restart "],[" на установленной сборке?"," on the installed build?"],
     ["Ненадолго прервётся:","Briefly interrupted:"],["Перезагружать роутер не нужно.","No need to reboot the router."],
@@ -11650,6 +11705,7 @@
     ["«доступ домой»","«home access»"],
     [" — на секунду, правила не трогаем"," — for a second, rules stay untouched"],[" — несколько секунд без имён"," — a few seconds without name lookups"],
     [" — на секунду, открытая по HTTPS страница переподключится"," — for a second, a page opened over HTTPS will reconnect"],
+    [" — на секунду, устройства с «ограничено» переспросят имена"," — for a second, devices in «limited» will ask for names again"],
     [" — на несколько секунд, его трафик пока пойдёт запасным путём"," — for a few seconds, its traffic takes its fallback path meanwhile"],
     [" указан и на установку, и на удаление"," is listed both for install and for removal"],
     ["Нельзя снять ","Cannot remove "],
@@ -24102,7 +24158,8 @@
     byedpi:'обход блокировок без VPN-сервера — через прокси на роутере',
     zapret:'обход блокировок без VPN-сервера — пакеты правит сам роутер, без прокси',
     doh:'шифрует DNS-запросы всей сети',
-    tls:'вход в панель по HTTPS, в том числе снаружи'
+    tls:'вход в панель по HTTPS, в том числе снаружи',
+    filter:'закрывает детям выбранные категории сайтов в окнах «ограничено» расписаний доступа'
   };
   // Ответ той формы: у гейта входа есть вырожденная ветка с кодом 200 и телом `{need_login:true}`, и по ней экран нарисовал бы
   // «ничего не установлено». Движок, которого нет (`engine:false`), форму держит.
@@ -25082,7 +25139,8 @@
     server:'«доступ домой» — на несколько секунд, клиенты переподключатся сами',
     zapret:'Zapret (nfqws) — на секунду, правила не трогаем',
     doh:'шифрованный DNS — несколько секунд без имён',
-    tls:'HTTPS панели — на секунду, открытая по HTTPS страница переподключится'
+    tls:'HTTPS панели — на секунду, открытая по HTTPS страница переподключится',
+    filter:'фильтр по категориям — на секунду, устройства с «ограничено» переспросят имена'
   };
   function pkgRstCut(u){ var m=/^slot([2-7])$/.exec(u); return m ? 'дополнительный выход №'+m[1]+' — на несколько секунд, его трафик пока пойдёт запасным путём' : (PKG_RST_CUT[u]||u); }
   function pkgRestart(id){

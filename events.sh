@@ -115,7 +115,9 @@ level_of() {
 		# doh-dot-fallback — выбран DoT, а порт 853 не проходит: DNS шифруется, но по DoH (doh-lib.sh).
 		# hev-restart-* — залипшую прослойку TUN→прокси сторож перезапустил сам (slot-tun-lib.sh): работает, но соединения рвались.
 		# sched-clock — access schedules are not acting: the router clock is not synced yet (access-sched.sh, once per boot).
-		transport-missing|geo-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*|sched-clock) echo warn ;;
+		# sched-filter — «limited» is not acting (no filter component / it did not start) or acts again; geo-want-snap-skip — a
+		# category of a schedule too big for its flash snapshot (geo.sh _wanted_pass).
+		transport-missing|geo-snap-skip|geo-want-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*|sched-clock|sched-filter) echo warn ;;
 		*)                        echo info ;;
 	esac
 }

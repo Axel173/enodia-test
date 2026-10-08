@@ -23,7 +23,17 @@
 #   ENODIA_SCHED: -o br+ -j RETURN — the home network stays (measured BE7000: bridge-nf-call-iptables=1, so bridged LAN frames
 #                 traverse FORWARD too, and a bare per-MAC DROP would cut the printer and the cameras);
 #                 closed — `-m mac --mac-source M` → REJECT (tcp-reset for TCP): the app fails at once instead of hanging on
-#                 a TCP timeout. INPUT stays open (DNS, the panel).
+#                 a TCP timeout. INPUT stays open (DNS, the panel);
+#                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below.
+# «ОГРАНИЧЕНО» = OUR DNS FILTER, not address sets (decided 08.10.2026: categories share anycast frontends — closing youtube.com by
+# address closes Google Search and Gemini on the device too; «only allowed» cannot be said by address; and dnsmasq has no
+# per-client answers). The DNS of a limited device is REDIRECTed by MAC (nat PREROUTING `ENODIA_SCHED_DNS`, at the top — above
+# the stock guest DNAT; both families) to the port of its schedule's PROFILE in `dns-filter` (component «filter», source
+# dev/dns-filter/): it answers «nothing there» for the chosen categories and own sites and passes the rest to dnsmasq. Category
+# data is geo.sh's (the one owner): `geo.sh want sched <keys>` on a save, a READY file by `geo.sh domfile` in the tick — never a
+# fetch here. No filter binary, or it does not answer its probe after a restart ⇒ limited devices stay OPEN (fail-open, as with
+# the clock) and the journal says why once. Without ip6 nat the device's IPv6 is REJECTed whole and its DNS to the router's v6
+# addresses refused in INPUT (`ENODIA_SCHED_IN6`) — it falls back to IPv4, where the REDIRECT stands.
 # After a device's state changes, its established flows are dropped (`ct_flush_src` per address of the MAC): NSS/ECM keeps
 # offloaded flows out of netfilter otherwise. Never a global flush — a 23:00 close would drop every call in the house.
 # A plan that closes nobody = no chain at all (no footprint while everything is open).
@@ -38,6 +48,7 @@
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
+ENODIA_BIN=${ENODIA_BIN:-/data/usr/app/enodia-bin}
 SC_DIR="$ENODIA_STATE/sched"        # registry on /data: written only on user actions (and once per expired override)
 SC_RUN=/tmp/enodia-sched            # RAM: lock, the plan now in the kernel, last states — gone with a reboot like the kernel
 SC_LOCK="$SC_RUN/lock"
@@ -51,12 +62,34 @@ SC_K=6                              # upcoming changes reported to the panel
 SC_CLOCK_NOTE=600                   # s of uptime with schedules and an unsynced clock before one journal line
 # DAY LIMIT — minutes of REAL activity, by the stock `trafficd` (per MAC, counts NSS-offloaded and tunnelled traffic alike —
 # measured BE7000 08.10.2026: a 1 GiB download +1129 MB there, conntrack accounting −5 %). A minute is «active» when the device
-# moved at least SC_ACTIVE_B in it: background sync (push, mail checks) stays far below, a video or a game far above.
-SC_ACTIVE_B=262144
+# moved at least SC_ACTIVE_B in it. Measured BE7000 08.10.2026, a phone per minute: idle 0–240 KB (one 30-MB minute — an app
+# update), a YouTube video 4.1–8.8 MB in EVERY minute of 32 (no buffering gaps). 256 KB sat right above the idle peaks ⇒ 512 KB:
+# twice the background, an eighth of a video. Light games (tens of KB a minute) count at neither — said in the panel.
+SC_ACTIVE_B=524288
 SC_USE_GAP=5                        # minutes one sample may cover (a missed tick); a longer gap counts as this much at most
 SC_USE_SAVE=900                     # s between saves of the day's usage to the flash while it changes (a reboot loses ≤ 15 min)
 SC_USE="$SC_RUN/use"                # RAM: «<date>» then «<mac> <minutes>» — the day's usage
 SC_USE_LAST="$SC_RUN/use.last"      # RAM: «<epoch>» then «<mac> <bytes>» — the previous trafficd sample
+# «ОГРАНИЧЕНО» — the DNS filter (header). A profile = a schedule with limited devices NOW; its port stays while it exists (a port
+# that moved under a device would hand its next queries to another profile).
+SC_FDIR="$SC_RUN/filter"            # RAM: the daemon's config, own-sites lists, the port map
+# the daemon's pidfile and log by the project's /tmp names: «Перезапустить» (packages.sh) finds processes by /tmp/enodia-*.pid,
+# and dump.sh / clean.sh know logs by their names
+SC_FPID=/tmp/enodia-dns-filter.pid
+SC_FLOG=/tmp/enodia-dns-filter.log
+SC_FPORT0=5390                      # profile ports: SC_FPORT0 .. SC_FPORT0 + SC_MAX - 1 (checked free on BE7000 08.10.2026)
+SC_NAT=ENODIA_SCHED_DNS             # nat PREROUTING, both families: DNS of a limited MAC → its profile's port
+SC_IN6=ENODIA_SCHED_IN6             # filter INPUT v6, only without ip6 nat: DNS of a limited MAC to the router refused
+SC_SITE_MAX=200                     # own sites per schedule
+SC_WANT_GAP=600                     # s between background fetches the tick starts for categories not downloaded yet
+# Categories offered for «limited»: id|geo keys|name (the panel words it by its dictionary). The keys are geo.sh's — the ONE
+# owner of category data; a category is a SET of keys because «Видео» is not one upstream category. No dating or gambling
+# category exists upstream ⇒ not offered (own sites cover them).
+SC_CATS='social|v2fly-category-social-media-!cn|Соцсети
+video|v2fly-youtube v2fly-tiktok v2fly-twitch v2fly-vimeo v2fly-dailymotion|Видео
+games|v2fly-category-games|Игры
+ent|v2fly-category-entertainment|Развлечения
+adult|v2fly-category-porn|Для взрослых'
 SC_NL='
 '
 
@@ -68,6 +101,15 @@ if [ -f "$ENODIA_DIR/json-lib.sh" ]; then . "$ENODIA_DIR/json-lib.sh"; fi
 command -v jtxt >/dev/null 2>&1 || jtxt() { tr -d '\000-\010\013-\037' | tr '\n\t' '  ' | cut -c1-"$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -d "/proc/$1" ]; }
+# the filter daemon's start (daemon-lib.sh owns the wait: the term is the PROCESS's life, not a stopwatch); the shim keeps a fixed
+# ceiling + its own life guard for a partial update, the doh-lib.sh form
+command -v daemon_wait_uport >/dev/null 2>&1 || daemon_wait_uport() {
+    DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do
+        netstat -lnu 2>/dev/null | grep -q "$4:$5 " && return 0
+        _dwp=$(cat "$1" 2>/dev/null); [ -d "/proc/${_dwp:-none}" ] || break
+        sleep 1; _dwi=$((_dwi+1))
+    done
+    DAEMON_WAIT_WHY="порт $5 не появился за $_dwi с (или процесс умер)"; return 1; }
 if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi
 command -v lbl_san >/dev/null 2>&1 || lbl_san() { printf '%s' "$1" | tr '\t\r\n' '   ' | tr -d '\000-\037"\\' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'; }
 command -v lbl_lock_take >/dev/null 2>&1 || lbl_lock_take() { mkdir "$1" 2>/dev/null; }
@@ -79,6 +121,9 @@ command -v mac_ok >/dev/null 2>&1 || mac_ok() { printf '%s' "$1" | grep -qE '^[0
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 command -v ct_flush_src >/dev/null 2>&1 || ct_flush_src() { [ -n "$1" ] && conntrack -D --src "$1" >/dev/null 2>&1; return 0; }
+# where the filter binary lies (the store may hold it) — store-lib.sh; without it the binaries' own directory
+if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
+command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
 
 jstr() { printf '%s' "$1" | jtxt "${2:-200}"; }
 jok() { printf '{"ok":true%s}\n' "${1:+,$1}"; }
@@ -138,6 +183,11 @@ sc_next_hhmm() {
 # ---- registry -----------------------------------------------------------------------------------------------------
 # <id>.sch — key=value lines; `win=` and `dev=` repeat. Read through the SAME validation as a save: the file can come from a
 # backup or a hand edit, and a stray line must neither break the JSON nor reach iptables.
+# categories of «limited» (SC_CATS): is it one of ours · its geo keys · the keys of a list of ids
+sc_cat_ok() { case "$1" in ''|*[!a-z]*) return 1 ;; esac; case "$SC_NL$SC_CATS" in *"$SC_NL$1|"*) return 0 ;; esac; return 1; }
+sc_cat_keys() {   # <id>… → the geo keys, a key per line, each once
+	for _ck in "$@"; do printf '%s\n' "$SC_CATS" | awk -F'|' -v c="$_ck" '$1 == c { print $2 }'; done | tr ' ' '\n' | grep . | sort -u
+}
 sc_ids() { for _f in "$SC_DIR"/s*.sch; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.sch}"; done | sed 's/^s//' | sort -n | sed 's/^/s/'; }
 # Window line «<days> <HH:MM> <HH:MM> <state>»: days are digits 0..6 (0 = Sunday), ascending, each once. ONE program for the
 # load and the save — two copies of «what a window is» would let a save write what the next load silently drops. Prints the
@@ -153,7 +203,7 @@ l !~ /^[0-6]+ ([01][0-9]|2[0-3]):[0-5][0-9] ([01][0-9]|2[0-3]):[0-5][0-9] (open|
 # sanitised where it leaves (JSON, journal): the tick itself never needs it.
 sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file = the same schedule from elsewhere (import)
 	SC_F=${2:-"$SC_DIR/$1.sch"}; [ -f "$SC_F" ] || return 1
-	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0
+	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""
 	_slt=$(tr -d '\r' < "$SC_F" 2>/dev/null)
 	while IFS= read -r _sl; do
 		case "$_sl" in
@@ -164,10 +214,16 @@ sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file 
 			ver=*)        sc_num SC_VER "${_sl#ver=}" 0 ;;
 			lim_wd=*)     sc_num SC_LWD "${_sl#lim_wd=}" 0 ;;
 			lim_we=*)     sc_num SC_LWE "${_sl#lim_we=}" 0 ;;
+			lmode=block|lmode=allow) SC_LMODE=${_sl#lmode=} ;;
+			cat=*)        sc_cat_ok "${_sl#cat=}" && case " $SC_CATON " in *" ${_sl#cat=} "*) ;; *) SC_CATON="${SC_CATON:+$SC_CATON }${_sl#cat=}" ;; esac ;;
 		esac
 	done <<EOF
 $_slt
 EOF
+	# own sites: `site=` lines, the same form a save writes (lowercase host names, each once) — a hand edit loads what is valid
+	SC_SITES=$(printf '%s\n' "$_slt" | awk -v max="$SC_SITE_MAX" '
+		/^site=/ { d = substr($0, 6)
+		  if (d ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !(d in s) && n < max) { s[d] = 1; n++; print d } }')
 	[ "$SC_LWD" -le 1440 ] || SC_LWD=0; [ "$SC_LWE" -le 1440 ] || SC_LWE=0
 	SC_WINS=$(printf '%s\n' "$_slt" | awk "$SC_WIN_AWK")
 	[ -n "$SC_WINS" ] && SC_WINS="$SC_WINS$SC_NL"
@@ -182,9 +238,11 @@ sc_name() { lbl_san "$SC_NAME" | cut -c1-200; }   # the loaded schedule's name, 
 sc_write() {   # sc_write <id> — from SC_*: atomically (write next to it, compare, mv)
 	_wf="$SC_DIR/$1.sch"; _wt="$_wf.$$"
 	{
-		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\nlim_wd=%s\nlim_we=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER" "$SC_LWD" "$SC_LWE"
+		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\nlim_wd=%s\nlim_we=%s\nlmode=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER" "$SC_LWD" "$SC_LWE" "$SC_LMODE"
 		printf '%s' "$SC_WINS" | while IFS= read -r _wl; do [ -n "$_wl" ] && printf 'win=%s\n' "$_wl"; done
 		for _wm in $SC_DEVS; do printf 'dev=mac:%s\n' "$_wm"; done
+		for _wm in $SC_CATON; do printf 'cat=%s\n' "$_wm"; done
+		for _wm in $SC_SITES; do printf 'site=%s\n' "$_wm"; done
 	} > "$_wt" 2>/dev/null || { rm -f "$_wt"; return 1; }
 	grep -q "^ver=$SC_VER\$" "$_wt" && mv -f "$_wt" "$_wf" && return 0
 	rm -f "$_wt"; return 1
@@ -309,6 +367,9 @@ sc_use_save() {
 # least SC_ACTIVE_B per minute of the gap since the previous sample (the gap capped at SC_USE_GAP: a stalled tick must neither
 # grant nor take an hour). A device's first sample only records; a counter that went back (trafficd restarted, the device
 # came back) counts from zero. Two ticks within one minute: the second waits — its delta belongs to the next one.
+# A device the kernel kept CLOSED through the minute (the plan in SC_APPLIED — this tick has not replanned yet) does not count:
+# trafficd counts every byte the station moves, retries into a REJECT and the home network too (BE7000 08.10.2026: a phone
+# closed by its limit went 4 → 6 «minutes in the internet» in a quarter of an hour). A limited one is partly out — it counts.
 sc_use_tick() {
 	_um=""
 	for _ui in $SC_IDS; do
@@ -334,15 +395,17 @@ sc_use_tick() {
 		printf '%s\n' "$SC_USED" | sed -n 's/^\([0-9a-f:]* [0-9]*\)$/U \1/p'
 		sed -n '2,$s/^/P /p' "$SC_USE_LAST" 2>/dev/null
 		printf '%s\n' "$_ucur" | sed 's/^/C /'
+		awk '$2 == "closed" { print "X " $1 }' "$SC_APPLIED" 2>/dev/null
 	} | awk -v el="$_uel" -v gap="$SC_USE_GAP" -v act="$SC_ACTIVE_B" '
 		$1 == "L" { lim[$2] = 1; next }
+		$1 == "X" { x[$2] = 1; next }
 		$1 == "U" { u[$2] = $3 + 0; next }
 		$1 == "P" { p[$2] = $3 + 0; next }
 		$1 == "C" { c[$2] = $3 + 0; next }
 		END {
 			m = el; if (m > gap) m = gap
 			for (k in lim) if (k in c) {
-				if (m >= 1 && (k in p)) { d = c[k] - p[k]; if (d < 0) d = c[k]; if (d >= act * m) u[k] += m }
+				if (m >= 1 && (k in p) && !(k in x)) { d = c[k] - p[k]; if (d < 0) d = c[k]; if (d >= act * m) u[k] += m }
 				printf "C %s %.0f\n", k, c[k]
 			}
 			for (k in u) if (u[k] > 0) printf "U %s %d\n", k, u[k]
@@ -386,11 +449,17 @@ sc_fill() {
 	"$1" -A "$SC_CHAIN" -o br+ -j RETURN 2>/dev/null || return 1
 	printf '%s\n' "$SC_PLAN" | while read -r _km _ks _ki; do
 		[ -n "$_km" ] || continue
-		case "$_ks" in
-			closed|limited)
-				# limited = closed for now: its per-category sets arrive with the «Ограничено» phase
+		# limited, by the filter: only encrypted DNS (DoT/DoQ, 853) is refused here — a device that falls back from it asks
+		# plain DNS, and that is REDIRECTed to the filter. Without ip6 nat its IPv6 cannot be steered: closed whole (header).
+		# Two rules per device in every form — sc_rules_n counts that.
+		_kf=$_ks; [ "$_ks" = limited ] && [ "$1" = ip6tables ] && [ "$SC_NAT6" != 1 ] && _kf=closed
+		case "$_kf" in
+			closed)
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -j REJECT 2>/dev/null ;;
+			limited)
+				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
+				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 853 -j REJECT 2>/dev/null ;;
 		esac
 	done
 	return 0
@@ -422,21 +491,239 @@ sc_mac_ips() {
 # Converge the kernel to SC_PLAN. Rebuild only when the plan changed or the form is gone (a firewall reload); flows of devices
 # whose state changed are dropped AFTER the rules stand (dropped before, the next packet would be offloaded again unjudged).
 sc_apply() {
-	_aold=$(cat "$SC_APPLIED" 2>/dev/null)
+	_aold=$(cat "$SC_APPLIED" 2>/dev/null); _anold=$(cat "$SC_APPLIED.nat" 2>/dev/null)
+	sc_nplan
+	SC_NAT6=0
+	if [ -n "$SC_NPLAN" ] && have_nat6; then SC_NAT6=1; fi
+	_achg=0
 	if [ -z "$SC_PLAN" ]; then
-		[ -z "$_aold" ] && return 0
-		sc_drop_fam iptables; have_v6 && sc_drop_fam ip6tables
-	else
-		if [ "$SC_PLAN" = "$_aold" ] && sc_wired iptables && { ! have_v6 || sc_wired ip6tables; }; then return 0; fi
-		sc_put_fam iptables; have_v6 && sc_put_fam ip6tables
+		if [ -n "$_aold" ]; then sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi; _achg=1; fi
+	elif [ "$SC_PLAN" != "$_aold" ] || ! sc_wired iptables || { have_v6 && ! sc_wired ip6tables; }; then
+		sc_put_fam iptables; if have_v6; then sc_put_fam ip6tables; fi; _achg=1
 	fi
+	# the DNS of limited devices to their filter profile (a separate plan: a profile's port may change while the state does not)
+	if [ -z "$SC_NPLAN" ]; then
+		if [ -n "$_anold" ]; then sc_cap_drop; _achg=1; fi
+	elif [ "$SC_NPLAN" != "$_anold" ] || ! sc_cap_wired; then
+		sc_cap_put; _achg=1
+	fi
+	[ "$_achg" = 1 ] || return 0
 	printf '%s\n' "$SC_PLAN" > "$SC_APPLIED.$$" && mv -f "$SC_APPLIED.$$" "$SC_APPLIED"
-	# devices whose line changed (new, gone, other state): only a stricter state needs the flush, but opening is rare and a
-	# flush there is harmless — one rule, no second copy of «stricter»
-	{ printf '%s\n' "$_aold"; printf '%s\n' "$SC_PLAN"; } | awk 'NF==3' | sort | uniq -u | awk '{print $1}' | sort -u |
-	while read -r _am; do
+	printf '%s\n' "$SC_NPLAN" > "$SC_APPLIED.nat.$$" && mv -f "$SC_APPLIED.nat.$$" "$SC_APPLIED.nat"
+	# devices whose line changed (new, gone, other state, another filter port): only a stricter state needs the flush, but
+	# opening is rare and a flush there is harmless — one rule, no second copy of «stricter». The filter needs it as much as
+	# REJECT does: a device's DNS flow to 8.8.8.8 that exists already keeps its old NAT decision.
+	{ printf '%s\n' "$_aold"; printf '%s\n' "$SC_PLAN"; } | awk 'NF==3' | sort | uniq -u | awk '{print $1}' > "$SC_RUN/chg.$$"
+	{ printf '%s\n' "$_anold"; printf '%s\n' "$SC_NPLAN"; } | awk 'NF==2' | sort | uniq -u | awk '{print $1}' >> "$SC_RUN/chg.$$"
+	sort -u "$SC_RUN/chg.$$" | while read -r _am; do
 		for _aip in $(sc_mac_ips "$_am" | sort -u); do ct_flush_src "$_aip"; done
 	done
+	rm -f "$SC_RUN/chg.$$"
+	return 0
+}
+
+# ---- «ОГРАНИЧЕНО»: the DNS of limited devices → the filter ------------------------------------------------------------
+have_nat6() { have_v6 && ip6tables -t nat -S PREROUTING >/dev/null 2>&1; }
+# the capture plan: «<mac> <port>» per limited device whose schedule has a profile in the filter now (SC_FMAP)
+sc_nplan() {
+	SC_NPLAN=$( { printf '%s\n' "$SC_FMAP" | sed 's/^/M /'; printf '%s\n' "$SC_PLAN" | sed 's/^/P /'; } |
+		awk '$1 == "M" && NF == 3 { p[$2] = $3; next } $1 == "P" && $3 == "limited" && ($4 in p) { print $2, p[$4] }' | sort)
+}
+sc_nat_put() {   # $1 = iptables|ip6tables — the chain refilled, the jump at the TOP of nat PREROUTING (above the stock guest DNAT)
+	"$1" -t nat -N "$SC_NAT" 2>/dev/null || "$1" -t nat -F "$SC_NAT" 2>/dev/null || return 1
+	printf '%s\n' "$SC_NPLAN" | while read -r _nm _np; do
+		[ -n "$_np" ] || continue
+		"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p udp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
+		"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p tcp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
+	done
+	"$1" -t nat -C PREROUTING -j "$SC_NAT" 2>/dev/null || "$1" -t nat -I PREROUTING 1 -j "$SC_NAT" 2>/dev/null
+}
+sc_nat_drop() {   # $1 = iptables|ip6tables
+	_dn=0; while "$1" -t nat -D PREROUTING -j "$SC_NAT" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
+	"$1" -t nat -F "$SC_NAT" 2>/dev/null; "$1" -t nat -X "$SC_NAT" 2>/dev/null
+	return 0
+}
+sc_nat_wired() {   # $1 = iptables|ip6tables — the jump and two rules per device (the kernel rewrites the text; we count)
+	"$1" -t nat -C PREROUTING -j "$SC_NAT" 2>/dev/null || return 1
+	[ "$("$1" -t nat -S "$SC_NAT" 2>/dev/null | grep -c '^-A ' || true)" = "$(printf '%s\n' "$SC_NPLAN" | awk 'NF == 2 { n += 2 } END { print n + 0 }')" ]
+}
+# without ip6 nat: the device's DNS to the router's own v6 addresses refused (its v6 FORWARD is closed whole in sc_fill)
+sc_in6_put() {
+	ip6tables -N "$SC_IN6" 2>/dev/null || ip6tables -F "$SC_IN6" 2>/dev/null || return 1
+	printf '%s\n' "$SC_NPLAN" | while read -r _nm _np; do
+		[ -n "$_np" ] || continue
+		ip6tables -A "$SC_IN6" -m mac --mac-source "$_nm" -p udp --dport 53 -j REJECT 2>/dev/null
+		ip6tables -A "$SC_IN6" -m mac --mac-source "$_nm" -p tcp --dport 53 -j REJECT --reject-with tcp-reset 2>/dev/null
+	done
+	ip6tables -C INPUT -j "$SC_IN6" 2>/dev/null || ip6tables -I INPUT 1 -j "$SC_IN6" 2>/dev/null
+}
+sc_in6_drop() {
+	_dn=0; while ip6tables -D INPUT -j "$SC_IN6" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
+	ip6tables -F "$SC_IN6" 2>/dev/null; ip6tables -X "$SC_IN6" 2>/dev/null
+	return 0
+}
+sc_in6_wired() {
+	ip6tables -C INPUT -j "$SC_IN6" 2>/dev/null || return 1
+	[ "$(ip6tables -S "$SC_IN6" 2>/dev/null | grep -c '^-A ' || true)" = "$(printf '%s\n' "$SC_NPLAN" | awk 'NF == 2 { n += 2 } END { print n + 0 }')" ]
+}
+sc_cap_put() {
+	sc_nat_put iptables
+	have_v6 || return 0
+	if [ "$SC_NAT6" = 1 ]; then sc_nat_put ip6tables; sc_in6_drop; else sc_in6_put; fi
+}
+sc_cap_drop() {
+	sc_nat_drop iptables
+	if have_v6; then sc_nat_drop ip6tables; sc_in6_drop; fi
+	return 0
+}
+sc_cap_wired() {
+	sc_nat_wired iptables || return 1
+	have_v6 || return 0
+	if [ "$SC_NAT6" = 1 ]; then sc_nat_wired ip6tables; else sc_in6_wired; fi
+}
+
+# The daemon. One process for all profiles; it runs only while some device is limited NOW (RAM comes back after).
+sc_fpid() { cat "$SC_FPID" 2>/dev/null | tr -cd '0-9'; }
+sc_falive() { pid_runs "$(sc_fpid)" 'dns-filter'; }
+sc_fstop() {
+	_fsp=$(sc_fpid)
+	if pid_runs "$_fsp" 'dns-filter'; then
+		kill "$_fsp" 2>/dev/null
+		if command -v daemon_wait_gone >/dev/null 2>&1; then daemon_wait_gone "$_fsp" 3; fi
+	fi
+	rm -f "$SC_FPID" "$SC_FDIR/sig" 2>/dev/null
+	return 0
+}
+sc_fstart() {   # $1 = a port of the config — 0 when it answers the probe
+	# the log's clock: a static musl binary reads TZ from the environment only, and the router keeps it in /etc/TZ
+	if [ -s /etc/TZ ]; then TZ=$(cat /etc/TZ 2>/dev/null); export TZ; fi
+	start-stop-daemon -S -b -m -p "$SC_FPID" -x "$SC_FBIN" -- -c "$SC_FDIR/conf" -l "$SC_FLOG" >/dev/null 2>&1 || return 1
+	daemon_wait_uport "$SC_FPID" dns-filter 5 0.0.0.0 "$1" || return 1
+	"$SC_FBIN" -q "$1"
+}
+# The port of each profile: kept while the schedule exists, the lowest free one for a new profile. RAM: a reboot reassigns, and
+# no device keeps a port across a reboot (its DNS flows go with the conntrack table). $1 = ids limited now → SC_FMAP for them.
+sc_fports() {
+	_fall=" $(sc_ids | tr '\n' ' ') "
+	_fmp=$(cat "$SC_FDIR/ports" 2>/dev/null | while read -r _fi _fpn; do
+		case "$_fall" in *" $_fi "*) case "$_fpn" in ''|*[!0-9]*) ;; *) echo "$_fi $_fpn" ;; esac ;; esac
+	done)
+	for _fi in $1; do
+		case "$SC_NL$_fmp$SC_NL" in *"$SC_NL$_fi "*) continue ;; esac
+		_fpn=$SC_FPORT0
+		while case "$SC_NL$_fmp$SC_NL" in *" $_fpn$SC_NL"*) true ;; *) false ;; esac; do _fpn=$((_fpn + 1)); done
+		_fmp="${_fmp:+$_fmp$SC_NL}$_fi $_fpn"
+	done
+	printf '%s\n' "$_fmp" > "$SC_FDIR/ports.$$" && mv -f "$SC_FDIR/ports.$$" "$SC_FDIR/ports"
+	SC_FMAP=$(printf '%s\n' "$_fmp" | while read -r _fi _fpn; do case " $1 " in *" $_fi "*) echo "$_fi $_fpn" ;; esac; done)
+}
+# The config for ids limited now → $SC_FDIR/conf.new. Category lists are geo's READY files (one `geo.sh domfile` for all keys);
+# a category whose data is not downloaded yet acts without it and goes to SC_FPEND («<id>:<category>») — the tick then starts
+# the background fetch. Own sites — a file per schedule here.
+sc_fconf() {
+	SC_FPEND=""; _fk=""
+	for _fi in $1; do sc_load "$_fi" || continue; _fk="$_fk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	_fready=""
+	if [ -n "$(echo $_fk)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then _fready=$(sh "$ENODIA_DIR/geo.sh" domfile $_fk 2>/dev/null); fi
+	{
+		echo "# access-sched.sh: a profile per schedule with limited devices now"
+		printf '%s\n' "$_fready" | awk -F'\t' 'NF == 2 && !s[$1]++ { print "list " $1 " " $2 }'
+		for _fi in $1; do
+			sc_load "$_fi" || continue
+			_fl=""
+			for _fc in $SC_CATON; do
+				_fmiss=0
+				for _fkk in $(sc_cat_keys "$_fc"); do
+					if printf '%s\n' "$_fready" | awk -F'\t' -v k="$_fkk" '$1 == k { f = 1 } END { exit !f }'; then
+						_fl="${_fl:+$_fl,}$_fkk"
+					else _fmiss=1; fi
+				done
+				[ "$_fmiss" = 0 ] || SC_FPEND="$SC_FPEND $_fi:$_fc"
+			done
+			if [ -n "$SC_SITES" ]; then
+				printf '%s\n' "$SC_SITES" > "$SC_FDIR/site-$_fi.new"
+				if cmp -s "$SC_FDIR/site-$_fi.new" "$SC_FDIR/site-$_fi.list"; then rm -f "$SC_FDIR/site-$_fi.new"
+				else mv -f "$SC_FDIR/site-$_fi.new" "$SC_FDIR/site-$_fi.list"; fi
+				echo "list site-$_fi $SC_FDIR/site-$_fi.list"
+				_fl="${_fl:+$_fl,}site-$_fi"
+			fi
+			echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}"
+		done
+	} > "$SC_FDIR/conf.new"
+}
+# Converge the filter to SC_PLAN: profiles of the limited schedules, the daemon started / reloaded / stopped, its probe. A filter
+# that cannot work ⇒ the limited lines leave SC_PLAN (fail-open: open, never «no DNS») and the journal says why, once.
+sc_filter_sync() {
+	SC_FMAP=""; SC_FPEND=""
+	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" { print $3 }' | sort -u | tr '\n' ' ')
+	if [ -z "$(echo $_fids)" ]; then
+		if sc_falive; then sc_fstop; fi
+		sc_fstate idle; return 0
+	fi
+	SC_FBIN=$(bin_path dns-filter)
+	if [ ! -x "$SC_FBIN" ]; then sc_ffail nobin; return 0; fi
+	[ -d "$SC_FDIR" ] || ( umask 077; mkdir -p "$SC_FDIR" ) 2>/dev/null
+	sc_fports "$_fids"
+	sc_fconf "$_fids"
+	_fp0=$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }')
+	_fsig=$( { cat "$SC_FDIR/conf.new"; awk '$1 == "list" { print $3 }' "$SC_FDIR/conf.new" | while read -r _fpth; do stat -c '%s %Y %n' "$_fpth" 2>/dev/null; done; } | md5sum | cut -c1-32)
+	if sc_falive; then
+		if [ "$_fsig" != "$(cat "$SC_FDIR/sig" 2>/dev/null)" ]; then
+			mv -f "$SC_FDIR/conf.new" "$SC_FDIR/conf"; kill -HUP "$(sc_fpid)" 2>/dev/null
+		else rm -f "$SC_FDIR/conf.new"; fi
+		# alive is not answering (map rake «демон жив ≠ работает»): one restart, then fail-open
+		if ! "$SC_FBIN" -q "$_fp0"; then sc_fstop; sc_fstart "$_fp0" || { sc_ffail dead; return 0; }; fi
+	else
+		mv -f "$SC_FDIR/conf.new" "$SC_FDIR/conf"
+		sc_fstop
+		sc_fstart "$_fp0" || { sc_ffail dead; return 0; }
+	fi
+	echo "$_fsig" > "$SC_FDIR/sig"
+	sc_fstate ok
+	if [ -n "$SC_FPEND" ]; then sc_want_fetch; fi
+	return 0
+}
+sc_ffail() {   # $1 = nobin|dead
+	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited"')
+	SC_FMAP=""
+	if [ "$1" = dead ]; then sc_fstop; fi
+	sc_fstate "$1"
+}
+# the filter's state within this boot → a journal line on a change into a failure and back (not «idle ↔ ok»)
+sc_fstate() {
+	_fso=$(cat "$SC_RUN/filter.state" 2>/dev/null)
+	[ "$_fso" = "$1" ] && return 0
+	echo "$1" > "$SC_RUN/filter.state" 2>/dev/null
+	case "$1" in idle) return 0 ;; ok) case "$_fso" in nobin|dead) ;; *) return 0 ;; esac ;; esac
+	sc_lang
+	case "$1:$SC_LANG" in
+		nobin:en) sc_note sched-filter "«Limited» is not acting: the category filter component is not installed" "Devices in a limited state are fully open now. Install the «Category filter» component on the «Components» screen." ;;
+		nobin:*)  sc_note sched-filter "«Ограничено» не действует: нет компонента «Фильтр по категориям»" "Устройства с «ограничено» сейчас открыты целиком. Поставьте компонент «Фильтр по категориям» на экране «Компоненты»." ;;
+		dead:en)  sc_note sched-filter "«Limited» is not acting: the category filter did not start" "Devices in a limited state are fully open now. The filter's log is in the diagnostics archive; the next minute tries again." ;;
+		dead:*)   sc_note sched-filter "«Ограничено» не действует: фильтр по категориям не запустился" "Устройства с «ограничено» сейчас открыты целиком. Лог фильтра — в архиве диагностики; через минуту роутер попробует снова." ;;
+		*:en)     sc_note sched-filter "«Limited» acts again" "The category filter answers again." ;;
+		*)        sc_note sched-filter "«Ограничено» снова действует" "Фильтр по категориям снова отвечает." ;;
+	esac
+}
+# Category data: the consumer's keys to geo.sh (the one owner), and the background fetch of what is not downloaded yet.
+sc_want_sync() {   # under the lock, after a write: every schedule's category keys → `geo.sh want sched`
+	[ -f "$ENODIA_DIR/geo.sh" ] || return 0
+	_wsk=""
+	for _wsi in $(sc_ids); do sc_load "$_wsi" || continue; _wsk="$_wsk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	_wsk=$(printf '%s\n' $_wsk | grep . | sort -u | tr '\n' ' ')
+	sh "$ENODIA_DIR/geo.sh" want sched $_wsk >/dev/null 2>&1
+	if [ -n "$(echo $_wsk)" ]; then sc_want_fetch force; fi
+	return 0
+}
+sc_want_fetch() {   # `geo.sh wanted` in the background; not twice at once, and from the tick not more often than SC_WANT_GAP
+	_wfp=$(cat "$SC_RUN/wanted.pid" 2>/dev/null | tr -cd '0-9')
+	pid_runs "$_wfp" 'geo\.sh' && return 0
+	if [ "${1:-}" != force ]; then
+		_wfl=$(cat "$SC_RUN/wanted.at" 2>/dev/null); case "$_wfl" in ''|*[!0-9]*) _wfl=-999999 ;; esac
+		[ $(( $(uptime_s) - _wfl )) -ge "$SC_WANT_GAP" ] || return 0
+	fi
+	uptime_s > "$SC_RUN/wanted.at" 2>/dev/null
+	start-stop-daemon -S -b -m -p "$SC_RUN/wanted.pid" -x /bin/sh -- "$ENODIA_DIR/geo.sh" wanted >/dev/null 2>&1
 	return 0
 }
 
@@ -508,6 +795,7 @@ sc_tick_locked() {
 	SC_IDS=$(sc_ids)
 	clock_trusted && sc_use_tick
 	sc_plan
+	sc_filter_sync        # may take the limited lines out of the plan (fail-open) — before the kernel converges
 	sc_apply
 	clock_trusted || return 0
 	SC_LANG=""
@@ -561,8 +849,11 @@ cmd_tick() {
 }
 cmd_unwire() {
 	sc_lock || true
-	sc_drop_fam iptables; have_v6 && sc_drop_fam ip6tables
-	rm -f "$SC_APPLIED" "$SC_RUN"/st.* 2>/dev/null
+	sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi
+	sc_cap_drop
+	sc_fstop
+	rm -f "$SC_APPLIED" "$SC_APPLIED.nat" "$SC_RUN"/st.* "$SC_RUN/filter.state" 2>/dev/null
+	rm -rf "$SC_FDIR" 2>/dev/null
 	echo "Расписания доступа: правила сняты."
 }
 
@@ -590,6 +881,19 @@ sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
 	done
 	printf '],"devs":['
 	_ij=0; for _im in $SC_DEVS; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_im"; done
+	# «limited»: the mode, the chosen categories, own sites, and the categories whose data is not downloaded yet (SC_FREADY —
+	# the ready keys, asked once per answer by sc_fready)
+	printf '],"lmode":"%s","cats":[' "$SC_LMODE"
+	_ij=0; _ipd=""
+	for _ic in $SC_CATON; do
+		[ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_ic"
+		for _ik in $(sc_cat_keys "$_ic"); do
+			case " $SC_FREADY " in *" $_ik "*) ;; *) _ipd="${_ipd:+$_ipd,}\"$_ic\""; break ;; esac
+		done
+	done
+	printf '],"pend":[%s],"sites":[' "$_ipd"
+	_ij=0
+	for _is in $SC_SITES; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_is"; done
 	printf '],"st":"%s","why":"%s","hol":' "$SC_ST" "$SC_WHY"
 	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then sc_at_json "$SC_HOL"; else printf 'null'; fi
 	printf ',"ovr":'
@@ -616,9 +920,22 @@ sc_head_json() {   # router clock + «close all» + limits, after sc_now
 	if [ "$_hc" = 1 ] && sc_all_get; then
 		if [ "$SC_AU" = 0 ]; then printf '{"until":null}'; else printf '{"until":'; sc_at_json "$SC_AU"; printf '}'; fi
 	else printf 'null'; fi
+	# «limited»: the categories offered (the router's table — the panel words them) and the filter: installed? its state now
+	_hfi=0; [ -x "$(bin_path dns-filter)" ] && _hfi=1
+	printf ',"cats":['
+	printf '%s\n' "$SC_CATS" | awk -F'|' 'NF == 3 { printf "%s{\"id\":\"%s\",\"name\":\"%s\"}", (n++ ? "," : ""), $1, $3 }'
+	printf '],"filter":{"inst":%s,"state":"%s"}' "$_hfi" "$(cat "$SC_RUN/filter.state" 2>/dev/null | tr -cd 'a-z')"
+}
+# the category keys of the listed schedules that have READY data now → SC_FREADY (one geo.sh call per answer)
+sc_fready() {
+	SC_FREADY=""; _frk=""
+	for _fri in "$@"; do sc_load "$_fri" || continue; _frk="$_frk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	[ -n "$(echo $_frk)" ] && [ -f "$ENODIA_DIR/geo.sh" ] || return 0
+	SC_FREADY=$(sh "$ENODIA_DIR/geo.sh" domfile $_frk 2>/dev/null | cut -f1 | tr '\n' ' ')
+	return 0
 }
 cmd_list_json() {
-	sc_now; sc_use_load
+	sc_now; sc_use_load; sc_fready $(sc_ids)
 	printf '{"ok":true,'; sc_head_json; printf ',"items":['
 	_lj=0
 	for _li in $(sc_ids); do
@@ -630,7 +947,7 @@ cmd_list_json() {
 }
 cmd_get_json() {
 	id_ok "$1" || jfail "неверный номер расписания"
-	sc_now; sc_use_load
+	sc_now; sc_use_load; sc_fready "$1"
 	sc_load "$1" || jfail "нет такого расписания"
 	printf '{"ok":true,'; sc_head_json; printf ',"item":'; sc_item_json; printf '}\n'
 }
@@ -638,7 +955,8 @@ cmd_get_json() {
 # ---- writes -------------------------------------------------------------------------------------------------------
 # Spec from the CGI (key=value lines, values already charset-checked there; meaning is checked HERE):
 #   id=<sN|new> ver=<n the panel opened> name_b64=… enabled=0|1 base=open|limited|closed
-#   wins=<d>.<HHMM>.<HHMM>.<o|l|c>[;…]   devs=<mac>[,<mac>…]
+#   wins=<d>.<HHMM>.<HHMM>.<o|l|c>[;…]   devs=<mac>[,<mac>…]   lim_wd= lim_we= (minutes)
+#   lmode=block|allow   cats=<id>[,<id>…]   sites_b64=<base64 of a site per line>   — absent = the schedule keeps its own
 sc_spec() { sed -n "s/^$1=//p" "$SC_SPEC" | head -n 1 | tr -d '\r'; }
 sc_st_of() { case "$1" in o) echo open ;; l) echo limited ;; c) echo closed ;; *) return 1 ;; esac; }
 cmd_save() {
@@ -677,11 +995,39 @@ cmd_save() {
 		_vdn=$((_vdn + 1)); [ "$_vdn" -le "$SC_DEV_MAX" ] || jfail "устройств больше $SC_DEV_MAX"
 		_vdevs="${_vdevs:+$_vdevs }$_vm"
 	done
+	# «limited»: the mode, categories (ours only), own sites. Sites as a person pastes them — URLs, «*.x», capitals: the ONE
+	# normaliser of the project's domain lists (lists-lib.sh::norm_domains) makes host names of them; what it cannot is dropped
+	# and COUNTED in the answer (the panel says how many lines were not sites).
+	_vlm=$(sc_spec lmode); case "$_vlm" in ''|block|allow) ;; *) jfail "неверный режим «ограничено»" ;; esac
+	_vcats=""; _vhc=0
+	if grep -q '^cats=' "$SC_SPEC"; then
+		_vhc=1
+		for _vc in $(sc_spec cats | tr ',' ' '); do
+			sc_cat_ok "$_vc" || jfail "неизвестная категория: $_vc"
+			case " $_vcats " in *" $_vc "*) ;; *) _vcats="${_vcats:+$_vcats }$_vc" ;; esac
+		done
+	fi
+	_vhs=0; _vsites=""; _vdrop=0
+	if grep -q '^sites_b64=' "$SC_SPEC"; then
+		_vhs=1
+		# «*.x» is x and below (dnsmasq semantics, the filter's too) — cut here: the shared normaliser drops a star as junk
+		_vraw=$(sc_spec sites_b64 | base64 -d 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*\*\.//')
+		_vin=$(printf '%s\n' "$_vraw" | grep -c '[^[:space:]]' || true)
+		if [ -f "$ENODIA_DIR/lists-lib.sh" ]; then
+			. "$ENODIA_DIR/lists-lib.sh"
+			_vsites=$(printf '%s\n' "$_vraw" | norm_domains | awk '!s[$0]++')
+		else
+			_vsites=$(printf '%s\n' "$_vraw" | tr 'A-Z' 'a-z' | awk '{ d = $1; sub(/^\*?\./, "", d) } d ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !s[d]++ { print d }')
+		fi
+		_vout=$(printf '%s\n' "$_vsites" | grep -c . || true)
+		[ "$_vout" -le "$SC_SITE_MAX" ] || jfail "своих сайтов больше $SC_SITE_MAX"
+		_vdrop=$(( ${_vin:-0} - ${_vout:-0} )); [ "$_vdrop" -ge 0 ] || _vdrop=0
+	fi
 	mkdir -p "$SC_DIR" 2>/dev/null || jfail "не удалось создать $SC_DIR"
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	if [ "$_vid" = new ]; then
 		[ "$(sc_ids | wc -l | tr -d ' ')" -lt "$SC_MAX" ] || jfail "расписаний не больше $SC_MAX"
-		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0
+		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_SITES=""
 	else
 		id_ok "$_vid" || jfail "неверный номер расписания"
 		sc_load "$_vid" || jfail "расписание удалено — откройте список заново"
@@ -699,15 +1045,19 @@ cmd_save() {
 	done
 	SC_ID=$_vid; SC_NAME=$_vname; SC_ON=$_von; SC_BASE=$_vbase; SC_WINS=$_vwins; SC_DEVS=$_vdevs; SC_VER=$((SC_VER + 1))
 	[ -n "$_vlwd" ] && SC_LWD=$_vlwd; [ -n "$_vlwe" ] && SC_LWE=$_vlwe
+	[ -n "$_vlm" ] && SC_LMODE=$_vlm; [ "$_vhc" = 1 ] && SC_CATON=$_vcats; [ "$_vhs" = 1 ] && SC_SITES=$_vsites
 	sc_write "$_vid" || jfail "не удалось записать расписание"
+	_vv=$SC_VER          # the tick and the keys' sync load OTHER schedules into the same SC_* — the answer is this one's
+	sc_want_sync
 	sc_tick_locked
-	jok "\"id\":\"$_vid\",\"ver\":$SC_VER"
+	jok "\"id\":\"$_vid\",\"ver\":$_vv,\"dropped\":$_vdrop"
 }
 cmd_del() {
 	id_ok "$1" || jfail "неверный номер расписания"
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	[ -f "$SC_DIR/$1.sch" ] || jfail "нет такого расписания"
 	rm -f "$SC_DIR/$1.sch" "$SC_DIR/$1.ovr" "$SC_RUN/st.$1" 2>/dev/null
+	sc_want_sync
 	sc_tick_locked
 	jok
 }
@@ -718,8 +1068,8 @@ cmd_toggle() {
 	sc_load "$1" || jfail "нет такого расписания"
 	SC_ON=$_tv; SC_VER=$((SC_VER + 1))
 	sc_write "$1" || jfail "не удалось записать расписание"
-	sc_tick_locked
-	jok "\"ver\":$SC_VER"
+	_tvv=$SC_VER; sc_tick_locked
+	jok "\"ver\":$_tvv"
 }
 # minutes|HH:MM|0 -> SC_UNTIL (epoch; 0 = until cancelled). `end` is handled by the caller (it needs the week).
 sc_until() {
@@ -790,8 +1140,8 @@ cmd_hol() {
 	fi
 	SC_VER=$((SC_VER + 1))
 	sc_write "$1" || jfail "не удалось записать расписание"
-	sc_tick_locked
-	jok "\"ver\":$SC_VER"
+	_hvv=$SC_VER; sc_tick_locked
+	jok "\"ver\":$_hvv"
 }
 
 # Backup import (cgi-bin/backup): a schedule from the archive replaces the one under its id, written through the SAME load
@@ -830,8 +1180,31 @@ cmd_import() {
 	done
 	_ma=$(cat "$1/.last-id" 2>/dev/null | tr -cd '0-9'); _ml=$(cat "$SC_DIR/.last-id" 2>/dev/null | tr -cd '0-9')
 	[ "${_ma:-0}" -gt "${_ml:-0}" ] 2>/dev/null && echo "$_ma" > "$SC_DIR/.last-id"
+	sc_want_sync
 	sc_tick_locked
 	jok "\"n\":$(set -- $_mi; echo $#)"
+}
+
+# Does any switched-on schedule use «limited» in its week (a window or the state outside them)? packages.sh asks before removing
+# the filter component: without it those devices would go fully open. rc 0 = yes.
+cmd_uses_filter() {
+	for _ui in $(sc_ids); do
+		sc_load "$_ui" || continue
+		[ "$SC_ON" = 1 ] || continue
+		[ "$SC_BASE" = limited ] && return 0
+		case "$SC_NL$SC_WINS" in *" limited$SC_NL"*) return 0 ;; esac
+	done
+	return 1
+}
+# «Перезапустить» (packages.sh, after a new build of the binary): the daemon goes, the tick brings it back if something is
+# limited now. rc 0 = nothing limited, or the new process answers its probe.
+cmd_filter_restart() {
+	sc_lock || { echo "расписания сейчас меняет другой запрос — повторите"; return 1; }
+	sc_fstop
+	sc_tick_locked
+	[ -z "$SC_FMAP" ] && [ -z "$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited"')" ] && { echo "сейчас ничего не ограничено — фильтр не нужен"; return 0; }
+	if sc_falive && "$SC_FBIN" -q "$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }')"; then echo "фильтр перезапущен: $(sc_fpid)"; return 0; fi
+	echo "фильтр не поднялся — устройства с «ограничено» открыты (подробности в $SC_FLOG)"; return 1
 }
 
 # ---- diagnostics --------------------------------------------------------------------------------------------------
@@ -843,8 +1216,14 @@ cmd_dump() {
 		sc_load "$_di" || continue
 		sc_eval 1; sc_effective
 		# by id, not by name: the dump goes into a chat, and a schedule is named after a person («Маша») more often than not
-		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true)"
+		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true) «ограничено»: $SC_LMODE [${SC_CATON:-—}] своих сайтов=$(printf '%s\n' "$SC_SITES" | grep -c . || true)"
 	done
+	# the filter of «limited»: component, state, the daemon, its config (ports and lists) and the last lines of its log
+	echo "фильтр «ограничено»: компонент $([ -x "$(bin_path dns-filter)" ] && echo есть || echo НЕТ) · состояние $(cat "$SC_RUN/filter.state" 2>/dev/null || echo —) · процесс $(sc_falive && echo "жив ($(sc_fpid))" || echo нет)"
+	grep -E '^(list|port) ' "$SC_FDIR/conf" 2>/dev/null | sed 's/^/  /'
+	iptables -t nat -S "$SC_NAT" 2>/dev/null | sed 's/^/  v4 nat /'
+	have_v6 && ip6tables -t nat -S "$SC_NAT" 2>/dev/null | sed 's/^/  v6 nat /'
+	tail -n 5 "$SC_FLOG" 2>/dev/null | sed 's/^/  лог: /'
 	_dn=$(grep -c . "$SC_APPLIED" 2>/dev/null || true)
 	echo "в ядре (план): ${_dn:-0} устройств закрыто/ограничено"
 	# MACs as they are: dump.sh masks its whole output with the one redact() of the project
@@ -870,5 +1249,7 @@ case "$SC_VERB" in
 	tick)      cmd_tick ;;
 	unwire)    cmd_unwire ;;
 	dump)      cmd_dump ;;
-	*) echo "usage: access-sched.sh list-json|get-json <id>|save <spec>|del <id>|toggle <id> on|off|ovr <id> …|all …|hol <id> …|import <dir>|tick|unwire|dump"; exit 1 ;;
+	uses-filter)    cmd_uses_filter ;;
+	filter-restart) cmd_filter_restart ;;
+	*) echo "usage: access-sched.sh list-json|get-json <id>|save <spec>|del <id>|toggle <id> on|off|ovr <id> …|all …|hol <id> …|import <dir>|tick|unwire|dump|uses-filter|filter-restart"; exit 1 ;;
 esac

@@ -87,7 +87,7 @@ BGPID=/tmp/enodia-proto-install.pid
 RESERVE_B="$DATA_RESERVE_B"   # 2.5 МБ неснижаемого запаса на /data (единственная цифра — в store-lib.sh)
 
 # Реестр связок. Новый компонент = ОДНО слово в PKGS + по строке в трёх case ниже.
-PKGS="awg xray hy2 byedpi zapret doh tls"
+PKGS="awg xray hy2 byedpi zapret doh tls filter"
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
 # СОСТОЯНИЕ ПИШЕМ АТОМАРНО (запись рядом + `mv`): `>` сперва ОБРЕЗАЕТ файл, и читатель, попавший между обрезкой и записью,
@@ -101,13 +101,13 @@ pkg_known()  { case " $PKGS " in *" $1 "*) return 0 ;; esac; return 1; }
 pkg_label()  { case "$1" in
         awg) echo "AmneziaWG" ;; xray) echo "Xray" ;; hy2) echo "Hysteria2" ;;
         byedpi) echo "ByeDPI" ;; zapret) echo "Zapret" ;;
-        doh) echo "Шифрованный DNS" ;; tls) echo "HTTPS панели" ;;
+        doh) echo "Шифрованный DNS" ;; tls) echo "HTTPS панели" ;; filter) echo "Фильтр по категориям" ;;
     esac; }
 # Свои бинари связки (их и удаляем).
 pkg_own()    { case "$1" in
         awg) echo "amneziawg-go awg" ;; xray) echo "xray" ;; hy2) echo "hysteria" ;;
         byedpi) echo "byedpi" ;; zapret) echo "nfqws" ;;
-        doh) echo "https-dns-proxy dot-proxy" ;; tls) echo "panel-tls" ;;
+        doh) echo "https-dns-proxy dot-proxy" ;; tls) echo "panel-tls" ;; filter) echo "dns-filter" ;;
     esac; }
 # ОБЩИЕ бинари: нужны связке, но принадлежат не ей (ref-count при удалении).
 pkg_shared() { case "$1" in xray|hy2|byedpi) echo "hev" ;; esac; }
@@ -217,6 +217,7 @@ rst_unit() {   # $1 = pid, $2 = бинарь, $3 = активный трансп
             zapret-nfqws)    echo zapret ;;
             doh)             echo doh ;;
             panel-tls)       echo tls ;;
+            dns-filter)      echo filter ;;
         esac
         return 0
     done
@@ -277,7 +278,7 @@ rst_scan() {   # $@ = связки → RST_UNITS (в порядке RST_ORDER), 
 rst_label() { case "$1" in
         main) echo "основной канал" ;; warm-awg) echo "тёплый резерв AmneziaWG" ;; server) echo "«доступ домой»" ;;
         slot[2-7]) echo "дополнительный выход №${1#slot}" ;; zapret) echo "Zapret (nfqws)" ;;
-        doh) echo "шифрованный DNS" ;; tls) echo "HTTPS панели" ;; *) echo "$1" ;;
+        doh) echo "шифрованный DNS" ;; tls) echo "HTTPS панели" ;; filter) echo "фильтр по категориям" ;; *) echo "$1" ;;
     esac; }
 # CAN A UNIT BE RESTARTED NOW — one answer for the offer (list-json `rst_units`) and the run (cmd_restart): the main carrier only while
 # it CARRIES. No default route in table 1000 means the watchdog holds traffic direct (FAILOPEN — a network state, not the string in
@@ -325,6 +326,7 @@ rst_one() {   # $1 = unit → код владельца (0 — перезапу�
         warm-awg)  sh "$ENODIA_DIR/transport.sh" rewarm awg >> "$RST_OWNER_LOG" 2>&1 ;;
         main)      sh "$ENODIA_DIR/transport.sh" restart >> "$RST_OWNER_LOG" 2>&1 ;;
         tls)       sh "$ENODIA_DIR/web-ui.sh" tls-reload >> "$RST_OWNER_LOG" 2>&1 ;;
+        filter)    sh "$ENODIA_DIR/access-sched.sh" filter-restart >> "$RST_OWNER_LOG" 2>&1 ;;
         *)         return 1 ;;
     esac
 }
@@ -468,6 +470,10 @@ pkg_hold() {
              [ -f "$ENODIA_DIR/doh-lib.sh" ] && ( . "$ENODIA_DIR/doh-lib.sh"; doh_auto_active ) 2>/dev/null && \
                  { echo "шифрованный DNS сейчас держит DNS сети сам (прямой режим) — сперва выключите «Включать само в прямых режимах»"; return 0; } ;;
         tls) [ -f "$ENODIA_STATE/.panel-tls" ] && { echo "включён HTTPS панели — снимете и потеряете вход"; return 0; } ;;
+        # a schedule with «limited» in its week would go fully OPEN without the filter (fail-open) — the owner answers who
+        filter) if [ -f "$ENODIA_DIR/access-sched.sh" ] && sh "$ENODIA_DIR/access-sched.sh" uses-filter >/dev/null 2>&1; then
+                    echo "его держат расписания с «ограничено» — сперва уберите из них «ограничено»"; return 0
+                fi ;;
     esac
     return 0
 }
@@ -773,7 +779,7 @@ cmd_plan() {
 # остался без него, хотя теперь именно он — единственный экран установки.
 pkg_pids() { case "$1" in
         xray) echo /tmp/enodia-xray.pid ;; hy2) echo /tmp/enodia-hysteria.pid ;; byedpi) echo /tmp/enodia-byedpi.pid ;;
-        doh) echo /tmp/enodia-doh.pid ;; tls) echo /tmp/enodia-panel-tls.pid ;;
+        doh) echo /tmp/enodia-doh.pid ;; tls) echo /tmp/enodia-panel-tls.pid ;; filter) echo /tmp/enodia-dns-filter.pid ;;
     esac; }
 kill_by_pidfile() { [ -f "$1" ] || return 0; start-stop-daemon -K -p "$1" >/dev/null 2>&1; rm -f "$1"; return 0; }
 
@@ -881,6 +887,7 @@ do_install() {      # $1 = связка
         byedpi) log "ByeDPI установлен. Включить — в «Соединение → Транспорт»." ;;
         doh) log "Компоненты шифрованного DNS установлены. Включить — в «Сеть → Шифрованный DNS»." ;;
         tls) log "Компонент HTTPS установлен. Включить — в «Панель → Доступ к панели»." ;;
+        filter) log "Фильтр по категориям установлен. Действует в окнах «ограничено» — «Маршрутизация → Расписания доступа»." ;;
     esac
     return 0
 }

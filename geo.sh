@@ -697,6 +697,51 @@ snap_q() {
 	return 0
 }
 
+# --- CONSUMERS: category data for other subsystems (access schedules' «Ограничено») ------------------------------------
+# geo.sh is the ONE owner of category DATA (fetch, the v2fly include tree, snapshots); another subsystem must not grow a second
+# copy. A consumer names the keys it needs (`want`) and reads a READY file (`domfile`) — never a fetch on its own path: the
+# schedule tick runs every minute and must not wait on an include tree that takes minutes. The fetch runs in geo's own jobs:
+# `wanted` (the consumer's save starts it in the background) and every `update` (boot, daily, the panel) refreshes them.
+# Not through do_build: its pass ends with a dnsmasq restart — ~2.5 s without names for the whole house per schedule save.
+WANT_DIR="$GEO/want"                    # one file per consumer: a key per line
+WSNAP="$GEO/.wsnap.$RESOLVER_VER"       # gz snapshots of wanted keys; keyed by the resolver version (new logic = stale data)
+WSNAP_MAX=1048576                       # bytes of one gz snapshot; a bigger key lives in RAM only (a journal line, as snap_flash)
+want_keys() { cat "$WANT_DIR"/* 2>/dev/null | tr -d '\r' | grep . | sort -u; }
+# _wanted_pass <refetch> — under GEO_LOCK: every wanted key into the RAM cache (refetch=1: again) and its snapshot to the flash;
+# snapshots of keys nobody wants any more, and of older resolver versions, go away
+_wanted_pass() {
+	_wk=$(want_keys)
+	for _wo in "$GEO"/.wsnap.*; do [ -d "$_wo" ] && [ "$_wo" != "$WSNAP" ] && rm -rf "$_wo"; done
+	for _ws in "$WSNAP"/*.gz; do
+		[ -f "$_ws" ] || continue
+		_wn=${_ws##*/}; _wn=${_wn%.gz}
+		printf '%s\n' "$_wk" | grep -qxF "$_wn" || rm -f "$_ws"
+	done
+	[ -n "$_wk" ] || return 0
+	mkdir -p "$WSNAP" 2>/dev/null
+	for _wn in $_wk; do
+		_wc=$(ensure_cache "$_wn" "$1")
+		[ -s "$_wc" ] || continue
+		# a snapshot is rewritten only when the data changed: the flash is written by content, not by the clock
+		gzip -c "$_wc" > "$RAM/.wsnap.$$" 2>/dev/null || { rm -f "$RAM/.wsnap.$$"; continue; }
+		if [ "$(wc -c < "$RAM/.wsnap.$$" | tr -d ' ')" -gt "$WSNAP_MAX" ]; then
+			rm -f "$RAM/.wsnap.$$" "$WSNAP/$_wn.gz"
+			if [ -f "$ENODIA_DIR/events.sh" ]; then
+				sh "$ENODIA_DIR/events.sh" add geo-want-snap-skip 86400 \
+					"Категория расписания не переживёт перезагрузку" \
+					"Категория «$_wn» слишком велика для снимка на флеш. Сейчас она работает, но после перезагрузки роутера начнёт закрываться не сразу — сперва её нужно будет заново скачать (несколько минут)." >/dev/null 2>&1
+			fi
+			continue
+		fi
+		if [ -f "$WSNAP/$_wn.gz" ] && gunzip -c "$WSNAP/$_wn.gz" 2>/dev/null | cmp -s - "$_wc"; then
+			rm -f "$RAM/.wsnap.$$"
+		else
+			mv -f "$RAM/.wsnap.$$" "$WSNAP/$_wn.gz"
+		fi
+	done
+	return 0
+}
+
 # --- сборка: агрегировать включённые ключи → сеты/conf → снимки → правила -------------
 # refetch=1 (update) перекачивает кэш; refetch=0 (apply) собирает из существующего кэша (быстро).
 # _build_pass — ОДИН проход; ВСЕГДА под локом do_build (см. ниже).
@@ -805,6 +850,8 @@ _build_pass() {
 	dns_reload
 	# NSS/ECM-offload держит установленные соединения на старом маршруте до таймаута — сброс обязателен.
 	ct_flush
+	# the consumers' keys ride every refetch (boot, daily, «Обновить»); AFTER the routing above — they must not delay it
+	if [ "$_refetch" = 1 ]; then _wanted_pass 1 >/dev/null 2>&1; fi
 	rm -f "$_vpn" "$_out" "$_blk" "$_dsy" "$_dv" "$_do" "$_db" "$_dd" 2>/dev/null
 	for _sn in 2 3 4 5 6 7; do rm -f "$RAM/.agg-vpn-s$_sn" "$RAM/.dom-vpn-s$_sn" 2>/dev/null; done
 	# ustate DONE ставит ОБЁРТКА (do_build) после ПОСЛЕДНЕГО прохода: иначе dirty-повтор мигнул бы
@@ -1142,6 +1189,49 @@ case "$1" in
 		awk -F"$TAB" -v OFS="$TAB" -v k="$2" -v s="$3" '$1==k{$5=s} {print}' "$REG" > "$REG.new" && mv "$REG.new" "$REG"
 		echo "выход: $([ "$3" = 0 ] && echo 'Основной' || echo "слот №$3")"
 		;;
+	# want <consumer> [<key>…] — the consumer's whole set of keys (none = it wants nothing); DOMAIN keys only: a consumer judges
+	# names (the access schedules' DNS filter), and an address list would be silently empty for it
+	want)
+		case "$2" in ''|*[!a-z0-9-]*) echo "потребитель: [a-z0-9-]"; exit 1 ;; esac
+		_wc="$2"; shift 2
+		for _wn in "$@"; do
+			case "$_wn" in */*|.*|*[!a-z0-9._!-]*) echo "неверный ключ гео: $_wn"; exit 1 ;; esac   # a key becomes a file name
+			[ -n "$(cat_url "$_wn")" ] || { echo "неизвестный ключ гео: $_wn"; exit 1; }
+			[ "$(cat_kind "$_wn")" = domain ] || { echo "ключ гео не доменный: $_wn"; exit 1; }
+		done
+		mkdir -p "$WANT_DIR" 2>/dev/null
+		if [ "$#" = 0 ]; then rm -f "$WANT_DIR/$_wc"; exit 0; fi
+		printf '%s\n' "$@" | sort -u > "$WANT_DIR/.$_wc.$$" && mv -f "$WANT_DIR/.$_wc.$$" "$WANT_DIR/$_wc" ;;
+	# domfile <key>… — «<key><TAB><path>» for every key with a READY domain file: the RAM cache, or the flash snapshot put back
+	# into it. A key with neither is left out (the consumer goes without it until `wanted` brings it) — never a fetch here. One
+	# call for all keys: the schedule tick asks every minute while a device is limited.
+	domfile)
+		shift
+		for _wn in "$@"; do
+			[ -n "$(cat_url "$_wn")" ] || continue
+			case "$_wn" in */*|.*|*[!a-z0-9._!-]*) continue ;; esac
+			_wc="$CACHE/$_wn"
+			if [ ! -s "$_wc" ] && [ -s "$WSNAP/$_wn.gz" ]; then
+				gunzip -c "$WSNAP/$_wn.gz" > "$_wc.$$" 2>/dev/null && mv -f "$_wc.$$" "$_wc"
+				rm -f "$_wc.$$" 2>/dev/null
+			fi
+			if [ -s "$_wc" ]; then printf '%s\t%s\n' "$_wn" "$_wc"; fi
+		done
+		exit 0 ;;
+	# wanted — fetch what the consumers want and is not in RAM yet (a background job of the consumer's save). Waits for the geo
+	# lock instead of riding a build: a build pass ends with a dnsmasq restart the save must not cost the house.
+	wanted)
+		_wi=0
+		until ls_lock_take "$GEO_LOCK" "$RAM/.wanted.wait" 1; do
+			_wi=$((_wi + 1)); [ "$_wi" -le 720 ] || exit 1   # an hour: an update of everything is the longest holder
+			sleep 5
+		done
+		rm -f "$RAM/.wanted.wait" 2>/dev/null
+		trap 'ls_lock_drop "$GEO_LOCK"' EXIT
+		trap 'exit 1' INT TERM HUP PIPE
+		_wanted_pass 0
+		trap - EXIT INT TERM HUP PIPE; ls_lock_drop "$GEO_LOCK"
+		exit 0 ;;
 	apply)   do_build 0 ;;     # собрать из кэша (быстро; после смены действия)
 	update)  resolve_upstream; set_source_urls; v2fly_enumerate; do_build 1 ;;   # SHA+даты → пиновка URL → перечислить v2fly (rf=baked) → перекачать (пиновано) + собрать
 	reapply) do_reapply ;;     # офлайн из снимка (boot)
@@ -1183,7 +1273,7 @@ case "$1" in
 	*)
 		echo "geo.sh — гео-категории (страны/сервисы/заблок-в-РФ → в VPN / мимо VPN / блок)"
 		echo "  list | active | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2..7> | apply | update | reapply | enabled"
-		echo "  desync-list"
+		echo "  desync-list | want <consumer> [<key>…] | domfile <key> | wanted"
 		echo "  provider <type> | provider-set <type> <pid> | freshness"
 		exit 1
 		;;
