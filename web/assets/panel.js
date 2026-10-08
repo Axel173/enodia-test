@@ -5662,8 +5662,12 @@
       + '<option value="">—</option>'+devPickSort(other).map(function(v){ var m=String(v.mac).toLowerCase(); return '<option value="'+esc(m)+'">'+esc(devName(v)+' · '+m.toUpperCase())+'</option>'; }).join('')
       + '</select></div><button type="button" class="btn" id="sc-daddgo"'+(other.length?'':' disabled')+'>Добавить</button></div></div>';
     // DAY LIMIT (mockup «Лимит в день»): minutes of real activity per weekday / weekend day — part of the draft, saved with it
+    // A limit the choices do not have (a backup, a hand edit — the router takes any 0..1440) is offered as is: shown as «без
+    // лимита», the next «Сохранить» would silently drop it (BE7000 08.10.2026, a 3-minute test limit).
     function limSel(id, v){
-      return '<select id="'+id+'" class="sc-lim">'+SCH_LIM_OPT.map(function(m){ return '<option value="'+m+'"'+(m===(v|0) ? ' selected' : '')+'>'+esc(m ? schMinWord(m) : tkL('без лимита','no limit'))+'</option>'; }).join('')+'</select>';
+      v=v|0;
+      var opts=SCH_LIM_OPT.indexOf(v)>=0 ? SCH_LIM_OPT : SCH_LIM_OPT.concat([v]).sort(function(a, b){ return a-b; });
+      return '<select id="'+id+'" class="sc-lim">'+opts.map(function(m){ return '<option value="'+m+'"'+(m===(v|0) ? ' selected' : '')+'>'+esc(m ? schMinWord(m) : tkL('без лимита','no limit'))+'</option>'; }).join('')+'</select>';
     }
     h+='<div class="card" id="sc-lim"><div class="wt">Лимит в день</div>'
       + '<div class="kv"><div class="grow"><div class="k">Будни</div><div class="v">не больше стольких минут в интернете</div></div><div class="f">'+limSel('sc-lwd', dr.lim.wd)+'</div></div>'

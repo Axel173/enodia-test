@@ -350,7 +350,9 @@ sc_use_tick() {
 	{ echo "$SC_E"; printf '%s\n' "$_uout" | sed -n 's/^C //p'; } > "$SC_USE_LAST.$$" && mv -f "$SC_USE_LAST.$$" "$SC_USE_LAST"
 	_unew=$(printf '%s\n' "$_uout" | sed -n 's/^U //p' | sort)
 	if [ "$_unew" != "$(printf '%s\n' "$SC_USED" | grep . | sort)" ] || [ "$(head -n 1 "$SC_USE" 2>/dev/null)" != "$SC_D" ]; then
-		{ echo "$SC_D"; [ -n "$_unew" ] && printf '%s\n' "$_unew"; } > "$SC_USE.$$" && mv -f "$SC_USE.$$" "$SC_USE"
+		# `[ -z ] ||`, not `[ -n ] &&`: the group's status is its last command's — nobody's minutes yet would fail the write,
+		# skip the mv and leave a temp file in RAM on every tick until the first active minute (BE7000, 08.10.2026)
+		{ echo "$SC_D"; [ -z "$_unew" ] || printf '%s\n' "$_unew"; } > "$SC_USE.$$" && mv -f "$SC_USE.$$" "$SC_USE"
 	fi
 	SC_USED=$_unew
 	sc_use_save
