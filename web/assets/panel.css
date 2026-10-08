@@ -1192,6 +1192,25 @@
   .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
   .lg i{width:10px;height:10px;border-radius:3px;display:block}
   .lg.ln i{width:16px;height:3px;border-radius:2px}
+  /* WEEK OF AN ACCESS SCHEDULE (macket `WeekBars`/`.wk`, 08.10.2026): one bar per day, windows in % of the day — a window is set to the
+     minute, and a bar in percent reads the same at 320 px and at 1600 (a 7×24 grid would not). Painted weakest first, so the stricter
+     state ends up on top: the picture IS the overlap rule. `b` — «now» on the router's clock. */
+  .wk{display:grid;grid-template-columns:24px minmax(0,1fr);gap:6px 9px;align-items:center}
+  .wk .dn{font-size:11.5px;color:var(--ink3);line-height:1}
+  .wk .dn.now{color:var(--ink);font-weight:600}
+  .wk .tl{position:relative;height:15px;border-radius:5px;background:var(--soft2);overflow:hidden}
+  .wk .tl i{position:absolute;top:0;bottom:0}
+  .wk .tl i.open{background:var(--wk-op)}
+  .wk .tl i.limited{background:var(--st-warn)}
+  .wk .tl i.closed{background:var(--st-bad)}
+  .wk .tl b{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--ink);box-shadow:0 0 0 1.5px var(--card)}
+  .wk .ax{position:relative;height:12px;font-size:10.5px;color:var(--ink3)}
+  .wk .ax span{position:absolute;top:0;transform:translateX(-50%)}
+  .wk .ax span:first-child{transform:none}
+  .wk .ax span:last-child{transform:translateX(-100%)}
+  :root{--wk-op:color-mix(in srgb,var(--st-ok) 45%,var(--card))}
+  /* the device tab's «what now» line of its schedule (mockup: 14.5 px, medium) */
+  .dv-schst{font-size:14.5px;font-weight:500;color:var(--ink)}
   /* ПЛИТКИ-ПОКАЗАТЕЛИ экрана «Трафик» (макет: `.tiles`/`.tile`/`.delta`, Л6): число ведёт, искра сопровождает; дельта окрашена только
      там, где «больше» = «лучше» (доля туннеля). */
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
@@ -1398,9 +1417,11 @@
        border:1px solid transparent;white-space:nowrap;flex:none;max-width:100%}
   .dir>span{overflow:hidden;text-overflow:ellipsis}
   .dir i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
-  .dir.vpn{background:var(--acc-soft);color:var(--acc-deep);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+  /* `.opn`/`.lim` — the state of an access schedule (open / limited): the colour family of the path chips (macket `.dir.opn`,
+     `.dir.lim`), so «Закрыто» reads like «Блок» and «Открыто» like a working path. */
+  .dir.vpn,.dir.opn{background:var(--acc-soft);color:var(--acc-deep);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
   .dir.dirc{background:var(--soft);color:var(--ink2);border-color:var(--line2)}
-  .dir.des{background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+  .dir.des,.dir.lim{background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
   .dir.blk{background:var(--bad-soft);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 35%,transparent)}
   /* Выход — цвет по номеру (`exitColor`), тот же, что у выхода в разрезе трафика; текст — чернилами (контраст). */
   .dir.ex{--xc:var(--g5);background:color-mix(in srgb,var(--xc) 14%,transparent);color:var(--ink);border-color:color-mix(in srgb,var(--xc) 45%,transparent)}

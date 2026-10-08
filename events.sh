@@ -114,7 +114,8 @@ level_of() {
 		# тревожного слова в ключе нет, значит глоб их не возьмёт — только это перечисление.
 		# doh-dot-fallback — выбран DoT, а порт 853 не проходит: DNS шифруется, но по DoH (doh-lib.sh).
 		# hev-restart-* — залипшую прослойку TUN→прокси сторож перезапустил сам (slot-tun-lib.sh): работает, но соединения рвались.
-		transport-missing|geo-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*) echo warn ;;
+		# sched-clock — access schedules are not acting: the router clock is not synced yet (access-sched.sh, once per boot).
+		transport-missing|geo-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*|sched-clock) echo warn ;;
 		*)                        echo info ;;
 	esac
 }
@@ -138,7 +139,8 @@ class_of() {
 		subs-*)                   echo subs ;;
 		iplist-*|ipblock-*|geo-*) echo lists ;;
 		task-*)                   echo tasks ;;   # the user's own tasks (tasks.sh): failure / done — the mail choice is also per task
-		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*) echo system ;;
+		# sched-<id> / sched-clock — access schedules (access-sched.sh): the journal only, it sends no mail
+		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*|sched-*) echo system ;;
 		*)                        echo system ;;
 	esac
 }

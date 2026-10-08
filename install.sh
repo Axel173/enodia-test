@@ -1076,7 +1076,12 @@ cron_put() {
         _cp_line="$_cp_s $CRON_RUN $_cp_t >/dev/null 2>&1"
     fi
     if grep -qF "$_cp_line" /etc/crontabs/root 2>/dev/null; then _cp_new=; else _cp_new=1; fi
-    sed -i "\|$_cp_t|d" /etc/crontabs/root 2>/dev/null
+    # The script NAME at a word boundary (a space or a path slash before it, a space or the end after it) — any older form of
+    # the line goes (code dir, bootstrap), nothing else does. By substring, every `cron_put … access-sched.sh`-like name that
+    # is the tail of another one (`sched.sh` ⊂ `update-sched.sh`) would delete THAT script's line (caught before the first
+    # install, s.109; stand dev/cron-put-test.sh).
+    _cp_re=$(printf '%s' "$_cp_t" | sed 's/[.]/\\./g')
+    sed -i -r "\\#(^|[ /])$_cp_re( |\$)#d" /etc/crontabs/root 2>/dev/null
     echo "$_cp_line" >> /etc/crontabs/root
     [ -n "$_cp_new" ]
 }
@@ -1140,6 +1145,16 @@ if [ -f "$ENODIA_DIR/traffic-acct.sh" ]; then
     chmod +x "$ENODIA_DIR/traffic-acct.sh"
     if cron_put "*/5 * * * *" traffic-acct.sh; then
         ok "Cron-задача учёта трафика зарегистрирована (каждые 5 минут)"
+    fi
+fi
+
+# access-sched.sh — access schedules: a level-triggered tick every minute converges the per-MAC rules to «what must be true now».
+# Its own line, not the watchdog's tick: that one can run tens of minutes (failover ladder), and a 23:00 close would wait for it.
+# With no schedules the tick is one directory listing.
+if [ -f "$ENODIA_DIR/access-sched.sh" ]; then
+    chmod +x "$ENODIA_DIR/access-sched.sh"
+    if cron_put "*/1 * * * *" access-sched.sh tick; then
+        ok "Cron-задача расписаний доступа зарегистрирована (каждую минуту)"
     fi
 fi
 

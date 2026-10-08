@@ -224,6 +224,17 @@ CLOCK_LOCK=/tmp/enodia-clock.lock           # heal и тик сторожа мо
 command -v wan_iface >/dev/null 2>&1 || wan_iface() { ip route show default 2>/dev/null | awk '/^default/{d=""; for(i=1;i<=NF;i++) if($i=="dev") d=$(i+1); if(d!="" && d !~ /^(awg|xtun)/){print d; exit}}'; }
 
 clock_synced() { [ -f "$CLOCK_SYNC_MARK" ]; }
+# «ВРЕМЯ СВЕРЕНО» — the clock was set from the network THIS boot: our HTTP-date sync (the mark above) or the stock ntp client
+# (`ntpsetclock` writes `ok,<date>` into /tmp/ntp.status on success; /tmp ⇒ this boot). clock_sane alone is not it: after a
+# reboot the clock sits on a file's mtime — a sane-looking date hours or days behind. Whoever ACTS on the wall clock (access
+# schedules close the internet by it, sched.sh) gates on this; whoever only measures an age uses age_since.
+CLOCK_STOCK_NTP=/tmp/ntp.status
+clock_trusted() {
+	clock_sane || return 1
+	clock_synced && return 0
+	case "$(cut -d, -f1 "$CLOCK_STOCK_NTP" 2>/dev/null)" in ok) return 0 ;; esac
+	return 1
+}
 
 # clock_http_date <iface> <url> — эпоха из заголовка Date, пусто = не ответил/не разобрали/
 # дата вне разумного (clock_sane: раньше сборки прошивки или после 2100-го — сервер-шутник,

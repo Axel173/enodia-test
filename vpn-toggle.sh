@@ -497,6 +497,9 @@ cmd_repair() {
     [ -f "$ENODIA_DIR/lists-update.sh" ] && sh "$ENODIA_DIR/lists-update.sh" wire ipblock >/dev/null 2>&1
     [ -f "$ENODIA_DIR/geo.sh" ] && sh "$ENODIA_DIR/geo.sh" wire >/dev/null 2>&1
     [ -f "$ENODIA_DIR/net-tune.sh" ] && sh "$ENODIA_DIR/net-tune.sh" apply >/dev/null 2>&1
+    # Access schedules: their own tick re-wires a wiped chain within a minute anyway (level-triggered); here — at once, with the
+    # rest of the rules the reload took. Not a VPN rule: it stands with the VPN off as well.
+    [ -f "$ENODIA_DIR/access-sched.sh" ] && sh "$ENODIA_DIR/access-sched.sh" tick >/dev/null 2>&1
 
     # NSS/ECM offload: правила только что переставлены — для УЖЕ установленных потоков
     # старый маршрут залипает до conntrack-таймаута. Сбрасываем (инвариант проекта).

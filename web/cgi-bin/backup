@@ -95,6 +95,7 @@ SETTINGS="$SETTINGS .dns-hosts .ipv6-block .tun-mtu .go-memlimit"               
 SETTINGS="$SETTINGS iplist.conf iplist.custom lists"                                 # списки и их источники
 SETTINGS="$SETTINGS .gh-ref .gh-bin-tag .update-interval .subs-interval"  # обновления
 SETTINGS="$SETTINGS tasks"                                                           # «Задачи»: registry, scripts (cron lines are derived); variables — full backup only (export below)
+SETTINGS="$SETTINGS sched"                                                           # access schedules: the registry only (actions «now» — .ovr/.all — stay out, export below)
 SETTINGS="$SETTINGS .prefs .panel-layout"                                            # язык, тема, порядок карточек
 SETTINGS="$SETTINGS .traffic-daily"                                                  # история трафика (посуточно)
 # --- ЧТО НЕ ВХОДИТ И ПОЧЕМУ ------------------------------------------------------------------
@@ -303,6 +304,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		# this CGI reads, not into its own default — a sandboxed copy of this CGI (dev/backup-import-test.sh) would hit the live registry.
 		if [ "$f" = tasks ] && [ -d "$tmp/tasks" ]; then
 			[ -f "$ENODIA_DIR/tasks.sh" ] && ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/tasks.sh" import "$tmp/tasks" "$_tfull" >/dev/null 2>&1 \
+				&& restored=$((restored+1))
+			continue
+		fi
+		# Access schedules: the OWNER writes each schedule through its own load (valid lines only), keeps «one device = one
+		# schedule» across the merge and the higher id counter (access-sched.sh import); same directories-in-the-call rule as above.
+		if [ "$f" = sched ] && [ -d "$tmp/sched" ]; then
+			[ -f "$ENODIA_DIR/access-sched.sh" ] && ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/access-sched.sh" import "$tmp/sched" >/dev/null 2>&1 \
 				&& restored=$((restored+1))
 			continue
 		fi
@@ -646,6 +654,13 @@ for f in $list; do
 		for _tf in "$ENODIA_STATE"/tasks/*; do
 			case "$_tf" in *.env|*.new) continue ;; esac
 			[ -f "$_tf" ] && present="$present tasks/${_tf##*/}"
+		done
+		continue
+	fi
+	# Access schedules: the schedules and the id counter; an action «now» (open for 30 min, close all) is not a setting
+	if [ "$f" = sched ]; then
+		for _sf in "$ENODIA_STATE"/sched/s*.sch "$ENODIA_STATE"/sched/.last-id; do
+			[ -f "$_sf" ] && present="$present sched/${_sf##*/}"
 		done
 		continue
 	fi

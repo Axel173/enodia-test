@@ -1309,6 +1309,10 @@ case "$sec" in
 	# Only what holds no secrets is read here: the list (names, schedules, statuses) and the schedule preview. A script's body,
 	# the raw crontab and a file's text can carry passwords — those are POST verbs under CSRF in cgi-bin/action, like get_config_raw.
 	tasks)    tasks_relay list-json ;;
+	# Access schedules: the clock, «close all» and every schedule with its state and the week's next changes — ONE answer for the
+	# list, a schedule's screen (it needs all of them: one device = one schedule) and the device screen. Built by access-sched.sh.
+	sched)    if [ -f "$D/access-sched.sh" ]; then sh "$D/access-sched.sh" list-json
+	          else printf '{"ok":false,"msg":"на роутере нет access-sched.sh — обновите скрипты роутера"}\n'; fi ;;
 	tasks_explain)
 	          tsc=$(b64url_dec "$(qv s)")
 	          if [ -n "$tsc" ] && [ "$(printf '%s' "$tsc" | wc -l | tr -d ' ')" = 0 ]; then tasks_relay explain "$tsc"

@@ -104,7 +104,9 @@ run() { [ -f "$ENODIA_DIR/$1" ] || return 0; _s="$1"; shift; sh "$ENODIA_DIR/$_s
 # PANEL_WAN/PANEL_WAN_DNAT здесь НЕТ намеренно: это цепочки ПАНЕЛИ, а не VPN — при деактивации
 # панель остаётся жить вместе со входом снаружи; на полном удалении их снимает `web-ui.sh wan-off`.
 CHAINS_MANGLE="VPN_EXCLUDE VPN_FORCE VPN_PORTS VPN_KEEP VPN_DEV ENODIA_ZAPRET"
-CHAINS_FILTER="ENODIA_BLK ENODIA_GEOBLK VPNSRV_IN VPNSRV_FWD VPNSRV_WAN"
+# ENODIA_SCHED — access schedules (REJECT per MAC); its owner `access-sched.sh unwire` takes both families in step_rules, the
+# word here is the IPv4 safety net for a missing owner (the IPv6 one is a line in step_rules).
+CHAINS_FILTER="ENODIA_BLK ENODIA_GEOBLK ENODIA_SCHED VPNSRV_IN VPNSRV_FWD VPNSRV_WAN"
 # Родители, из которых вызываются наши filter-цепочки: штатные INPUT/FORWARD + пустой хук fw3
 # `input_wan_rule` (в него вешаются правила «снаружи» — панели и «доступа домой»).
 CHAIN_PARENTS="INPUT FORWARD input_wan_rule"
@@ -275,6 +277,11 @@ step_rules() {
         run slots.sh unwire "$_id"
     done
     run vpn-server.sh down                                # awgs0 + VPNSRV_* + правила пиров
+    run access-sched.sh unwire                            # access schedules: REJECT per MAC, both families
+    if command -v ip6tables >/dev/null 2>&1; then         # …and the IPv6 net for a missing owner (CHAINS_FILTER is IPv4)
+        while ip6tables -D FORWARD -j ENODIA_SCHED 2>/dev/null; do :; done
+        ip6tables -F ENODIA_SCHED 2>/dev/null; ip6tables -X ENODIA_SCHED 2>/dev/null
+    fi
     run zapret.sh src-clear                               # NFQUEUE устройств «целиком в десинк» (по источнику)
     run zapret.sh down                                    # nfqws + NFQUEUE + dnsmasq-сниппет
     _t=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
