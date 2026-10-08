@@ -873,9 +873,10 @@
     .vwrap>*:not(.card):not(.sect){grid-column:1/-1}
     .vwrap>.w2{grid-column:span 2}
     .vwrap>.wfull{grid-column:1/-1}
-    /* Колода из одной-двух карточек над дверями раздела («DNS сейчас»): колонки держим и пустыми — карточка встаёт в одну колонку
-       колоды, как в макете, а не растягивается во всю строку (`auto-fit` схлопнул бы пустые). */
-    .vwrap.fill{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+    /* r2 — a TALL card spans two rows, so the two short cards after it stand one under the other beside it (mockup 08.10.2026: a
+       600–1000 px card beside a 190 px one left 400–790 px of blank). No wrapper markup: decks painted card by card (deckPaint)
+       replace a card in place, and a wrapper around two cards would break that. The tall card comes FIRST in the markup. */
+    .vwrap>.r2,.vwrap>.tpane>.r2{grid-row:span 2}
     /* Широкая дверь (макет `.door.wide`: «Журнал действий») — две колонки сетки дверей. */
     .doors>.door.wide{grid-column:span 2}
     /* Дети прозрачной панели вкладки — те же правила колоды, что у прямых детей: ряд кнопок и заметка — во всю строку. */
@@ -883,8 +884,21 @@
     .vwrap>.tpane>.w2{grid-column:span 2}
     .vwrap>.tpane>.wfull{grid-column:1/-1}
   }
+  /* WIDE MONITORS (mockup 08.10.2026): AT MOST three columns, not «as many as fit». Screens are «2+1» pairs and rows of three;
+     auto-fit gave 4 columns at 1920 and 5 at 2560, and every pair ended in blank columns (mockup at 2560: 34 screens, up to 1821 px).
+     Track minimum = max(380 px, a third of the deck): never a 4th column, while auto-fit still COLLAPSES empty tracks (a plain
+     repeat(3) left a blank third beside every two-card screen). Extra width becomes margins: .main's content stops at 1680 px,
+     centred — the title bar (#topbar, outside #view) together with the deck, or the title would drift left of the cards. */
+  .main>*{max-width:1680px;width:100%;margin-inline:auto}
   @container view (min-width:1150px){
-    .vwrap{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
+    .vwrap{grid-template-columns:repeat(auto-fit,minmax(max(380px,calc((100% - 20px) / 3)),1fr))}
+  }
+  /* TWO COLUMNS (tablet, 700–1149): a two-column card stands in ONE. At three columns a screen is «2+1» pairs; at two, the wide
+     card took the whole row and its partner stood alone beside an empty half (mockup: 24 rows; 9 after — all the last row of an
+     odd card count). `.vwrap.c3` did this for the tasks screens; now for all. Every card lays out at phone width (~330), so half
+     of 715 is never too narrow for it. */
+  @container view (min-width:700px) and (max-width:1149px){
+    .vwrap>.w2,.vwrap>.tpane>.w2{grid-column:span 1}
   }
   /* A SCREEN BUILT OF «2+1» PAIRS (`.vwrap.c3`: the tasks screens): EXACTLY three columns, not as many as fit — at 1920 auto-fit
      gave four (a full-row card keeps every track alive, so auto-fit collapses none), the pair took three, and an empty column
@@ -928,7 +942,7 @@
     #mcards>.wfull{grid-column:1/-1}
   }
   @container view (min-width:1150px){
-    #mcards{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
+    #mcards{grid-template-columns:repeat(auto-fit,minmax(max(380px,calc((100% - 20px) / 3)),1fr))}
   }
 
   /* ============================================================================
@@ -1094,6 +1108,10 @@
   .cron5 .f input{padding:8px 4px;text-align:center}
   .f textarea.code{min-height:190px;line-height:1.55;white-space:pre;overflow:auto;tab-size:2}
   .fauto{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 24px;align-items:start}
+  /* «DNS сейчас» (mockup 08.10.2026): the rows painted into #nw-now-b are cells of the strip's columns; a separator between
+     COLUMNS reads as a stray line. */
+  .nw-now-cols>#nw-now-b{display:contents}
+  .nw-now-cols .kv+.kv{border-top:0}
   .f input:focus,.f select:focus,.f textarea:focus,.inrow input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
   .inrow{display:flex;gap:8px;align-items:center;min-width:0}
   .inrow input{flex:1;min-width:0;width:auto}

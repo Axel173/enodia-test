@@ -3298,10 +3298,11 @@
     // недельная доля выхода честно занижена. Молчать об этом — то же самое, что нарисовать ноль.
     // ФРАЗА ОБЯЗАНА ОСТАТЬСЯ ВЕРНОЙ И ЧЕРЕЗ МЕСЯЦ: ни «до обновления» (правда сегодня и ложь, когда история доберётся до полного
     // окна), ни дата макета (у роутера, обновлённого позже, она соврала бы) — говорим, ЧЕГО в днях нет (пачка 5).
-    h+='</div>';
-    // «Чего в окнах пока нет» — соседней карточкой и мелким текстом, как в макете; у «сегодня» оговорки нет — окно в один день.
+    // «Чего в окнах пока нет» — the tail of THIS card (mockup 08.10.2026: as a card beside it the tab made four columns on a
+    // three-column deck); «сегодня» has no such caveat — a one-day window.
     if(per!=='today')
-      h+='<div class="card"><div class="wt">Чего в окнах пока нет</div><div class="tiny">Дни, которых выход не застал, его объёма не содержат: до появления выхода — и до того обновления, с которого роутер начал считать каждый выход отдельно, — эти байты лежат внутри «Напрямую». За длинное окно доля такого выхода занижена.</div></div>';
+      h+='<div class="wt" style="margin-top:16px">Чего в окнах пока нет</div><div class="tiny">Дни, которых выход не застал, его объёма не содержат: до появления выхода — и до того обновления, с которого роутер начал считать каждый выход отдельно, — эти байты лежат внутри «Напрямую». За длинное окно доля такого выхода занижена.</div>';
+    h+='</div>';
     return h;
   }
   function tsKeepHtml(){
@@ -3533,7 +3534,7 @@
       + '<div class="rr-acts"><button type="button" class="btn" data-repair="1"'+(busy ? ' disabled' : '')+'>'+icUse('i-refresh','s')+'Починить правила</button>'
       + '<button type="button" class="btn gh" data-dgo="ev">Журнал событий</button></div>'
       + '<div class="cline">«Починить правила» заново ставит правила маршрутизации, если их смыло: например, сохранение настроек в родной панели Xiaomi снимает их все.</div></div>'
-      + '<div class="card w2" id="dg-in"><div class="wt">Что внутри</div>'
+      + '<div class="card wfull" id="dg-in"><div class="wt">Что внутри</div>'
       + diagRow('Версия и состояние подсистем','что установлено и что несёт трафик: транспорт, дополнительные выходы, десинк, доступ домой, шифрованный DNS; включены ли письма и о чём; у секретных файлов — только «есть ли»')
       + diagRow('Правила ядра','маршрутизация, метки, цепочки, наборы адресов и проба прямого пути')
       + diagRow('DNS','настройки резолвера и что он положил в наборы')
@@ -13417,7 +13418,7 @@
     if(pinned){
       own=own.filter(function(n){ return n!==pinned; });
       for(var tg in byTag){ byTag[tg]=byTag[tg].filter(function(n){ return n!==pinned; }); }
-      h+='<div class="card srv-pinned"><div class="ct">Активный сервер</div>'+serverCard(pinned, grp, cfgDisp('xray', pinned, subs), subLabelOf(pinned, subs), true)
+      h+='<div class="card wfull srv-pinned"><div class="ct">Активный сервер</div>'+serverCard(pinned, grp, cfgDisp('xray', pinned, subs), subLabelOf(pinned, subs), true)
         + '<div class="tiny" style="margin-top:9px">Активный закреплён сверху и не уезжает при поиске и сортировке. Бейдж собирается из самого конфига: протокол · защита · транспорт · flow.</div></div>';
     }
     var tags=subs.map(function(s){return s.tag;}); if(own.length) tags.push('__own__');
@@ -13461,7 +13462,7 @@
     grp=grp||{}; subs=subs||[];
     var list=grp.servers||[], h='';
     if(key==='xray') h=subListControls(subs.length, list.length)+xrayServers(grp, list, subs, info, now);
-    else h='<div class="card"><div class="ct">Конфиги '+names[key]+' <span class="sub dotb">'+srvStatus(grp)+'</span></div>'
+    else h='<div class="card w2"><div class="ct">Конфиги '+names[key]+' <span class="sub dotb">'+srvStatus(grp)+'</span></div>'
       + (list.length ? list.map(function(name){
           // Настоящее имя (эмодзи/флаги) — и у Hysteria2: её конфиг может приехать из подписки (иначе «sub-de-nidjerlandy»).
           return serverRow(key, name, grp, cfgDisp(key, name, subs)); }).join('') : '<div class="lempty">нет конфигов</div>')
@@ -13766,7 +13767,7 @@
       // карточки — своим узлом: смена расписания перечитывает только настройки (prefsCardReload), а экран целиком стирал
       // набранную ссылку «Добавить подписку» (ревью шага 5c, круг 3).
       if(subs.length) h+='<div class="card"><div class="wt">Автообновление</div><div id="subs-sched-b"></div></div>';
-      h+='<div class="card"><div class="wt">Добавить подписку</div>'+subAddInputs()+'</div>';
+      h+='<div class="card wfull"><div class="wt">Добавить подписку</div>'+subAddInputs()+'</div>';
       body.innerHTML=h+'</div>';
       wireCacts(body);
       subsSchedFill(t0);
@@ -13836,7 +13837,7 @@
     var mine=function(n){ return ownerTag(n, tags)===tag; };
     var xs=(gx.servers||[]).filter(mine), hs=(gh.servers||[]).filter(mine), n=xs.length+hs.length;
     var h='<div class="vwrap">'
-      + '<div class="card w2"><div class="wt">Подписка</div>'+subRow(s, now, null)
+      + '<div class="card wfull"><div class="wt">Подписка</div>'+subRow(s, now, null)
       + '<div class="acts">'
       +   '<button type="button" class="btn sm gh" data-sa="refresh">Обновить серверы</button>'
       +   '<button type="button" class="btn sm gh" data-sa="routing">Правила маршрутизации…</button>'
@@ -13847,7 +13848,7 @@
       +   '<span class="grow"></span><button type="button" class="btn sm bad" data-sa="del">Удалить подписку</button>'
       + '</div><div class="cline">'+SUBS_NOTE+'</div></div>';
     // Карточка сама — группа (`.sub-acc`, развёрнута всегда): заголовок с данными (`.ct`), число — в `.sub-cnt` (его пишут прогоны).
-    h+='<div class="card w2 sub-acc open" data-tag="'+esc(tag)+'">'
+    h+='<div class="card wfull sub-acc open" data-tag="'+esc(tag)+'">'
       + '<div class="ct">Серверы подписки <span class="sub dotb sub-cnt">'+n+' серв.</span><span class="sp"></span>'
       + (n ? '<button type="button" class="btn sm gh" data-sa="check">Проверить</button>' : '')
       + (xs.length ? '<button type="button" class="btn sm gh" data-sa="speed">Тест скорости</button>' : '')
@@ -15441,7 +15442,7 @@
     }).join('');
     return rpSect('i-at', 'Свои сайты и адреса', 'только для этого устройства — сильнее его режима, сети и общих списков', drules.length,
       (rows || '<div class="lempty">своих правил нет — устройство идёт по общим спискам и своему режиму</div>')
-      + '<div class="dv-form" id="dv-oform">'+dvOwnFormHtml(f)+'</div>', '', ' data-dvp="route"', 'dv-site');
+      + '<div class="dv-form" id="dv-oform">'+dvOwnFormHtml(f)+'</div>', '', ' data-dvp="route"', 'dv-site', 'w2');
   }
   function dvOwnFormHtml(f){
     var sl=devSlotChoices(); f.dvSlot=dvFormSlot(f.dvSlot);
@@ -16675,8 +16676,9 @@
       + '<div class="b">'+body+'</div>';
   }
   function rpSectOpen(key){ return 'sect rp-sect'+(rpShut(key) ? '' : ' open'); }
-  function rpSect(ic, nm, ds, cnt, body, act, attr, key){
-    return '<div class="'+rpSectOpen(key)+'"'+(key ? ' data-rsk="'+key+'"' : '')+(attr||'')+'>'+rpSectInner(ic, nm, ds, cnt, body, act, !rpShut(key), key)+'</div>';
+  // cls — a deck class (`w2`): a section in the deck is a card like any other and needs the «2+1» pairing too (mockup 08.10.2026).
+  function rpSect(ic, nm, ds, cnt, body, act, attr, key, cls){
+    return '<div class="'+rpSectOpen(key)+(cls ? ' '+cls : '')+'"'+(key ? ' data-rsk="'+key+'"' : '')+(attr||'')+'>'+rpSectInner(ic, nm, ds, cnt, body, act, !rpShut(key), key)+'</div>';
   }
   function rpSectToggle(sc){
     var on=!sc.classList.contains('open'); sectOpenSet(sc, on);
@@ -18660,7 +18662,7 @@
         body.innerHTML='<div class="vwrap"><div class="card w2">'+noteBox('Роутер не умеет дополнительные выходы: его скрипты старее этой возможности. Обновите систему («Роутер → Обновление»).','warn')+'</div></div>';
         return;
       }
-      var slots=d.slots, max=d.max|0, h='<div class="vwrap"><div class="card"><div class="wt">Выходы</div>';
+      var slots=d.slots, max=d.max|0, h='<div class="vwrap"><div class="card wfull"><div class="wt">Выходы</div>';
       if(!slots.length) h+='<div class="lempty">выходов пока нет — все правила идут основным транспортом</div>';
       slots.forEach(function(s){
         // Точка = ЧЕСТНОЕ состояние (slots.sh state), а не строка реестра: включённый выход с неподнявшейся
@@ -18678,7 +18680,7 @@
       h+='</div>';
       // Форма добавления (пока есть место). Доступные транспорты = ready ∩ SLOT_CAPABLE.
       var capable=(d.ready||[]).filter(function(t){ return SLOT_CAPABLE[t]; });
-      h+='<div class="card"><div class="wt">Добавить выход</div>';
+      h+='<div class="card wfull"><div class="wt">Добавить выход</div>';
       if(d.full) h+='<div class="cline">достигнут лимит выходов ('+d.max+')</div>';
       // Прежний текст звал ставить Zapret — единственным лекарством. На ядре 4.4 это совет по
       // кругу: nfqws там ставится, а NFQUEUE в ядре вырезан, и выход на нём не поднимется
@@ -18773,7 +18775,7 @@
         + '<div class="cline">'+(desync?'<span>Готовый набор — гео-категория сервиса: её сайты пойдут через этот выход.</span> ':'')+'<span>«Свой пул» создаёт группу, сразу привязанную к выходу; сайты в неё добавляются в «Маршрутизации».</span></div>';
     }
     h+='</div>';
-    h+='<div class="card"><div class="wt">Что через него идёт</div>'
+    h+='<div class="card w2"><div class="wt">Что через него идёт</div>'
       + '<div class="kv"><div class="grow"><div class="k">Группы правил</div><div class="v"><b>'+(s.groups|0)+'</b></div></div><button type="button" class="act" data-xa="groups">Группы</button></div>'
       + '<div class="kv"><div class="grow"><div class="k">Гео-категории</div><div class="v"><b>'+(s.geo|0)+'</b></div></div><button type="button" class="act" data-xa="geo">Гео-списки</button></div>'
       + '</div>';
@@ -19548,7 +19550,8 @@
   function srcCatCard(src, o){
     var en=blkOn(src), cnt=src.count||0;
     var v = o.v!=null ? o.v : (en&&cnt ? '<span>в пуле:</span> <b>'+cnt+'</b> <span>'+o.unit+'</span>' : (en?'включён':'выключен'));
-    return '<div class="card'+(en?' w2':'')+'" id="'+o.p+'"><div class="wt">'+o.title+'</div>'
+    // o.cls — an extra deck class for the ENABLED card only (`r2`: the short cards after it stand beside it; mockup 08.10.2026).
+    return '<div class="card'+(en?' w2':'')+(en && o.cls ? ' '+o.cls : '')+'" id="'+o.p+'"><div class="wt">'+o.title+'</div>'
       + '<div class="kv swrow"><div class="grow"><div class="k">'+o.sub+'</div><div class="v">'+v+'</div></div>'
       +   '<label class="sw"><input type="checkbox" id="'+o.p+'-en" aria-label="'+o.sub+'"'+(en?' checked':'')+'><i></i></label></div>'
       + '<div class="cline">'+o.text+'</div>'+(o.more||'')
@@ -19653,7 +19656,7 @@
     // --- Вредоносные адреса (ipblock) ---
     if(!ip) h+=blkFailCard('Вредоносные адреса');
     else {
-      h+=srcCatCard(ip, {p:'blk-ip', title:'Вредоносные адреса', sub:'Блокировка по адресам', v:blkStateHtml(ip, 'подсетей'),
+      h+=srcCatCard(ip, {p:'blk-ip', cls:'r2', title:'Вредоносные адреса', sub:'Блокировка по адресам', v:blkStateHtml(ip, 'подсетей'),
         text:'Отбрасывает соединения с адресами и подсетями из списков угроз — в обе стороны, для всех устройств сети. Списки только IPv4: '
           +'строки IPv6 из источников отбрасываются. Приватные диапазоны вырезаются из любого списка, а серверы туннеля, шлюз провайдера, DNS и домашние подсети не блокируются никогда.',
         more:blkGuardHtml(ip)+'<div style="margin-top:11px">'+noteBox('Включение идёт с самопроверкой и автооткатом: если после применения пропадёт связь, блокировка снимется сама и экран скажет почему. '
@@ -19665,7 +19668,7 @@
       var live=(typeof ip.addr_live==='boolean') ? ip.addr_live : (ip.critical_count|0)>0;
       if(blkOn(ip) || live || (ip.allow_count|0)>0){
         var crit=Array.isArray(ip.critical) ? ip.critical.filter(function(c){ return c && c.ip; }) : [];
-        h+='<div class="card w2" id="blk-prot"><div class="wt">Защита сети</div>'
+        h+='<div class="card wfull" id="blk-prot"><div class="wt">Защита сети</div>'
           + '<div class="cline">Эти адреса роутер не заблокирует, даже если они попадут в список: без них оборвались бы туннель, интернет или домашняя сеть. '
           + 'Список собирается сам — при каждом обновлении и при смене сервера.</div>';
         if(crit.length) crit.forEach(function(c){
@@ -19695,7 +19698,7 @@
     if(gb===null)
       h+='<div class="card" id="blk-geo"><div class="wt">Ещё блокируют гео-категории</div><div class="cline wr">Не удалось узнать, какие гео-категории блокируют: роутер не ответил.</div></div>';
     else if(gb.length)
-      h+='<div class="card w2" id="blk-geo"><div class="wt">Ещё блокируют гео-категории</div>'
+      h+='<div class="card" id="blk-geo"><div class="wt">Ещё блокируют гео-категории</div>'
         + '<div class="cline">Категории с действием «Блок» закрывают свои домены и подсети так же, как списки выше, а правятся в «Гео-списках».</div>'
         + gb.map(rpGeoRow).join('')+'</div>';
     h+=listSchedCard();
@@ -20885,7 +20888,7 @@
       // выходов общей проводкой переходов (`data-cact`, `wireCacts`): там и заводят тот самый десинк рядом с живым VPN.
       +   '<div style="margin-top:12px">'+noteBox('<b>Установлен ≠ активен.</b> <span>Поставить или снять движок — в разделе «Роутер → Компоненты»; здесь только выбор активного. Десинк-транспорты (ByeDPI, Zapret) работают без сервера: выбрав такой ОСНОВНЫМ, вы выходите через провайдера — туннеля в этот момент нет, десинк стоит вместо него, а не рядом. Это ограничение только основного транспорта:</span> '
       +     '<button type="button" class="ilink" data-cact="exits">дополнительным выходом</button> <span>тот же десинк работает при живом VPN, и на этом держится схема «сайт → Zapret, видео → ByeDPI».</span>')+'</div></div>'
-      + '<div class="card"><div class="wt">Параметры активного транспорта</div><div id="tp-mtu">'+mh+'</div></div>'
+      + '<div class="card w2"><div class="wt">Параметры активного транспорта</div><div id="tp-mtu">'+mh+'</div></div>'
       + '<div class="card"><div class="wt">Если активный транспорт умрёт</div><div id="tp-fo"></div></div>'
       + '</div>';
     document.getElementById('tp-opt')._h=oh; document.getElementById('tp-mtu')._h=mh;
@@ -20976,7 +20979,7 @@
       // «СЕЙЧАС» — во ВСЕХ режимах: на резерве роутер бывает и в «Резерв», и после смены режима на «Выкл».
       // УЗЕЛ ИМЕНОВАН НАРОЧНО: содержимое блока целиком временнОе, и перерисовывает его общий опрос
       // статуса (paint), а не второй запрос отсюда.
-      html+='<div class="card"><div class="wt">Сейчас</div><div id="fo-now">'+foNowHtml(st)+'</div></div>';
+      html+='<div class="card w2 r2"><div class="wt">Сейчас</div><div id="fo-now">'+foNowHtml(st)+'</div></div>';
       // «КУДА ВЕРНЁТСЯ» — только в режиме home, потому что только там это что-то значит.
       // Дом двухуровневый: сервер (.failover-home) возвращает switch-vpn, транспорт
       // (.transport-home) — сторож. Второй задаётся ТОЛЬКО ручным выбором протокола, и когда он
@@ -21412,7 +21415,7 @@
         + '<div style="margin-top:7px">Если роутер стоит за вашим же вторым роутером или за модемом провайдера — пробросьте на нём UDP-порт на этот роутер, тогда сработает внешний адрес. Если приватный адрес выдал сам провайдер (CGNAT), поможет только «белый» IP: обычно это платная услуга. DDNS тут не спасёт — он решает смену адреса, а не его приватность.</div>','warn'));
       if(on && run && !d.port_open) warns.push(noteBox('Порт наружу закрыт — правила фаервола могли смыться (перезагрузка роутера или изменение настроек в стоковой вебморде). Выключите и включите доступ домой, чтобы поставить их заново.','warn'));
       if(warns.length) h+='<div class="card"><div class="wt">Что мешает подключиться</div>'+warns.join('')+'</div>';
-      h+='<div class="card w2"><div class="wt">Устройства</div>';
+      h+='<div class="card wfull"><div class="wt">Устройства</div>';
       if(!peers.length) h+='<div class="lempty">пока ни одного — добавьте телефон и отсканируйте QR-код</div>';
       peers.forEach(function(p){
         // Рукопожатие — только у включённого устройства на работающем сервере: у выключенного и при неподнятом сервере роутер отдаёт
@@ -21766,7 +21769,7 @@
           + '<div style="margin-top:11px">'+noteBox('Результаты проверок хранятся на роутере, а не в браузере: открыв панель с телефона, вы видите те же числа. Упавший сервер переключает сторож на роутере — балансер лишь выбирает быстрый из живых и только внутри текущего протокола.','info')+'</div>';
       }
       h+='</div>';
-      h+='<div class="card"><div class="wt">После «Проверить все»</div>';
+      h+='<div class="card w2"><div class="wt">После «Проверить все»</div>';
       if(!fresh) h+='<div class="cline">роутер не сообщил настройки</div>';
       else {
         h+='<div class="kv swrow"><div class="grow"><div class="k">Сортировать по пингу</div><div class="v">после «Проверить все» на вкладке Xray экрана «Серверы и конфиги» рабочие поднимаются наверх внутри своей группы; прогон с этого экрана порядок не меняет</div></div>'
@@ -22010,7 +22013,7 @@
     var tf=pa.totp||{}, tfON=!!tf.on, tfKnow=(tf.engine!==false), tON=!!pa.tls_on, tRUN=!!pa.tls_running, inst=!!pa.installed, port=(pa.tls_port|0)||8443;
     // Открыть наружу можно при живом терминаторе И втором факторе; уже открытый не запирается никогда — закрыть можно всегда.
     var wON=!!pa.wan_on, wCan=wON || (tON && tRUN && tfON), busyO=(pa.pkg_busy===true && !pa.installing), lan=String(pa.lan||'');
-    var h='<div class="vwrap"><div class="card w2" id="pa-open"'+(pa.installing ? ' data-inst="1"' : '')+'><div class="wt">Как открывается</div>';
+    var h='<div class="vwrap"><div class="card w2 r2" id="pa-open"'+(pa.installing ? ' data-inst="1"' : '')+'><div class="wt">Как открывается</div>';
     // Короткого адреса без порта нет и не будет: 80 и 443 держит заводская веб-морда, а в её конфиг мы не лезем (решение 27.08.2026).
     h+=pnKv('Адрес', '<span class="mono">http://'+esc(lan)+':'+((pa.port|0)||8088)+'</span> <span>· порт нужен: 80 и 443 занимает заводская веб-морда роутера</span>');
     // HTTPS. Без программы терминатора тумблер включать нечем — он заперт, а установка стоит прямо под ним (движок компонентов).
@@ -22091,7 +22094,7 @@
     // ВОШЕДШИЕ УСТРОЙСТВА. Сессию рождает КАЖДЫЙ вход (форма входа), а не только подтверждённый кодом, — список живёт здесь, а не
     // под вторым фактором. Ленивый: отдельный запрос, а число приходит в общем ответе и видно сразу.
     var n=tf.sessions|0;
-    h+='<div class="card w2" id="pa-dev"><div class="wt">Устройства с активным входом</div>'
+    h+='<div class="card wfull" id="pa-dev"><div class="wt">Устройства с активным входом</div>'
       + '<div class="cline"><span>Устройств с активным входом:</span> <b>'+n+'</b></div><div id="pa-sess"></div>'
       + '<div class="acts"><button type="button" class="btn sm gh" data-paa="list" id="pa-list">Показать устройства</button><div class="grow"></div>'
       + (n>1 ? '<button type="button" class="btn sm gh" data-paa="others">Выйти на остальных</button>' : '')
@@ -22353,9 +22356,10 @@
       // Имена языков — на своём языке и без перевода (в словаре — тождество): человек, не читающий текущий, узнаёт свой.
       + pnKv('Язык / Language', 'English is in beta — core screens are translated, the rest stays Russian')
       + '<div class="segbar" id="pv-lang" role="group" aria-label="Язык / Language">'+dvSeg('data-pvl', 'ru', 'Русский', lg)+dvSeg('data-pvl', 'en', 'English', lg)+'</div>'
-      + '<div class="cline">Смена языка перезагружает страницу: так всё перерисовывается сразу на новом языке.</div></div>';
-    h+='<div class="card" id="pv-cards"><div class="wt">Карточки главной</div>'
-      + lrowGo('cards')+'<div class="grow"><div class="nm">Состав, ширина и порядок</div><div class="ds">какие карточки видны на «Обзоре» и в каком порядке — хранится на роутере</div></div>'+CHEV+'</div></div>';
+      + '<div class="cline">Смена языка перезагружает страницу: так всё перерисовывается сразу на новом языке.</div>';
+    // «Карточки главной» — the tail of «Оформление» (mockup 08.10.2026: as its own tiny card it left «Режим стримера» alone in a row).
+    h+='<div id="pv-cards"><div class="wt" style="margin-top:16px">Карточки главной</div>'
+      + lrowGo('cards')+'<div class="grow"><div class="nm">Состав, ширина и порядок</div><div class="ds">какие карточки видны на «Обзоре» и в каком порядке — хранится на роутере</div></div>'+CHEV+'</div></div></div>';   // row · «Карточки главной» wrapper · «Оформление» card
     h+='<div class="card" id="pv-str"><div class="wt">Режим стримера</div>'
       + pnKv('Скрыть чувствительные данные', 'адреса, серверы, имена сетей и почта размываются — для записи экрана', pnSw('pv-streamer', 'Скрыть чувствительные данные', streamerOn, false), 'swrow')
       + '<div style="margin-top:11px">'+noteBox('Работает только в этом браузере: это защита от случайного показа на записи, а не от чтения данных с роутера.', 'info')+'</div></div>';
@@ -22480,9 +22484,11 @@
   // единая точка отказа» в карте проекта): его читают ровно тогда, когда смотрят, куда уходит DNS. Раздельный резолв рунета —
   // исключение из «всё» (его имена идут мимо туннеля), и фраза обязана это сказать, а не обобщить.
   function nwNowCardHtml(){
-    return '<div class="card" id="nw-now"><div class="wt">DNS сейчас</div>'
+    // A full-width STRIP, its facts and the warning in columns (mockup 08.10.2026: one column of three stood 360 px tall beside two
+    // empty ones; «Соединение» and «Роутер» open with a low strip too). #nw-now-b is display:contents — its rows are grid cells.
+    return '<div class="card wfull" id="nw-now"><div class="wt">DNS сейчас</div><div class="fauto nw-now-cols">'
       + '<div id="nw-now-b"><div class="cline" data-loading="1">Загрузка…</div></div>'
-      + '<div style="margin-top:11px">'+noteBox('<b>DNS — единая точка отказа.</b> Если сервер VPN умрёт, а прямой режим не включится, перестанет резолвиться всё — российские сайты тоже, если не включён их раздельный резолв. Поэтому сторож умеет снимать туннель и возвращать прямой DNS сам.','info')+'</div></div>';
+      + '<div>'+noteBox('<b>DNS — единая точка отказа.</b> Если сервер VPN умрёт, а прямой режим не включится, перестанет резолвиться всё — российские сайты тоже, если не включён их раздельный резолв. Поэтому сторож умеет снимать туннель и возвращать прямой DNS сам.','info')+'</div></div></div>';
   }
   // Карточку и чип двери «Шифрованный DNS» рисует ответ `tech` (опрос ленты, `techPaintAll`). Нет ответа ещё — «Загрузка»;
   // роутер не ответил и ответил не то (`{need_login}`, `{error}` CGI старее ленты) — РАЗНЫЕ исходы и разные слова (разбор у
@@ -23579,7 +23585,7 @@
   }
   function dkPlaceHtml(st, dk){
     var v=dkVol(st), sok=dkStoreOk(st) && st.engine!==false, dok=!dk.__err && dk.engine!==false;
-    var h='<div class="card w2" id="dk-place"><div class="wt">Место</div>';
+    var h='<div class="card w2 r2" id="dk-place"><div class="wt">Место</div>';
     // Флеш роутера. Код на флеше — том тот же, что у разбивки (clean.sh), и числа берём у неё: «весят» и «занято» обязаны
     // быть про одно измерение. Код на накопителе — флеш меряет usb-offload (`data_*`).
     var ft=0, ff=0;
@@ -23737,7 +23743,7 @@
   // подтверждением после клика: вопрос в окне читают вполглаза, а здесь плитка не сработает, пока согласие не отмечено.
   function dkModeHtml(st){
     if(!dkStoreOk(st) || st.engine===false || st.on!==true) return '';
-    var h='<div class="card w2" id="dk-mode"><div class="wt">Что держать на накопителе</div>';
+    var h='<div class="card wfull" id="dk-mode"><div class="wt">Что держать на накопителе</div>';
     if(storeLost(st)) return h+dkLine('Раскладку не сменить, пока накопитель не найден: переезд в обе стороны требует живого накопителя.')+'</div>';
     // Режим приезжает от БУТСТРАПА; пусто — его на роутере нет (установка старее фичи), и менять раскладку нечем.
     if(st.ready!==true || (st.mode!=='bins' && st.mode!=='full')) return '';
@@ -23804,7 +23810,7 @@
     {id:'stocklogs', l:'Системный лог роутера',  k:'stocklogs_b', h:'не наш: стоковый лог на флеше. Единственная история, переживающая перезагрузку, — она же уезжает в «Скачать логи». Флеш его сжимает, поэтому освободится примерно втрое меньше, чем весит'}
   ];
   function dkCleanHtml(st, dk){
-    var h='<div class="card w2" id="dk-clean"><div class="wt">Что можно освободить</div>';
+    var h='<div class="card wfull" id="dk-clean"><div class="wt">Что можно освободить</div>';
     if(dk.__err) return h+dkLine(dk.__err==='net' ? 'Роутер не ответил — что чистить, неизвестно. Откройте экран ещё раз.'
       : 'Что чистить, получить не удалось: роутер ответил не то. Если вход в панель истёк — обновите страницу.', true)+'</div>';
     if(dk.engine===false) return h+dkLine('Чистить роутер не умеет — обновите скрипты роутера.')+'</div>';
@@ -24110,7 +24116,7 @@
   }
   // ---- карточка «Что должно стоять» ----
   function pkgListHtml(d){
-    var h='<div class="card w2" id="pkg-list"><div class="wt">Что должно стоять</div>';
+    var h='<div class="card w2 r2" id="pkg-list"><div class="wt">Что должно стоять</div>';
     (d.pkgs||[]).forEach(function(p){ h+=pkgRowHtml(p); });
     h+=DK_SEP+pkgCheckRow()+DK_SEP+pkgUpRow(d);
     // Установлен ≠ активен — и дверь туда, где включают: «поставил, а ничего не изменилось» — вопрос, который здесь задают первым.
@@ -24220,7 +24226,7 @@
     var op=pkgOp; if(pkgRunning || !op || !(Number(op.at)>0) || !op.log.length) return '';
     var st=op.state, v=(st==='OK') ? {d:'', w:'готово'} : (st==='FAIL') ? {d:' bad', w:'не удалось'} : (st==='RUNNING') ? {d:' warn', w:'прервана'} : {d:' off', w:''};
     var last=String(op.log[op.log.length-1]||'').replace(/^\[\d\d:\d\d:\d\d\] /, '');
-    var h='<div class="card w2" id="pkg-last"><div class="wt">Последняя операция</div>'
+    var h='<div class="card wfull" id="pkg-last"><div class="wt">Последняя операция</div>'
       + '<div class="lrow"><span class="dot'+v.d+'"></span><div class="grow"><div class="nm" id="pkg-last-now" tabindex="-1">'+pkgOpTitle(pkgIds(op.ins), pkgIds(op.del), v.w ? ' — <span>'+v.w+'</span>' : '', pkgIds(op.upd), pkgIds(op.rst))
       + '</div><div class="ds"><span>'+esc(fmtAge(Math.max(0, (Number(op.now)||0)-(Number(op.at)||0))))+'</span></div></div></div>';
     if(st==='FAIL') h+='<div class="cline wr">'+esc(last)+'</div>';
@@ -24862,7 +24868,7 @@
   var BK_NEVER='<div id="bk-never">'+noteBox('<b>Не входят никогда:</b> пароль панели и второй фактор, вход в панель снаружи, режим поддержки и журнал событий. Перенос настроек не должен переносить доступ к роутеру, а в журнале — ваш внешний адрес.','info')+'</div>';
   function bkLastHtml(){
     var r=bkRes, s=bkRun; if(!r && !s) return '';
-    var h='<div class="card w2" id="bk-last"><div class="wt">Последний импорт</div>';
+    var h='<div class="card wfull" id="bk-last"><div class="wt">Последний импорт</div>';
     // Отказ и потерянный ответ — вместе со строкой хода: отказ «ещё идёт» следит за чужим применением, а потерянный ответ узнаёт у
     // роутера, дошёл ли файл (прежде карточка навсегда оставалась «неизвестно» — ревью шага 6d, круг 2).
     if(r && !r.ok) return h+dkLine(r.lost ? 'Файл до роутера не дошёл (или роутер перезагрузился) — повторите импорт.'
@@ -25582,12 +25588,12 @@
     g.setAttribute('data-gk', k); g.innerHTML=dsGateHtml(ctx.pfx, avail, gate); dsWireRun(ctx);
   }
   function dsSweepHtml(o){
-    var h='<div class="card w2"><div class="wt">Проверка в браузере</div><div class="cline">'+o.intro+'</div>';
+    var h='<div class="card wfull"><div class="wt">Проверка в браузере</div><div class="cline">'+o.intro+'</div>';
     h+='<div id="'+o.pfx+'-sweep-gate" data-gk="'+esc(dsGateKey(o.pfx, o.avail, o.gate))+'">'+dsGateHtml(o.pfx, o.avail, o.gate)+'</div>';
     h+='<div id="'+o.pfx+'-pool" style="margin-top:9px"></div></div>';
     // РЕЗУЛЬТАТ — СВОЕЙ КАРТОЧКОЙ ВО ВСЮ ШИРИНУ: таблица по категориям шире колонки колоды. Пока проверки не было (или её
     // отменили) — карточки нет вовсе: пустая рамка «Результат» читалась бы как «прогон был, и ничего не нашлось».
-    h+='<div class="card w2" id="'+o.pfx+'-sweep-card" style="display:none"><div class="wt">Результат проверки</div><div id="'+o.pfx+'-sweep-out"></div></div>';
+    h+='<div class="card wfull" id="'+o.pfx+'-sweep-card" style="display:none"><div class="wt">Результат проверки</div><div id="'+o.pfx+'-sweep-out"></div></div>';
     return h;
   }
   // ПОКАЗАН ЛИ ЭКРАН ЦЕЛИ ПРОВЕРКИ. Узлы результата, кнопок и пула ищутся по префиксу, а префикс `bp` общий у основной несущей и
@@ -25953,7 +25959,7 @@
     // Стратегия + проверка — ОБЩИЙ блок «Десинк» (тот же, что в экране ByeDPI): различия
     // zapret живут в параметрах (nfqws вместо ciadpi, свой charset флагов, свои вербы свипа).
     var zpCurRaw = d.isdefault?'':(d.args||'');
-    h+='<div class="card"><div class="wt">Стратегия десинка nfqws</div>'
+    h+='<div class="card w2"><div class="wt">Стратегия десинка nfqws</div>'
       + '<div class="kv"><div class="grow"><div class="k">Сейчас</div><div class="v"><b>'+(d.isdefault?'по умолчанию':'своя')+'</b></div></div></div>';
     h+=dsStrategyHtml({pfx:'zp', presets:d.presets||[], cur:zpCurRaw,
       hint:'Выберите пресет или задайте флаги nfqws вручную; @tls и @quic — встроенные фейк-пакеты.',
@@ -26359,7 +26365,8 @@
     // строкой потребовало бы правила-регулярки на каждое возможное число (а заодно и границы
     // слова рядом с кириллицей — той самой, что не совпадает никогда). Слово переводится ключом,
     // число живёт в своём узле и переводить его не надо.
-    // КОЛОДА МАКЕТА (ov-cards): «Показаны» — широкой карточкой, «Можно вернуть» — рядом, пояснения и «Вернуть как было» — своей.
+    // КОЛОДА МАКЕТА (ov-cards): «Показаны» — широкой карточкой, «Можно вернуть» — рядом, пояснения и «Вернуть как было» — the tail of
+    // «Можно вернуть» (mockup 08.10.2026: as their own card they stood alone in a row beside two empty columns).
     var h='<div class="vwrap"><div class="card w2"><div class="wt">Показаны <span class="chip">'+on.length+'</span></div>';
     if(!on.length){
       h+='<div class="lempty">Все карточки выключены — на «Обзоре» осталась только шапка. Верните нужные ниже.</div>';
@@ -26368,7 +26375,7 @@
     if(!off.length){
       h+='<div class="lempty">Все карточки на главной — выключать ничего не пришлось.</div>';
     } else off.forEach(function(c){ h+=ovCardRow(c); });
-    h+='</div><div class="card">'
+    h+='<div style="height:12px"></div>'
       // ГДЕ ХРАНИТСЯ — ЭТО ЧАСТЬ ОТВЕТА, А НЕ СНОСКА: раскладка на роутере значит, что выключенная
       // на ноутбуке карточка пропадёт и на телефоне, — и человек имеет право знать это ДО того,
       // как выключит.
@@ -26578,7 +26585,7 @@
     // «Маршрутизация» — не двери, а сама страница правил (шаг 4a; разбор у rpShow).
     rt:function(){ return rpPageHtml(); },
     // «Сеть» — карточка «DNS сейчас» над дверями (шаг 5a; наполняет её опрос ленты — `nwNowPaint`).
-    nw:function(){ return '<div class="vwrap fill">'+nwNowCardHtml()+'</div>'; },
+    nw:function(){ return '<div class="vwrap">'+nwNowCardHtml()+'</div>'; },
     // «Роутер» — карточка железа над дверями (шаг 6a; меры — из опроса статуса, остальное — `rrShow`).
     rr:function(){ return rrNowCardHtml(); }
   };
