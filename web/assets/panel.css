@@ -1277,8 +1277,12 @@
   /* Шаг 5a («Сеть»): выбор резолвера — рядом с кнопкой, как поле ссылки (`.lnkrow>input`), а не во всю ширину с кнопкой под ним. */
   .lnkrow>select{flex:1 1 auto;min-width:0}
   /* Два поля рядом — `.f2` макета (две равные колонки), но по ширине КАРТОЧКИ: в узкой колонке — друг под другом. */
-  .f2{display:grid;grid-template-columns:minmax(0,1fr);gap:0 10px}
+  /* The fields of a row carry no `.f` margin of their own (the second one kept it and sat 11 px lower than the first — BE7000,
+     08.10.2026); the gap between stacked ones is the grid's. `.keep` (macket) — two columns at any width: a time range «С — До». */
+  .f2{display:grid;grid-template-columns:minmax(0,1fr);gap:11px 10px}
+  .f2>.f{margin-top:0}
   @container card (min-width:441px){ .f2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} }
+  .f2.keep{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   /* СОБЫТИЕ ЖУРНАЛА НА ЭКРАНЕ «СОБЫТИЯ» (шаг 7b) — `<details>`: summary — та же строка `.lrow`, что у «Обзора», под ней полный
      текст события (многострочный — развёрнутыми строки превратили бы список в простыню). Маркер браузера прячем: стрелку даёт `.chev`. */
   .evd+.evd{border-top:1px solid var(--line)}

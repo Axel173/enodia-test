@@ -1895,8 +1895,9 @@
   // close the open, open the closed (the same menus as on the schedule's screen). The answer is the router's (section=sched).
   // The buttons live inside rows that lead into the schedule — their own handler stops the click before the deck's row transition.
   function ovcSched(fresh){
-    return schLoad().then(function(d){
+    return fetchJson('/cgi-bin/data?section=sched').then(function(d){
       if(fresh && !fresh()) return;   // ответ старее нарисованного (разбор у ovcStart)
+      schTake(d);
       if(!d || d.ok!==true || !Array.isArray(d.items)) return;   // не тот ответ — молчим (см. разбор в ovcExits)
       var h=cardHeadOf('sched','Расписания доступа');
       if(!d.items.length) h+='<div class="lempty">Расписаний нет. Расписание закрывает устройствам интернет по времени — ночью, в учебные часы или всегда, кроме выбранных окон.</div>';
@@ -5298,15 +5299,16 @@
   // router epochs). A schedule = devices by MAC + windows of a week + the state outside them. «Ограничено» is not OFFERED until the
   // router can do it (its per-category sets are a later phase) — a window that already has it (a hand edit) is still shown.
   var SCH_LIM=false;
+  var SCH_LIM_OPT=[0, 30, 60, 90, 120, 180, 240, 360, 480];   // the day limit's choices, minutes (0 = none)
   var _sch=null;   // the last list answer (section=sched): the device screen, the device rows and the home card read it
   var SCH_ST={open:['Открыто','Open','opn'], limited:['Ограничено','Limited','lim'], closed:['Закрыто','Closed','blk']};
   var SCH_RK={open:0, limited:1, closed:2};
   var SCH_WD=['вс','пн','вт','ср','чт','пт','сб'], SCH_WD_EN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   // the panel's week starts on Monday; the router numbers days as `date +%w` (0 = Sunday)
   var SCH_ORD=[1,2,3,4,5,6,0], SCH_DN=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'], SCH_DN_EN=['Su','Mo','Tu','We','Th','Fr','Sa'];
-  function schLoad(){
-    return fetchJson('/cgi-bin/data?section=sched').then(function(d){ if(d && d.ok===true && Array.isArray(d.items)) _sch=d; return d; });
-  }
+  // ONE cache of the router's answer (`_sch`): every reader of section=sched passes its answer here
+  function schTake(d){ if(d && d.ok===true && Array.isArray(d.items)) _sch=d; return d; }
+  function schLoad(){ return fetchJson('/cgi-bin/data?section=sched').then(schTake); }
   function schOfMac(mac, d){
     d=d||_sch; mac=String(mac||'').toLowerCase();
     if(!d || !mac || !Array.isArray(d.items)) return null;
@@ -5347,7 +5349,25 @@
     return {k:k, t:w};
   }
   // translate="no": the words are composed in the right language already (tkL), and the dictionary must not touch them
-  function schChip(it, d){ var s=schSay(it, d); return '<span class="dir'+(s.k?' '+s.k:'')+'" translate="no"><i></i><span>'+esc(s.t)+'</span></span>'; }
+  function schChipHtml(s){ return '<span class="dir'+(s.k?' '+s.k:'')+'" translate="no"><i></i><span>'+esc(s.t)+'</span></span>'; }
+  function schChip(it, d){ return schChipHtml(schSay(it, d)); }
+  // THE DAY LIMIT closes one device while its schedule stays open — the router names who (`over`), the panel only words it
+  function schOver(it, mac){ return (it.over||[]).indexOf(String(mac||'').toLowerCase())>=0; }
+  function schDevSay(it, mac, d){
+    if(d.clock && it.on && schOver(it, mac)) return {k:'blk', t:tkL('Закрыто · лимит на сегодня исчерпан','Closed · today\'s limit used up')};
+    return schSay(it, d);
+  }
+  function schDevChip(it, mac, d){ return schChipHtml(schDevSay(it, mac, d)); }
+  function schMinWord(m){   // «45 мин», «2 ч», «1 ч 20 мин»
+    m=m|0; if(m<60) return tkL(m+' мин', m+' min');
+    var h=Math.floor(m/60), r=m%60; return tkL(h+' ч'+(r ? ' '+r+' мин' : ''), h+' h'+(r ? ' '+r+' min' : ''));
+  }
+  // «сегодня 1 ч 20 мин из 2 ч» — only when today has a limit
+  function schUseWord(it, mac){
+    var t=(it.lim && it.lim.today)|0; if(!t) return '';
+    var u=((it.used||{})[String(mac||'').toLowerCase()])|0;
+    return tkL('сегодня ','today ')+schMinWord(u)+tkL(' из ',' of ')+schMinWord(t);
+  }
   // '12345' → «Пн–Пт», '06' → «Сб, Вс», all seven → «каждый день» (Monday first, runs of three and more as a range)
   function schDaysWord(ds){
     ds=String(ds||'');
@@ -5518,9 +5538,10 @@
     var key=it ? it.id : 'new';
     if(_schDraft && _schDraft.key===key && (!it || _schDraft.ver===it.ver)) return _schDraft;
     var t=_schNewTpl;
-    _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(), dirty:false}
+    _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(),
+                    lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0}, dirty:false}
                  : {key:key, ver:0, name:t ? trNow(t.t) : '', on:1, base:t ? t.base : 'open', wins:t ? t.wins.map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }) : [],
-                    devs:_schNewDev ? [_schNewDev] : [], dirty:!!(t || _schNewDev)};
+                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, dirty:!!(t || _schNewDev)};
     return _schDraft;
   }
   function schShow(d, it, devs){
@@ -5571,11 +5592,13 @@
   // ACTIONS OVER A SCHEDULE — one builder and one wiring for its screen (full: + holidays) and the device tab (mockup: the two a
   // parent needs right there). Open now ⇒ «Закрыть сейчас…» (+ «Отложить», when the week is about to get stricter); otherwise
   // «Открыть на…». Not synced or switched off ⇒ locked: the router refuses actions it cannot keep by the clock.
-  function schActsHtml(it, d, full){
+  // `st` — the state the actions are for: the device tab passes «closed» for a device its day limit closed («Открыть на…» adds time)
+  function schActsHtml(it, d, full, st){
     var dis=(d.clock && it.on) ? '' : ' disabled', h='', nx=it.next && it.next[0];
-    if(it.st==='open') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
+    st=st||it.st;
+    if(st==='open') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
     else h+='<button type="button" class="btn" data-scact="open" aria-haspopup="menu"'+dis+'>Открыть на…</button>';
-    if(it.st==='open' && (it.why==='win' || it.why==='base') && nx && SCH_RK[nx.s]>0) h+='<button type="button" class="btn" data-scact="post"'+dis+'>Отложить закрытие на 30 мин</button>';
+    if(st==='open' && (it.why==='win' || it.why==='base') && nx && SCH_RK[nx.s]>0) h+='<button type="button" class="btn" data-scact="post"'+dis+'>Отложить закрытие на 30 мин</button>';
     if(full) h+='<button type="button" class="btn gh" data-scact="hol"'+dis+'>Каникулы…</button>';
     return '<div class="acts" style="justify-content:flex-start;flex-wrap:wrap">'+h+'</div>';
   }
@@ -5617,7 +5640,7 @@
       + '<div class="cline" style="margin-top:0">Вне окон</div>'+schStSeg('sc-base', dr.base)
       + '<div class="cline">Новое окно</div>'
       + '<div class="segbar sm" id="sc-days" role="group" aria-label="Дни недели">'+SCH_ORD.map(function(x){ return '<div class="seg'+(x>=1 && x<=5 ? ' on' : '')+'" data-scd="'+x+'">'+SCH_DN[x]+'</div>'; }).join('')+'</div>'
-      + '<div class="f2" style="margin-top:4px"><div class="f"><label for="sc-a">С</label><input id="sc-a" type="time" value="19:00" autocomplete="off"></div>'
+      + '<div class="f2 keep" style="margin-top:11px"><div class="f"><label for="sc-a">С</label><input id="sc-a" type="time" value="19:00" autocomplete="off"></div>'
       + '<div class="f"><label for="sc-b">До</label><input id="sc-b" type="time" value="21:00" autocomplete="off"></div></div>'
       + '<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap">'+schStSeg('sc-ws', dr.base==='closed' ? 'open' : 'closed')
       + '<button type="button" class="btn pri" id="sc-wadd">Добавить окно</button></div>'
@@ -5629,13 +5652,23 @@
       + (mine.length ? mine.map(function(m){ var x=schDevNm(m, devs);
           return '<div class="lrow"><span class="av">'+icUse('i-dev','s','',true)+'</span><div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(x.nm)+'</span>'
             + (schMacPriv(m) ? ' <span class="badge inh" title="'+esc(tkL('MAC выдуман самим телефоном для этой сети и может смениться','the phone made this MAC up for this network and may change it'))+'">'+esc(tkL('частный адрес','private address'))+'</span>' : '')+'</div>'
-            + '<div class="ds"><span class="mono sens">'+esc(m.toUpperCase())+'</span> · '+(x.on ? 'в сети' : 'не в сети')+'</div></div>'
+            + '<div class="ds"><span class="mono sens">'+esc(m.toUpperCase())+'</span> · '+(x.on ? 'в сети' : 'не в сети')
+            + (it && schUseWord(it, m) ? ' · <span translate="no">'+esc(schUseWord(it, m))+'</span>' : '')+'</div></div>'
+            + (it && d.clock && it.on && schOver(it, m) ? schDevChip(it, m, d) : '')
             + '<button type="button" class="btn sm gh" data-scdel="'+esc(m)+'" aria-label="'+esc(tkL('убрать из расписания','remove from the schedule'))+'">✕</button></div>'; }).join('')
         : '<div class="cline">Устройств пока нет — расписанию некого закрывать.</div>')
       + (priv.length ? noteBox('<b>Частный адрес Wi-Fi.</b> Устройство с таким MAC может его сменить и выпасть из расписания — выключите частный адрес для этой сети в настройках телефона.', 'warn') : '')
       + '<div class="row" style="gap:9px;margin-top:11px;align-items:flex-end"><div class="grow f"><label for="sc-dadd">Добавить устройство без расписания</label><select id="sc-dadd">'
       + '<option value="">—</option>'+devPickSort(other).map(function(v){ var m=String(v.mac).toLowerCase(); return '<option value="'+esc(m)+'">'+esc(devName(v)+' · '+m.toUpperCase())+'</option>'; }).join('')
       + '</select></div><button type="button" class="btn" id="sc-daddgo"'+(other.length?'':' disabled')+'>Добавить</button></div></div>';
+    // DAY LIMIT (mockup «Лимит в день»): minutes of real activity per weekday / weekend day — part of the draft, saved with it
+    function limSel(id, v){
+      return '<select id="'+id+'" class="sc-lim">'+SCH_LIM_OPT.map(function(m){ return '<option value="'+m+'"'+(m===(v|0) ? ' selected' : '')+'>'+esc(m ? schMinWord(m) : tkL('без лимита','no limit'))+'</option>'; }).join('')+'</select>';
+    }
+    h+='<div class="card" id="sc-lim"><div class="wt">Лимит в день</div>'
+      + '<div class="kv"><div class="grow"><div class="k">Будни</div><div class="v">не больше стольких минут в интернете</div></div><div class="f">'+limSel('sc-lwd', dr.lim.wd)+'</div></div>'
+      + '<div class="kv"><div class="grow"><div class="k">Выходные</div><div class="v">суббота и воскресенье</div></div><div class="f">'+limSel('sc-lwe', dr.lim.we)+'</div></div>'
+      + '<div class="cline">Считаются минуты, когда устройство действительно качало, — фоновая синхронизация не в счёт. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.</div></div>';
     h+='<div class="card"><div class="wt">Что расписание не остановит</div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Мобильный интернет</div><div class="ds">телефон с выключенным Wi-Fi роутеру не виден</div></div></div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Новый MAC</div><div class="ds">частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет</div></div></div></div>';
@@ -5647,9 +5680,11 @@
   function schMacPriv(m){ return /^.[26ae]/i.test(String(m||'')); }   // the locally administered bit (lease-lib.sh::mac_is_random)
   // THE save of a schedule — the editor and the device tab (add / remove a device) send the whole schedule against its version, in
   // the form cgi-bin/action carries: windows «days.HHMM.HHMM.o|l|c» by `;`, devices by `,`, the name base64.
-  function schSpec(id, ver, name, on, base, wins, devs){
+  // `lim` — {wd, we} minutes of the day limit (weekdays / weekend, 0 = none).
+  function schSpec(id, ver, name, on, base, wins, devs, lim){
     return {id:id, ver:ver, name_b64:b64utf8(String(name)), enabled:on ? 1 : 0, base:base,
-            wins:wins.map(function(w){ return w.d+'.'+w.a.replace(':','')+'.'+w.b.replace(':','')+'.'+w.s.charAt(0); }).join(';'), devs:devs.join(',')};
+            wins:wins.map(function(w){ return w.d+'.'+w.a.replace(':','')+'.'+w.b.replace(':','')+'.'+w.s.charAt(0); }).join(';'), devs:devs.join(','),
+            lim_wd:(lim && lim.wd)|0, lim_we:(lim && lim.we)|0};
   }
   function schSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-'+id) : ''; }
   function schFormWire(body, d, it, dr, devs){
@@ -5666,6 +5701,8 @@
     }
     // the name — a draft on `input` (not `change`: Chrome sends `change` to a field the redraw carries away, after the success)
     el('sc-name').addEventListener('input', function(){ dr.name=this.value; dr.dirty=true; });
+    el('sc-lwd').addEventListener('change', function(){ dr.lim.wd=+this.value||0; dr.dirty=true; });
+    el('sc-lwe').addEventListener('change', function(){ dr.lim.we=+this.value||0; dr.dirty=true; });
     wireSeg('sc-base', 'data-sc-base', function(v){ dr.base=v; dr.dirty=true; repaintWeek(); });
     wireSeg('sc-ws', 'data-sc-ws', function(){});
     Array.prototype.forEach.call(body.querySelectorAll('#sc-days [data-scd]'), function(s){
@@ -5695,7 +5732,7 @@
       var nm=String(dr.name||'').trim(), er=el('sc-err');
       if(!nm){ er.textContent=trNow('нужно имя расписания'); el('sc-name').focus(); return; }
       er.textContent='';
-      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs);
+      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim);
       postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
         if(!r || !r.ok){ if(r && r.msg && screenAlive(er)) er.textContent=trNow(String(r.msg)); return; }
         _schDraft=null; _schNewTpl=null; _schNewDev='';
@@ -6846,7 +6883,6 @@
     "Устройств пока нет — расписанию некого закрывать.":"No devices yet — the schedule has nobody to close.",
     "Частный адрес Wi-Fi.":"Private Wi-Fi address.",
     "Устройство с таким MAC может его сменить и выпасть из расписания — выключите частный адрес для этой сети в настройках телефона.":"A device with such a MAC may change it and drop out of the schedule — turn the private address off for this network in the phone's settings.",
-    "Телефон может сменить такой MAC и выпасть из расписания — выключите частный адрес для этой сети в его настройках.":"The phone may change such a MAC and drop out of the schedule — turn the private address off for this network in its settings.",
     "Добавить устройство без расписания":"Add a device without a schedule",
     "Что расписание не остановит":"What a schedule will not stop","Мобильный интернет":"Mobile internet","телефон с выключенным Wi-Fi роутеру не виден":"a phone with Wi-Fi off is not seen by the router",
     "Новый MAC":"A new MAC","частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет":"a private Wi-Fi address or a changed MAC is a new device for the router, without a schedule",
@@ -6865,6 +6901,10 @@
     "Так же и закрытое окно":"So does a closed window of an","расписания доступа":"access schedule",": устройство не выходит наружу никаким путём.":": the device goes out by no path at all.",
     "Ещё здесь":"Also here","открыть расписания доступа":"open access schedules","когда устройству можно в интернет — дети, приставка, камеры":"when a device may go online — kids, a console, cameras",
     "Все расписания":"All schedules",
+    "Лимит в день":"Daily limit","Будни":"Weekdays","Выходные":"Weekend","не больше стольких минут в интернете":"at most this much time online",
+    "суббота и воскресенье":"Saturday and Sunday",
+    "Считаются минуты, когда устройство действительно качало, — фоновая синхронизация не в счёт. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.":"Only the minutes the device really transferred count — background sync does not. When the limit runs out it is closed till the end of the day; «Open for…» adds time.",
+    "неверный лимит":"wrong limit","лимит — не больше суток":"a limit is at most a day",
     // the router's refusals (access-sched.sh, cgi-bin/action): fixed answers; the ones with a value inside are rules below
     "на роутере нет access-sched.sh — обновите скрипты роутера":"access-sched.sh is not on the router — update the router scripts",
     "время роутера ещё не сверено — расписания не действуют":"the router clock is not synced yet — the schedules do not act",
@@ -10629,6 +10669,7 @@
     [/^строку не разобрать: /,"the line can't be parsed: "],
     [/^это ссылка на (.*) — откройте сам файл$/,"this is a link to $1 — open the file itself"],
     [/^неверные данные задачи \(([a-z_0-9]+)\)$/,"invalid task data ($1)"],
+    [/^неверные данные расписания \(([a-z_0-9]+)\)$/,"invalid schedule data ($1)"],
     [/день недели \(0–6, воскресенье — 0\): /,"weekday (0–6, Sunday is 0): "],
     [/день месяца: /,"day of month: "],
     [/минута: /,"minute: "],
@@ -16721,8 +16762,8 @@
       return '<div class="card w2"><div class="wt">Расписание доступа</div><div class="cline">'+esc(trNow((d && d.msg) ? String(d.msg) : 'Роутер не ответил про расписания — откройте вкладку ещё раз.'))+'</div></div>';
     var mac=String(dev.mac||'').toLowerCase();
     if(!mac) return '<div class="card w2"><div class="wt">Расписание доступа</div><div class="cline">У этого устройства нет MAC — расписанию не к чему привязаться.</div></div>';
+    // A private MAC is warned about by the screen's own header (devPinHtml) — not a second time here.
     var it=schOfMac(mac, d), h=d.clock ? '' : noteBox('<b>Расписание сейчас не действует:</b> роутер ещё не знает, который час.', 'warn');
-    var priv=schMacPriv(mac) ? noteBox('<b>Частный адрес Wi-Fi.</b> Телефон может сменить такой MAC и выпасть из расписания — выключите частный адрес для этой сети в его настройках.', 'warn') : '';
     if(!it){
       var opts=d.items.filter(function(x){ return (x.devs||[]).length<(d.dmax||32); });
       return h+'<div class="card w2"><div class="wt">Расписание доступа</div>'
@@ -16730,21 +16771,20 @@
         + (opts.length ? '<div class="row" style="gap:9px;margin-top:11px;align-items:flex-end"><div class="grow f"><label for="dv-schpick">Добавить в расписание</label><select id="dv-schpick">'
             + opts.map(function(x){ return '<option value="'+esc(x.id)+'" translate="no">'+esc(x.name)+'</option>'; }).join('')+'</select></div>'
             + '<button type="button" class="btn" data-dva="sch-add">Добавить</button></div>' : '')
-        + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn'+(opts.length ? ' gh' : ' pri')+'" data-dva="sch-new">'+icUse('i-plus','s')+'Новое для этого устройства</button></div>'
-        + priv+'</div>';
+        + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn'+(opts.length ? ' gh' : ' pri')+'" data-dva="sch-new">'+icUse('i-plus','s')+'Новое для этого устройства</button></div></div>';
     }
-    var nx=it.next && it.next[0], line=schSay(it, d).t, more=(it.devs||[]).length-1;
-    if(d.clock && it.on && (it.why==='win' || it.why==='base') && nx) line=schStWord(it.st)+' · '+schVerb(nx.s)+' '+tkL('в ','at ')+schWhen(nx, d.now);
-    var sub=[(d.clock && it.on) ? schIn(nx, d) : '', more>0 ? tkL('в этом расписании ещё '+schDevN(more), more+' more in this schedule') : ''].filter(Boolean).join(' · ');
+    var nx=it.next && it.next[0], line=schDevSay(it, mac, d).t, more=(it.devs||[]).length-1, over=d.clock && it.on && schOver(it, mac);
+    if(!over && d.clock && it.on && (it.why==='win' || it.why==='base') && nx) line=schStWord(it.st)+' · '+schVerb(nx.s)+' '+tkL('в ','at ')+schWhen(nx, d.now);
+    var sub=[(d.clock && it.on && !over) ? schIn(nx, d) : '', schUseWord(it, mac), more>0 ? tkL('в этом расписании ещё '+schDevN(more), more+' more in this schedule') : ''].filter(Boolean).join(' · ');
     h+='<div class="card w2" id="dv-schc"><div class="wt"><span>Расписание доступа</span>&nbsp;«<span translate="no">'+esc(it.name)+'</span>»</div>'
       + '<div class="dv-schst" translate="no">'+esc(line)+'</div>'+(sub ? '<div class="cline" style="margin-top:2px" translate="no">'+esc(sub)+'</div>' : '')
-      + schActsHtml(it, d, false)+'<div style="margin-top:14px">'+schWeekHtml(it, d)+'</div></div>';
+      + schActsHtml(it, d, false, over ? 'closed' : it.st)+'<div style="margin-top:14px">'+schWeekHtml(it, d)+'</div></div>';
     h+='<div class="card"><div class="wt">В этом расписании</div>'
       + (it.devs||[]).map(function(m){ var x=schDevNm(m, devs);
           return '<div class="lrow"><span class="av">'+icUse('i-dev','s','',true)+'</span><div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(x.nm)+'</span>'
             + (m===mac ? ' <span class="chip">это устройство</span>' : '')+'</div><div class="ds">'+(x.on ? 'в сети' : 'не в сети')+'</div></div></div>'; }).join('')
       + '<div class="acts" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn gh" data-cact="sch:'+esc(it.id)+'">Открыть расписание</button>'
-      + '<button type="button" class="btn gh" data-dva="sch-rm">Убрать из расписания</button></div>'+priv+'</div>';
+      + '<button type="button" class="btn gh" data-dva="sch-rm">Убрать из расписания</button></div></div>';
     return h;
   }
   // The route tab's ladder hears of the schedule too (mockup): it is not a step of the ladder (mangle decides the path, the schedule
@@ -16785,7 +16825,7 @@
     var it=(a==='sch-rm') ? schOfMac(mac, S.d) : S.d.items.filter(function(x){ var p=document.getElementById('dv-schpick'); return p && x.id===p.value; })[0];
     if(!it) return;
     var devs=(it.devs||[]).filter(function(m){ return m!==mac; }); if(a==='sch-add') devs.push(mac);
-    var p=schSpec(it.id, it.ver, it.name, it.on, it.base, it.wins||[], devs);
+    var p=schSpec(it.id, it.ver, it.name, it.on, it.base, it.wins||[], devs, it.lim);
     dvPost('sched_save', a==='sch-rm' ? tkL('Убрать устройство из расписания «'+it.name+'»?\n\nИнтернет ему станет открыт всегда.', 'Remove the device from the schedule «'+it.name+'»?\n\nIts internet becomes open always.') : null,
       a==='sch-rm' ? 'убираю из расписания…' : 'добавляю в расписание…', p, rep);
   }
@@ -17682,7 +17722,7 @@
   // A device in an access schedule (the router's last list answer, `_sch`): its row says so after the address, and while the
   // schedule KEEPS it closed or limited the chip is the schedule's — «closed» beats any route (decision 01.10.2026: chip = device
   // state). Not synced or switched off — the schedule acts on nothing, the route chip stays.
-  function devSchOf(dev){ var it=dev && dev.mac ? schOfMac(dev.mac) : null; return it ? {it:it, act:!!(_sch.clock && it.on && it.st!=='open')} : null; }
+  function devSchOf(dev){ var it=dev && dev.mac ? schOfMac(dev.mac) : null; return it ? {it:it, act:!!(_sch.clock && it.on && (it.st!=='open' || schOver(it, dev.mac)))} : null; }
   function devSchDs(s){ return s ? ' · <span>'+esc(tkL('расписание','schedule'))+'</span> «<span translate="no">'+esc(s.it.name)+'</span>»' : ''; }
   function devRow(dev, nP, nD, full, ws, net, ready, ports){
     var nm=devName(dev), sc=devSchOf(dev);
@@ -17694,7 +17734,7 @@
         + '<div class="av">'+icUse('i-dev','s','',true)+'</div>'
         + '<div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(nm)+'</span></div>'
         + '<div class="ds"><span class="sens">'+esc(dev.ip)+'</span>'+(ss ? ' · <span class="sens">'+esc(ss)+'</span>' : '')+devSchDs(sc)+'</div></div>'
-        + (sc && sc.act ? schChip(sc.it, _sch) : devChip(rest)) + CHEV + '</div>';
+        + (sc && sc.act ? schDevChip(sc.it, dev.mac, _sch) : devChip(rest)) + CHEV + '</div>';
     }
     // СТРАНИЦА «МАРШРУТИЗАЦИИ» — та же строка (макет): знак, имя, адрес и сводка, справа — тот же чип состояния (`devChip`). Режим
     // словами в описании не повторяем — его несёт чип; своих правил — числом. MAC рядом с именем — ради
@@ -17707,7 +17747,7 @@
       + ((dev.mac && devNamed(dev)) ? '<span class="mono sens rp-mac">'+esc(dev.mac.toUpperCase())+'</span>' : '')+'</div>'
       + '<div class="ds"><span class="sens">'+esc(dev.ip)+'</span>'+((!dev.mode || dev.mode==='split') ? ' · <span>наследует сеть</span>' : '')
       + (nR ? ' · <span>+'+nR+' '+unitF(nR, 'правил')+'</span>' : '')+devSchDs(sc)+devFlags(dev)+'</div></div>'
-      + (sc && sc.act ? schChip(sc.it, _sch) : devChip(rs)) + CHEV + '</div>';
+      + (sc && sc.act ? schDevChip(sc.it, dev.mac, _sch) : devChip(rs)) + CHEV + '</div>';
   }
   function rpPaintDev(box, d){
     rqDevFill();   // «для кого спрашиваем» у проверялки — из этого же ответа, второго запроса нет

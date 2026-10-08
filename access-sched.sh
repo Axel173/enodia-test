@@ -49,6 +49,14 @@ SC_DEV_MAX=32                       # devices per schedule
 SC_NAME_MAX=60                      # characters of a name (the panel's field)
 SC_K=6                              # upcoming changes reported to the panel
 SC_CLOCK_NOTE=600                   # s of uptime with schedules and an unsynced clock before one journal line
+# DAY LIMIT — minutes of REAL activity, by the stock `trafficd` (per MAC, counts NSS-offloaded and tunnelled traffic alike —
+# measured BE7000 08.10.2026: a 1 GiB download +1129 MB there, conntrack accounting −5 %). A minute is «active» when the device
+# moved at least SC_ACTIVE_B in it: background sync (push, mail checks) stays far below, a video or a game far above.
+SC_ACTIVE_B=262144
+SC_USE_GAP=5                        # minutes one sample may cover (a missed tick); a longer gap counts as this much at most
+SC_USE_SAVE=900                     # s between saves of the day's usage to the flash while it changes (a reboot loses ≤ 15 min)
+SC_USE="$SC_RUN/use"                # RAM: «<date>» then «<mac> <minutes>» — the day's usage
+SC_USE_LAST="$SC_RUN/use.last"      # RAM: «<epoch>» then «<mac> <bytes>» — the previous trafficd sample
 SC_NL='
 '
 
@@ -106,9 +114,10 @@ sc_unlock() { [ "$SC_LOCKED" = 1 ] && lbl_lock_drop "$SC_LOCK"; SC_LOCKED=0; ret
 # ---- time ---------------------------------------------------------------------------------------------------------
 # ONE `date` per call: epoch, weekday (0 = Sunday), hour, minute, second. Leading zeros go (`08` is octal in ash arithmetic).
 sc_now() {
-	set -- $(date '+%s %w %H %M %S' 2>/dev/null)
+	set -- $(date '+%s %w %H %M %S %Y-%m-%d' 2>/dev/null)
 	sc_num SC_E "$1" 0; sc_num SC_W "$2" 0
 	sc_num SC_H "${3#0}" 0; sc_num SC_M "${4#0}" 0; sc_num SC_S "${5#0}" 0
+	SC_D=${6:-}                                      # the local date: the key of the day's usage
 	SC_NM=$(( SC_W * 1440 + SC_H * 60 + SC_M ))   # minute of the week, local
 	SC_E0=$(( SC_E - SC_S ))                         # epoch of the start of this minute
 }
@@ -144,7 +153,7 @@ l !~ /^[0-6]+ ([01][0-9]|2[0-3]):[0-5][0-9] ([01][0-9]|2[0-3]):[0-5][0-9] (open|
 # sanitised where it leaves (JSON, journal): the tick itself never needs it.
 sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file = the same schedule from elsewhere (import)
 	SC_F=${2:-"$SC_DIR/$1.sch"}; [ -f "$SC_F" ] || return 1
-	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0
+	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0
 	_slt=$(tr -d '\r' < "$SC_F" 2>/dev/null)
 	while IFS= read -r _sl; do
 		case "$_sl" in
@@ -153,10 +162,13 @@ sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file 
 			base=open|base=limited|base=closed) SC_BASE=${_sl#base=} ;;
 			hol=*)        sc_num SC_HOL "${_sl#hol=}" 0 ;;
 			ver=*)        sc_num SC_VER "${_sl#ver=}" 0 ;;
+			lim_wd=*)     sc_num SC_LWD "${_sl#lim_wd=}" 0 ;;
+			lim_we=*)     sc_num SC_LWE "${_sl#lim_we=}" 0 ;;
 		esac
 	done <<EOF
 $_slt
 EOF
+	[ "$SC_LWD" -le 1440 ] || SC_LWD=0; [ "$SC_LWE" -le 1440 ] || SC_LWE=0
 	SC_WINS=$(printf '%s\n' "$_slt" | awk "$SC_WIN_AWK")
 	[ -n "$SC_WINS" ] && SC_WINS="$SC_WINS$SC_NL"
 	# devices: `dev=mac:` lines, lowercase, valid, each once
@@ -170,7 +182,7 @@ sc_name() { lbl_san "$SC_NAME" | cut -c1-200; }   # the loaded schedule's name, 
 sc_write() {   # sc_write <id> — from SC_*: atomically (write next to it, compare, mv)
 	_wf="$SC_DIR/$1.sch"; _wt="$_wf.$$"
 	{
-		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER"
+		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\nlim_wd=%s\nlim_we=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER" "$SC_LWD" "$SC_LWE"
 		printf '%s' "$SC_WINS" | while IFS= read -r _wl; do [ -n "$_wl" ] && printf 'win=%s\n' "$_wl"; done
 		for _wm in $SC_DEVS; do printf 'dev=mac:%s\n' "$_wm"; done
 	} > "$_wt" 2>/dev/null || { rm -f "$_wt"; return 1; }
@@ -258,17 +270,112 @@ sc_effective() {
 # epoch of the first upcoming change of the week (empty = the week never changes)
 sc_first_change() { _fc=$(printf '%s\n' "$SC_CHG" | awk 'NF==2{print $1; exit}'); [ -n "$_fc" ] && echo $(( SC_E0 + _fc * 60 )); }
 
+# ---- day limit: usage ---------------------------------------------------------------------------------------------
+sc_lim_today() { if [ "$SC_W" -ge 1 ] && [ "$SC_W" -le 5 ]; then SC_LT=$SC_LWD; else SC_LT=$SC_LWE; fi; }   # weekdays / weekend
+# Does today's limit act now? Only while the WEEK decides (holidays rest it, a hand action beats it) and nothing closes anyway.
+sc_lim_applies() { [ "$SC_LT" -gt 0 ] && [ "$SC_ST" != closed ] && { [ "$SC_WHY" = win ] || [ "$SC_WHY" = base ]; }; }
+# The day's usage -> SC_USED («<mac> <minutes>» lines): RAM first (fresh), the flash copy after a reboot; another date = none yet.
+sc_use_load() {
+	SC_USED=""
+	for _uf in "$SC_USE" "$SC_DIR/.use"; do
+		[ -f "$_uf" ] || continue
+		[ "$(head -n 1 "$_uf" 2>/dev/null)" = "$SC_D" ] || continue
+		SC_USED=$(sed 1d "$_uf" 2>/dev/null); return 0
+	done
+	return 0
+}
+sc_used_of() { printf '%s\n' "$SC_USED" | awk -v m="$1" '$1 == m { print $2 + 0; f = 1; exit } END { if (!f) print 0 }'; }
+# trafficd -> «<mac> <bytes in+out>» per MAC, lowercase (it answers MACs in capitals). The counters pass 32 bits: awk's doubles,
+# printed as integers. A device's own `hw` line and its addresses' lines carry the same MAC — the sum is over its addresses.
+sc_traffic() {
+	ubus call trafficd hw 2>/dev/null | awk '
+		/"hw":/ { m = $0; sub(/.*"hw": *"/, "", m); sub(/".*/, "", m); mac = tolower(m) }
+		/"(rx|tx)_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); if (mac != "") s[mac] += v }
+		END { for (k in s) printf "%s %.0f\n", k, s[k] }'
+}
+# Save the day's usage to the flash: every SC_USE_SAVE while it changes, at once when $1 = now (a device just ran out — a
+# reboot must not hand it a new day).
+sc_use_save() {
+	[ -f "$SC_USE" ] || return 0
+	_usv=$(cat "$SC_RUN/use.saved" 2>/dev/null); case "$_usv" in ''|*[!0-9]*) _usv=0 ;; esac
+	[ "${1:-}" = now ] || [ $(( SC_E - _usv )) -ge "$SC_USE_SAVE" ] || return 0   # clock-raw: both are this boot's synced clock
+	cmp -s "$SC_USE" "$SC_DIR/.use" 2>/dev/null && return 0
+	mkdir -p "$SC_DIR" 2>/dev/null
+	cp "$SC_USE" "$SC_DIR/.use.$$" 2>/dev/null && mv -f "$SC_DIR/.use.$$" "$SC_DIR/.use" && echo "$SC_E" > "$SC_RUN/use.saved"
+	rm -f "$SC_DIR/.use.$$" 2>/dev/null
+	return 0
+}
+# One sample per tick, only for the devices of enabled schedules with a limit today. A minute counts when the device moved at
+# least SC_ACTIVE_B per minute of the gap since the previous sample (the gap capped at SC_USE_GAP: a stalled tick must neither
+# grant nor take an hour). A device's first sample only records; a counter that went back (trafficd restarted, the device
+# came back) counts from zero. Two ticks within one minute: the second waits — its delta belongs to the next one.
+sc_use_tick() {
+	_um=""
+	for _ui in $SC_IDS; do
+		sc_load "$_ui" || continue
+		[ "$SC_ON" = 1 ] || continue
+		sc_lim_today; [ "$SC_LT" -gt 0 ] || continue
+		_um="$_um $SC_DEVS"
+	done
+	if [ -z "$_um" ]; then rm -f "$SC_USE_LAST" 2>/dev/null; return 0; fi
+	sc_use_load
+	_upe=$(head -n 1 "$SC_USE_LAST" 2>/dev/null); case "$_upe" in ''|*[!0-9]*) _upe=0 ;; esac
+	_uel=0
+	if [ "$_upe" -gt 0 ]; then
+		_uel=$(( (SC_E - _upe + 30) / 60 ))   # clock-raw: two samples of this boot's synced clock
+		if [ "$_uel" -lt 0 ]; then _uel=0       # the clock went back: resync the sample, count nothing
+		elif [ "$_uel" = 0 ]; then return 0     # the same minute: its delta belongs to the next tick
+		fi
+	fi
+	_ucur=$(sc_traffic)
+	[ -n "$_ucur" ] || return 0      # trafficd silent: nothing counted (an unknown minute is not an active one)
+	_uout=$( {
+		for _uk in $_um; do echo "L $_uk"; done
+		printf '%s\n' "$SC_USED" | sed -n 's/^\([0-9a-f:]* [0-9]*\)$/U \1/p'
+		sed -n '2,$s/^/P /p' "$SC_USE_LAST" 2>/dev/null
+		printf '%s\n' "$_ucur" | sed 's/^/C /'
+	} | awk -v el="$_uel" -v gap="$SC_USE_GAP" -v act="$SC_ACTIVE_B" '
+		$1 == "L" { lim[$2] = 1; next }
+		$1 == "U" { u[$2] = $3 + 0; next }
+		$1 == "P" { p[$2] = $3 + 0; next }
+		$1 == "C" { c[$2] = $3 + 0; next }
+		END {
+			m = el; if (m > gap) m = gap
+			for (k in lim) if (k in c) {
+				if (m >= 1 && (k in p)) { d = c[k] - p[k]; if (d < 0) d = c[k]; if (d >= act * m) u[k] += m }
+				printf "C %s %.0f\n", k, c[k]
+			}
+			for (k in u) if (u[k] > 0) printf "U %s %d\n", k, u[k]
+		}')
+	{ echo "$SC_E"; printf '%s\n' "$_uout" | sed -n 's/^C //p'; } > "$SC_USE_LAST.$$" && mv -f "$SC_USE_LAST.$$" "$SC_USE_LAST"
+	_unew=$(printf '%s\n' "$_uout" | sed -n 's/^U //p' | sort)
+	if [ "$_unew" != "$(printf '%s\n' "$SC_USED" | grep . | sort)" ] || [ "$(head -n 1 "$SC_USE" 2>/dev/null)" != "$SC_D" ]; then
+		{ echo "$SC_D"; [ -n "$_unew" ] && printf '%s\n' "$_unew"; } > "$SC_USE.$$" && mv -f "$SC_USE.$$" "$SC_USE"
+	fi
+	SC_USED=$_unew
+	sc_use_save
+}
+
 # ---- kernel -------------------------------------------------------------------------------------------------------
 # The plan: every device of an enabled schedule whose state is not open — «<mac> <state> <id>», sorted (stable comparison).
+# A device whose day limit ran out is closed till the end of the day — but only while the WEEK decides (a window or the base
+# state): holidays rest the limit too, and an «open for…» by hand beats it («добавляет время»). SC_OVER — «<mac> <id>» of those.
 sc_plan() {
-	SC_PLAN=""
+	SC_PLAN=""; SC_OVER=""
 	clock_trusted || return 0
+	sc_use_load
 	for _pi in $(sc_ids); do
 		sc_load "$_pi" || continue
 		[ "$SC_ON" = 1 ] && [ -n "$SC_DEVS" ] || continue
-		sc_eval 1; sc_effective
-		[ "$SC_ST" = open ] && continue
-		for _pm in $SC_DEVS; do SC_PLAN="$SC_PLAN$_pm $SC_ST $_pi$SC_NL"; done
+		sc_eval 1; sc_effective; sc_lim_today
+		_plm=0; sc_lim_applies && _plm=1
+		[ "$SC_ST" = open ] && [ "$_plm" = 0 ] && continue
+		for _pm in $SC_DEVS; do
+			_ps=$SC_ST
+			if [ "$_plm" = 1 ] && [ "$(sc_used_of "$_pm")" -ge "$SC_LT" ]; then _ps=closed; SC_OVER="$SC_OVER$_pm $_pi$SC_NL"; fi
+			[ "$_ps" = open ] && continue
+			SC_PLAN="$SC_PLAN$_pm $_ps $_pi$SC_NL"
+		done
 	done
 	SC_PLAN=$(printf '%s' "$SC_PLAN" | sort)
 }
@@ -396,13 +503,46 @@ sc_tick_locked() {
 	elif [ -n "$(sc_ids)" ]; then
 		sc_clock_note
 	fi
+	SC_IDS=$(sc_ids)
+	clock_trusted && sc_use_tick
 	sc_plan
 	sc_apply
 	clock_trusted || return 0
 	SC_LANG=""
-	for _ti in $(sc_ids); do
+	for _ti in $SC_IDS; do
 		sc_load "$_ti" || continue
 		sc_eval 1; sc_effective; sc_journal
+	done
+	sc_over_note
+	return 0
+}
+# A device newly out of its day limit ⇒ one journal line (the first tick of a boot only records), and the day's usage goes to the
+# flash at once: a reboot must not hand the device a fresh day.
+sc_over_note() {
+	_on=$(printf '%s' "$SC_OVER" | grep . | sort)
+	# the first tick of a boot writes its record even when nobody is over — otherwise the first real crossing would read as
+	# «the first tick» and stay silent
+	if [ ! -f "$SC_RUN/over" ]; then
+		printf '%s\n' "$_on" > "$SC_RUN/over" 2>/dev/null
+		[ -n "$_on" ] && sc_use_save now
+		return 0
+	fi
+	_oo=$(cat "$SC_RUN/over" 2>/dev/null)
+	[ "$_on" = "$_oo" ] && return 0
+	printf '%s\n' "$_on" > "$SC_RUN/over" 2>/dev/null
+	[ -n "$_on" ] && sc_use_save now
+	printf '%s\n' "$_on" | while read -r _om _oi; do
+		[ -n "$_om" ] || continue
+		case "$SC_NL$_oo$SC_NL" in *"$SC_NL$_om $_oi$SC_NL"*) continue ;; esac
+		sc_load "$_oi" || continue
+		_onm=""; [ -f "$ENODIA_DIR/dev-names.sh" ] && _onm=$(sh "$ENODIA_DIR/dev-names.sh" get "$_om" 2>/dev/null)
+		[ -n "$_onm" ] || _onm=$(printf '%s' "$_om" | tr 'a-f' 'A-F')
+		[ -n "$SC_LANG" ] || sc_lang
+		if [ "$SC_LANG" = en ]; then
+			sc_note "sched-lim-$_oi" "Schedule «$(sc_name)»: the day's limit is used up" "$_onm has used up today's limit — closed until the end of the day. «Open for…» on the schedule adds time."
+		else
+			sc_note "sched-lim-$_oi" "Расписание «$(sc_name)»: лимит на сегодня исчерпан" "$_onm исчерпало лимит на сегодня — закрыто до конца дня. «Открыть на…» на экране расписания добавит время."
+		fi
 	done
 	return 0
 }
@@ -423,9 +563,18 @@ cmd_unwire() {
 sc_at_json() {   # <epoch> -> {"at":"…","w":N,"ue":E}
 	sc_at "$1"; printf '{"at":"%s","w":%s,"ue":%s}' "$SC_AT" "$SC_AW" "$1"
 }
-sc_item_json() {   # the loaded schedule, after sc_now
-	sc_eval "$SC_K"; sc_effective
-	printf '{"id":"%s","name":"%s","on":%s,"ver":%s,"base":"%s","wins":[' "$SC_ID" "$(jstr "$(sc_name)" 200)" "$SC_ON" "$SC_VER" "$SC_BASE"
+sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
+	sc_eval "$SC_K"; sc_effective; sc_lim_today
+	printf '{"id":"%s","name":"%s","on":%s,"ver":%s,"base":"%s",' "$SC_ID" "$(jstr "$(sc_name)" 200)" "$SC_ON" "$SC_VER" "$SC_BASE"
+	# the day limit: minutes per weekday / weekend day, today's; every device's minutes today; who is closed by it NOW
+	printf '"lim":{"wd":%s,"we":%s,"today":%s},"used":{' "$SC_LWD" "$SC_LWE" "$SC_LT"
+	_ij=0; _iov=""
+	for _im in $SC_DEVS; do
+		_iu=$(sc_used_of "$_im")
+		[ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s":%s' "$_im" "$_iu"
+		sc_lim_applies && [ "$_iu" -ge "$SC_LT" ] && _iov="${_iov:+$_iov,}\"$_im\""
+	done
+	printf '},"over":[%s],"wins":[' "$_iov"
 	_ij=0
 	printf '%s' "$SC_WINS" | while read -r _id _ia _ib _is; do
 		[ -n "$_is" ] || continue
@@ -462,7 +611,7 @@ sc_head_json() {   # router clock + «close all» + limits, after sc_now
 	else printf 'null'; fi
 }
 cmd_list_json() {
-	sc_now
+	sc_now; sc_use_load
 	printf '{"ok":true,'; sc_head_json; printf ',"items":['
 	_lj=0
 	for _li in $(sc_ids); do
@@ -474,7 +623,7 @@ cmd_list_json() {
 }
 cmd_get_json() {
 	id_ok "$1" || jfail "неверный номер расписания"
-	sc_now
+	sc_now; sc_use_load
 	sc_load "$1" || jfail "нет такого расписания"
 	printf '{"ok":true,'; sc_head_json; printf ',"item":'; sc_item_json; printf '}\n'
 }
@@ -494,6 +643,12 @@ cmd_save() {
 	[ "$(printf '%s' "$_vname" | tr -d '\200-\277' | wc -c | tr -d ' ')" -le "$SC_NAME_MAX" ] || jfail "имя длиннее $SC_NAME_MAX знаков"
 	_von=$(sc_spec enabled); case "$_von" in 0|1) ;; *) jfail "неверный выключатель" ;; esac
 	_vbase=$(sc_spec base); case "$_vbase" in open|limited|closed) ;; *) jfail "неверное состояние вне окон" ;; esac
+	# day limits, minutes (0 = none); absent from the spec = the schedule keeps its own (an older panel knows nothing of them)
+	_vlwd=$(sc_spec lim_wd | sed 's/^0*\([0-9]\)/\1/'); _vlwe=$(sc_spec lim_we | sed 's/^0*\([0-9]\)/\1/')   # «090» is octal to $((…))
+	for _vlv in "$_vlwd" "$_vlwe"; do
+		case "$_vlv" in '') continue ;; *[!0-9]*) jfail "неверный лимит" ;; esac
+		[ "$_vlv" -le 1440 ] || jfail "лимит — не больше суток"
+	done
 	# windows: «days.HHMM.HHMM.s» → registry lines (days sorted, each once), then through the SAME check as a load (SC_WIN_AWK)
 	_vwn=$(sc_spec wins | tr ';' '\n' | grep -c . || true)
 	[ "${_vwn:-0}" -le "$SC_WIN_MAX" ] || jfail "окон больше $SC_WIN_MAX"
@@ -519,7 +674,7 @@ cmd_save() {
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	if [ "$_vid" = new ]; then
 		[ "$(sc_ids | wc -l | tr -d ' ')" -lt "$SC_MAX" ] || jfail "расписаний не больше $SC_MAX"
-		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0
+		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0
 	else
 		id_ok "$_vid" || jfail "неверный номер расписания"
 		sc_load "$_vid" || jfail "расписание удалено — откройте список заново"
@@ -536,6 +691,7 @@ cmd_save() {
 		done
 	done
 	SC_ID=$_vid; SC_NAME=$_vname; SC_ON=$_von; SC_BASE=$_vbase; SC_WINS=$_vwins; SC_DEVS=$_vdevs; SC_VER=$((SC_VER + 1))
+	[ -n "$_vlwd" ] && SC_LWD=$_vlwd; [ -n "$_vlwe" ] && SC_LWE=$_vlwe
 	sc_write "$_vid" || jfail "не удалось записать расписание"
 	sc_tick_locked
 	jok "\"id\":\"$_vid\",\"ver\":$SC_VER"

@@ -585,7 +585,7 @@ case "$act" in
 			sched_save)
 				in_dir
 				printf 'id=%s\n' "$sid" > "$IN_DIR/spec"
-				for _k in ver enabled base wins devs; do
+				for _k in ver enabled base wins devs lim_wd lim_we; do
 					_v=$(urldecode "$(field "$_k")"); case "$_v" in *[!A-Za-z0-9.:\;,]*) fail "неверные данные расписания ($_k)" ;; esac
 					printf '%s=%s\n' "$_k" "$_v" >> "$IN_DIR/spec"
 				done
