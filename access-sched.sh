@@ -24,8 +24,8 @@
 #                 traverse FORWARD too, and a bare per-MAC DROP would cut the printer and the cameras);
 #                 closed — `-m mac --mac-source M` → REJECT (tcp-reset for TCP): the app fails at once instead of hanging on
 #                 a TCP timeout. INPUT stays open (DNS, the panel);
-#                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below; a category that also has
-#                 an ADDRESS set (messengers) — REJECT to that set (`enodia_sch_<category>`, v6 `enodia_sch6_<category>`).
+#                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below; addresses the schedule
+#                 closes — REJECT to its set (`enodia_sch_<id>`, v6 `enodia_sch6_<id>`).
 # «ОГРАНИЧЕНО» = OUR DNS FILTER, not address sets (decided 08.10.2026: categories share anycast frontends — closing youtube.com by
 # address closes Google Search and Gemini on the device too; «only allowed» cannot be said by address; and dnsmasq has no
 # per-client answers). The DNS of a limited device is REDIRECTed by MAC (nat PREROUTING `ENODIA_SCHED_DNS`, at the top — above
@@ -35,11 +35,16 @@
 # fetch here. No filter binary, or it does not answer its probe after a restart ⇒ limited devices stay OPEN (fail-open, as with
 # the clock) and the journal says why once. Without ip6 nat the device's IPv6 is REJECTed whole and its DNS to the router's v6
 # addresses refused in INPUT (`ENODIA_SCHED_IN6`) — it falls back to IPv4, where the REDIRECT stands.
-# THE ONE EXCEPTION — MESSENGERS BY ADDRESS TOO (phone walk BE7000 08.10.2026: everything chosen closed except Telegram). Telegram
-# dials the addresses built into the app, past DNS, so a filter of names leaves it working; and its network carries nothing but
-# Telegram — the anycast reason above does not hold for it. A category of SC_CATS may therefore carry cidr keys: geo.sh hands their
-# data in (the same `ready`, bogons cut there), one set per CATEGORY and family (set-lib.sh fills it, an unchanged one is not
-# touched) — its data is the same for every schedule. The sets live only while some limited device needs them.
+# ADDRESSES TOO, where names cannot do it (phone walk BE7000 08.10.2026: everything chosen closed except Telegram). Telegram dials
+# the addresses built into the app, past DNS, so a filter of names leaves it working; its network carries nothing but Telegram —
+# the anycast reason above does not hold for it. So a curated category may carry ADDRESS keys (SC_CATS, third field), a pool of
+# the geo catalogue may be an address one (`geo=`, runetfreedom geoip, a country), and own sites may be addresses (`addr=`).
+# geo.sh hands their data in (the same `ready`, bogons cut there); a set per SCHEDULE and family (set-lib.sh fills it, an
+# unchanged one is not touched), alive only while some limited device of the schedule needs it.
+# Two modes. «block» — the chosen names are answered «nothing there», the chosen addresses REJECTed. «allow» — every name but
+# the chosen ones (and connectivity checks) is answered «nothing there»; addresses cannot say «only these» (an allowed site lives
+# on any CDN address), so there they work one way only: the address keys of the curated categories NOT allowed are REJECTed —
+# otherwise Telegram, not allowed, would still connect by its built-in addresses.
 # After a device's state changes, its established flows are dropped (`ct_flush_src` per address of the MAC): NSS/ECM keeps
 # offloaded flows out of netfilter otherwise. Never a global flush — a 23:00 close would drop every call in the house.
 # A plan that closes nobody = no chain at all (no footprint while everything is open).
@@ -86,19 +91,23 @@ SC_FLOG=/tmp/enodia-dns-filter.log
 SC_FPORT0=5390                      # profile ports: SC_FPORT0 .. SC_FPORT0 + SC_MAX - 1 (checked free on BE7000 08.10.2026)
 SC_NAT=ENODIA_SCHED_DNS             # nat PREROUTING, both families: DNS of a limited MAC → its profile's port
 SC_IN6=ENODIA_SCHED_IN6             # filter INPUT v6, only without ip6 nat: DNS of a limited MAC to the router refused
-SC_SITE_MAX=200                     # own sites per schedule
+SC_SITE_MAX=200                     # own sites and addresses per schedule
+# pools of the geo catalogue per schedule: the filter loads a list per pool (dns-filter MAX_PL 64 per profile = 32 pools + the
+# curated keys + own sites, with room), and every pool is the router's RAM
+SC_POOL_MAX=32
 SC_WANT_GAP=600                     # s between background fetches the tick starts for categories not downloaded yet
-# Categories offered for «limited»: id|geo keys|name (the panel words it by its dictionary). The keys are geo.sh's — the ONE
-# owner of category data; a category is a SET of keys because «Видео» is not one upstream category. No dating or gambling
-# category exists upstream ⇒ not offered (own sites cover them). A cidr key closes by address (header): only for a network that
-# carries nothing else — Telegram's (runetfreedom geoip); the other messengers' apps ask DNS, the filter is enough for them.
+# Categories offered for «limited»: id|name keys|address keys|name (the panel words it by its dictionary). The keys are geo.sh's
+# — the ONE owner of category data; a category is a SET of keys because «Видео» is not one upstream category. No dating or
+# gambling category exists upstream ⇒ not offered (own sites cover them). ADDRESS keys (header): only for a network that carries
+# nothing else — Telegram's (runetfreedom geoip); the other messengers' apps ask DNS, the filter is enough for them. They are
+# also what «allow» closes by address when the category is not allowed.
 # v2fly `category-communication` is not taken whole: it carries mail (protonmail, mail.com) and work chats (slack).
-SC_CATS='social|v2fly-category-social-media-!cn|Соцсети
-msg|v2fly-telegram v2fly-whatsapp v2fly-discord v2fly-signal v2fly-viber v2fly-messenger rfip-telegram|Мессенджеры
-video|v2fly-youtube v2fly-tiktok v2fly-twitch v2fly-vimeo v2fly-dailymotion|Видео
-games|v2fly-category-games|Игры
-ent|v2fly-category-entertainment|Развлечения
-adult|v2fly-category-porn|Для взрослых'
+SC_CATS='social|v2fly-category-social-media-!cn||Соцсети
+msg|v2fly-telegram v2fly-whatsapp v2fly-discord v2fly-signal v2fly-viber v2fly-messenger|rfip-telegram|Мессенджеры
+video|v2fly-youtube v2fly-tiktok v2fly-twitch v2fly-vimeo v2fly-dailymotion||Видео
+games|v2fly-category-games||Игры
+ent|v2fly-category-entertainment||Развлечения
+adult|v2fly-category-porn||Для взрослых'
 SC_NL='
 '
 
@@ -133,6 +142,7 @@ command -v ct_flush_src >/dev/null 2>&1 || ct_flush_src() { [ -n "$1" ] && connt
 # the address sets of «limited» (header): set-lib.sh fills one atomically and leaves an unchanged one alone; without it (a partial
 # update) the address part is skipped — names still go through the filter
 if [ -f "$ENODIA_DIR/set-lib.sh" ]; then . "$ENODIA_DIR/set-lib.sh"; fi
+SET_MAXELEM=1000000                 # a ceiling, not an allocation: a pool may be a whole country (geo.sh takes the same)
 # where the filter binary lies (the store may hold it) — store-lib.sh; without it the binaries' own directory
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
@@ -197,9 +207,22 @@ sc_next_hhmm() {
 # backup or a hand edit, and a stray line must neither break the JSON nor reach iptables.
 # categories of «limited» (SC_CATS): is it one of ours · its geo keys · the keys of a list of ids
 sc_cat_ok() { case "$1" in ''|*[!a-z]*) return 1 ;; esac; case "$SC_NL$SC_CATS" in *"$SC_NL$1|"*) return 0 ;; esac; return 1; }
-sc_cat_keys() {   # <id>… → the geo keys, a key per line, each once
-	for _ck in "$@"; do printf '%s\n' "$SC_CATS" | awk -F'|' -v c="$_ck" '$1 == c { print $2 }'; done | tr ' ' '\n' | grep . | sort -u
+sc_cat_keys() {   # <id>… → the geo keys (names and addresses), a key per line, each once
+	for _ck in "$@"; do printf '%s\n' "$SC_CATS" | awk -F'|' -v c="$_ck" '$1 == c { print $2 " " $3 }'; done | tr ' ' '\n' | grep . | sort -u
 }
+# the keys one LOADED schedule acts by, a key per line, each once: its categories and pools; «allow» adds the address keys of
+# the curated categories it does not allow (header — what closes Telegram there)
+sc_keys() {
+	{ sc_cat_keys $SC_CATON; printf '%s\n' $SC_GEO; [ "$SC_LMODE" = allow ] && sc_bypass_keys; } | grep . | sort -u
+}
+sc_bypass_keys() {   # «allow»: address keys of the curated categories not allowed, minus pools chosen by hand (busybox awk: no index())
+	printf '%s\n' "$SC_CATS" | while IFS='|' read -r _bi _bn _ba _bl; do
+		[ -n "$_ba" ] || continue
+		case " $SC_CATON " in *" $_bi "*) continue ;; esac
+		for _bk in $_ba; do case " $SC_GEO " in *" $_bk "*) ;; *) echo "$_bk" ;; esac; done
+	done
+}
+sc_geo_ok() { case "$1" in ''|.*|*[!a-z0-9._!-]*) return 1 ;; esac; [ "${#1}" -le 64 ]; }   # a pool key's form (geo.sh judges it on a save)
 sc_ids() { for _f in "$SC_DIR"/s*.sch; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.sch}"; done | sed 's/^s//' | sort -n | sed 's/^/s/'; }
 # Window line «<days> <HH:MM> <HH:MM> <state>»: days are digits 0..6 (0 = Sunday), ascending, each once. ONE program for the
 # load and the save — two copies of «what a window is» would let a save write what the next load silently drops. Prints the
@@ -215,7 +238,7 @@ l !~ /^[0-6]+ ([01][0-9]|2[0-3]):[0-5][0-9] ([01][0-9]|2[0-3]):[0-5][0-9] (open|
 # sanitised where it leaves (JSON, journal): the tick itself never needs it.
 sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file = the same schedule from elsewhere (import)
 	SC_F=${2:-"$SC_DIR/$1.sch"}; [ -f "$SC_F" ] || return 1
-	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""
+	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_GEO=""
 	_slt=$(tr -d '\r' < "$SC_F" 2>/dev/null)
 	while IFS= read -r _sl; do
 		case "$_sl" in
@@ -228,6 +251,7 @@ sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file 
 			lim_we=*)     sc_num SC_LWE "${_sl#lim_we=}" 0 ;;
 			lmode=block|lmode=allow) SC_LMODE=${_sl#lmode=} ;;
 			cat=*)        sc_cat_ok "${_sl#cat=}" && case " $SC_CATON " in *" ${_sl#cat=} "*) ;; *) SC_CATON="${SC_CATON:+$SC_CATON }${_sl#cat=}" ;; esac ;;
+			geo=*)        sc_geo_ok "${_sl#geo=}" && case " $SC_GEO " in *" ${_sl#geo=} "*) ;; *) SC_GEO="${SC_GEO:+$SC_GEO }${_sl#geo=}" ;; esac ;;
 		esac
 	done <<EOF
 $_slt
@@ -236,6 +260,11 @@ EOF
 	SC_SITES=$(printf '%s\n' "$_slt" | awk -v max="$SC_SITE_MAX" '
 		/^site=/ { d = substr($0, 6)
 		  if (d ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !(d in s) && n < max) { s[d] = 1; n++; print d } }')
+	# own addresses: `addr=` lines — a v4 or v6 address/CIDR as a save writes it (bogons were cut there)
+	SC_ADDRS=$(printf '%s\n' "$_slt" | awk -v max="$SC_SITE_MAX" '
+		/^addr=/ { a = substr($0, 6)
+		  if ((a ~ /^[0-9][0-9]?[0-9]?(\.[0-9][0-9]?[0-9]?)(\.[0-9][0-9]?[0-9]?)(\.[0-9][0-9]?[0-9]?)(\/[0-9][0-9]?)?$/ || a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f:]*(\/[0-9][0-9]?[0-9]?)?$/) && !(a in s) && n < max) { s[a] = 1; n++; print a } }')
+	[ "$(set -- $SC_GEO; echo $#)" -le "$SC_POOL_MAX" ] || SC_GEO=$(printf '%s\n' $SC_GEO | head -n "$SC_POOL_MAX" | tr '\n' ' ' | sed 's/ $//')
 	[ "$SC_LWD" -le 1440 ] || SC_LWD=0; [ "$SC_LWE" -le 1440 ] || SC_LWE=0
 	SC_WINS=$(printf '%s\n' "$_slt" | awk "$SC_WIN_AWK")
 	[ -n "$SC_WINS" ] && SC_WINS="$SC_WINS$SC_NL"
@@ -254,7 +283,9 @@ sc_write() {   # sc_write <id> — from SC_*: atomically (write next to it, comp
 		printf '%s' "$SC_WINS" | while IFS= read -r _wl; do [ -n "$_wl" ] && printf 'win=%s\n' "$_wl"; done
 		for _wm in $SC_DEVS; do printf 'dev=mac:%s\n' "$_wm"; done
 		for _wm in $SC_CATON; do printf 'cat=%s\n' "$_wm"; done
+		for _wm in $SC_GEO; do printf 'geo=%s\n' "$_wm"; done
 		for _wm in $SC_SITES; do printf 'site=%s\n' "$_wm"; done
+		for _wm in $SC_ADDRS; do printf 'addr=%s\n' "$_wm"; done
 	} > "$_wt" 2>/dev/null || { rm -f "$_wt"; return 1; }
 	grep -q "^ver=$SC_VER\$" "$_wt" && mv -f "$_wt" "$_wf" && return 0
 	rm -f "$_wt"; return 1
@@ -552,27 +583,22 @@ sc_apply() {
 	return 0
 }
 
-# ---- «ОГРАНИЧЕНО» by address: the sets of the categories that carry cidr keys (header) --------------------------------------
-# SC_ASETS in: «<id> <category>» (sc_fconf: a limited schedule's category with ready address data); out: «<id> <4|6> <set>» for
-# the sets that stand. A set per CATEGORY and family: the data is the same for every schedule, one Telegram set serves them all.
-# The data is geo's `ready` forms (SC_GREADY), bogons cut there; a family without data has no set and no rule.
-sc_aset_name() { if [ "$2" = 6 ]; then echo "enodia_sch6_$1"; else echo "enodia_sch_$1"; fi; }   # <category> <4|6>
+# ---- «ОГРАНИЧЕНО» by address: a set per schedule and family (header) ------------------------------------------------------
+# SC_AFILES (sc_fconf): «<id> <4|6> <file>» — geo's ready address forms of the keys the schedule closes by address, and its own
+# addresses; out: SC_ASETS «<id> <4|6> <set>» for the sets that stand. A family without data has no set and no rule.
+sc_aset_name() { if [ "$2" = 6 ]; then echo "enodia_sch6_$1"; else echo "enodia_sch_$1"; fi; }   # <id> <4|6>
 sc_aset_sync() {
-	_asin=$SC_ASETS; SC_ASETS=""
-	[ -n "$_asin" ] || return 0
+	SC_ASETS=""
+	[ -n "$SC_AFILES" ] || return 0
 	command -v set_sync >/dev/null 2>&1 || return 0
-	for _asc in $(printf '%s\n' "$_asin" | awk 'NF == 2 { print $2 }' | sort -u); do
+	for _asi in $(printf '%s\n' "$SC_AFILES" | awk 'NF == 3 { print $1 }' | sort -u); do
 		for _asf in 4 6; do
 			[ "$_asf" = 6 ] && ! have_v6 && continue
-			_ask=cidr; [ "$_asf" = 6 ] && _ask=cidr6
-			_ass=$(sc_aset_name "$_asc" "$_asf")
-			for _askk in $(sc_cat_keys "$_asc"); do
-				printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_askk" -v t="$_ask" '$1 == k && $2 == t { print $3 }'
-			done | while read -r _asp; do cat "$_asp" 2>/dev/null; done | sort -u > "$SC_RUN/aset.$$"
+			_ass=$(sc_aset_name "$_asi" "$_asf")
+			printf '%s\n' "$SC_AFILES" | awk -v i="$_asi" -v f="$_asf" 'NF == 3 && $1 == i && $2 == f { print $3 }' |
+				while read -r _asp; do cat "$_asp" 2>/dev/null; done | sort -u > "$SC_RUN/aset.$$"
 			SET_FAMILY=inet; [ "$_asf" = 6 ] && SET_FAMILY=inet6
-			if [ -s "$SC_RUN/aset.$$" ] && set_sync "$_ass" "$SC_RUN/aset.$$"; then
-				SC_ASETS="$SC_ASETS$(printf '%s\n' "$_asin" | awk -v c="$_asc" -v f="$_asf" -v s="$_ass" 'NF == 2 && $2 == c { print $1, f, s }')$SC_NL"
-			fi
+			if [ -s "$SC_RUN/aset.$$" ] && set_sync "$_ass" "$SC_RUN/aset.$$"; then SC_ASETS="$SC_ASETS$_asi $_asf $_ass$SC_NL"; fi
 			SET_FAMILY=""
 			rm -f "$SC_RUN/aset.$$"
 		done
@@ -581,7 +607,7 @@ sc_aset_sync() {
 	return 0
 }
 sc_aset_gc() {   # our sets that SC_ASETS does not name (all of them with an empty SC_ASETS — unwire); set-lib.sh drops its snapshot too
-	for _gs in $(ipset list -n 2>/dev/null | grep -E '^enodia_sch6?_[a-z]+$'); do
+	for _gs in $(ipset list -n 2>/dev/null | grep -E '^enodia_sch6?_[a-z0-9]+$'); do
 		printf '%s\n' "$SC_ASETS" | awk -v s="$_gs" '$3 == s { f = 1 } END { exit !f }' && continue
 		if command -v set_drop >/dev/null 2>&1; then set_drop "$_gs"; else ipset destroy "$_gs" 2>/dev/null; fi
 	done
@@ -683,48 +709,60 @@ sc_fports() {
 	printf '%s\n' "$_fmp" > "$SC_FDIR/ports.$$" && mv -f "$SC_FDIR/ports.$$" "$SC_FDIR/ports"
 	SC_FMAP=$(printf '%s\n' "$_fmp" | while read -r _fi _fpn; do case " $1 " in *" $_fi "*) echo "$_fi $_fpn" ;; esac; done)
 }
-# The config for ids limited now → $SC_FDIR/conf.new. Category data is geo's READY forms (one `geo.sh ready` for all keys →
-# SC_GREADY): a domain key is a list of the filter, a cidr key makes the category an address one (SC_ASETS «<id> <category>»,
-# sets by sc_aset_sync). A category whose data is not downloaded yet acts without it and goes to SC_FPEND («<id>:<category>») —
-# the tick then starts the background fetch. Own sites — a file per schedule here.
+# The config for ids limited now → $SC_FDIR/conf.new. Data is geo's READY forms (one `geo.sh ready` for all keys → SC_GREADY):
+# a domain key is a list of the filter (block: closed, allow: allowed); a cidr key is an address file of the schedule's set
+# (SC_AFILES «<id> <4|6> <file>», sets by sc_aset_sync) — in «block» what it chose, in «allow» only sc_bypass_keys (an address
+# cannot be «allowed only»). A key whose data is not downloaded yet acts without it and goes to SC_FPEND — the tick then starts
+# the background fetch. Own sites and own addresses — files per schedule here (RAM; rewritten only when they change).
 sc_fconf() {
-	SC_FPEND=""; SC_ASETS=""; _fk=""
-	for _fi in $1; do sc_load "$_fi" || continue; _fk="$_fk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	SC_FPEND=""; SC_AFILES=""; _fk=""
+	for _fi in $1; do sc_load "$_fi" || continue; _fk="$_fk $(sc_keys | tr '\n' ' ')"; done
 	SC_GREADY=""
 	if [ -n "$(echo $_fk)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then SC_GREADY=$(sh "$ENODIA_DIR/geo.sh" ready $_fk 2>/dev/null); fi
+	# «<key>=<kind>» of every ready key, once — the loop below asks it per key without a fork (32 pools a schedule, every minute)
+	_fkinds=" $(printf '%s\n' "$SC_GREADY" | awk -F'\t' 'NF == 3 && ($2 == "domain" || $2 == "cidr") { printf "%s=%s ", $1, $2 }') "
 	{
 		echo "# access-sched.sh: a profile per schedule with limited devices now"
 		printf '%s\n' "$SC_GREADY" | awk -F'\t' 'NF == 3 && $2 == "domain" && !s[$1]++ { print "list " $1 " " $3 }'
 		for _fi in $1; do
 			sc_load "$_fi" || continue
-			_fl=""
-			for _fc in $SC_CATON; do
-				_fmiss=0; _fadr=0
-				for _fkk in $(sc_cat_keys "$_fc"); do
-					case "$(printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_fkk" '$1 == k && ($2 == "domain" || $2 == "cidr") { print $2; exit }')" in
-						domain) _fl="${_fl:+$_fl,}$_fkk" ;;
-						cidr)   _fadr=1 ;;
-						*)      _fmiss=1 ;;
-					esac
-				done
-				[ "$_fmiss" = 0 ] || SC_FPEND="$SC_FPEND $_fi:$_fc"
-				[ "$_fadr" = 0 ] || SC_ASETS="$SC_ASETS$_fi $_fc$SC_NL"
+			_fl=""; _fbp=" "; [ "$SC_LMODE" = allow ] && _fbp=" $(sc_bypass_keys | tr '\n' ' ') "
+			for _fkk in $(sc_keys); do
+				case "$_fkinds" in
+					*" $_fkk=domain "*)
+						case "$_fbp" in *" $_fkk "*) ;; *) _fl="${_fl:+$_fl,}$_fkk" ;; esac ;;
+					*" $_fkk=cidr "*)
+						if [ "$SC_LMODE" = block ] || case "$_fbp" in *" $_fkk "*) true ;; *) false ;; esac; then
+							SC_AFILES="$SC_AFILES$(printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_fkk" -v i="$_fi" '$1 == k && $2 == "cidr" { print i, 4, $3 } $1 == k && $2 == "cidr6" { print i, 6, $3 }')$SC_NL"
+						fi ;;
+					*) SC_FPEND="$SC_FPEND $_fi:$_fkk" ;;
+				esac
 			done
 			if [ -n "$SC_SITES" ]; then
-				printf '%s\n' "$SC_SITES" > "$SC_FDIR/site-$_fi.new"
-				if cmp -s "$SC_FDIR/site-$_fi.new" "$SC_FDIR/site-$_fi.list"; then rm -f "$SC_FDIR/site-$_fi.new"
-				else mv -f "$SC_FDIR/site-$_fi.new" "$SC_FDIR/site-$_fi.list"; fi
+				sc_fput "site-$_fi.list" "$SC_SITES"
 				echo "list site-$_fi $SC_FDIR/site-$_fi.list"
 				_fl="${_fl:+$_fl,}site-$_fi"
-			fi
+			else rm -f "$SC_FDIR/site-$_fi.list"; fi
+			# own addresses close in «block» only (in «allow» every address is open anyway: the filter judges names)
+			for _faf in 4 6; do
+				if [ "$_faf" = 4 ]; then _fav=$(printf '%s\n' $SC_ADDRS | grep -v ':'); else _fav=$(printf '%s\n' $SC_ADDRS | grep ':'); fi
+				if [ "$SC_LMODE" = block ] && [ -n "$_fav" ]; then
+					sc_fput "addr-$_fi.$_faf" "$_fav"; SC_AFILES="$SC_AFILES$_fi $_faf $SC_FDIR/addr-$_fi.$_faf$SC_NL"
+				else rm -f "$SC_FDIR/addr-$_fi.$_faf"; fi
+			done
 			echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}"
 		done
 	} > "$SC_FDIR/conf.new"
+	SC_AFILES=$(printf '%s' "$SC_AFILES" | grep .)
+}
+sc_fput() {   # <name in SC_FDIR> <content> — rewritten only when it changes (its stat feeds the daemon's reload signature)
+	printf '%s\n' "$2" > "$SC_FDIR/$1.new"
+	if cmp -s "$SC_FDIR/$1.new" "$SC_FDIR/$1"; then rm -f "$SC_FDIR/$1.new"; else mv -f "$SC_FDIR/$1.new" "$SC_FDIR/$1"; fi
 }
 # Converge the filter to SC_PLAN: profiles of the limited schedules, the daemon started / reloaded / stopped, its probe. A filter
 # that cannot work ⇒ the limited lines leave SC_PLAN (fail-open: open, never «no DNS») and the journal says why, once.
 sc_filter_sync() {
-	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""
+	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""; SC_AFILES=""
 	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" { print $3 }' | sort -u | tr '\n' ' ')
 	if [ -z "$(echo $_fids)" ]; then
 		if sc_falive; then sc_fstop; fi
@@ -756,7 +794,7 @@ sc_filter_sync() {
 }
 sc_ffail() {   # $1 = nobin|dead — «limited» acts whole or not at all: no address sets either
 	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited"')
-	SC_FMAP=""; SC_ASETS=""
+	SC_FMAP=""; SC_ASETS=""; SC_AFILES=""
 	if [ "$1" = dead ]; then sc_fstop; fi
 	sc_fstate "$1"
 }
@@ -777,10 +815,10 @@ sc_fstate() {
 	esac
 }
 # Category data: the consumer's keys to geo.sh (the one owner), and the background fetch of what is not downloaded yet.
-sc_want_sync() {   # under the lock, after a write: every schedule's category keys → `geo.sh want sched`
+sc_want_sync() {   # under the lock, after a write: every schedule's keys (sc_keys) → `geo.sh want sched`
 	[ -f "$ENODIA_DIR/geo.sh" ] || return 0
 	_wsk=""
-	for _wsi in $(sc_ids); do sc_load "$_wsi" || continue; _wsk="$_wsk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	for _wsi in $(sc_ids); do sc_load "$_wsi" || continue; _wsk="$_wsk $(sc_keys | tr '\n' ' ')"; done
 	_wsk=$(printf '%s\n' $_wsk | grep . | sort -u | tr '\n' ' ')
 	sh "$ENODIA_DIR/geo.sh" want sched $_wsk >/dev/null 2>&1
 	if [ -n "$(echo $_wsk)" ]; then sc_want_fetch force; fi
@@ -963,9 +1001,21 @@ sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
 			case " $SC_FREADY " in *" $_ik "*) ;; *) _ipd="${_ipd:+$_ipd,}\"$_ic\""; break ;; esac
 		done
 	done
-	printf '],"pend":[%s],"sites":[' "$_ipd"
+	printf '],"pend":[%s],"geo":[' "$_ipd"
+	# pools of the catalogue: key, kind (domain|cidr), its catalogue tab and label — geo.sh's answer (SC_GABOUT, sc_fready)
+	_ij=0; _ipd=""
+	for _ig in $SC_GEO; do
+		[ "$_ij" = 1 ] && printf ','; _ij=1
+		printf '%s\n' "$SC_GABOUT" | awk -F'\t' -v k="$_ig" '$1 == k { printf "{\"k\":\"%s\",\"kind\":\"%s\",\"t\":\"%s\",\"l\":\"%s\"}", $1, $2, $3, $4; f = 1; exit }
+			END { if (!f) printf "{\"k\":\"%s\",\"kind\":\"\",\"t\":\"\",\"l\":\"%s\"}", k, k }'
+		case " $SC_FREADY " in *" $_ig "*) ;; *) _ipd="${_ipd:+$_ipd,}\"$_ig\"" ;; esac
+	done
+	printf '],"gpend":[%s],"sites":[' "$_ipd"
 	_ij=0
 	for _is in $SC_SITES; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_is"; done
+	printf '],"addrs":['
+	_ij=0
+	for _is in $SC_ADDRS; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_is"; done
 	printf '],"st":"%s","why":"%s","hol":' "$SC_ST" "$SC_WHY"
 	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then sc_at_json "$SC_HOL"; else printf 'null'; fi
 	printf ',"ovr":'
@@ -995,13 +1045,17 @@ sc_head_json() {   # router clock + «close all» + limits, after sc_now
 	# «limited»: the categories offered (the router's table — the panel words them) and the filter: installed? its state now
 	_hfi=0; [ -x "$(bin_path dns-filter)" ] && _hfi=1
 	printf ',"cats":['
-	printf '%s\n' "$SC_CATS" | awk -F'|' 'NF == 3 { printf "%s{\"id\":\"%s\",\"name\":\"%s\"}", (n++ ? "," : ""), $1, $3 }'
-	printf '],"filter":{"inst":%s,"state":"%s"}' "$_hfi" "$(cat "$SC_RUN/filter.state" 2>/dev/null | tr -cd 'a-z')"
+	# a category that also closes by address says so (`addr`): «allow» closes it by address when it is not allowed
+	printf '%s\n' "$SC_CATS" | awk -F'|' 'NF == 4 { printf "%s{\"id\":\"%s\",\"name\":\"%s\",\"addr\":%s}", (n++ ? "," : ""), $1, $4, ($3 == "" ? "false" : "true") }'
+	printf '],"pmax":%s,"filter":{"inst":%s,"state":"%s"}' "$SC_POOL_MAX" "$_hfi" "$(cat "$SC_RUN/filter.state" 2>/dev/null | tr -cd 'a-z')"
 }
-# the category keys of the listed schedules that have READY data now → SC_FREADY (one geo.sh call per answer)
+# the keys of the listed schedules that have READY data now → SC_FREADY, and what the catalogue says of their pools → SC_GABOUT
+# (one geo.sh call each per answer; `about` only when some schedule has pools)
 sc_fready() {
-	SC_FREADY=""; _frk=""
-	for _fri in "$@"; do sc_load "$_fri" || continue; _frk="$_frk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
+	SC_FREADY=""; SC_GABOUT=""; _frk=""; _frg=""
+	for _fri in "$@"; do sc_load "$_fri" || continue; _frg="$_frg $SC_GEO"; done
+	if [ -n "$(echo $_frg)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then SC_GABOUT=$(sh "$ENODIA_DIR/geo.sh" about $_frg 2>/dev/null); fi
+	for _fri in "$@"; do sc_load "$_fri" || continue; _frk="$_frk $(sc_keys | tr '\n' ' ')"; done
 	[ -n "$(echo $_frk)" ] && [ -f "$ENODIA_DIR/geo.sh" ] || return 0
 	SC_FREADY=$(sh "$ENODIA_DIR/geo.sh" ready $_frk 2>/dev/null | cut -f1 | sort -u | tr '\n' ' ')
 	return 0
@@ -1028,7 +1082,8 @@ cmd_get_json() {
 # Spec from the CGI (key=value lines, values already charset-checked there; meaning is checked HERE):
 #   id=<sN|new> ver=<n the panel opened> name_b64=… enabled=0|1 base=open|limited|closed
 #   wins=<d>.<HHMM>.<HHMM>.<o|l|c>[;…]   devs=<mac>[,<mac>…]   lim_wd= lim_we= (minutes)
-#   lmode=block|allow   cats=<id>[,<id>…]   sites_b64=<base64 of a site per line>   — absent = the schedule keeps its own
+#   lmode=block|allow   cats=<id>[,<id>…]   geo=<geo key>[,…]   sites_b64=<base64 of a site or an address per line>
+#   — absent = the schedule keeps its own
 sc_spec() { sed -n "s/^$1=//p" "$SC_SPEC" | head -n 1 | tr -d '\r'; }
 sc_st_of() { case "$1" in o) echo open ;; l) echo limited ;; c) echo closed ;; *) return 1 ;; esac; }
 cmd_save() {
@@ -1079,7 +1134,23 @@ cmd_save() {
 			case " $_vcats " in *" $_vc "*) ;; *) _vcats="${_vcats:+$_vcats }$_vc" ;; esac
 		done
 	fi
-	_vhs=0; _vsites=""; _vdrop=0
+	# pools of the geo catalogue: their form here, membership in the catalogue by geo.sh (the one owner) — an unknown key would
+	# stay «downloading» for ever
+	_vgeo=""; _vhg=0
+	if grep -q '^geo=' "$SC_SPEC"; then
+		_vhg=1
+		for _vg in $(sc_spec geo | tr ',' ' '); do
+			sc_geo_ok "$_vg" || jfail "неверный пул: $_vg"
+			case " $_vgeo " in *" $_vg "*) ;; *) _vgeo="${_vgeo:+$_vgeo }$_vg" ;; esac
+		done
+		[ "$(set -- $_vgeo; echo $#)" -le "$SC_POOL_MAX" ] || jfail "пулов больше $SC_POOL_MAX"
+		if [ -n "$_vgeo" ]; then
+			[ -f "$ENODIA_DIR/geo.sh" ] || jfail "на роутере нет geo.sh — обновите скрипты роутера"
+			_vknown=$(sh "$ENODIA_DIR/geo.sh" about $_vgeo 2>/dev/null | cut -f1)
+			for _vg in $_vgeo; do printf '%s\n' "$_vknown" | grep -qxF -- "$_vg" || jfail "неизвестный пул: $_vg"; done
+		fi
+	fi
+	_vhs=0; _vsites=""; _vaddrs=""; _vdrop=0
 	if grep -q '^sites_b64=' "$SC_SPEC"; then
 		_vhs=1
 		# «*.x» is x and below (dnsmasq semantics, the filter's too) — cut here: the shared normaliser drops a star as junk
@@ -1087,19 +1158,22 @@ cmd_save() {
 		_vin=$(printf '%s\n' "$_vraw" | grep -c '[^[:space:]]' || true)
 		if [ -f "$ENODIA_DIR/lists-lib.sh" ]; then
 			. "$ENODIA_DIR/lists-lib.sh"
+			# addresses by the project's ONE address normalisers, bogons cut (the map rake: a private range must never become a
+			# REJECT); the names' normaliser skips address lines itself (a bare IP or a CIDR is not a host name there)
+			_vaddrs=$( { printf '%s\n' "$_vraw" | norm_cidr | strip_bogon; printf '%s\n' "$_vraw" | norm_cidr6 | strip_bogon6; } | awk '!s[$0]++')
 			_vsites=$(printf '%s\n' "$_vraw" | norm_domains | awk '!s[$0]++')
 		else
 			_vsites=$(printf '%s\n' "$_vraw" | tr 'A-Z' 'a-z' | awk '{ d = $1; sub(/^\*?\./, "", d) } d ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !s[d]++ { print d }')
 		fi
-		_vout=$(printf '%s\n' "$_vsites" | grep -c . || true)
-		[ "$_vout" -le "$SC_SITE_MAX" ] || jfail "своих сайтов больше $SC_SITE_MAX"
+		_vout=$( { printf '%s\n' "$_vsites"; printf '%s\n' "$_vaddrs"; } | grep -c . || true)
+		[ "$_vout" -le "$SC_SITE_MAX" ] || jfail "своих сайтов и адресов больше $SC_SITE_MAX"
 		_vdrop=$(( ${_vin:-0} - ${_vout:-0} )); [ "$_vdrop" -ge 0 ] || _vdrop=0
 	fi
 	mkdir -p "$SC_DIR" 2>/dev/null || jfail "не удалось создать $SC_DIR"
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	if [ "$_vid" = new ]; then
 		[ "$(sc_ids | wc -l | tr -d ' ')" -lt "$SC_MAX" ] || jfail "расписаний не больше $SC_MAX"
-		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_SITES=""
+		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_SITES=""; SC_GEO=""; SC_ADDRS=""
 	else
 		id_ok "$_vid" || jfail "неверный номер расписания"
 		sc_load "$_vid" || jfail "расписание удалено — откройте список заново"
@@ -1117,7 +1191,8 @@ cmd_save() {
 	done
 	SC_ID=$_vid; SC_NAME=$_vname; SC_ON=$_von; SC_BASE=$_vbase; SC_WINS=$_vwins; SC_DEVS=$_vdevs; SC_VER=$((SC_VER + 1))
 	[ -n "$_vlwd" ] && SC_LWD=$_vlwd; [ -n "$_vlwe" ] && SC_LWE=$_vlwe
-	[ -n "$_vlm" ] && SC_LMODE=$_vlm; [ "$_vhc" = 1 ] && SC_CATON=$_vcats; [ "$_vhs" = 1 ] && SC_SITES=$_vsites
+	[ -n "$_vlm" ] && SC_LMODE=$_vlm; [ "$_vhc" = 1 ] && SC_CATON=$_vcats; [ "$_vhg" = 1 ] && SC_GEO=$_vgeo
+	[ "$_vhs" = 1 ] && { SC_SITES=$_vsites; SC_ADDRS=$_vaddrs; }
 	sc_write "$_vid" || jfail "не удалось записать расписание"
 	_vv=$SC_VER          # the tick and the keys' sync load OTHER schedules into the same SC_* — the answer is this one's
 	sc_want_sync
@@ -1288,7 +1363,7 @@ cmd_dump() {
 		sc_load "$_di" || continue
 		sc_eval 1; sc_effective
 		# by id, not by name: the dump goes into a chat, and a schedule is named after a person («Маша») more often than not
-		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true) «ограничено»: $SC_LMODE [${SC_CATON:-—}] своих сайтов=$(printf '%s\n' "$SC_SITES" | grep -c . || true)"
+		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true) «ограничено»: $SC_LMODE [${SC_CATON:-—}] пулов=$(set -- $SC_GEO; echo $#) [${SC_GEO:-—}] своих сайтов=$(printf '%s\n' "$SC_SITES" | grep -c . || true) адресов=$(set -- $SC_ADDRS; echo $#)"
 	done
 	# the filter of «limited»: component, state, the daemon, its config (ports and lists) and the last lines of its log
 	echo "фильтр «ограничено»: компонент $([ -x "$(bin_path dns-filter)" ] && echo есть || echo НЕТ) · состояние $(cat "$SC_RUN/filter.state" 2>/dev/null || echo —) · процесс $(sc_falive && echo "жив ($(sc_fpid))" || echo нет)"

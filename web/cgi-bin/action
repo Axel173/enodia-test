@@ -593,10 +593,10 @@ case "$act" in
 				printf 'name_b64=%s\n' "$_v" >> "$IN_DIR/spec"
 				# «limited»: ONLY the keys the request carries — absent means «keep the schedule's own» (a panel tab opened before
 				# an update knows nothing of them and must not wipe the categories); empty means «none»
-				for _k in lmode cats sites_b64; do
+				for _k in lmode cats geo sites_b64; do
 					echo "$body" | tr '&' '\n' | grep -q "^$_k=" || continue
 					_v=$(urldecode "$(field "$_k")")
-					case "$_k:$_v" in lmode:*[!a-z]*|cats:*[!a-z,]*|sites_b64:*[!A-Za-z0-9+/=]*) fail "неверные данные расписания ($_k)" ;; esac
+					case "$_k:$_v" in lmode:*[!a-z]*|cats:*[!a-z,]*|geo:*[!a-z0-9._!,-]*|sites_b64:*[!A-Za-z0-9+/=]*) fail "неверные данные расписания ($_k)" ;; esac
 					printf '%s=%s\n' "$_k" "$_v" >> "$IN_DIR/spec"
 				done
 				owner_relay access-sched.sh save "$IN_DIR/spec" ;;

@@ -5545,9 +5545,10 @@
     var t=_schNewTpl;
     _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(),
                     lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0},
-                    lmode:it.lmode||'block', cats:(it.cats||[]).slice(), sites:(it.sites||[]).join('\n'), dirty:false}
+                    lmode:it.lmode||'block', cats:(it.cats||[]).slice(), geo:(it.geo||[]).map(function(g){ return {k:g.k, kind:g.kind, t:g.t, l:g.l}; }),
+                    sites:(it.sites||[]).concat(it.addrs||[]).join('\n'), dirty:false}
                  : {key:key, ver:0, name:t ? trNow(t.t) : '', on:1, base:t ? t.base : 'open', wins:t ? t.wins.map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }) : [],
-                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, lmode:'block', cats:[], sites:'', dirty:!!(t || _schNewDev)};
+                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, lmode:'block', cats:[], geo:[], sites:'', dirty:!!(t || _schNewDev)};
     return _schDraft;
   }
   function schShow(d, it, devs){
@@ -5692,36 +5693,88 @@
     return h+'</div>';
   }
   function schMacPriv(m){ return /^.[26ae]/i.test(String(m||'')); }   // the locally administered bit (lease-lib.sh::mac_is_random)
-  // «ОГРАНИЧЕНО — ЧТО ЗАКРЫТО» (mockup): the categories the ROUTER offers (`d.cats`: its table, the panel only words them) as pills
-  // like the days of a window, own sites a line each, and what it cannot do said on the card. Data of a category comes from the geo
-  // catalogue (the router downloads it after a save): until then the pill says «скачивается» — `it.pend`. No filter on the router ⇒
-  // the card says what is missing and leads to «Компоненты»: «ограничено» is not offered in the week then (schLimOn).
-  // «Только разрешённое» of the mockup is a spike there («скоро») — the panel draws what works.
+  // «ОГРАНИЧЕНО» (mockup «Ограничено — что закрыто»): the mode, the categories the ROUTER offers (`d.cats`: its table, the panel
+  // only words them) as pills like the days of a window, any POOL of the geo catalogue, own sites and addresses a line each, and what
+  // it cannot do said on the card. Data comes from the geo catalogue (the router downloads it after a save): until then a pill or a
+  // pool says «скачивается» — `it.pend` / `it.gpend`. No filter on the router ⇒ the card says what is missing and leads to
+  // «Компоненты»: «ограничено» is not offered in the week then (schLimOn).
+  // POOLS: a search over the catalogue the «Гео» screen reads (`rtLoadGeoKeys` — one cache per tab, loaded on the first search:
+  // 1.5 s and 305 KB on BE7000, not for every show); what a chosen pool IS (kind, label) the router says in `it.geo`.
+  // «ALLOW» (mockup: «скоро»): names only — an address cannot be «allowed only» (an allowed site lives on any CDN address); the router
+  // closes by address the categories that carry addresses (`c.addr`) unless they are allowed. Said on the card.
   function schLimHtml(d, it, dr){
-    var cats=Array.isArray(d.cats) ? d.cats : [], pend=(it && it.pend) || [];
-    var h='<div class="card w2" id="sc-lmt"><div class="wt">Ограничено — что закрыто</div>';
+    var cats=Array.isArray(d.cats) ? d.cats : [], pend=(it && it.pend) || [], al=dr.lmode==='allow';
+    var h='<div class="card w2" id="sc-lmt"><div class="wt">'+(al ? 'Ограничено — что разрешено' : 'Ограничено — что закрыто')+'</div>';
     if(!schLimOn(d)) h+=noteBox('<b>Нужен компонент «Фильтр по категориям».</b> Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.', 'warn')
       + '<div class="acts" style="justify-content:flex-start;margin-top:9px"><button type="button" class="btn" data-cact="rr-pkg">Компоненты</button></div>';
-    h+='<div class="cline" style="margin-top:'+(schLimOn(d) ? '0' : '13px')+'">Категории — из каталога гео-категорий</div>'
+    h+='<div class="segbar sm" id="sc-lmode" role="group" aria-label="'+esc(tkL('Режим «ограничено»','The «limited» mode'))+'" style="margin-top:'+(schLimOn(d) ? '0' : '13px')+'">'
+      + dvSeg('data-sc-lmode', 'block', '<span>Закрыть выбранное</span>', dr.lmode) + dvSeg('data-sc-lmode', 'allow', '<span>Только разрешённое</span>', dr.lmode)+'</div>'
+      + '<div class="cline">Категории — из каталога гео-категорий</div>'
       + '<div class="segbar sm" id="sc-cats" role="group" aria-label="'+esc(tkL('Категории','Categories'))+'">'
       + cats.map(function(c){ var on=dr.cats.indexOf(c.id)>=0, pd=on && pend.indexOf(c.id)>=0;
           return '<div class="seg'+(on ? ' on' : '')+'" data-sccat="'+esc(c.id)+'" role="button" tabindex="0" aria-pressed="'+(on ? 'true' : 'false')+'">'
             + '<span>'+esc(trNow(String(c.name)))+'</span>'+(pd ? '<span class="sub">'+esc(tkL(' · скачивается',' · downloading'))+'</span>' : '')+'</div>'; }).join('')
       + '</div>'
-      + '<div class="f" style="margin-top:12px"><label for="sc-sites">Свои сайты — по одному в строке</label>'
+      + '<div class="cline">Любой пул из каталога гео — сервис, страна, «заблокировано в РФ»</div>'
+      + '<div id="sc-geo">'+schGeoChips(d, it, dr)+'</div>'
+      + '<div class="f" style="margin-top:9px"><label for="sc-gq">Найти в каталоге</label><input id="sc-gq" type="search" autocomplete="off" spellcheck="false" translate="no" placeholder="telegram, discord, cn…"></div>'
+      + '<div id="sc-gres"></div>'
+      + '<div class="f" style="margin-top:12px"><label for="sc-sites">'+(al ? 'Свои сайты — по одному в строке' : 'Свои сайты и адреса — по одному в строке')+'</label>'
       + '<textarea id="sc-sites" spellcheck="false" autocapitalize="off" translate="no" placeholder="roblox.com">'+esc(dr.sites)+'</textarea></div>'
-      + noteBox('«Ограничено» закрывает через DNS роутера, мессенджеры — ещё и по адресам их серверов: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.', 'info');
+      + (al ? noteBox('Разрешено только выбранное: остальные сайты на устройстве не откроются. Проверки связи телефона и время разрешены всегда. Мессенджеры, не разрешённые здесь, закрыты и по адресам их серверов. Адреса в этом режиме не нужны — разрешает фильтр имён. Свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, это обойдёт.', 'info')
+            : noteBox('«Ограничено» закрывает через DNS роутера, мессенджеры, адресные пулы и свои адреса — ещё и по адресу: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.', 'info'));
     return h+'</div>';
+  }
+  // the chosen pools: a chip each (what the router says it is; «скачивается» until its data is on the router), ✕ takes it off; an
+  // ADDRESS pool in «block» closes everything on those addresses — the warning stands beside the chips it is about
+  function schGeoChips(d, it, dr){
+    var gp=(it && it.gpend) || [], al=dr.lmode==='allow', max=(d.pmax|0) || 32;
+    var h=dr.geo.length ? '<div class="xchips" style="margin-top:6px">'+dr.geo.map(function(g, i){
+        return '<span class="chip zp-cat" title="'+esc(trNow(geoSrcL({key:g.k, type:g.t})))+'"><span translate="no">'+esc(g.l || g.k)+'</span><span class="n">'+esc(g.kind==='cidr' ? tkL('адреса','addresses') : tkL('домены','domains'))
+          + (gp.indexOf(g.k)>=0 ? esc(tkL(' · скачивается',' · downloading')) : '')+'</span>'
+          + '<button type="button" class="zp-cat-off" data-scgdel="'+i+'" aria-label="'+esc(tkL('убрать пул','remove the pool'))+'" title="'+esc(tkL('убрать пул','remove the pool'))+'">✕</button></span>'; }).join('')+'</div>'
+      : '<div class="cline" style="margin-top:4px">Пулов не выбрано.</div>';
+    if(dr.geo.length>=max) h+='<div class="cline">'+esc(tkL('пулов не больше ','pools at most '))+max+'</div>';
+    var adr=dr.geo.filter(function(g){ return g.kind==='cidr'; });
+    if(adr.length && al) h+=noteBox('Адресные пулы в «только разрешённом» ничего не меняют: разрешает фильтр имён, по адресам и так всё открыто.', 'info');
+    else if(adr.length) h+=noteBox('<b>Адресный пул закрывает всё на этих адресах — вместе с соседями.</b> Для сети одного сервиса (как у Telegram) это то, что нужно; сети CDN и страны закроют и посторонние сайты.', 'warn');
+    return h;
+  }
+  // a search over the catalogue (`rtGeoKeys`) by the «Гео» screen's own matcher (geoQMatch: label, description, key); the label's
+  // exact and prefix hits first; 8 rows — the rest is «уточните запрос»
+  function schGeoFind(q){
+    q=geoQNorm(q); if(!q || !rtGeoKeys) return [];
+    var hit=[];
+    Object.keys(rtGeoKeys).forEach(function(k){
+      var it=rtGeoKeys[k]; if(!geoQMatch(it, q)) return;
+      var l=String(it.label || k).toLowerCase();
+      hit.push({r:(l===q) ? 0 : (l.indexOf(q)===0) ? 1 : 2, it:it});
+    });
+    hit.sort(function(a, b){ return a.r-b.r || String(a.it.label).length-String(b.it.label).length || String(a.it.key).localeCompare(String(b.it.key)); });
+    return hit;
+  }
+  function schGeoRes(d, dr, q){
+    if(!String(q||'').trim()) return '';
+    if(!rtGeoKeys) return '<div class="cline">'+esc(trNow('каталог гео не получен — попробуйте ещё раз'))+'</div>';
+    var hit=schGeoFind(q);
+    if(!hit.length) return '<div class="cline">'+esc(trNow('в каталоге такого нет'))+'</div>';
+    var have={}; dr.geo.forEach(function(g){ have[g.k]=1; });
+    return hit.slice(0, 8).map(function(x){ var it=x.it;
+        return '<div class="lrow'+(have[it.key] ? ' dis' : '')+'"'+(have[it.key] ? '' : ' role="button" tabindex="0" data-scgadd="'+esc(it.key)+'"')+'>'
+          + '<div class="grow"><div class="nm" translate="no">'+esc(it.label || it.key)+'</div>'
+          + '<div class="ds">'+esc(trNow(geoSrcL(it)))+' · '+esc(it.kind==='cidr' ? tkL('адреса','addresses') : tkL('домены','domains'))+'</div></div>'
+          + (have[it.key] ? '<span class="chip">'+esc(tkL('выбран','chosen'))+'</span>' : '<span class="chip acc">'+esc(tkL('добавить','add'))+'</span>')+'</div>'; }).join('')
+      + (hit.length>8 ? '<div class="cline">'+esc(tkL('ещё совпадений: ','more matches: '))+(hit.length-8)+esc(tkL(' — уточните запрос',' — narrow the search'))+'</div>' : '');
   }
   // THE save of a schedule — the editor and the device tab (add / remove a device) send the whole schedule against its version, in
   // the form cgi-bin/action carries: windows «days.HHMM.HHMM.o|l|c» by `;`, devices by `,`, the name base64.
   // `lim` — {wd, we} minutes of the day limit (weekdays / weekend, 0 = none).
-  // `lx` — {lmode, cats, sites} of «limited» (the editor); absent ⇒ the keys are not sent and the router keeps the schedule's own.
+  // `lx` — {lmode, cats, geo, sites} of «limited» (the editor); absent ⇒ the keys are not sent and the router keeps the schedule's own.
   function schSpec(id, ver, name, on, base, wins, devs, lim, lx){
     var p={id:id, ver:ver, name_b64:b64utf8(String(name)), enabled:on ? 1 : 0, base:base,
             wins:wins.map(function(w){ return w.d+'.'+w.a.replace(':','')+'.'+w.b.replace(':','')+'.'+w.s.charAt(0); }).join(';'), devs:devs.join(','),
             lim_wd:(lim && lim.wd)|0, lim_we:(lim && lim.we)|0};
-    if(lx){ p.lmode=lx.lmode||'block'; p.cats=(lx.cats||[]).join(','); p.sites_b64=b64utf8(String(lx.sites||'')); }
+    if(lx){ p.lmode=lx.lmode||'block'; p.cats=(lx.cats||[]).join(','); p.geo=(lx.geo||[]).map(function(g){ return g.k; }).join(','); p.sites_b64=b64utf8(String(lx.sites||'')); }
     return p;
   }
   function schSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-'+id) : ''; }
@@ -5752,6 +5805,35 @@
       s.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); flip(); } });
     });
     wireCacts(el('sc-lmt'));
+    // the mode redraws the screen from the draft (the card's words change with it)
+    wireSeg('sc-lmode', 'data-sc-lmode', function(v){ if(v===dr.lmode) return; dr.lmode=v; dr.dirty=true; schShow(d, it, devs); });
+    // pools: the chips and the search results are repainted in place — the search field keeps its text and focus
+    function scGeoPaint(){
+      el('sc-geo').innerHTML=schGeoChips(d, it, dr);
+      Array.prototype.forEach.call(body.querySelectorAll('[data-scgdel]'), function(b){
+        b.addEventListener('click', function(){ dr.geo.splice(+b.getAttribute('data-scgdel'), 1); dr.dirty=true; scGeoPaint(); scGeoFind(); });
+      });
+    }
+    function scGeoFind(){
+      var q=el('sc-gq').value, out=el('sc-gres');
+      out.innerHTML=schGeoRes(d, dr, q);
+      Array.prototype.forEach.call(out.querySelectorAll('[data-scgadd]'), function(r){
+        function add(){
+          var k=r.getAttribute('data-scgadd'), g=rtGeoKeys && rtGeoKeys[k];
+          if(!g || dr.geo.some(function(x){ return x.k===k; })) return;
+          if(dr.geo.length>=((d.pmax|0) || 32)){ showToast(tkL('пулов не больше ','pools at most ')+((d.pmax|0) || 32), false); return; }
+          dr.geo.push({k:k, kind:g.kind, t:g.type, l:g.label || k}); dr.dirty=true; scGeoPaint(); scGeoFind();
+        }
+        r.addEventListener('click', add);
+        r.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); add(); } });
+      });
+    }
+    el('sc-gq').addEventListener('input', function(){
+      if(rtGeoKeys){ scGeoFind(); return; }
+      el('sc-gres').innerHTML='<div class="cline">'+esc(trNow('загружаю каталог гео…'))+'</div>';
+      rtLoadGeoKeys().then(function(){ if(screenAlive(body)) scGeoFind(); });
+    });
+    scGeoPaint();
     el('sc-lwe').addEventListener('change', function(){ dr.lim.we=+this.value||0; dr.dirty=true; });
     wireSeg('sc-base', 'data-sc-base', function(v){ dr.base=v; dr.dirty=true; repaintWeek(); });
     wireSeg('sc-ws', 'data-sc-ws', function(){});
@@ -5782,11 +5864,11 @@
       var nm=String(dr.name||'').trim(), er=el('sc-err');
       if(!nm){ er.textContent=trNow('нужно имя расписания'); el('sc-name').focus(); return; }
       er.textContent='';
-      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, sites:dr.sites});
+      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, geo:dr.geo, sites:dr.sites});
       postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
         if(!r || !r.ok){ if(r && r.msg && screenAlive(er)) er.textContent=trNow(String(r.msg)); return; }
         // lines of «Свои сайты» the router could not read as a site — said, not silently lost
-        if((r.dropped|0)>0) showToast(tkL('не похожи на сайт и пропущены — строк: ','not a site and skipped — lines: ')+(r.dropped|0), false);
+        if((r.dropped|0)>0) showToast(tkL('не похожи на сайт или адрес и пропущены — строк: ','not a site or an address and skipped — lines: ')+(r.dropped|0), false);
         _schDraft=null; _schNewTpl=null; _schNewDev='';
         if(!it) navReplace(navKey('rt-sched-p', r.id));
         schScrOpen(r.id);
@@ -6971,14 +7053,25 @@
     "не удалось записать расписание":"could not write the schedule","неверное имя расписания":"wrong schedule name",
     "неверный режим «ограничено»":"wrong «limited» mode",
     // «Ограничено — что закрыто» (the DNS filter of schedules); category names come from the router's table (access-sched.sh SC_CATS)
-    "Ограничено — что закрыто":"Limited — what is closed",
+    "Ограничено — что закрыто":"Limited — what is closed","Ограничено — что разрешено":"Limited — what is allowed",
+    "Закрыть выбранное":"Close the chosen","Только разрешённое":"Only the allowed",
+    "Любой пул из каталога гео — сервис, страна, «заблокировано в РФ»":"Any pool of the geo catalogue — a service, a country, «blocked in Russia»",
+    "Найти в каталоге":"Find in the catalogue","Пулов не выбрано.":"No pools chosen.",
+    "Свои сайты и адреса — по одному в строке":"Own sites and addresses — one per line",
+    "каталог гео не получен — попробуйте ещё раз":"the geo catalogue did not come — try again","в каталоге такого нет":"nothing like that in the catalogue",
+    "загружаю каталог гео…":"loading the geo catalogue…",
+    "Разрешено только выбранное: остальные сайты на устройстве не откроются. Проверки связи телефона и время разрешены всегда. Мессенджеры, не разрешённые здесь, закрыты и по адресам их серверов. Адреса в этом режиме не нужны — разрешает фильтр имён. Свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, это обойдёт.":"Only the chosen is allowed: other sites will not open on the device. Phone connectivity checks and the clock are always allowed. Messengers not allowed here are also closed by their servers' addresses. Addresses are not needed in this mode — the name filter allows. A VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it.",
+    "«Ограничено» закрывает через DNS роутера, мессенджеры, адресные пулы и свои адреса — ещё и по адресу: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.":"«Limited» closes through the router's DNS, messengers, address pools and own addresses by address too: a VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it. «Closed» cannot be got past — it closes the whole device. It takes a few minutes to act: the device remembers the addresses it has already learned.",
+    "Адресные пулы в «только разрешённом» ничего не меняют: разрешает фильтр имён, по адресам и так всё открыто.":"Address pools change nothing in «only the allowed»: the name filter allows, by address everything is open anyway.",
+    "Адресный пул закрывает всё на этих адресах — вместе с соседями.":"An address pool closes everything on those addresses — neighbours too.",
+    "Для сети одного сервиса (как у Telegram) это то, что нужно; сети CDN и страны закроют и посторонние сайты.":"For a network of one service (like Telegram's) that is what is wanted; CDN networks and countries close unrelated sites too.",
+    "пулов больше":"pools more than","неизвестный пул":"unknown pool","неверный пул":"wrong pool","своих сайтов и адресов больше":"own sites and addresses more than",
     "«Ограничено» — закрыто выбранное":"«Limited» — the chosen is closed","категории и сайты из расписания, остальное работает":"the schedule's categories and sites, the rest works",
     "Нужен компонент «Фильтр по категориям».":"The «Category filter» component is needed.",
     "Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.":"Without it «limited» closes nothing — the device stays fully open.",
     "Категории — из каталога гео-категорий":"Categories — from the geo-category catalogue",
     "Мессенджеры":"Messengers","Видео":"Video","Игры":"Games","Развлечения":"Entertainment","Для взрослых":"Adult",
     "Свои сайты — по одному в строке":"Own sites — one per line",
-    "«Ограничено» закрывает через DNS роутера, мессенджеры — ещё и по адресам их серверов: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.":"«Limited» closes through the router's DNS, messengers by their servers' addresses too: a VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it. «Closed» cannot be got past — it closes the whole device. It takes a few minutes to act: the device remembers the addresses it has already learned.",
     // ─── «Задачи» — cron manager (07.10.2026): screens, labels, the router's fixed answers (tasks.sh) ───
     "Задачи":"Tasks","Новая задача":"New task","Задача":"Task","Задачи выполняются с правами root и без проверок:":"Tasks run as root, unchecked:",
     "ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.":"a wrong script or an edit of a foreign line can break the router, the VPN or the internet. They are your responsibility.",
@@ -20588,7 +20681,8 @@
   // за чекбоксом «показывать служебные» — по просьбе пользователя (июль 2026) показываем ВСЕГДА, фильтр убран.
   var GEO_DOM_RE=/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;   // валидный одиночный домен
   // Синтаксис v2ray в поиске: geosite:/geoip:/domain:/full: — префикс срезаем, ищем по имени категории.
-  function geoCleanQuery(){ return (geoQuery||'').trim().toLowerCase().replace(/^(?:geosite|geoip|domain|full):/,''); }
+  function geoQNorm(q){ return String(q||'').trim().toLowerCase().replace(/^(?:geosite|geoip|domain|full):/,''); }
+  function geoCleanQuery(){ return geoQNorm(geoQuery); }
   function openGeo(){
     openModal(null, {route:'rt-geo', deck:true});
     var body=document.getElementById('modal-body'); loading(body);
@@ -20655,8 +20749,8 @@
     // заводил вторую цепочку запросов к самому тяжёлому эндпоинту там, где сборка уже кончилась.
     if(b && screenAlive(b)) geoLoad(b);
   }
-  function geoQMatch(it){
-    var q=geoCleanQuery(); if(!q) return true;
+  function geoQMatch(it, q){   // q — a cleaned query (the schedules' search); none — the screen's own
+    q=(q==null) ? geoCleanQuery() : q; if(!q) return true;
     return (it.label||'').toLowerCase().indexOf(q)>=0 || (it.desc||'').toLowerCase().indexOf(q)>=0 || (it.key||'').toLowerCase().indexOf(q)>=0;
   }
   function geoMatch(it){

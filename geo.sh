@@ -714,6 +714,17 @@ WANT_DIR="$GEO/want"                    # one file per consumer: a key per line
 WSNAP="$GEO/.wsnap.$RESOLVER_VER"       # gz snapshots of wanted keys; keyed by the resolver version (new logic = stale data)
 WSNAP_MAX=1048576                       # bytes of one gz snapshot; a bigger key lives in RAM only (a journal line, as snap_flash)
 want_keys() { cat "$WANT_DIR"/* 2>/dev/null | tr -d '\r' | grep . | sort -u; }
+# Is the key one the catalogue OFFERS? The patterns of cat_url/cat_kind take any name after a prefix (v2fly-anything would pass and
+# stay «downloading» for ever), so the enumerated lists are asked too — the same files catalog_lines reads, no list built.
+cat_known() {
+	case "$1" in
+		v2fly-*) _ckf="$V2CAT_SNAP"; [ -s "$_ckf" ] || _ckf="$V2CAT_BAKED"; tr -d '\r' < "$_ckf" 2>/dev/null | grep -qxF -- "${1#v2fly-}" ;;
+		rfip-*)  _ckf="$RFIP_SNAP"; [ -s "$_ckf" ] || _ckf="$RFIP_BAKED"; tr -d '\r' < "$_ckf" 2>/dev/null | grep -qxF -- "${1#rfip-}" ;;
+		rfgs-*)  _ckf="$RFGS_SNAP"; [ -s "$_ckf" ] || _ckf="$RFGS_BAKED"; tr -d '\r' < "$_ckf" 2>/dev/null | grep -qxF -- "${1#rfgs-}" ;;
+		??)      country_codes | tr ' ' '\n' | grep -qxF -- "$1" ;;
+		*)       [ -n "$(cat_url "$1")" ] && [ -n "$(cat_kind "$1")" ] ;;
+	esac
+}
 want_forms() {   # <key> → «<file name in CACHE> <kind>» per consumer form
 	case "$(cat_kind "$1")" in
 		domain) echo "$1 domain" ;;
@@ -1254,6 +1265,16 @@ case "$1" in
 			done
 		done
 		exit 0 ;;
+	# about <key>… — «<key><TAB><kind><TAB><type><TAB><label>» for every key the catalogue offers (cat_known): what a consumer
+	# checks a key by before keeping it, and shows it as — without reading the whole catalogue (`list` is 1.5 s on BE7000)
+	about)
+		shift
+		for _wn in "$@"; do
+			case "$_wn" in */*|.*|*[!a-z0-9._!-]*) continue ;; esac
+			cat_known "$_wn" || continue
+			printf '%s\t%s\t%s\t%s\n' "$_wn" "$(cat_kind "$_wn")" "$(cat_type "$_wn")" "$(cat_label "$_wn")"
+		done
+		exit 0 ;;
 	# wanted — fetch what the consumers want and is not in RAM yet (a background job of the consumer's save). Waits for the geo
 	# lock instead of riding a build: a build pass ends with a dnsmasq restart the save must not cost the house.
 	wanted)
@@ -1309,7 +1330,7 @@ case "$1" in
 	*)
 		echo "geo.sh — гео-категории (страны/сервисы/заблок-в-РФ → в VPN / мимо VPN / блок)"
 		echo "  list | active | set <key> <vpn|bypass|block|desync|off> | slot <key> <0|2..7> | apply | update | reapply | enabled"
-		echo "  desync-list | want <consumer> [<key>…] | ready <key>… | wanted"
+		echo "  desync-list | want <consumer> [<key>…] | ready <key>… | about <key>… | wanted"
 		echo "  provider <type> | provider-set <type> <pid> | freshness"
 		exit 1
 		;;
