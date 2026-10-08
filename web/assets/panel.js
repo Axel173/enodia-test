@@ -5545,10 +5545,10 @@
     var t=_schNewTpl;
     _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(),
                     lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0},
-                    lmode:it.lmode||'block', cats:(it.cats||[]).slice(), geo:(it.geo||[]).map(function(g){ return {k:g.k, kind:g.kind, t:g.t, l:g.l}; }),
+                    safe:it.safe ? 1 : 0, lmode:it.lmode||'block', cats:(it.cats||[]).slice(), geo:(it.geo||[]).map(function(g){ return {k:g.k, kind:g.kind, t:g.t, l:g.l}; }),
                     sites:(it.sites||[]).concat(it.addrs||[]).join('\n'), dirty:false}
                  : {key:key, ver:0, name:t ? trNow(t.t) : '', on:1, base:t ? t.base : 'open', wins:t ? t.wins.map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }) : [],
-                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, lmode:'block', cats:[], geo:[], sites:'', dirty:!!(t || _schNewDev)};
+                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, safe:0, lmode:'block', cats:[], geo:[], sites:'', dirty:!!(t || _schNewDev)};
     return _schDraft;
   }
   function schShow(d, it, devs){
@@ -5684,6 +5684,15 @@
       + '<div class="kv"><div class="grow"><div class="k">Будни</div><div class="v">не больше стольких минут в интернете</div></div><div class="f">'+limSel('sc-lwd', dr.lim.wd)+'</div></div>'
       + '<div class="kv"><div class="grow"><div class="k">Выходные</div><div class="v">суббота и воскресенье</div></div><div class="f">'+limSel('sc-lwe', dr.lim.we)+'</div></div>'
       + '<div class="cline">Считаются минуты, когда устройство действительно качало: видео, соцсети, загрузки. Фоновая синхронизация, переписка и лёгкие игры качают мало и в счёт не идут. Лимит кончился — закрыто до конца дня; «Открыть на…» добавляет время.</div></div>';
+    // SAFE SEARCH (mockup «Безопасный поиск»): one switch, part of the draft — the router's filter answers the search engines'
+    // names with their own safe front doors all day except closed time (access-sched.sh, state «safe»); YouTube moderate, a strict
+    // switch is planned. Without the filter component the switch is kept but acts nowhere — said on the card.
+    h+='<div class="card" id="sc-safe"><div class="wt">Безопасный поиск</div>'
+      + (schLimOn(d) ? '' : noteBox('<b>Нужен компонент «Фильтр по категориям».</b> Без него безопасный поиск не включится.', 'warn'))
+      + '<div class="kv swrow"><div class="grow"><div class="k">Поиск и YouTube — в безопасном режиме</div><div class="v">Google, Яндекс, Bing, DuckDuckGo, YouTube</div></div>'
+      + '<label class="sw"><input type="checkbox" id="sc-safe-on" aria-label="'+esc(tkL('безопасный поиск','safe search'))+'"'+(dr.safe ? ' checked' : '')+'><i></i></label></div>'
+      + '<div class="cline">Весь день, кроме закрытого времени: имена этих устройств отвечает фильтр роутера, правила по доменам продолжают работать. YouTube — умеренный режим.</div>'
+      + '<div style="margin-top:11px">'+noteBox('Шифрованный DNS, включённый в браузере вручную, идёт мимо роутера — его не подменить.', 'info')+'</div></div>';
     h+='<div class="card"><div class="wt">Что расписание не остановит</div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Мобильный интернет</div><div class="ds">телефон с выключенным Wi-Fi роутеру не виден</div></div></div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Новый MAC</div><div class="ds">частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет</div></div></div></div>';
@@ -5769,12 +5778,13 @@
   // THE save of a schedule — the editor and the device tab (add / remove a device) send the whole schedule against its version, in
   // the form cgi-bin/action carries: windows «days.HHMM.HHMM.o|l|c» by `;`, devices by `,`, the name base64.
   // `lim` — {wd, we} minutes of the day limit (weekdays / weekend, 0 = none).
-  // `lx` — {lmode, cats, geo, sites} of «limited» (the editor); absent ⇒ the keys are not sent and the router keeps the schedule's own.
+  // `lx` — {lmode, cats, geo, sites, safe} of «limited» and safe search (the editor); absent ⇒ the keys are not sent and the router
+  // keeps the schedule's own.
   function schSpec(id, ver, name, on, base, wins, devs, lim, lx){
     var p={id:id, ver:ver, name_b64:b64utf8(String(name)), enabled:on ? 1 : 0, base:base,
             wins:wins.map(function(w){ return w.d+'.'+w.a.replace(':','')+'.'+w.b.replace(':','')+'.'+w.s.charAt(0); }).join(';'), devs:devs.join(','),
             lim_wd:(lim && lim.wd)|0, lim_we:(lim && lim.we)|0};
-    if(lx){ p.lmode=lx.lmode||'block'; p.cats=(lx.cats||[]).join(','); p.geo=(lx.geo||[]).map(function(g){ return g.k; }).join(','); p.sites_b64=b64utf8(String(lx.sites||'')); }
+    if(lx){ p.lmode=lx.lmode||'block'; p.cats=(lx.cats||[]).join(','); p.geo=(lx.geo||[]).map(function(g){ return g.k; }).join(','); p.sites_b64=b64utf8(String(lx.sites||'')); p.safe=lx.safe ? 1 : 0; }
     return p;
   }
   function schSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-'+id) : ''; }
@@ -5835,6 +5845,7 @@
     });
     scGeoPaint();
     el('sc-lwe').addEventListener('change', function(){ dr.lim.we=+this.value||0; dr.dirty=true; });
+    el('sc-safe-on').addEventListener('change', function(){ dr.safe=this.checked ? 1 : 0; dr.dirty=true; });
     wireSeg('sc-base', 'data-sc-base', function(v){ dr.base=v; dr.dirty=true; repaintWeek(); });
     wireSeg('sc-ws', 'data-sc-ws', function(){});
     Array.prototype.forEach.call(body.querySelectorAll('#sc-days [data-scd]'), function(s){
@@ -5864,7 +5875,7 @@
       var nm=String(dr.name||'').trim(), er=el('sc-err');
       if(!nm){ er.textContent=trNow('нужно имя расписания'); el('sc-name').focus(); return; }
       er.textContent='';
-      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, geo:dr.geo, sites:dr.sites});
+      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, geo:dr.geo, sites:dr.sites, safe:dr.safe});
       postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
         if(!r || !r.ok){ if(r && r.msg && screenAlive(er)) er.textContent=trNow(String(r.msg)); return; }
         // lines of «Свои сайты» the router could not read as a site — said, not silently lost
@@ -7055,6 +7066,11 @@
     // «Ограничено — что закрыто» (the DNS filter of schedules); category names come from the router's table (access-sched.sh SC_CATS)
     "Ограничено — что закрыто":"Limited — what is closed","Ограничено — что разрешено":"Limited — what is allowed",
     "Закрыть выбранное":"Close the chosen","Только разрешённое":"Only the allowed",
+    "Безопасный поиск":"Safe search","Поиск и YouTube — в безопасном режиме":"Search and YouTube — in safe mode","Google, Яндекс, Bing, DuckDuckGo, YouTube":"Google, Yandex, Bing, DuckDuckGo, YouTube",
+    "Без него безопасный поиск не включится.":"Without it safe search does not turn on.",
+    "Весь день, кроме закрытого времени: имена этих устройств отвечает фильтр роутера, правила по доменам продолжают работать. YouTube — умеренный режим.":"All day except closed time: the router's filter answers these devices' names, the domain rules keep working. YouTube — moderate mode.",
+    "Шифрованный DNS, включённый в браузере вручную, идёт мимо роутера — его не подменить.":"Encrypted DNS switched on in a browser by hand goes past the router — it cannot be replaced.",
+    "неверный выключатель безопасного поиска":"wrong safe search switch",
     "Любой пул из каталога гео — сервис, страна, «заблокировано в РФ»":"Any pool of the geo catalogue — a service, a country, «blocked in Russia»",
     "Найти в каталоге":"Find in the catalogue","Пулов не выбрано.":"No pools chosen.",
     "Свои сайты и адреса — по одному в строке":"Own sites and addresses — one per line",

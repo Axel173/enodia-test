@@ -45,6 +45,10 @@
 # the chosen ones (and connectivity checks) is answered «nothing there»; addresses cannot say «only these» (an allowed site lives
 # on any CDN address), so there they work one way only: the address keys of the curated categories NOT allowed are REJECTed —
 # otherwise Telegram, not allowed, would still connect by its built-in addresses.
+# SAFE SEARCH (`safe=1`): the same filter answers the search engines' names with their own safe front doors (dev/dns-filter,
+# SAFE_MAP; YouTube moderate). It acts ALL DAY except closed time — a device of such a schedule whose week says «open» is in the
+# plan as «safe»: its DNS is REDIRECTed to a profile without lists (`port P block - safe`), DoT refused as in «limited»; nothing
+# else is closed. A dead filter takes it away with «limited» (fail-open, said once in the journal).
 # After a device's state changes, its established flows are dropped (`ct_flush_src` per address of the MAC): NSS/ECM keeps
 # offloaded flows out of netfilter otherwise. Never a global flush — a 23:00 close would drop every call in the house.
 # A plan that closes nobody = no chain at all (no footprint while everything is open).
@@ -238,7 +242,7 @@ l !~ /^[0-6]+ ([01][0-9]|2[0-3]):[0-5][0-9] ([01][0-9]|2[0-3]):[0-5][0-9] (open|
 # sanitised where it leaves (JSON, journal): the tick itself never needs it.
 sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file = the same schedule from elsewhere (import)
 	SC_F=${2:-"$SC_DIR/$1.sch"}; [ -f "$SC_F" ] || return 1
-	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_GEO=""
+	SC_ID=$1; SC_NAME=""; SC_ON=0; SC_BASE=open; SC_HOL=0; SC_VER=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_GEO=""; SC_SAFE=0
 	_slt=$(tr -d '\r' < "$SC_F" 2>/dev/null)
 	while IFS= read -r _sl; do
 		case "$_sl" in
@@ -250,6 +254,7 @@ sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file 
 			lim_wd=*)     sc_num SC_LWD "${_sl#lim_wd=}" 0 ;;
 			lim_we=*)     sc_num SC_LWE "${_sl#lim_we=}" 0 ;;
 			lmode=block|lmode=allow) SC_LMODE=${_sl#lmode=} ;;
+			safe=1)       SC_SAFE=1 ;;
 			cat=*)        sc_cat_ok "${_sl#cat=}" && case " $SC_CATON " in *" ${_sl#cat=} "*) ;; *) SC_CATON="${SC_CATON:+$SC_CATON }${_sl#cat=}" ;; esac ;;
 			geo=*)        sc_geo_ok "${_sl#geo=}" && case " $SC_GEO " in *" ${_sl#geo=} "*) ;; *) SC_GEO="${SC_GEO:+$SC_GEO }${_sl#geo=}" ;; esac ;;
 		esac
@@ -279,7 +284,7 @@ sc_name() { lbl_san "$SC_NAME" | cut -c1-200; }   # the loaded schedule's name, 
 sc_write() {   # sc_write <id> — from SC_*: atomically (write next to it, compare, mv)
 	_wf="$SC_DIR/$1.sch"; _wt="$_wf.$$"
 	{
-		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\nlim_wd=%s\nlim_we=%s\nlmode=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER" "$SC_LWD" "$SC_LWE" "$SC_LMODE"
+		printf 'name=%s\nenabled=%s\nbase=%s\nhol=%s\nver=%s\nlim_wd=%s\nlim_we=%s\nlmode=%s\nsafe=%s\n' "$SC_NAME" "$SC_ON" "$SC_BASE" "$SC_HOL" "$SC_VER" "$SC_LWD" "$SC_LWE" "$SC_LMODE" "$SC_SAFE"
 		printf '%s' "$SC_WINS" | while IFS= read -r _wl; do [ -n "$_wl" ] && printf 'win=%s\n' "$_wl"; done
 		for _wm in $SC_DEVS; do printf 'dev=mac:%s\n' "$_wm"; done
 		for _wm in $SC_CATON; do printf 'cat=%s\n' "$_wm"; done
@@ -465,7 +470,8 @@ sc_use_tick() {
 }
 
 # ---- kernel -------------------------------------------------------------------------------------------------------
-# The plan: every device of an enabled schedule whose state is not open — «<mac> <state> <id>», sorted (stable comparison).
+# The plan: every device of an enabled schedule whose state is not open — «<mac> <state> <id>», sorted (stable comparison); an
+# open device of a schedule with safe search is «safe» (header).
 # A device whose day limit ran out is closed till the end of the day — but only while the WEEK decides (a window or the base
 # state): holidays rest the limit too, and an «open for…» by hand beats it («добавляет время»). SC_OVER — «<mac> <id>» of those.
 sc_plan() {
@@ -477,10 +483,11 @@ sc_plan() {
 		[ "$SC_ON" = 1 ] && [ -n "$SC_DEVS" ] || continue
 		sc_eval 1; sc_effective; sc_lim_today
 		_plm=0; sc_lim_applies && _plm=1
-		[ "$SC_ST" = open ] && [ "$_plm" = 0 ] && continue
+		[ "$SC_ST" = open ] && [ "$_plm" = 0 ] && [ "$SC_SAFE" != 1 ] && continue
 		for _pm in $SC_DEVS; do
 			_ps=$SC_ST
 			if [ "$_plm" = 1 ] && [ "$(sc_used_of "$_pm")" -ge "$SC_LT" ]; then _ps=closed; SC_OVER="$SC_OVER$_pm $_pi$SC_NL"; fi
+			[ "$_ps" = open ] && [ "$SC_SAFE" = 1 ] && _ps=safe
 			[ "$_ps" = open ] && continue
 			SC_PLAN="$SC_PLAN$_pm $_ps $_pi$SC_NL"
 		done
@@ -510,6 +517,9 @@ sc_fill() {
 					"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -m set --match-set "$_kst" dst -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null
 					"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -m set --match-set "$_kst" dst -j REJECT 2>/dev/null
 				done ;;
+			safe)   # safe search only: its DNS goes to the filter (nat), encrypted DNS refused — nothing else is closed
+				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
+				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 853 -j REJECT 2>/dev/null ;;
 		esac
 	done
 	return 0
@@ -619,7 +629,7 @@ have_nat6() { have_v6 && ip6tables -t nat -S PREROUTING >/dev/null 2>&1; }
 # the capture plan: «<mac> <port>» per limited device whose schedule has a profile in the filter now (SC_FMAP)
 sc_nplan() {
 	SC_NPLAN=$( { printf '%s\n' "$SC_FMAP" | sed 's/^/M /'; printf '%s\n' "$SC_PLAN" | sed 's/^/P /'; } |
-		awk '$1 == "M" && NF == 3 { p[$2] = $3; next } $1 == "P" && $3 == "limited" && ($4 in p) { print $2, p[$4] }' | sort)
+		awk '$1 == "M" && NF == 3 { p[$2] = $3; next } $1 == "P" && ($3 == "limited" || $3 == "safe") && ($4 in p) { print $2, p[$4] }' | sort)
 }
 sc_nat_put() {   # $1 = iptables|ip6tables — the chain refilled, the jump at the TOP of nat PREROUTING (above the stock guest DNAT)
 	"$1" -t nat -N "$SC_NAT" 2>/dev/null || "$1" -t nat -F "$SC_NAT" 2>/dev/null || return 1
@@ -716,7 +726,12 @@ sc_fports() {
 # the background fetch. Own sites and own addresses — files per schedule here (RAM; rewritten only when they change).
 sc_fconf() {
 	SC_FPEND=""; SC_AFILES=""; _fk=""
-	for _fi in $1; do sc_load "$_fi" || continue; _fk="$_fk $(sc_keys | tr '\n' ' ')"; done
+	# ids that are «limited» now; the others are here for safe search only (open + safe): a profile without lists or addresses
+	_flim=" $(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" { print $3 }' | sort -u | tr '\n' ' ') "
+	for _fi in $1; do
+		case "$_flim" in *" $_fi "*) ;; *) continue ;; esac
+		sc_load "$_fi" || continue; _fk="$_fk $(sc_keys | tr '\n' ' ')"
+	done
 	SC_GREADY=""
 	if [ -n "$(echo $_fk)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then SC_GREADY=$(sh "$ENODIA_DIR/geo.sh" ready $_fk 2>/dev/null); fi
 	# «<key>=<kind>» of every ready key, once — the loop below asks it per key without a fork (32 pools a schedule, every minute)
@@ -726,6 +741,10 @@ sc_fconf() {
 		printf '%s\n' "$SC_GREADY" | awk -F'\t' 'NF == 3 && $2 == "domain" && !s[$1]++ { print "list " $1 " " $3 }'
 		for _fi in $1; do
 			sc_load "$_fi" || continue
+			_fsf=""; [ "$SC_SAFE" = 1 ] && _fsf=" safe"
+			case "$_flim" in *" $_fi "*) ;; *)
+				echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') block -$_fsf"
+				continue ;; esac
 			_fl=""; _fbp=" "; [ "$SC_LMODE" = allow ] && _fbp=" $(sc_bypass_keys | tr '\n' ' ') "
 			for _fkk in $(sc_keys); do
 				case "$_fkinds" in
@@ -750,7 +769,7 @@ sc_fconf() {
 					sc_fput "addr-$_fi.$_faf" "$_fav"; SC_AFILES="$SC_AFILES$_fi $_faf $SC_FDIR/addr-$_fi.$_faf$SC_NL"
 				else rm -f "$SC_FDIR/addr-$_fi.$_faf"; fi
 			done
-			echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}"
+			echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}$_fsf"
 		done
 	} > "$SC_FDIR/conf.new"
 	SC_AFILES=$(printf '%s' "$SC_AFILES" | grep .)
@@ -763,7 +782,7 @@ sc_fput() {   # <name in SC_FDIR> <content> — rewritten only when it changes (
 # that cannot work ⇒ the limited lines leave SC_PLAN (fail-open: open, never «no DNS») and the journal says why, once.
 sc_filter_sync() {
 	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""; SC_AFILES=""
-	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" { print $3 }' | sort -u | tr '\n' ' ')
+	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" || $2 == "safe" { print $3 }' | sort -u | tr '\n' ' ')
 	if [ -z "$(echo $_fids)" ]; then
 		if sc_falive; then sc_fstop; fi
 		sc_fstate idle; return 0
@@ -793,7 +812,7 @@ sc_filter_sync() {
 	return 0
 }
 sc_ffail() {   # $1 = nobin|dead — «limited» acts whole or not at all: no address sets either
-	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited"')
+	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited" && $2 != "safe"')
 	SC_FMAP=""; SC_ASETS=""; SC_AFILES=""
 	if [ "$1" = dead ]; then sc_fstop; fi
 	sc_fstate "$1"
@@ -993,7 +1012,7 @@ sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
 	_ij=0; for _im in $SC_DEVS; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_im"; done
 	# «limited»: the mode, the chosen categories, own sites, and the categories whose data is not downloaded yet (SC_FREADY —
 	# the ready keys, asked once per answer by sc_fready)
-	printf '],"lmode":"%s","cats":[' "$SC_LMODE"
+	printf '],"safe":%s,"lmode":"%s","cats":[' "$SC_SAFE" "$SC_LMODE"
 	_ij=0; _ipd=""
 	for _ic in $SC_CATON; do
 		[ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_ic"
@@ -1082,7 +1101,7 @@ cmd_get_json() {
 # Spec from the CGI (key=value lines, values already charset-checked there; meaning is checked HERE):
 #   id=<sN|new> ver=<n the panel opened> name_b64=… enabled=0|1 base=open|limited|closed
 #   wins=<d>.<HHMM>.<HHMM>.<o|l|c>[;…]   devs=<mac>[,<mac>…]   lim_wd= lim_we= (minutes)
-#   lmode=block|allow   cats=<id>[,<id>…]   geo=<geo key>[,…]   sites_b64=<base64 of a site or an address per line>
+#   lmode=block|allow   cats=<id>[,<id>…]   geo=<geo key>[,…]   sites_b64=<base64 of a site or an address per line>   safe=0|1
 #   — absent = the schedule keeps its own
 sc_spec() { sed -n "s/^$1=//p" "$SC_SPEC" | head -n 1 | tr -d '\r'; }
 sc_st_of() { case "$1" in o) echo open ;; l) echo limited ;; c) echo closed ;; *) return 1 ;; esac; }
@@ -1126,6 +1145,7 @@ cmd_save() {
 	# normaliser of the project's domain lists (lists-lib.sh::norm_domains) makes host names of them; what it cannot is dropped
 	# and COUNTED in the answer (the panel says how many lines were not sites).
 	_vlm=$(sc_spec lmode); case "$_vlm" in ''|block|allow) ;; *) jfail "неверный режим «ограничено»" ;; esac
+	_vsafe=$(sc_spec safe); case "$_vsafe" in ''|0|1) ;; *) jfail "неверный выключатель безопасного поиска" ;; esac
 	_vcats=""; _vhc=0
 	if grep -q '^cats=' "$SC_SPEC"; then
 		_vhc=1
@@ -1173,7 +1193,7 @@ cmd_save() {
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	if [ "$_vid" = new ]; then
 		[ "$(sc_ids | wc -l | tr -d ' ')" -lt "$SC_MAX" ] || jfail "расписаний не больше $SC_MAX"
-		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_SITES=""; SC_GEO=""; SC_ADDRS=""
+		_vid=$(sc_new_id); SC_VER=0; SC_HOL=0; SC_LWD=0; SC_LWE=0; SC_LMODE=block; SC_CATON=""; SC_SITES=""; SC_GEO=""; SC_ADDRS=""; SC_SAFE=0
 	else
 		id_ok "$_vid" || jfail "неверный номер расписания"
 		sc_load "$_vid" || jfail "расписание удалено — откройте список заново"
@@ -1192,6 +1212,7 @@ cmd_save() {
 	SC_ID=$_vid; SC_NAME=$_vname; SC_ON=$_von; SC_BASE=$_vbase; SC_WINS=$_vwins; SC_DEVS=$_vdevs; SC_VER=$((SC_VER + 1))
 	[ -n "$_vlwd" ] && SC_LWD=$_vlwd; [ -n "$_vlwe" ] && SC_LWE=$_vlwe
 	[ -n "$_vlm" ] && SC_LMODE=$_vlm; [ "$_vhc" = 1 ] && SC_CATON=$_vcats; [ "$_vhg" = 1 ] && SC_GEO=$_vgeo
+	[ -n "$_vsafe" ] && SC_SAFE=$_vsafe
 	[ "$_vhs" = 1 ] && { SC_SITES=$_vsites; SC_ADDRS=$_vaddrs; }
 	sc_write "$_vid" || jfail "не удалось записать расписание"
 	_vv=$SC_VER          # the tick and the keys' sync load OTHER schedules into the same SC_* — the answer is this one's
@@ -1332,13 +1353,14 @@ cmd_import() {
 	jok "\"n\":$(set -- $_mi; echo $#)"
 }
 
-# Does any switched-on schedule use «limited» in its week (a window or the state outside them)? packages.sh asks before removing
+# Does any switched-on schedule use «limited» in its week (a window or the state outside them) or safe search? packages.sh asks before removing
 # the filter component: without it those devices would go fully open. rc 0 = yes.
 cmd_uses_filter() {
 	for _ui in $(sc_ids); do
 		sc_load "$_ui" || continue
 		[ "$SC_ON" = 1 ] || continue
 		[ "$SC_BASE" = limited ] && return 0
+		[ "$SC_SAFE" = 1 ] && return 0
 		case "$SC_NL$SC_WINS" in *" limited$SC_NL"*) return 0 ;; esac
 	done
 	return 1
@@ -1349,7 +1371,7 @@ cmd_filter_restart() {
 	sc_lock || { echo "расписания сейчас меняет другой запрос — повторите"; return 1; }
 	sc_fstop
 	sc_tick_locked
-	[ -z "$SC_FMAP" ] && [ -z "$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited"')" ] && { echo "сейчас ничего не ограничено — фильтр не нужен"; return 0; }
+	[ -z "$SC_FMAP" ] && [ -z "$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" || $2 == "safe"')" ] && { echo "сейчас ничего не ограничено — фильтр не нужен"; return 0; }
 	if sc_falive && "$SC_FBIN" -q "$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }')"; then echo "фильтр перезапущен: $(sc_fpid)"; return 0; fi
 	echo "фильтр не поднялся — устройства с «ограничено» открыты (подробности в $SC_FLOG)"; return 1
 }
@@ -1363,7 +1385,7 @@ cmd_dump() {
 		sc_load "$_di" || continue
 		sc_eval 1; sc_effective
 		# by id, not by name: the dump goes into a chat, and a schedule is named after a person («Маша») more often than not
-		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true) «ограничено»: $SC_LMODE [${SC_CATON:-—}] пулов=$(set -- $SC_GEO; echo $#) [${SC_GEO:-—}] своих сайтов=$(printf '%s\n' "$SC_SITES" | grep -c . || true) адресов=$(set -- $SC_ADDRS; echo $#)"
+		echo "$_di: вкл=$SC_ON вне окон=$SC_BASE сейчас=$SC_ST ($SC_WHY) устройств=$(set -- $SC_DEVS; echo $#) окон=$(printf '%s' "$SC_WINS" | grep -c . || true) безопасный поиск=$SC_SAFE «ограничено»: $SC_LMODE [${SC_CATON:-—}] пулов=$(set -- $SC_GEO; echo $#) [${SC_GEO:-—}] своих сайтов=$(printf '%s\n' "$SC_SITES" | grep -c . || true) адресов=$(set -- $SC_ADDRS; echo $#)"
 	done
 	# the filter of «limited»: component, state, the daemon, its config (ports and lists) and the last lines of its log
 	echo "фильтр «ограничено»: компонент $([ -x "$(bin_path dns-filter)" ] && echo есть || echo НЕТ) · состояние $(cat "$SC_RUN/filter.state" 2>/dev/null || echo —) · процесс $(sc_falive && echo "жив ($(sc_fpid))" || echo нет)"
