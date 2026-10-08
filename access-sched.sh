@@ -24,16 +24,22 @@
 #                 traverse FORWARD too, and a bare per-MAC DROP would cut the printer and the cameras);
 #                 closed — `-m mac --mac-source M` → REJECT (tcp-reset for TCP): the app fails at once instead of hanging on
 #                 a TCP timeout. INPUT stays open (DNS, the panel);
-#                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below.
+#                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below; a category that also has
+#                 an ADDRESS set (messengers) — REJECT to that set (`enodia_sch_<category>`, v6 `enodia_sch6_<category>`).
 # «ОГРАНИЧЕНО» = OUR DNS FILTER, not address sets (decided 08.10.2026: categories share anycast frontends — closing youtube.com by
 # address closes Google Search and Gemini on the device too; «only allowed» cannot be said by address; and dnsmasq has no
 # per-client answers). The DNS of a limited device is REDIRECTed by MAC (nat PREROUTING `ENODIA_SCHED_DNS`, at the top — above
 # the stock guest DNAT; both families) to the port of its schedule's PROFILE in `dns-filter` (component «filter», source
 # dev/dns-filter/): it answers «nothing there» for the chosen categories and own sites and passes the rest to dnsmasq. Category
-# data is geo.sh's (the one owner): `geo.sh want sched <keys>` on a save, a READY file by `geo.sh domfile` in the tick — never a
+# data is geo.sh's (the one owner): `geo.sh want sched <keys>` on a save, READY forms by `geo.sh ready` in the tick — never a
 # fetch here. No filter binary, or it does not answer its probe after a restart ⇒ limited devices stay OPEN (fail-open, as with
 # the clock) and the journal says why once. Without ip6 nat the device's IPv6 is REJECTed whole and its DNS to the router's v6
 # addresses refused in INPUT (`ENODIA_SCHED_IN6`) — it falls back to IPv4, where the REDIRECT stands.
+# THE ONE EXCEPTION — MESSENGERS BY ADDRESS TOO (phone walk BE7000 08.10.2026: everything chosen closed except Telegram). Telegram
+# dials the addresses built into the app, past DNS, so a filter of names leaves it working; and its network carries nothing but
+# Telegram — the anycast reason above does not hold for it. A category of SC_CATS may therefore carry cidr keys: geo.sh hands their
+# data in (the same `ready`, bogons cut there), one set per CATEGORY and family (set-lib.sh fills it, an unchanged one is not
+# touched) — its data is the same for every schedule. The sets live only while some limited device needs them.
 # After a device's state changes, its established flows are dropped (`ct_flush_src` per address of the MAC): NSS/ECM keeps
 # offloaded flows out of netfilter otherwise. Never a global flush — a 23:00 close would drop every call in the house.
 # A plan that closes nobody = no chain at all (no footprint while everything is open).
@@ -84,8 +90,11 @@ SC_SITE_MAX=200                     # own sites per schedule
 SC_WANT_GAP=600                     # s between background fetches the tick starts for categories not downloaded yet
 # Categories offered for «limited»: id|geo keys|name (the panel words it by its dictionary). The keys are geo.sh's — the ONE
 # owner of category data; a category is a SET of keys because «Видео» is not one upstream category. No dating or gambling
-# category exists upstream ⇒ not offered (own sites cover them).
+# category exists upstream ⇒ not offered (own sites cover them). A cidr key closes by address (header): only for a network that
+# carries nothing else — Telegram's (runetfreedom geoip); the other messengers' apps ask DNS, the filter is enough for them.
+# v2fly `category-communication` is not taken whole: it carries mail (protonmail, mail.com) and work chats (slack).
 SC_CATS='social|v2fly-category-social-media-!cn|Соцсети
+msg|v2fly-telegram v2fly-whatsapp v2fly-discord v2fly-signal v2fly-viber v2fly-messenger rfip-telegram|Мессенджеры
 video|v2fly-youtube v2fly-tiktok v2fly-twitch v2fly-vimeo v2fly-dailymotion|Видео
 games|v2fly-category-games|Игры
 ent|v2fly-category-entertainment|Развлечения
@@ -121,6 +130,9 @@ command -v mac_ok >/dev/null 2>&1 || mac_ok() { printf '%s' "$1" | grep -qE '^[0
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 command -v ct_flush_src >/dev/null 2>&1 || ct_flush_src() { [ -n "$1" ] && conntrack -D --src "$1" >/dev/null 2>&1; return 0; }
+# the address sets of «limited» (header): set-lib.sh fills one atomically and leaves an unchanged one alone; without it (a partial
+# update) the address part is skipped — names still go through the filter
+if [ -f "$ENODIA_DIR/set-lib.sh" ]; then . "$ENODIA_DIR/set-lib.sh"; fi
 # where the filter binary lies (the store may hold it) — store-lib.sh; without it the binaries' own directory
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
 command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"; }
@@ -445,13 +457,15 @@ sc_plan() {
 	SC_PLAN=$(printf '%s' "$SC_PLAN" | sort)
 }
 # rules of one family into the chain (the chain exists and is empty). $1 = iptables|ip6tables
+sc_fam() { if [ "$1" = ip6tables ]; then echo 6; else echo 4; fi; }
 sc_fill() {
 	"$1" -A "$SC_CHAIN" -o br+ -j RETURN 2>/dev/null || return 1
+	_kfm=$(sc_fam "$1")
 	printf '%s\n' "$SC_PLAN" | while read -r _km _ks _ki; do
 		[ -n "$_km" ] || continue
 		# limited, by the filter: only encrypted DNS (DoT/DoQ, 853) is refused here — a device that falls back from it asks
 		# plain DNS, and that is REDIRECTed to the filter. Without ip6 nat its IPv6 cannot be steered: closed whole (header).
-		# Two rules per device in every form — sc_rules_n counts that.
+		# Two rules per device in every form, two more per address set of a limited one — sc_rules_n counts that.
 		_kf=$_ks; [ "$_ks" = limited ] && [ "$1" = ip6tables ] && [ "$SC_NAT6" != 1 ] && _kf=closed
 		case "$_kf" in
 			closed)
@@ -459,16 +473,26 @@ sc_fill() {
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -j REJECT 2>/dev/null ;;
 			limited)
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
-				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 853 -j REJECT 2>/dev/null ;;
+				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 853 -j REJECT 2>/dev/null
+				# the schedule's categories closed by address too (messengers dialling their own addresses — header)
+				for _kst in $(printf '%s\n' "$SC_ASETS" | awk -v i="$_ki" -v f="$_kfm" '$1 == i && $2 == f { print $3 }'); do
+					"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -m set --match-set "$_kst" dst -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null
+					"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -m set --match-set "$_kst" dst -j REJECT 2>/dev/null
+				done ;;
 		esac
 	done
 	return 0
 }
-sc_rules_n() { printf '%s\n' "$SC_PLAN" | awk 'NF==3{n+=2} END{print n+1}'; }   # rules per family the plan makes
+sc_rules_n() {   # $1 = 4|6 — rules the plan makes in that family: the home RETURN, two per device, two per address set of a limited one
+	{ printf '%s\n' "$SC_ASETS" | sed 's/^/A /'; printf '%s\n' "$SC_PLAN" | sed 's/^/P /'; } | awk -v f="$1" -v n6="$SC_NAT6" '
+		$1 == "A" && NF == 4 { if ($3 == f) a[$2] += 2; next }
+		$1 == "P" && NF == 4 { n += 2; if ($3 == "limited" && (f == 4 || n6 == 1)) n += a[$4] }
+		END { print n + 1 }'
+}
 # Is the plan's form standing in the kernel of one family? Jump in FORWARD + the expected count of rules in the chain.
 sc_wired() {   # $1 = iptables|ip6tables -> 0 standing, 1 not
 	"$1" -C FORWARD -j "$SC_CHAIN" 2>/dev/null || return 1
-	[ "$("$1" -S "$SC_CHAIN" 2>/dev/null | grep -c '^-A ' || true)" = "$(sc_rules_n)" ]
+	[ "$("$1" -S "$SC_CHAIN" 2>/dev/null | grep -c '^-A ' || true)" = "$(sc_rules_n "$(sc_fam "$1")")" ]
 }
 sc_drop_fam() {   # $1 = iptables|ip6tables — jump(s) and chain away
 	_dn=0; while "$1" -D FORWARD -j "$SC_CHAIN" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
@@ -491,16 +515,18 @@ sc_mac_ips() {
 # Converge the kernel to SC_PLAN. Rebuild only when the plan changed or the form is gone (a firewall reload); flows of devices
 # whose state changed are dropped AFTER the rules stand (dropped before, the next packet would be offloaded again unjudged).
 sc_apply() {
-	_aold=$(cat "$SC_APPLIED" 2>/dev/null); _anold=$(cat "$SC_APPLIED.nat" 2>/dev/null)
+	_aold=$(cat "$SC_APPLIED" 2>/dev/null); _anold=$(cat "$SC_APPLIED.nat" 2>/dev/null); _asold=$(cat "$SC_APPLIED.sets" 2>/dev/null)
 	sc_nplan
 	SC_NAT6=0
 	if [ -n "$SC_NPLAN" ] && have_nat6; then SC_NAT6=1; fi
 	_achg=0
 	if [ -z "$SC_PLAN" ]; then
 		if [ -n "$_aold" ]; then sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi; _achg=1; fi
-	elif [ "$SC_PLAN" != "$_aold" ] || ! sc_wired iptables || { have_v6 && ! sc_wired ip6tables; }; then
+	elif [ "$SC_PLAN" != "$_aold" ] || [ "$SC_ASETS" != "$_asold" ] || ! sc_wired iptables || { have_v6 && ! sc_wired ip6tables; }; then
 		sc_put_fam iptables; if have_v6; then sc_put_fam ip6tables; fi; _achg=1
 	fi
+	# address sets no rule refers to any more go AFTER the chains are rebuilt (a referenced set cannot be destroyed)
+	[ "$SC_ASETS" = "$_asold" ] || { sc_aset_gc; _achg=1; }
 	# the DNS of limited devices to their filter profile (a separate plan: a profile's port may change while the state does not)
 	if [ -z "$SC_NPLAN" ]; then
 		if [ -n "$_anold" ]; then sc_cap_drop; _achg=1; fi
@@ -510,15 +536,55 @@ sc_apply() {
 	[ "$_achg" = 1 ] || return 0
 	printf '%s\n' "$SC_PLAN" > "$SC_APPLIED.$$" && mv -f "$SC_APPLIED.$$" "$SC_APPLIED"
 	printf '%s\n' "$SC_NPLAN" > "$SC_APPLIED.nat.$$" && mv -f "$SC_APPLIED.nat.$$" "$SC_APPLIED.nat"
+	printf '%s\n' "$SC_ASETS" > "$SC_APPLIED.sets.$$" && mv -f "$SC_APPLIED.sets.$$" "$SC_APPLIED.sets"
 	# devices whose line changed (new, gone, other state, another filter port): only a stricter state needs the flush, but
 	# opening is rare and a flush there is harmless — one rule, no second copy of «stricter». The filter needs it as much as
 	# REJECT does: a device's DNS flow to 8.8.8.8 that exists already keeps its old NAT decision.
 	{ printf '%s\n' "$_aold"; printf '%s\n' "$SC_PLAN"; } | awk 'NF==3' | sort | uniq -u | awk '{print $1}' > "$SC_RUN/chg.$$"
 	{ printf '%s\n' "$_anold"; printf '%s\n' "$SC_NPLAN"; } | awk 'NF==2' | sort | uniq -u | awk '{print $1}' >> "$SC_RUN/chg.$$"
+	# …and the devices of a schedule whose address sets changed (a category added: an open Telegram flow is offloaded otherwise)
+	{ { printf '%s\n' "$_asold"; printf '%s\n' "$SC_ASETS"; } | awk 'NF==3' | sort | uniq -u | awk '{print "I", $1}'
+	  printf '%s\n' "$SC_PLAN" | awk 'NF==3 {print "P", $1, $3}'; } | awk '$1 == "I" { c[$2] = 1; next } $1 == "P" && ($3 in c) { print $2 }' >> "$SC_RUN/chg.$$"
 	sort -u "$SC_RUN/chg.$$" | while read -r _am; do
 		for _aip in $(sc_mac_ips "$_am" | sort -u); do ct_flush_src "$_aip"; done
 	done
 	rm -f "$SC_RUN/chg.$$"
+	return 0
+}
+
+# ---- «ОГРАНИЧЕНО» by address: the sets of the categories that carry cidr keys (header) --------------------------------------
+# SC_ASETS in: «<id> <category>» (sc_fconf: a limited schedule's category with ready address data); out: «<id> <4|6> <set>» for
+# the sets that stand. A set per CATEGORY and family: the data is the same for every schedule, one Telegram set serves them all.
+# The data is geo's `ready` forms (SC_GREADY), bogons cut there; a family without data has no set and no rule.
+sc_aset_name() { if [ "$2" = 6 ]; then echo "enodia_sch6_$1"; else echo "enodia_sch_$1"; fi; }   # <category> <4|6>
+sc_aset_sync() {
+	_asin=$SC_ASETS; SC_ASETS=""
+	[ -n "$_asin" ] || return 0
+	command -v set_sync >/dev/null 2>&1 || return 0
+	for _asc in $(printf '%s\n' "$_asin" | awk 'NF == 2 { print $2 }' | sort -u); do
+		for _asf in 4 6; do
+			[ "$_asf" = 6 ] && ! have_v6 && continue
+			_ask=cidr; [ "$_asf" = 6 ] && _ask=cidr6
+			_ass=$(sc_aset_name "$_asc" "$_asf")
+			for _askk in $(sc_cat_keys "$_asc"); do
+				printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_askk" -v t="$_ask" '$1 == k && $2 == t { print $3 }'
+			done | while read -r _asp; do cat "$_asp" 2>/dev/null; done | sort -u > "$SC_RUN/aset.$$"
+			SET_FAMILY=inet; [ "$_asf" = 6 ] && SET_FAMILY=inet6
+			if [ -s "$SC_RUN/aset.$$" ] && set_sync "$_ass" "$SC_RUN/aset.$$"; then
+				SC_ASETS="$SC_ASETS$(printf '%s\n' "$_asin" | awk -v c="$_asc" -v f="$_asf" -v s="$_ass" 'NF == 2 && $2 == c { print $1, f, s }')$SC_NL"
+			fi
+			SET_FAMILY=""
+			rm -f "$SC_RUN/aset.$$"
+		done
+	done
+	SC_ASETS=$(printf '%s' "$SC_ASETS" | grep . | sort)
+	return 0
+}
+sc_aset_gc() {   # our sets that SC_ASETS does not name (all of them with an empty SC_ASETS — unwire); set-lib.sh drops its snapshot too
+	for _gs in $(ipset list -n 2>/dev/null | grep -E '^enodia_sch6?_[a-z]+$'); do
+		printf '%s\n' "$SC_ASETS" | awk -v s="$_gs" '$3 == s { f = 1 } END { exit !f }' && continue
+		if command -v set_drop >/dev/null 2>&1; then set_drop "$_gs"; else ipset destroy "$_gs" 2>/dev/null; fi
+	done
 	return 0
 }
 
@@ -617,28 +683,32 @@ sc_fports() {
 	printf '%s\n' "$_fmp" > "$SC_FDIR/ports.$$" && mv -f "$SC_FDIR/ports.$$" "$SC_FDIR/ports"
 	SC_FMAP=$(printf '%s\n' "$_fmp" | while read -r _fi _fpn; do case " $1 " in *" $_fi "*) echo "$_fi $_fpn" ;; esac; done)
 }
-# The config for ids limited now → $SC_FDIR/conf.new. Category lists are geo's READY files (one `geo.sh domfile` for all keys);
-# a category whose data is not downloaded yet acts without it and goes to SC_FPEND («<id>:<category>») — the tick then starts
-# the background fetch. Own sites — a file per schedule here.
+# The config for ids limited now → $SC_FDIR/conf.new. Category data is geo's READY forms (one `geo.sh ready` for all keys →
+# SC_GREADY): a domain key is a list of the filter, a cidr key makes the category an address one (SC_ASETS «<id> <category>»,
+# sets by sc_aset_sync). A category whose data is not downloaded yet acts without it and goes to SC_FPEND («<id>:<category>») —
+# the tick then starts the background fetch. Own sites — a file per schedule here.
 sc_fconf() {
-	SC_FPEND=""; _fk=""
+	SC_FPEND=""; SC_ASETS=""; _fk=""
 	for _fi in $1; do sc_load "$_fi" || continue; _fk="$_fk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
-	_fready=""
-	if [ -n "$(echo $_fk)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then _fready=$(sh "$ENODIA_DIR/geo.sh" domfile $_fk 2>/dev/null); fi
+	SC_GREADY=""
+	if [ -n "$(echo $_fk)" ] && [ -f "$ENODIA_DIR/geo.sh" ]; then SC_GREADY=$(sh "$ENODIA_DIR/geo.sh" ready $_fk 2>/dev/null); fi
 	{
 		echo "# access-sched.sh: a profile per schedule with limited devices now"
-		printf '%s\n' "$_fready" | awk -F'\t' 'NF == 2 && !s[$1]++ { print "list " $1 " " $2 }'
+		printf '%s\n' "$SC_GREADY" | awk -F'\t' 'NF == 3 && $2 == "domain" && !s[$1]++ { print "list " $1 " " $3 }'
 		for _fi in $1; do
 			sc_load "$_fi" || continue
 			_fl=""
 			for _fc in $SC_CATON; do
-				_fmiss=0
+				_fmiss=0; _fadr=0
 				for _fkk in $(sc_cat_keys "$_fc"); do
-					if printf '%s\n' "$_fready" | awk -F'\t' -v k="$_fkk" '$1 == k { f = 1 } END { exit !f }'; then
-						_fl="${_fl:+$_fl,}$_fkk"
-					else _fmiss=1; fi
+					case "$(printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_fkk" '$1 == k && ($2 == "domain" || $2 == "cidr") { print $2; exit }')" in
+						domain) _fl="${_fl:+$_fl,}$_fkk" ;;
+						cidr)   _fadr=1 ;;
+						*)      _fmiss=1 ;;
+					esac
 				done
 				[ "$_fmiss" = 0 ] || SC_FPEND="$SC_FPEND $_fi:$_fc"
+				[ "$_fadr" = 0 ] || SC_ASETS="$SC_ASETS$_fi $_fc$SC_NL"
 			done
 			if [ -n "$SC_SITES" ]; then
 				printf '%s\n' "$SC_SITES" > "$SC_FDIR/site-$_fi.new"
@@ -654,7 +724,7 @@ sc_fconf() {
 # Converge the filter to SC_PLAN: profiles of the limited schedules, the daemon started / reloaded / stopped, its probe. A filter
 # that cannot work ⇒ the limited lines leave SC_PLAN (fail-open: open, never «no DNS») and the journal says why, once.
 sc_filter_sync() {
-	SC_FMAP=""; SC_FPEND=""
+	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""
 	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" { print $3 }' | sort -u | tr '\n' ' ')
 	if [ -z "$(echo $_fids)" ]; then
 		if sc_falive; then sc_fstop; fi
@@ -679,13 +749,14 @@ sc_filter_sync() {
 		sc_fstart "$_fp0" || { sc_ffail dead; return 0; }
 	fi
 	echo "$_fsig" > "$SC_FDIR/sig"
+	sc_aset_sync
 	sc_fstate ok
 	if [ -n "$SC_FPEND" ]; then sc_want_fetch; fi
 	return 0
 }
-sc_ffail() {   # $1 = nobin|dead
+sc_ffail() {   # $1 = nobin|dead — «limited» acts whole or not at all: no address sets either
 	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited"')
-	SC_FMAP=""
+	SC_FMAP=""; SC_ASETS=""
 	if [ "$1" = dead ]; then sc_fstop; fi
 	sc_fstate "$1"
 }
@@ -852,7 +923,8 @@ cmd_unwire() {
 	sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi
 	sc_cap_drop
 	sc_fstop
-	rm -f "$SC_APPLIED" "$SC_APPLIED.nat" "$SC_RUN"/st.* "$SC_RUN/filter.state" 2>/dev/null
+	SC_ASETS=""; sc_aset_gc
+	rm -f "$SC_APPLIED" "$SC_APPLIED.nat" "$SC_APPLIED.sets" "$SC_RUN"/st.* "$SC_RUN/filter.state" 2>/dev/null
 	rm -rf "$SC_FDIR" 2>/dev/null
 	echo "Расписания доступа: правила сняты."
 }
@@ -931,7 +1003,7 @@ sc_fready() {
 	SC_FREADY=""; _frk=""
 	for _fri in "$@"; do sc_load "$_fri" || continue; _frk="$_frk $(sc_cat_keys $SC_CATON | tr '\n' ' ')"; done
 	[ -n "$(echo $_frk)" ] && [ -f "$ENODIA_DIR/geo.sh" ] || return 0
-	SC_FREADY=$(sh "$ENODIA_DIR/geo.sh" domfile $_frk 2>/dev/null | cut -f1 | tr '\n' ' ')
+	SC_FREADY=$(sh "$ENODIA_DIR/geo.sh" ready $_frk 2>/dev/null | cut -f1 | sort -u | tr '\n' ' ')
 	return 0
 }
 cmd_list_json() {
@@ -1224,6 +1296,11 @@ cmd_dump() {
 	iptables -t nat -S "$SC_NAT" 2>/dev/null | sed 's/^/  v4 nat /'
 	have_v6 && ip6tables -t nat -S "$SC_NAT" 2>/dev/null | sed 's/^/  v6 nat /'
 	tail -n 5 "$SC_FLOG" 2>/dev/null | sed 's/^/  лог: /'
+	# the address sets (messengers): which stand and how big — a set the rules name and the kernel lacks is the rake to see here
+	for _ds in $(ipset list -n 2>/dev/null | grep -E '^enodia_sch6?_'); do
+		echo "  набор $_ds: $(ipset list "$_ds" 2>/dev/null | grep -cE '^[0-9a-f]+[.:]' || true) адресов"
+	done
+	sed 's/^/  в плане: /' "$SC_APPLIED.sets" 2>/dev/null | grep -v ': $'
 	_dn=$(grep -c . "$SC_APPLIED" 2>/dev/null || true)
 	echo "в ядре (план): ${_dn:-0} устройств закрыто/ограничено"
 	# MACs as they are: dump.sh masks its whole output with the one redact() of the project

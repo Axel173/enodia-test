@@ -5602,7 +5602,8 @@
   function schActsHtml(it, d, full, st){
     var dis=(d.clock && it.on) ? '' : ' disabled', h='', nx=it.next && it.next[0];
     st=st||it.st;
-    if(st==='open') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
+    // «limited» is both: stricter (close it all) and looser (open it) are offered (BE7000 08.10.2026: only «Открыть на…» was)
+    if(st!=='closed') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
     // the schedule's own screen while its day limit closes some device: «Открыть на…» too — the journal line sends the parent
     // here to add time (BE7000 08.10.2026: the schedule was «открыто», so only «Закрыть сейчас…» was offered)
     if(st!=='open' || (full && schOverN(it, d)>0)) h+='<button type="button" class="btn" data-scact="open" aria-haspopup="menu"'+dis+'>Открыть на…</button>';
@@ -5709,7 +5710,7 @@
       + '</div>'
       + '<div class="f" style="margin-top:12px"><label for="sc-sites">Свои сайты — по одному в строке</label>'
       + '<textarea id="sc-sites" spellcheck="false" autocapitalize="off" translate="no" placeholder="roblox.com">'+esc(dr.sites)+'</textarea></div>'
-      + noteBox('«Ограничено» закрывает через DNS роутера: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.', 'info');
+      + noteBox('«Ограничено» закрывает через DNS роутера, мессенджеры — ещё и по адресам их серверов: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.', 'info');
     return h+'</div>';
   }
   // THE save of a schedule — the editor and the device tab (add / remove a device) send the whole schedule against its version, in
@@ -6975,9 +6976,9 @@
     "Нужен компонент «Фильтр по категориям».":"The «Category filter» component is needed.",
     "Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.":"Without it «limited» closes nothing — the device stays fully open.",
     "Категории — из каталога гео-категорий":"Categories — from the geo-category catalogue",
-    "Видео":"Video","Игры":"Games","Развлечения":"Entertainment","Для взрослых":"Adult",
+    "Мессенджеры":"Messengers","Видео":"Video","Игры":"Games","Развлечения":"Entertainment","Для взрослых":"Adult",
     "Свои сайты — по одному в строке":"Own sites — one per line",
-    "«Ограничено» закрывает через DNS роутера: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.":"«Limited» closes through the router's DNS: a VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it. «Closed» cannot be got past — it closes the whole device. It takes a few minutes to act: the device remembers the addresses it has already learned.",
+    "«Ограничено» закрывает через DNS роутера, мессенджеры — ещё и по адресам их серверов: свой VPN на устройстве или шифрованный DNS, включённый в браузере вручную, его обойдёт. «Закрыто» так не обойти — оно закрывает устройство целиком. Вступает за несколько минут: устройство помнит адреса, которые уже узнало.":"«Limited» closes through the router's DNS, messengers by their servers' addresses too: a VPN on the device, or encrypted DNS switched on in a browser by hand, gets past it. «Closed» cannot be got past — it closes the whole device. It takes a few minutes to act: the device remembers the addresses it has already learned.",
     // ─── «Задачи» — cron manager (07.10.2026): screens, labels, the router's fixed answers (tasks.sh) ───
     "Задачи":"Tasks","Новая задача":"New task","Задача":"Task","Задачи выполняются с правами root и без проверок:":"Tasks run as root, unchecked:",
     "ошибочный скрипт или правка чужой строки могут нарушить работу роутера, VPN или интернета. Отвечаете за них вы.":"a wrong script or an edit of a foreign line can break the router, the VPN or the internet. They are your responsibility.",

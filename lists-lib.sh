@@ -349,6 +349,12 @@ strip_bogon() {  # strip_bogon [мин_маска] ; stdin (CIDR по строк
 		print
 	}'
 }
+# The same cut for IPv6 (strip_bogon6 [min mask], default 16): only global unicast 2000::/3 passes — a first group of four hex
+# digits starting with 2 or 3 («200:» is 0x0200, not 2000::/3). ULA (fc00::/7 — the BE7000 LAN carries fd00:6969:6969::1),
+# link-local, multicast, ::-forms go; a mask wider than min is «half the internet», never a service's network.
+strip_bogon6() {
+	awk -F/ -v minm="${1:-16}" '{ m = ($2 == "") ? 128 : $2 + 0; if (m < minm || m > 128) next; if ($1 !~ /^[23][0-9a-f][0-9a-f][0-9a-f]:/) next; print }'
+}
 
 # --- ЗАЩИТА СВЯЗИ: динамический allowlist критичных ПУБЛИЧНЫХ IP -------------------------------
 # strip_bogon режет ПРИВАТКУ, но критичные сущности — ПУБЛИЧНЫЕ IP: endpoint активной несущей (VPS),
@@ -479,6 +485,12 @@ norm_cidr() {  # stdin → stdout (по IP/CIDR на строку)
 	#    результат остаётся байт-в-байт прежним, фолбэк включается только там, где раньше был ноль.
 	grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' "$_nc"
 	rm -f "$_nc"
+}
+# norm_cidr6: the IPv6 lines of the same lists (an address or a CIDR per line, comments cut), lowercase. Not inside norm_cidr: its
+# output fills inet sets, and `ipset restore` into an inet set STOPS at the first v6 line — everything after it would be lost.
+# Its consumer: geo.sh's `<key>@6` form (the access schedules close a messenger by its network in both families).
+norm_cidr6() {
+	tr -d '\r' | sed 's/[#;].*$//; s/[[:space:]]//g' | tr 'A-F' 'a-f' | grep -E '^[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}(/[0-9]{1,3})?$'
 }
 
 # norm_domains: из hosts / adblock-ABP / dnsmasq / geosite / plain вытащить голый домен (нижний

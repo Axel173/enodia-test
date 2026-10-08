@@ -27,10 +27,11 @@
 #
 # Размер набора задаёт ПОТРЕБИТЕЛЬ (`SET_HASHSIZE`/`SET_MAXELEM`): у групп наборы мелкие, у гео —
 # агрегаты стран на сотни тысяч подсетей. Читаются В МОМЕНТ ВЫЗОВА, поэтому порядок «сорснуть
-# библиотеку / выставить переменные» значения не имеет.
+# библиотеку / выставить переменные» значения не имеет. The family is the consumer's too
+# (`SET_FAMILY=inet6`; empty = inet, the former form byte for byte): the access schedules' address sets live in both families.
 #
 # Потребители: groups.sh, geo.sh (у каждого guarded-source + шим на прежнее поведение — файла
-# может не оказаться после частичного apply-scripts).
+# может не оказаться после частичного apply-scripts); access-sched.sh (static only — its sets have no dnsmasq side).
 
 SET_SNAP=${SET_SNAP:-/tmp/.enodia-set-snap}
 
@@ -51,9 +52,15 @@ _sl_same() {  # _sl_same <файл> <файл> — «содержимое оди
 	esac
 }
 
+set_drop() {  # set_drop <set> — the set and its snapshot away (a set recreated later must not inherit «the content is the same»)
+	ipset destroy "$1" 2>/dev/null; _sl_dr=$?
+	rm -f "$SET_SNAP-$1.cidr" "$SET_SNAP-$1.dom" 2>/dev/null
+	return $_sl_dr
+}
+
 set_ensure() {  # set_ensure <набор> — создать, если его ещё нет
 	ipset list -n 2>/dev/null | grep -qx "$1" && return 0
-	ipset create "$1" hash:net hashsize "${SET_HASHSIZE:-1024}" maxelem "${SET_MAXELEM:-65536}" 2>/dev/null
+	ipset create "$1" hash:net ${SET_FAMILY:+family "$SET_FAMILY"} hashsize "${SET_HASHSIZE:-1024}" maxelem "${SET_MAXELEM:-65536}" 2>/dev/null
 }
 
 # set_fill <набор> <файл CIDR> [файл динамики] — атомарная замена содержимого.
@@ -67,7 +74,7 @@ set_fill() {
 	_sl_s="$1"; _sl_f="$2"; _sl_x="${3:-}"
 	set_ensure "$_sl_s"
 	ipset destroy "${_sl_s}_new" 2>/dev/null
-	ipset create "${_sl_s}_new" hash:net hashsize "${SET_HASHSIZE:-1024}" maxelem "${SET_MAXELEM:-65536}" 2>/dev/null || return 1
+	ipset create "${_sl_s}_new" hash:net ${SET_FAMILY:+family "$SET_FAMILY"} hashsize "${SET_HASHSIZE:-1024}" maxelem "${SET_MAXELEM:-65536}" 2>/dev/null || return 1
 	if [ -s "$_sl_f" ]; then
 		awk -v s="${_sl_s}_new" '/^[0-9]/{print "add " s " " $1}' "$_sl_f" | ipset restore -exist 2>/dev/null
 	fi
