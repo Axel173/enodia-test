@@ -1904,7 +1904,8 @@
       else {
         if(!d.clock) h+='<div class="cline" style="margin-top:0">Не действуют: время роутера ещё не сверено.</div>';
         d.items.forEach(function(it){
-          var s=schSay(it, d), live=d.clock && it.on, open=(it.st==='open');
+          var s=schSay(it, d), live=d.clock && it.on, open=(it.st==='open'), on=schOverN(it, d);
+          if(open && on) s.t+=' · '+tkL('лимит исчерпан: ','limit used up: ')+on;   // «открыто» must not hide a device the limit closed
           h+=lrowGo('sch:'+it.id, '')+'<span class="dot'+(!live ? ' off' : open ? '' : ' bad')+'"></span>'
             + '<div class="grow"><div class="nm"><span translate="no">'+esc(it.name)+'</span></div><div class="ds" translate="no">'+esc(s.t.toLowerCase())+'</div></div>'
             + (live ? '<button type="button" class="btn sm'+(open ? '' : ' gh')+'" data-scov="'+(open ? 'close' : 'open')+'" data-scid="'+esc(it.id)+'" aria-haspopup="menu">'+(open ? 'Закрыть…' : 'Открыть на…')+'</button>' : '')+'</div>';
@@ -5353,6 +5354,7 @@
   function schChip(it, d){ return schChipHtml(schSay(it, d)); }
   // THE DAY LIMIT closes one device while its schedule stays open — the router names who (`over`), the panel only words it
   function schOver(it, mac){ return (it.over||[]).indexOf(String(mac||'').toLowerCase())>=0; }
+  function schOverN(it, d){ return (d.clock && it.on) ? (it.over||[]).length : 0; }   // devices its limit closes NOW
   function schDevSay(it, mac, d){
     if(d.clock && it.on && schOver(it, mac)) return {k:'blk', t:tkL('Закрыто · лимит на сегодня исчерпан','Closed · today\'s limit used up')};
     return schSay(it, d);
@@ -5597,7 +5599,9 @@
     var dis=(d.clock && it.on) ? '' : ' disabled', h='', nx=it.next && it.next[0];
     st=st||it.st;
     if(st==='open') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
-    else h+='<button type="button" class="btn" data-scact="open" aria-haspopup="menu"'+dis+'>Открыть на…</button>';
+    // the schedule's own screen while its day limit closes some device: «Открыть на…» too — the journal line sends the parent
+    // here to add time (BE7000 08.10.2026: the schedule was «открыто», so only «Закрыть сейчас…» was offered)
+    if(st!=='open' || (full && schOverN(it, d)>0)) h+='<button type="button" class="btn" data-scact="open" aria-haspopup="menu"'+dis+'>Открыть на…</button>';
     if(st==='open' && (it.why==='win' || it.why==='base') && nx && SCH_RK[nx.s]>0) h+='<button type="button" class="btn" data-scact="post"'+dis+'>Отложить закрытие на 30 мин</button>';
     if(full) h+='<button type="button" class="btn gh" data-scact="hol"'+dis+'>Каникулы…</button>';
     return '<div class="acts" style="justify-content:flex-start;flex-wrap:wrap">'+h+'</div>';

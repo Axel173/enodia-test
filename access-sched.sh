@@ -537,7 +537,12 @@ sc_over_note() {
 		[ -n "$_om" ] || continue
 		case "$SC_NL$_oo$SC_NL" in *"$SC_NL$_om $_oi$SC_NL"*) continue ;; esac
 		sc_load "$_oi" || continue
+		# the name the panel shows: own label, then the name the device gave its lease, then the MAC (BE7000 08.10.2026: the line
+		# said «7E:E7:…» while the panel said «OnePlus-Ace-6»)
 		_onm=""; [ -f "$ENODIA_DIR/dev-names.sh" ] && _onm=$(sh "$ENODIA_DIR/dev-names.sh" get "$_om" 2>/dev/null)
+		if [ -z "$_onm" ] && command -v lease_host_of >/dev/null 2>&1; then
+			_onm=$(lease_host_of "$(lease_ip_of_mac "$_om")" 2>/dev/null)
+		fi
 		[ -n "$_onm" ] || _onm=$(printf '%s' "$_om" | tr 'a-f' 'A-F')
 		[ -n "$SC_LANG" ] || sc_lang
 		if [ "$SC_LANG" = en ]; then
