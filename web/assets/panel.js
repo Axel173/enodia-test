@@ -3198,7 +3198,7 @@
     openModal(null, {route:'ov-traffic', deck:true});
     var myGen=dwGen;                       // openModal двигает dwGen — фиксируем ПОСЛЕ него
     var b=document.getElementById('modal-body');
-    tsData=null; tsErr=false; tsGen=myGen;
+    tsData=null; tsErr=false; tsGen=myGen; tdMore=false;   // the devices' list opens folded
     // КОЛОДА МАКЕТА (ov-traffic): период — пилюлями сверху, плитки-показатели своей карточкой, график — своей, разрез — пилюлями и
     // карточками вкладки (обёртка `.tpane` прозрачна для сетки колоды: её карточки встают рядом, как в макете), «как считается» — в конце.
     b.innerHTML='<div class="vwrap">'
@@ -3342,9 +3342,14 @@
     // широкая карточка с честной причиной, а не нули.
     if(tsCut===1)      h='<div class="card w2"><div class="wt">По конфигам</div>'+noteBox('<b>Пока не считается.</b> Интерфейс у туннеля один, а серверов много: awg0 остаётся awg0 и после переключения. Единственный честный путь — фиксировать счётчик В МОМЕНТ смены конфига и засчитывать объём тому серверу, который был активен. Это отметка на роутере, а не арифметика в панели, — поэтому разрез ждёт своей очереди, а не рисуется примерно.','warn')+'</div>';
     else if(tsCut===2) h='<div class="card w2"><div class="wt">По сетям</div>'+noteBox('<b>Пока не считается.</b> Считать пришлось бы по счётчикам сетевых интерфейсов, а это ЭФИР: туда попадут и обмен между устройствами, и широковещание — сумма по сетям выйдет больше, чем через провайдера. Разрез полезный, но подписывать его придётся «в сети», а не «в интернет», и сделать это надо аккуратно.','warn')+'</div>';
-    else if(tsCut===3){ h=tdHtml(); tdFetch(tdPer!==tsPer); }
+    else if(tsCut===3){ h=tdHtml(); tdFetch(tdAsk!==tsPer); }
     else               h=tsCutExits(d);
-    box.innerHTML=h;
+    // The screen's 5-s poll repaints the cut: the SAME string is not written again, and a changed one keeps the keyboard focus on
+    // its row (review s.115, round 2: with up to 16+ device rows, focus fell to the page every five seconds — the wfStaRepaint way).
+    if(box._h===h) return;
+    var fa=document.activeElement, fs=(fa && box.contains(fa)) ? focusMark() : null;
+    box.innerHTML=h; box._h=h;
+    if(fs) focusBack(box, fs);
   }
   // ---- «ТРАФИК → УСТРОЙСТВА» (traffic-dev.sh, 09.10.2026; mockup ov-traffic tab 3) ------------------------------------------------
   // The router answers per window (`?dev=<per>`): the devices by volume, «other», since when it counts — the counters of the firmware's
@@ -3352,7 +3357,11 @@
   // the screen does not carry it, and the tab asks only while shown — at once on a new period, then every TD_POLL (the router's day
   // moves every five minutes, plus a live delta of «now»). Shares are of the list's own total: devices + «other».
   var TD_TOP=7, TD_POLL=15000, TD_COL=['var(--g1)','var(--g2)','var(--g3)','var(--g4)','var(--g5)'];
-  var tdData=null, tdPer='', tdAt=0, tdErr=0, tdMore=false, _tdGate=flightGate(TR_CEIL);
+  // tdData/tdPer — the last ANSWER and its window; tdAsk/tdAt — the last REQUEST (window, time) and tdErr its refusal. Two pairs,
+  // not one: a refusal must not count as «this window answered» (the old answer of another window would be drawn under this one),
+  // and it must count as «this window asked» — keyed on the answer only, a refusing router (503 «занят», uhttpd restarting) got the
+  // next request at once from the repaint, a loop of 165 requests in 200 ms (review s.115, round 1).
+  var tdData=null, tdPer='', tdAsk='', tdAt=0, tdErr=0, tdMore=false, _tdGate=flightGate(TR_CEIL);
   // A day of the router («2026-10-09») in words of the language — the table of the chart, not the dictionary (lcDay's reason).
   // A share of the list: a device that moved a few megabytes of tens of gigabytes is not «0.0 %» — it is there, just tiny.
   function tdPct(p){ return (p>0 && p<0.1) ? '<0.1 %' : (p.toFixed(p<10?1:0)+' %'); }
@@ -3362,26 +3371,30 @@
     return L==='en' ? mn+' '+D+y : D+' '+mn+y;
   }
   function tdFetch(force){
-    if(!force && tdPer===tsPer && (Date.now()-tdAt)<TD_POLL) return;
+    if(!force && tdAsk===tsPer && (Date.now()-tdAt)<TD_POLL) return;
     var tok=_tdGate.take(force); if(!tok) return;
-    var per=tsPer, gen=tsGen;
+    var per=tsPer;
+    if(tdAsk!==per){ tdErr=0; tdMore=false; }   // a new window: no stale refusal, the list starts folded
+    tdAsk=per; tdAt=Date.now();
     function retry(){ if(tsAlive(tsGen) && tsCut===3) tdFetch(true); }
+    // The answer is the router's for its window whoever asked: kept even when the screen was closed and opened again meanwhile
+    // (round 2: dropped, the new opening showed «загрузка…» until TD_POLL), drawn by the CURRENT opening.
     fetchJson('/cgi-bin/traffic?dev='+per).then(function(d){
       var gr=_tdGate.settle(tok, false, retry);
-      if(gr<0 || per!==tsPer || !tsAlive(gen)) return;
-      tdData=d; tdPer=per; tdAt=Date.now(); tdErr=0;
-      if(tsCut===3) tsPaintCut();
+      if(gr<0 || per!==tsPer) return;
+      tdData=d; tdPer=per; tdErr=0;
+      if(tsAlive(tsGen) && tsCut===3) tsPaintCut();
     }).catch(function(e){
       var gr=_tdGate.settle(tok, true, retry);
-      if((gr!==0 && gr!==1) || per!==tsPer || !tsAlive(gen)) return;
-      // a refusal keeps an answer already drawn for this window; the next try waits TD_POLL, not the next 5-s tick
-      tdErr=(e && e.net) ? 2 : 1; tdAt=Date.now();
-      if(tsCut===3) tsPaintCut();
+      if((gr!==0 && gr!==1) || per!==tsPer) return;
+      // a refusal keeps an answer already drawn for this window; the next try waits TD_POLL from this request, not the next repaint
+      tdErr=(e && e.net) ? 2 : 1;
+      if(tsAlive(tsGen) && tsCut===3) tsPaintCut();
     });
   }
   function tdHtml(){
     var h='<div class="card w2"><div class="wt">По устройствам</div>', d=(tdPer===tsPer) ? tdData : null, per=tsPer, i;
-    if(!d) return h+'<div class="lempty">'+(tdErr ? noteText(tdErr===2) : 'загрузка…')+'</div></div>';
+    if(!d) return h+'<div class="lempty">'+((tdErr && tdAsk===tsPer) ? noteText(tdErr===2) : 'загрузка…')+'</div></div>';
     // A router older than the cut answers `?dev=` with the interface answer (no `devs`): say so, do not draw an empty list.
     if(!Array.isArray(d.devs))
       return h+noteBox(d.ok===false && d.msg ? esc(trNow(String(d.msg))) : 'Этот роутер устройства ещё не считает — обновите панель на роутере, и разрез появится.', 'warn')+'</div>';
@@ -3424,12 +3437,16 @@
       if(n<devs.length) h+='<div class="acts" style="justify-content:flex-start"><button type="button" class="btn gh sm" data-tdmore="1">'+tkL('Показать ещё '+schDevN(devs.length-n), 'Show '+(devs.length-n)+' more')+'</button></div>';
     }
     h+='<div class="lfoot">'+(TS_WHEN[per]||TS_WHEN.today)+' · считает прошивка роутера по MAC-адресу</div>';
+    // The first counted day starts at the router's first accounting step, not at midnight (seen on BE7000 09.10.2026: «сегодня» from
+    // 21:30) — the windows' block below says it for long windows; «сегодня» has no such block, so it is said here.
+    if(per==='today' && d.since && d.since===d.from) h+='<div class="cline">Роутер начал считать устройства сегодня — за сегодня это не с начала дня.</div>';
     h+='<div style="margin-top:12px">'+noteBox('<b>Это трафик через роутер, а не «в интернет».</b> Прошивка считает всё, что устройство передало через роутер: и показ на телевизор, и обмен с домашним NAS. Поэтому сумма по устройствам не обязана совпасть со «Всего» наверху: там нет домашнего обмена, а здесь — трафика самого роутера (обновления, проверки туннеля).', 'warn')+'</div>';
     // What the window lacks — the same honesty as the exits' tab. The first counted day comes from the router (`since`); a window
     // that starts before it is partial. A private MAC per network is a separate device here — said always, it is not a passing state.
     if(per!=='today'){
       h+='<div class="wt" style="margin-top:16px">Чего в окнах пока нет</div><div class="tiny">';
-      if(d.since && d.from && d.since>d.from) h+='<span>'+tkL('Роутер считает устройства с '+tdDay(d.since), 'The router counts devices since '+tdDay(d.since))+'</span> <span>— дни до этого в разрезе пусты, и доли за длинное окно посчитаны только по тем дням, что есть.</span> ';
+      // the date comes from a file on the router (backup import copies it as is): escaped like any data, not trusted to be a date
+      if(d.since && d.from && d.since>d.from) h+='<span>'+esc(tkL('Роутер считает устройства с '+tdDay(d.since), 'The router counts devices since '+tdDay(d.since)))+'</span> <span>— дни до этого в разрезе пусты, и доли за длинное окно посчитаны только по тем дням, что есть.</span> ';
       h+='<span>Телефон со «случайным» MAC в каждой сети здесь — отдельное устройство: другого имени, кроме MAC, у роутера для него нет.</span></div>';
     }
     return h+'</div>';
@@ -7680,6 +7697,7 @@
     "Время на роутере ещё не сверено.":"The router's clock is not synced yet.",
     "Новые байты устройств лягут в свой день, как только оно сверится.":"New device bytes will land on their day as soon as it syncs.",
     "за этот период через роутер ничего не прошло":"nothing went through the router in this period",
+    "Роутер начал считать устройства сегодня — за сегодня это не с начала дня.":"The router started counting devices today — today's figures do not start at midnight.",
     "роутер начнёт считать устройства с ближайшего шага учёта — раз в пять минут":"the router starts counting devices at the next accounting step — every five minutes",
     "имени не сообщает":"reports no name","Прочие":"Other",
     "устройства сверх 16 за день — их объём целиком здесь":"devices beyond 16 a day — their whole volume is here",
@@ -17290,7 +17308,7 @@
     var line=all>0 ? tkL('За 7 дней — '+tsShare(me, all)+' всего, что прошло через роутер · ↓ '+humanBytes(w('week',0))+' · ↑ '+humanBytes(w('week',1))+'.',
                          'Over 7 days — '+tsShare(me, all)+' of everything through the router · ↓ '+humanBytes(w('week',0))+' · ↑ '+humanBytes(w('week',1))+'.')
                    : tkL('За 7 дней через роутер ничего не прошло.', 'Nothing went through the router over 7 days.');
-    if(d.since) line+=' '+tkL('Считается с '+tdDay(d.since)+'.', 'Counted since '+tdDay(d.since)+'.');
+    if(d.since) line+=' '+tkL('Считается с '+tdDay(d.since)+'.', 'Counted since '+tdDay(d.since)+'.');   // `line` goes through esc() below
     // Both languages by tkL; NOT translate="no" — the byte units inside still go through the dictionary's unit rules.
     h+='<div class="tiny" style="margin-top:10px">'+esc(line)+'</div>';
     if(d.src===false) h+='<div style="margin-top:10px">'+noteBox('<b>Прошивка сейчас не отвечает про устройства.</b> Служба trafficd молчит — показано то, что роутер успел записать.', 'warn')+'</div>';
@@ -17300,13 +17318,15 @@
   function dvStatLoad(dev){
     var mac=String(dev.mac||'').toLowerCase(), g=++_dvStatGen;
     if(!mac) return;
+    // …and the answer is drawn only while the screen is still THIS device's (its hidden pane of another device stays alive)
+    function mine(){ return g===_dvStatGen && !!_dvLast && String(_dvLast.dev.mac||'').toLowerCase()===mac; }
     fetchJson('/cgi-bin/traffic?dmac='+mac).then(function(d){
       var b=document.getElementById('dv-stat');
-      if(g!==_dvStatGen || !screenAlive(b)) return;
+      if(!mine() || !screenAlive(b)) return;
       _dvStat={mac:mac, d:d}; b.innerHTML=dvStatHtml(dev, d);
     }, function(e){
       var b=document.getElementById('dv-stat');
-      if(g!==_dvStatGen || !screenAlive(b)) return;
+      if(!mine() || !screenAlive(b)) return;
       // a refusal keeps an answer already drawn for this device
       if(!(_dvStat && _dvStat.mac===mac)) b.innerHTML=dvStatHtml(dev, {err:(e && e.net) ? 2 : 1});
     });

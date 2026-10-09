@@ -446,13 +446,13 @@ sc_use_load() {
 	return 0
 }
 sc_used_of() { printf '%s\n' "$SC_USED" | awk -v m="$1" '$1 == m { print $2 + 0; f = 1; exit } END { if (!f) print 0 }'; }
-# trafficd -> «<mac> <bytes in+out>» per MAC, lowercase. The counters pass 32 bits: awk's doubles, printed as integers.
-# trafficd is parsed by ONE owner (traffic-dev.sh snap, a line per address of a device); here — summed over the addresses.
+# trafficd -> «<mac>@<address> <bytes in+out>» per ADDRESS of a device (MAC lowercase). The counters pass 32 bits: awk's
+# doubles, printed as integers. trafficd is parsed by ONE owner (traffic-dev.sh snap). Per address, not per MAC: an address ages
+# out of trafficd's list, a per-MAC sum then FALLS, and «went back ⇒ counted from zero» made an idle device's minute active
+# (review s.115, round 1 — the same ladder as traffic-dev.sh's, fixed there first).
 sc_traffic() {
 	[ -f "$ENODIA_DIR/traffic-dev.sh" ] || return 0
-	sh "$ENODIA_DIR/traffic-dev.sh" snap 2>/dev/null | awk -F'\t' '
-		{ s[$1] += $3 + $4 }
-		END { for (k in s) printf "%s %.0f\n", k, s[k] }'
+	sh "$ENODIA_DIR/traffic-dev.sh" snap 2>/dev/null | awk -F'\t' '{ printf "%s@%s %.0f\n", $1, $2, $3 + $4 }'
 }
 # Save the day's usage to the flash: every SC_USE_SAVE while it changes, at once when $1 = now (a device just ran out — a
 # reboot must not hand it a new day).
@@ -507,10 +507,12 @@ sc_use_tick() {
 		$1 == "C" { c[$2] = $3 + 0; next }
 		END {
 			m = el; if (m > gap) m = gap
-			for (k in lim) if (k in c) {
-				if (m >= 1 && (k in p) && !(k in x)) { d = c[k] - p[k]; if (d < 0) d = c[k]; if (d >= act * m) u[k] += m }
+			# per address (the MAC is the first 17 characters of the key): an address seen before adds its delta, a new one
+			# only records (its first sample), one gone from trafficd adds nothing
+			for (k in c) { mac = substr(k, 1, 17); if (!(mac in lim)) continue
 				printf "C %s %.0f\n", k, c[k]
-			}
+				if (k in p) { d = c[k] - p[k]; if (d < 0) d = c[k]; D[mac] += d; seen[mac] = 1 } }
+			for (mac in seen) if (m >= 1 && !(mac in x) && D[mac] >= act * m) u[mac] += m
 			for (k in u) if (u[k] > 0) printf "U %s %d\n", k, u[k]
 		}')
 	{ echo "$SC_E"; printf '%s\n' "$_uout" | sed -n 's/^C //p'; } > "$SC_USE_LAST.$$" && mv -f "$SC_USE_LAST.$$" "$SC_USE_LAST"

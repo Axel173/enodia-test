@@ -53,6 +53,14 @@ TD_DAY_MAX=16          # devices a closed day keeps by name; the rest — one «
 TD_SAVE=14400          # seconds of uptime between checkpoints of the day
 TD_BOOT_WIN=7200       # without a boot id: «the counters are this boot's» while uptime is under this
 TD_CAP=1250000000      # bytes per second of one pair (10 Gbit/s): a delta over it is a counter glitch, not traffic
+TD_CARRY=86400         # seconds of uptime a pair missing from trafficd's answer keeps its last counters in `last`
+# One closed-day line of the history as the readers accept it: date · MAC or «other» · two counters. A hand-edited or imported
+# line that is not this is not counted and not taken as «the last closed day» (review s.115, round 1: a garbage first field sorts
+# after every date — counted in every window, shown as «since» unescaped, and as the last line it blocked every later close).
+# …and a day NOT AFTER TODAY (round 2: a future line from a backup of a router whose clock ran ahead stopped every close until
+# that date and hid «сегодня»), a real month and day, counters of at most 15 digits (a 309-digit one is `inf` in awk — invalid
+# JSON for 400 days). EVERY awk using it gets `-v today=<YYYY-MM-DD>`: unset, it would reject every line.
+TD_LINE_OK='NF == 4 && $1 <= today && $1 ~ /^[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/ && ($2 ~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])$/ || $2 == "other") && $3 ~ /^[0-9]+$/ && length($3) <= 15 && $4 ~ /^[0-9]+$/ && length($4) <= 15'
 TAB=$(printf '\t')
 
 # MAC parsing — the owner of «who is this device» (lease-lib.sh, it also sources clock-lib.sh). Shims = the same lines.
@@ -78,22 +86,31 @@ td_boot() {
 	echo "$_tbi"
 }
 
-# trafficd → pairs. The device's fields precede its `ip_list`, an address entry opens with a bare «{» and its "ip" comes
-# before the counters (the shape of BE7000 08.10.2026). Backslashes and control bytes go BEFORE parsing (the quotes stay —
-# they are the JSON's structure): an escaped quote inside a name then ends the name, so no name carries a quote or a
-# backslash out. `-t 5`: the tick holds traffic-acct.sh's lock — a hung bus must not hold it for an hour.
+# trafficd → pairs. ubus prints one key per line; the device's fields precede its `ip_list`, an address entry opens with a
+# bare «{» and its "ip" comes before the counters (the shape of BE7000 08.10.2026). Backslashes and control bytes go BEFORE
+# parsing (the quotes stay — they are the JSON's structure): an escaped quote inside a name then ends the name, so no name
+# carries a quote or a backslash out. EVERY KEY IS MATCHED AT THE START OF ITS LINE: with the backslashes gone, a name like
+# `kid\", \"hw\": \"aa:…` reads as more keys on the hostname's line, and an unanchored `"hw":` took the device's bytes to a
+# MAC of the name's choosing (review s.115, round 1) — out of the split and out of the day limit, which reads this parser. The
+# counters go to the pair opened by its "ip" line, not to whatever MAC the last "hw" line named.
+# `-t 5`: the tick holds traffic-acct.sh's lock — a hung bus must not hold it for an hour.
 td_snap() {
 	ubus -t 5 call trafficd hw 2>/dev/null | tr -d '\000-\010\013-\037\\' | awk -v T="$TAB" '
 		BEGIN { OFMT = "%.0f"; CONVFMT = "%.0f" }
-		/^[ \t]*\{[ \t]*$/ { ip = "" }
-		/"hw":/ { v = $0; sub(/.*"hw": *"/, "", v); sub(/".*/, "", v); mac = tolower(v) }
-		/"hostname":/ { v = $0; sub(/.*"hostname": *"/, "", v); sub(/".*/, "", v); if (v == "*") v = ""; gsub(/\t/, " ", v); hn[mac] = v }
-		/"ifname":/ { v = $0; sub(/.*"ifname": *"/, "", v); sub(/".*/, "", v); ifn[mac] = v }
-		/"assoc":/ { v = $0; gsub(/[^0-9]/, "", v); as[mac] = v + 0 }
-		/"ip":/ { v = $0; sub(/.*"ip": *"/, "", v); sub(/".*/, "", v); ip = v
-			if (!((mac T ip) in seen)) { seen[mac T ip] = 1; pm[++n] = mac; pi[n] = ip } }
-		/"rx_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); rx[mac T ip] += v }
-		/"tx_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); tx[mac T ip] += v }
+		/^[ \t]*\{[ \t]*$/ { ip = ""; pk = "" }
+		# the device is named by the "hw" of its object, never by the "hw" inside an address entry (round 2: if trafficd keeps
+		# the current holder of the address there, the bytes of the next entry would go to another MAC)
+		/^[ \t]*"[0-9A-Fa-f:]+": *\{/ { inl = 0 }
+		/^[ \t]*"ip_list":/ { inl = 1 }
+		/^[ \t]*\][ \t,]*$/ { inl = 0 }   # the list closed: a device object keyed otherwise than by a MAC still names itself (r.3)
+		/^[ \t]*"hw":/ { if (inl) next; v = $0; sub(/^[ \t]*"hw": *"/, "", v); sub(/".*/, "", v); mac = tolower(v) }
+		/^[ \t]*"hostname":/ { v = $0; sub(/^[ \t]*"hostname": *"/, "", v); sub(/".*/, "", v); if (v == "*") v = ""; gsub(/\t/, " ", v); hn[mac] = v }
+		/^[ \t]*"ifname":/ { v = $0; sub(/^[ \t]*"ifname": *"/, "", v); sub(/".*/, "", v); ifn[mac] = v }
+		/^[ \t]*"assoc":/ { v = $0; gsub(/[^0-9]/, "", v); as[mac] = v + 0 }
+		/^[ \t]*"ip":/ { v = $0; sub(/^[ \t]*"ip": *"/, "", v); sub(/".*/, "", v); ip = v; pk = mac T ip
+			if (!(pk in seen)) { seen[pk] = 1; pm[++n] = mac; pi[n] = ip } }
+		/^[ \t]*"rx_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); if (length(v) > 15) v = 0; if (pk != "") rx[pk] += v }
+		/^[ \t]*"tx_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); if (length(v) > 15) v = 0; if (pk != "") tx[pk] += v }
 		END { for (i = 1; i <= n; i++) {
 			m = pm[i]; a = pi[i]; k = m T a
 			if (m !~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])(:[0-9a-f][0-9a-f])$/) continue
@@ -102,17 +119,21 @@ td_snap() {
 			printf "%s%s%s%s%.0f%s%.0f%s%d%s%s%s%s\n", m, T, a, T, rx[k] + 0, T, tx[k] + 0, T, as[m], T, f, T, hn[m] } }'
 }
 
-# td_deltas <last|/dev/null> <snap> <delta|boot|seed> <elapsed s> → «mac drx dtx» per device that moved.
+# td_deltas <last|/dev/null> <snap> <delta|boot|seed|live> <elapsed s> → «mac drx dtx» per device that moved.
 # The ladder per pair: seen and grew ⇒ the difference · seen and fell ⇒ restarted, counted from zero · not seen (a pair born
 # since the last sample) or a boot sample ⇒ the whole counter · seed ⇒ nothing (we only learn the counters). A delta over the
 # link ceiling for the elapsed time is a glitch and counts nothing — it would poison the history for a year.
+# `live` — the READER's «unwritten delta of now»: only growth counts. Its snapshot is taken before it reads `last`, and a tick
+# writing a newer `last` in between makes every grown pair look «fallen» — the ladder above would add whole counters since boot
+# to one answer (review s.115, round 1). A fall or a new pair waits for the tick, which judges them on its own sample.
 td_deltas() {
 	awk -F'\t' -v L="$1" -v md="$3" -v el="$4" -v cps="$TD_CAP" '
 		BEGIN { OFMT = "%.0f"; CONVFMT = "%.0f"; T = "\t"; c = cps * el }
 		FILENAME == L { if ($1 != "#") { k = $1 T $2; lr[k] = $3 + 0; lt[k] = $4 + 0; lk[k] = 1 }; next }
 		md == "seed" { next }
 		{ k = $1 T $2; r = $3 + 0; t = $4 + 0
-		  if (md == "boot" || !(k in lk)) { dr = r; dt = t }
+		  if (md == "live") { dr = ((k in lk) && r >= lr[k]) ? r - lr[k] : 0; dt = ((k in lk) && t >= lt[k]) ? t - lt[k] : 0 }
+		  else if (md == "boot" || !(k in lk)) { dr = r; dt = t }
 		  else { dr = (r >= lr[k]) ? r - lr[k] : r; dt = (t >= lt[k]) ? t - lt[k] : t }
 		  if (dr > c) dr = 0
 		  if (dt > c) dt = 0
@@ -127,7 +148,8 @@ td_deltas() {
 td_close() {
 	_cd=$(head -n 1 "$1" 2>/dev/null | cut -d' ' -f1)
 	case "$_cd" in [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]) ;; *) return 0 ;; esac
-	_cl=$(tail -n 1 "$TD_HIST" 2>/dev/null | cut -d' ' -f1)
+	_cdt=$(date +%F)
+	_cl=$(awk -v today="$_cdt" "$TD_LINE_OK { d = \$1 } END { print d }" "$TD_HIST" 2>/dev/null)   # the last VALID closed day (a once-a-day pass)
 	if [ -n "$_cl" ] && ! td_lt "$_cl" "$_cd"; then return 0; fi
 	# busybox sort has no -k: the volume goes first, sort -rn orders by it, and the second pass drops it
 	awk 'NR > 1 && NF == 3 && ($2 + $3) > 0 { printf "%.0f %s %.0f %.0f\n", $2 + $3, $1, $2, $3 }' "$1" | sort -rn |
@@ -148,11 +170,11 @@ td_close() {
 			END { if (!ch) exit 1; for (i = 1; i <= n; i++) print o[i] T h[o[i]] }' "$TD_HOSTS" "$TD_RUN/hosts" "$1" > "$TD_HOSTS.$$"
 	then mv "$TD_HOSTS.$$" "$TD_HOSTS"; fi
 	rm -f "$TD_HOSTS.$$" 2>/dev/null
-	_cf=$(head -n 1 "$TD_HIST" 2>/dev/null | cut -d' ' -f1)
+	_cf=$(awk -v today="$_cdt" "$TD_LINE_OK { print \$1; exit }" "$TD_HIST" 2>/dev/null)   # the first VALID line: a garbage one must not stall the trim
 	_ck=$(date -d "@$(( $2 - TD_KEEP * 86400 ))" +%F 2>/dev/null)
 	_ct=$(date -d "@$(( $2 - (TD_KEEP + 31) * 86400 ))" +%F 2>/dev/null)
 	if [ -n "$_cf" ] && [ -n "$_ct" ] && td_lt "$_cf" "$_ct"; then
-		awk -v k="$_ck" 'NF == 4 && $1 >= k' "$TD_HIST" > "$TD_HIST.$$" && mv "$TD_HIST.$$" "$TD_HIST"
+		awk -v k="$_ck" -v today="$_cdt" "$TD_LINE_OK"' && $1 >= k' "$TD_HIST" > "$TD_HIST.$$" && mv "$TD_HIST.$$" "$TD_HIST"
 		awk -F'\t' -v Hh="$TD_HIST" 'FILENAME == Hh { k = $0; sub(/^[^ ]* /, "", k); sub(/ .*/, "", k); m[k] = 1; next } ($1 in m)' \
 			"$TD_HIST" "$TD_HOSTS" > "$TD_HOSTS.$$" && mv "$TD_HOSTS.$$" "$TD_HOSTS"
 	fi
@@ -162,6 +184,12 @@ td_close() {
 cmd_tick() {
 	clock_trusted || return 0
 	mkdir -p "$TD_RUN" 2>/dev/null || return 0
+	# Temporary files of a dead process: uhttpd SIGKILLs a CGI whose client left (the trap is silent then) — a reader leaves its
+	# `rsnap.<pid>`/`rout.<pid>` in RAM; nobody else knows this directory (round 2).
+	for _tf in "$TD_RUN"/*.* "$TD_CKPT".* "$TD_HIST".* "$TD_HOSTS".*; do   # …and a killed tick's own on the flash (r.3)
+		_tp=${_tf##*.}; case "$_tp" in ''|*[!0-9]*) continue ;; esac
+		[ -d "/proc/$_tp" ] || rm -f "$_tf"
+	done
 	_tn=$(date +%s); _tt=$(date +%F); _tu=$(uptime_s); _tb=$(td_boot)
 	_ts="$TD_RUN/snap.$$"
 	td_snap > "$_ts"
@@ -184,21 +212,34 @@ cmd_tick() {
 	fi
 	[ "$_tel" -ge 60 ] 2>/dev/null || _tel=60
 	# A day of another date: an earlier one is closed; a LATER one is a relic of a wrong clock — closing it would put a future
-	# date at the end of the history, and every real day after it would count as «closed already».
-	_tdd=$(head -n 1 "$_tdf" 2>/dev/null | cut -d' ' -f1)
+	# date at the end of the history, and every real day after it would count as «closed already» — and is dropped. EXCEPT one
+	# day ahead: a time zone set back across midnight on a trusted clock (round 2) — that day keeps its date and its bytes, the
+	# re-lived hour goes into it, and it closes when the clock reaches its end.
+	_tdd=$(head -n 1 "$_tdf" 2>/dev/null | cut -d' ' -f1); _tday=$_tt
 	if [ -n "$_tdd" ] && [ "$_tdd" != "$_tt" ]; then
-		if td_lt "$_tdd" "$_tt"; then td_close "$_tdf" "$_tn"; fi
-		rm -f "$_tdf"
+		if td_lt "$_tdd" "$_tt"; then td_close "$_tdf" "$_tn"; rm -f "$_tdf"
+		elif [ "$_tdd" = "$(date -d "@$(( _tn + 86400 ))" +%F 2>/dev/null)" ]; then _tday=$_tdd
+		else rm -f "$_tdf"; fi
 	fi
 	td_deltas "$_tlf" "$_ts" "$_tm" "$_tel" > "$TD_RUN/dlt.$$"
+	# The next sample's base: this snapshot's pairs, PLUS a pair missing from it for less than TD_CARRY of uptime with its last
+	# counters. A pair absent from one answer (a partial table, a mesh node switching parents) that comes back with its old counter
+	# would otherwise be «new» and charged whole again; one that comes back restarted reads as «fell» — counted from zero, right
+	# either way (review s.115, round 1). The fifth field = uptime when the pair was last seen.
+	# `last` is replaced BEFORE `day` (round 2): a reader between the two then misses this tick's delta for one answer (its live
+	# delta against the new base is ~0) instead of counting it twice (the new day plus a delta against the old base).
+	awk -F'\t' -v S="$_ts" -v up="$_tu" -v keep="$TD_CARRY" -v T="$TAB" '
+		BEGIN { print "#" T up }
+		FILENAME == S { s[$1 T $2] = 1; print $1 T $2 T $3 T $4 T up; next }
+		$1 != "#" && NF >= 5 && !(($1 T $2) in s) && $5 + keep >= up { print $1 T $2 T $3 T $4 T $5 }' \
+		"$_ts" "$_tlf" > "$TD_RUN/last.$$" && mv "$TD_RUN/last.$$" "$TD_RUN/last"
 	{
-		printf '%s %s\n' "$_tt" "${_tb:--}"
+		printf '%s %s\n' "$_tday" "${_tb:--}"
 		{ if [ -s "$_tdf" ]; then awk 'NR > 1 && NF == 3' "$_tdf"; fi; cat "$TD_RUN/dlt.$$"; } |
 			awk 'BEGIN { OFMT = "%.0f"; CONVFMT = "%.0f" }
 				$1 ~ /^[0-9a-f:]+$/ || $1 == "other" { if (!($1 in s)) { s[$1] = 1; o[++n] = $1 }; r[$1] += $2; t[$1] += $3 }
 				END { for (i = 1; i <= n; i++) printf "%s %.0f %.0f\n", o[i], r[o[i]], t[o[i]] }'
 	} > "$TD_RUN/day.$$" && mv "$TD_RUN/day.$$" "$_tdf"
-	{ printf '#\t%s\n' "$_tu"; cut -f1-4 "$_ts"; } > "$TD_RUN/last.$$" && mv "$TD_RUN/last.$$" "$TD_RUN/last"
 	: >> "$TD_RUN/hosts"
 	awk -F'\t' -v H="$TD_RUN/hosts" -v T="$TAB" '
 		FILENAME == H { if (NF >= 2 && !($1 in h)) { h[$1] = $2; o[++n] = $1 }; next }
@@ -236,12 +277,22 @@ td_read() {   # list <today|week|month|year> | mac <mac>
 	fi
 	{
 		if [ -s "$TD_HIST" ]; then
-			awk 'NF == 4 { print "F\t" $1; exit }' "$TD_HIST"
-			awk -v y="$_ry" 'NF == 4 && $1 >= y { print "H\t" $1 "\t" $2 "\t" $3 "\t" $4 }' "$TD_HIST"
+			awk -v today="$_rt" "$TD_LINE_OK"' { print "F\t" $1; exit }' "$TD_HIST"
+			awk -v y="$_ry" -v today="$_rt" "$TD_LINE_OK"' && $1 >= y { print "H\t" $1 "\t" $2 "\t" $3 "\t" $4 }' "$TD_HIST"
 		fi
-		if [ -s "$_rd" ]; then awk 'NR == 1 { d = $1; next } NF == 3 { print "D\t" d "\t" $1 "\t" $2 "\t" $3 }' "$_rd"; fi
+		if [ -s "$_rd" ]; then awk 'NR == 1 { d = $1; if (d !~ /^[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]$/) exit; next }
+			NF == 3 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { print "D\t" d "\t" $1 "\t" $2 "\t" $3 }' "$_rd"; fi
 		if [ -s "$TD_RUN/last" ] && [ "$_rsrc" = true ]; then
-			td_deltas "$TD_RUN/last" "$_rs" delta "$_rel" | awk '{ print "U\t" $1 "\t" $2 "\t" $3 }'
+			td_deltas "$TD_RUN/last" "$_rs" live "$_rel" | awk '{ print "U\t" $1 "\t" $2 "\t" $3 }'
+		fi
+		# Who owns each address trafficd lists NOW — the project's one answer (lease-lib.sh::ip_owner_now: the lease, then the
+		# neighbour table). A door goes only to an address that is this device's now (round 2: trafficd keeps an absent device's
+		# old address for days and lists entries in its own order; DHCP may have lent the address to another; a wired client
+		# without an interface in trafficd is still found here). No owner library — no doors, the numbers stay.
+		if [ "$1" = list ] && command -v ip_owner_now >/dev/null 2>&1; then   # one device (json-mac) has no door field
+			for _ri in $(awk -F'\t' '$2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2 }' "$_rs" | sort -u); do
+				_ro=$(ip_owner_now "$_ri" 2>/dev/null) && printf 'O\t%s\t%s\n' "$_ri" "$_ro"
+			done
 		fi
 		awk -F'\t' '{ print "S\t" $1 "\t" $2 "\t" $5 "\t" $6 "\t" $7 }' "$_rs"
 		if [ -f "$ENODIA_DIR/dev-names.sh" ]; then
@@ -252,7 +303,11 @@ td_read() {   # list <today|week|month|year> | mac <mac>
 	} | awk -F'\t' -v md="$1" -v q="$2" -v today="$_rt" -v fw="$_rw" -v fm="$_rm" -v fy="$_ry" -v src="$_rsrc" -v tr="$_rtr" '
 		BEGIN { OFMT = "%.0f"; CONVFMT = "%.0f"; w = (q == "today") ? 0 : (q == "week") ? 1 : (q == "month") ? 2 : 3 }
 		$1 == "F" { since = $2; next }
-		$1 == "S" { if (!($2 in sip)) { sip[$2] = ($3 == "-") ? "" : $3; sif[$2] = ($5 == "-") ? "" : $5 }; if ($6 != "") sh[$2] = $6; next }
+		$1 == "O" { own[$2] = $3; next }
+		$1 == "S" { if ($6 != "") sh[$2] = $6
+			if (!($2 in sif) && $5 != "-") sif[$2] = $5
+			if (!($2 in sip) && ($3 in own) && own[$3] == $2) sip[$2] = $3
+			next }
 		$1 == "A" { al[$2] = $3; next }
 		$1 == "L" { lh[$2] = $3; next }
 		$1 == "R" { rh[$2] = $3; next }
