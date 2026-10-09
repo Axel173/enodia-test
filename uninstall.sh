@@ -106,7 +106,7 @@ run() { [ -f "$ENODIA_DIR/$1" ] || return 0; _s="$1"; shift; sh "$ENODIA_DIR/$_s
 CHAINS_MANGLE="VPN_EXCLUDE VPN_FORCE VPN_PORTS VPN_KEEP VPN_DEV ENODIA_ZAPRET"
 # ENODIA_SCHED — access schedules (REJECT per MAC); its owner `access-sched.sh unwire` takes both families in step_rules, the
 # word here is the IPv4 safety net for a missing owner (the IPv6 one is a line in step_rules).
-CHAINS_FILTER="ENODIA_BLK ENODIA_GEOBLK ENODIA_SCHED VPNSRV_IN VPNSRV_FWD VPNSRV_WAN"
+CHAINS_FILTER="ENODIA_BLK ENODIA_GEOBLK ENODIA_SCHED ENODIA_SCHED_DNSIN VPNSRV_IN VPNSRV_FWD VPNSRV_WAN"
 # nat: ENODIA_SCHED_DNS — the DNS of «limited» devices REDIRECTed to the schedules' filter (the same owner unwires it; this is
 # the net for a missing one, both families, with the IPv6 INPUT fallback ENODIA_SCHED_IN6)
 CHAINS_NAT="ENODIA_SCHED_DNS"
@@ -286,6 +286,8 @@ step_rules() {
         ip6tables -F ENODIA_SCHED 2>/dev/null; ip6tables -X ENODIA_SCHED 2>/dev/null
         while ip6tables -D INPUT -j ENODIA_SCHED_IN6 2>/dev/null; do :; done
         ip6tables -F ENODIA_SCHED_IN6 2>/dev/null; ip6tables -X ENODIA_SCHED_IN6 2>/dev/null
+        while ip6tables -D INPUT -j ENODIA_SCHED_DNSIN 2>/dev/null; do :; done
+        ip6tables -F ENODIA_SCHED_DNSIN 2>/dev/null; ip6tables -X ENODIA_SCHED_DNSIN 2>/dev/null
     fi
     for _f in iptables ip6tables; do
         command -v "$_f" >/dev/null 2>&1 || continue
@@ -578,6 +580,10 @@ step_cron() {        # $1 = keep → строку панели оставляе�
     [ -f "$_ct.new" ] && mv "$_ct.new" "$_ct"
     /etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1
     log "Cron: снято строк $_was$_kept."
+    # Access schedules once more, now that their tick line is gone: a tick that started between step_rules and here put its
+    # rules back, and no tick is left to lift them (review s.112). The owner waits out a tick in flight; with no line in the
+    # crontab every later call of it (a panel action) plans nothing.
+    run access-sched.sh unwire
 }
 
 # Вернуть расписание, снятое деактивацией. ЗАЧЕМ ОТДЕЛЬНЫЙ ВЕРБ: «включить обратно» (панель →

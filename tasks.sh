@@ -70,13 +70,23 @@ command -v jtxt >/dev/null 2>&1 || jtxt() { tr -d '\000-\010\013-\037' | tr '\n\
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 # the tree walk's owner is daemon-lib.sh (same package); without it a timeout kills the top process only
 command -v proc_tree >/dev/null 2>&1 || proc_tree() { echo "$1"; }
+command -v daemon_step_init >/dev/null 2>&1 || daemon_step_init() { DAEMON_STEP_Q=1; }
+command -v daemon_step >/dev/null 2>&1 || daemon_step() { sleep 1; }
 
 b64() { base64 2>/dev/null | tr -d '\n'; }
 b64d() { printf '%s' "$1" | base64 -d 2>/dev/null; }
 jstr() { printf '%s' "$1" | jtxt "${2:-200}"; }
 jok() { printf '{"ok":true%s}\n' "${1:+,$1}"; }
 jfail() { printf '{"ok":false,"msg":"%s"%s}\n' "$(jstr "$1" 400)" "${2:+,$2}"; exit 0; }
-id_ok() { printf '%s' "$1" | grep -qE '^t[0-9]{1,6}$'; }
+# the ONE form of an id: no leading zero (`t01` and `t1` would be two files of one number), at most six digits
+id_ok() { printf '%s' "$1" | grep -qE '^t[1-9][0-9]{0,5}$'; }
+# a decimal of at most 6 digits without leading zeros, else $2: `010` is octal in ash arithmetic (an archive's counter gave t9 and
+# overwrote it), `08` a fatal error — review s.113, the twin of access-sched.sh's sc_new_id
+tk_dec() {
+	_td=$1; case "$_td" in ''|*[!0-9]*) echo "$2"; return 0 ;; esac
+	while :; do case "$_td" in 0?*) _td=${_td#0} ;; *) break ;; esac; done
+	if [ "${#_td}" -le 6 ]; then echo "$_td"; else echo "$2"; fi
+}
 now_local() { date '+%Y-%m-%d %H:%M' 2>/dev/null; }
 # sh single-quote: the path goes into a command line the user's shell syntax surrounds
 tk_sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -352,12 +362,15 @@ tk_write() {   # tk_write <id> — registry file atomically (write next to it + 
 # starting that moment would read half of it.
 # The staging name is this process's own: `root.new` is uninstall's draft beside the crontab, and a refused copy removed it (round 5).
 tk_put() { cp "$1" "$2.tk$$" 2>/dev/null && cmp -s "$1" "$2.tk$$" && mv -f "$2.tk$$" "$2" && return 0; rm -f "$2.tk$$"; return 1; }
-tk_ids() { for _f in "$TK_DIR"/t*.task; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.task}"; done | sed 's/^t//' | sort -n | sed 's/^/t/'; }
+tk_ids() { for _f in "$TK_DIR"/t*.task; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.task}"; done | grep -E '^t[1-9][0-9]{0,5}$' | sed 's/^t//' | sort -n | sed 's/^/t/'; }
 tk_new_id() {   # under the lock; the highest id ever given (`.last-id`) + 1, never a deleted one's
-	_ni=$(tk_ids | sed 's/^t//' | tail -n 1); _nl=$(cat "$TK_DIR/.last-id" 2>/dev/null)
-	case "$_nl" in ''|*[!0-9]*) _nl=0 ;; esac
+	_ni=$(tk_ids | sed 's/^t//' | tail -n 1); _nl=$(tk_dec "$(cat "$TK_DIR/.last-id" 2>/dev/null)" 0)
 	[ "${_ni:-0}" -ge "$_nl" ] || _ni=$_nl
-	_ni=$(( ${_ni:-0} + 1 )); mkdir -p "$TK_DIR" 2>/dev/null; echo "$_ni" > "$TK_DIR/.last-id"
+	_ni=$(( ${_ni:-0} + 1 ))
+	# past six digits (a crafted counter) — the lowest free number; and never a number whose file is there
+	[ "$_ni" -le 999999 ] || _ni=1
+	while [ -f "$TK_DIR/t$_ni.task" ]; do _ni=$((_ni + 1)); done
+	mkdir -p "$TK_DIR" 2>/dev/null; echo "$_ni" > "$TK_DIR/.last-id"
 	echo "t$_ni"
 }
 
@@ -919,8 +932,7 @@ cmd_import() {
 		tk_mark "$T_ORIGIN"
 		case "$_ifam" in *" $TKM "*) T_ENABLED=0; tk_write "$_ifi" ;; *) _ifam="$_ifam$TKM " ;; esac
 	done
-	_ial=$(cat "$_isrc/.last-id" 2>/dev/null); _irl=$(cat "$TK_DIR/.last-id" 2>/dev/null)
-	case "$_ial" in ''|*[!0-9]*) _ial=0 ;; esac; case "$_irl" in ''|*[!0-9]*) _irl=0 ;; esac
+	_ial=$(tk_dec "$(cat "$_isrc/.last-id" 2>/dev/null)" 0); _irl=$(tk_dec "$(cat "$TK_DIR/.last-id" 2>/dev/null)" 0)
 	[ "$_ial" -gt "$_irl" ] && echo "$_ial" > "$TK_DIR/.last-id"
 	cat "$_ig.work" "$_ig" > "$_ig.src"; tk_apply "$_ig.src"; _iap=$?
 	tk_unlock
@@ -1042,6 +1054,10 @@ cmd_raw_save() {   # <b64file> <rev the panel opened>
 	[ -n "$2" ] && [ "$2" != "$(tk_rev)" ] && jfail "crontab изменился, пока вы его правили — откройте вкладку заново" '"stale":true'
 	tk_apply "$_rw" || jfail "не удалось записать crontab"
 	tk_unlock
+	# the schedules' engine stands its rules only while its tick line is in the crontab (access-sched.sh sc_ticking): a raw edit
+	# that dropped it froze them — a 23:00 close nobody would lift any more (review s.113, round 4). One tick now: the line gone
+	# ⇒ the rules go; the line kept ⇒ nothing changes
+	if [ -f "$ENODIA_DIR/access-sched.sh" ]; then sh "$ENODIA_DIR/access-sched.sh" tick wait >/dev/null 2>&1 || true; fi
 	jok "\"msg\":\"crontab сохранён\",\"rev\":\"$(tk_rev)\",\"text\":\"$(tk_each_line | b64)\""
 }
 
@@ -1204,7 +1220,7 @@ cmd_run() {
 	) > "$_out.run" 2>&1 &
 	_wp=$!
 	printf '%s\t%s\t%s\t%s\t%s\n' "$_ts" "$_up0" "$$" "$_trig" "$_seq" > "$TK_RUN/$_id.cur.$_seq"
-	_flag=""
+	_flag=""; _rpq=0; daemon_step_init
 	while [ ! -s "$_rcf" ]; do
 		# «stop» holds the last run number it applies to: a run started after the click is not stopped by it (a flag removed
 		# by the next start cancelled a stop meant for a run alongside), and nothing has to remove it
@@ -1213,7 +1229,9 @@ cmd_run() {
 		if [ "$T_TIMEOUT" -gt 0 ] 2>/dev/null && [ $(( $(uptime_s) - _up0 )) -ge "$T_TIMEOUT" ]; then _flag=killed; tk_kill_tree "$_wp"; break; fi
 		if [ "$(wc -c < "$_out.run" 2>/dev/null)" -gt "$TK_OUT_CAP" ] 2>/dev/null; then _flag=cut; tk_kill_tree "$_wp"; break; fi
 		tk_alive "$_wp" || { sleep 1; [ -s "$_rcf" ] || { _flag=err; break; }; }
-		sleep 1
+		# the first two seconds in short steps (daemon-lib.sh::daemon_step): most runs end in a fraction of a second, and a
+		# whole-second step made «Запустить» of `true` take a second; a long run is then polled once a second as before
+		_rpq=$((_rpq + 1)); if [ "$_rpq" -le $((2 * DAEMON_STEP_Q)) ]; then daemon_step; else sleep 1; fi
 	done
 	wait "$_wp" 2>/dev/null
 	_code=$(cat "$_rcf" 2>/dev/null | tr -d ' \r\n'); case "$_code" in ''|*[!0-9]*) _code=143 ;; esac
@@ -1253,11 +1271,11 @@ cmd_run_bg() {
 	# after this answer, and a run not yet registered read as «not running», so the screen never followed it (review s.106).
 	# The wait is the runner's life, not a stopwatch; the ceiling only bounds a runner that hangs before registering.
 	# busybox start-stop-daemon -b returns BEFORE its grandchild writes the pidfile: an empty one is «not started yet»
-	_bw=0
-	while [ "$_bw" -lt 10 ]; do
+	_bw=0; daemon_step_init
+	while [ "$_bw" -lt $((10 * DAEMON_STEP_Q)) ]; do
 		tk_cur "$1" && break
 		_bpid=$(cat "$_bp" 2>/dev/null); if [ -n "$_bpid" ] && [ ! -d "/proc/$_bpid" ]; then break; fi
-		sleep 1; _bw=$((_bw + 1))
+		daemon_step; _bw=$((_bw + 1))
 	done
 	[ "$2" = quiet ] && return 0
 	jok '"msg":"задача запущена"'

@@ -17,13 +17,19 @@
 # hours or days behind) until it is synced. Windows applied by that clock would close the internet in the middle of the day —
 # worse than not closing. So nothing is installed until clock-lib.sh says the time is synced (`clock_trusted`), and the panel
 # says so in words.
+# …AND ONLY WHILE OUR TICK IS IN THE CRONTAB (`sc_ticking`). A level-triggered rule needs someone to lift it at the window's end:
+# deactivation takes the cron line (uninstall.sh step_cron), and a rule a panel action or a tick in flight put back then would
+# stand for good (review s.112). Without the line every schedule reads «stop» — nothing in the kernel, the panel says why.
 #
 # Kernel form — filter FORWARD, both families (the only place every forwarded packet passes, tunnelled or not):
 #   FORWARD 1: -j ENODIA_SCHED
 #   ENODIA_SCHED: -o br+ -j RETURN — the home network stays (measured BE7000: bridge-nf-call-iptables=1, so bridged LAN frames
 #                 traverse FORWARD too, and a bare per-MAC DROP would cut the printer and the cameras);
 #                 closed — `-m mac --mac-source M` → REJECT (tcp-reset for TCP): the app fails at once instead of hanging on
-#                 a TCP timeout. INPUT stays open (DNS, the panel);
+#                 a TCP timeout. INPUT stays open (DNS, the panel) — and the REDIRECTed DNS of a limited device is ACCEPTed
+#                 at its top (`ENODIA_SCHED_DNSIN`, `--ctstate DNAT` to its profile's port): stock `miot_input` DROPs all
+#                 but DHCP from br-miot before any zone, and a zone without redirects has no «accept port redirections»
+#                 (BE7000 09.10.2026) — the device would be left with no DNS at all;
 #                 limited — only DoT/DoQ (853) REJECTed: names go through our filter, see below; addresses the schedule
 #                 closes — REJECT to its set (`enodia_sch_<id>`, v6 `enodia_sch6_<id>`).
 # «ОГРАНИЧЕНО» = OUR DNS FILTER, not address sets (decided 08.10.2026: categories share anycast frontends — closing youtube.com by
@@ -95,6 +101,8 @@ SC_FLOG=/tmp/enodia-dns-filter.log
 SC_FPORT0=5390                      # profile ports: SC_FPORT0 .. SC_FPORT0 + SC_MAX - 1 (checked free on BE7000 08.10.2026)
 SC_NAT=ENODIA_SCHED_DNS             # nat PREROUTING, both families: DNS of a limited MAC → its profile's port
 SC_IN6=ENODIA_SCHED_IN6             # filter INPUT v6, only without ip6 nat: DNS of a limited MAC to the router refused
+SC_DNSIN=ENODIA_SCHED_DNSIN         # filter INPUT, the families with a REDIRECT: that DNS accepted at its port (header)
+SC_CRONTAB=/etc/crontabs/root       # our tick's line lives here (install.sh cron_put); the stand substitutes it
 SC_SITE_MAX=200                     # own sites and addresses per schedule
 # pools of the geo catalogue per schedule: the filter loads a list per pool (dns-filter MAX_PL 64 per profile = 32 pools + the
 # curated keys + own sites, with room), and every pool is the router's RAM
@@ -123,6 +131,8 @@ if [ -f "$ENODIA_DIR/json-lib.sh" ]; then . "$ENODIA_DIR/json-lib.sh"; fi
 command -v jtxt >/dev/null 2>&1 || jtxt() { tr -d '\000-\010\013-\037' | tr '\n\t' '  ' | cut -c1-"$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -d "/proc/$1" ]; }
+command -v daemon_step_init >/dev/null 2>&1 || daemon_step_init() { DAEMON_STEP_Q=1; }
+command -v daemon_step >/dev/null 2>&1 || daemon_step() { sleep 1; }
 # the filter daemon's start (daemon-lib.sh owns the wait: the term is the PROCESS's life, not a stopwatch); the shim keeps a fixed
 # ceiling + its own life guard for a partial update, the doh-lib.sh form
 command -v daemon_wait_uport >/dev/null 2>&1 || daemon_wait_uport() {
@@ -146,6 +156,9 @@ command -v ct_flush_src >/dev/null 2>&1 || ct_flush_src() { [ -n "$1" ] && connt
 # the address sets of «limited» (header): set-lib.sh fills one atomically and leaves an unchanged one alone; without it (a partial
 # update) the address part is skipped — names still go through the filter
 if [ -f "$ENODIA_DIR/set-lib.sh" ]; then . "$ENODIA_DIR/set-lib.sh"; fi
+# «same content» by set-lib.sh's owner (cmp, md5sum, cat — whichever this busybox has): a `cmp` that is not there would rewrite the
+# site lists every tick (their stat feeds the filter's reload signature: a HUP a minute)
+sc_same() { if command -v _sl_same >/dev/null 2>&1; then _sl_same "$1" "$2"; else cmp -s "$1" "$2" 2>/dev/null; fi; }
 SET_MAXELEM=1000000                 # a ceiling, not an allocation: a pool may be a whole country (geo.sh takes the same)
 # where the filter binary lies (the store may hold it) — store-lib.sh; without it the binaries' own directory
 if [ -f "$ENODIA_DIR/store-lib.sh" ]; then . "$ENODIA_DIR/store-lib.sh"; fi
@@ -154,10 +167,16 @@ command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"
 jstr() { printf '%s' "$1" | jtxt "${2:-200}"; }
 jok() { printf '{"ok":true%s}\n' "${1:+,$1}"; }
 jfail() { printf '{"ok":false,"msg":"%s"%s}\n' "$(jstr "$1" 400)" "${2:+,$2}"; exit 0; }
-id_ok() { printf '%s' "$1" | grep -qE '^s[0-9]{1,6}$'; }
+# the ONE form of an id: no leading zero (`s01` and `s1` would be two files of one number), at most six digits (sc_new_id keeps it)
+id_ok() { printf '%s' "$1" | grep -qE '^s[1-9][0-9]{0,5}$'; }
 num_or() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
 # the same into a variable, without a subshell (the tick runs every minute; every `$(…)` is a fork on the router)
-sc_num() { case "$2" in ''|*[!0-9]*) eval "$1=\$3" ;; *) eval "$1=\$2" ;; esac; }
+# …without leading zeros (`060` is octal in ash arithmetic and no JSON number, `08` breaks the arithmetic) and at most 18 digits
+# (64-bit arithmetic; an epoch is 10) — a hand-edited backup's `lim_wd=060` broke the whole list's JSON (review s.113, round 5)
+sc_num() {
+	case "$2" in ''|*[!0-9]*|???????????????????*) eval "$1=\$3" ;;
+		*) _snv=$2; while :; do case "$_snv" in 0?*) _snv=${_snv#0} ;; *) break ;; esac; done; eval "$1=\$_snv" ;; esac
+}
 have_v6() { command -v ip6tables >/dev/null 2>&1; }
 
 # ---- RAM dir and lock ---------------------------------------------------------------------------------------------
@@ -227,7 +246,7 @@ sc_bypass_keys() {   # «allow»: address keys of the curated categories not all
 	done
 }
 sc_geo_ok() { case "$1" in ''|.*|*[!a-z0-9._!-]*) return 1 ;; esac; [ "${#1}" -le 64 ]; }   # a pool key's form (geo.sh judges it on a save)
-sc_ids() { for _f in "$SC_DIR"/s*.sch; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.sch}"; done | sed 's/^s//' | sort -n | sed 's/^/s/'; }
+sc_ids() { for _f in "$SC_DIR"/s*.sch; do [ -f "$_f" ] || continue; _b=${_f##*/}; echo "${_b%.sch}"; done | grep -E '^s[1-9][0-9]{0,5}$' | sed 's/^s//' | sort -n | sed 's/^/s/'; }
 # Window line «<days> <HH:MM> <HH:MM> <state>»: days are digits 0..6 (0 = Sunday), ascending, each once. ONE program for the
 # load and the save — two copies of «what a window is» would let a save write what the next load silently drops. Prints the
 # valid `win=` lines of a registry file (or of bare window lines with -v bare=1).
@@ -250,7 +269,8 @@ sc_load() {   # sc_load <id> [<file>] -> SC_* ; rc 1 = no such schedule. A file 
 			enabled=1)    SC_ON=1 ;;
 			base=open|base=limited|base=closed) SC_BASE=${_sl#base=} ;;
 			hol=*)        sc_num SC_HOL "${_sl#hol=}" 0 ;;
-			ver=*)        sc_num SC_VER "${_sl#ver=}" 0 ;;
+			# ≤ 15 digits: a JS number past 2^53 came back to the router another number, and every save was refused as stale
+			ver=*)        sc_num SC_VER "${_sl#ver=}" 0; [ "${#SC_VER}" -le 15 ] || SC_VER=1 ;;
 			lim_wd=*)     sc_num SC_LWD "${_sl#lim_wd=}" 0 ;;
 			lim_we=*)     sc_num SC_LWE "${_sl#lim_we=}" 0 ;;
 			lmode=block|lmode=allow) SC_LMODE=${_sl#lmode=} ;;
@@ -269,14 +289,24 @@ EOF
 	SC_ADDRS=$(printf '%s\n' "$_slt" | awk -v max="$SC_SITE_MAX" '
 		/^addr=/ { a = substr($0, 6)
 		  if ((a ~ /^[0-9][0-9]?[0-9]?(\.[0-9][0-9]?[0-9]?)(\.[0-9][0-9]?[0-9]?)(\.[0-9][0-9]?[0-9]?)(\/[0-9][0-9]?)?$/ || a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f:]*(\/[0-9][0-9]?[0-9]?)?$/) && !(a in s) && n < max) { s[a] = 1; n++; print a } }')
+	# …and their VALUES by the save's own judges (octets, masks, the v6 form): the awk above is the shape only, and a hand-edited or
+	# imported «1.2.300.4» would stop the restore of the set that carries Telegram's network too (review s.112, round 2)
+	if [ -n "$SC_ADDRS" ]; then
+		command -v cidr4_ok >/dev/null 2>&1 || { if [ -f "$ENODIA_DIR/lists-lib.sh" ]; then . "$ENODIA_DIR/lists-lib.sh"; fi; }
+		if command -v cidr4_ok >/dev/null 2>&1 && command -v norm_cidr6 >/dev/null 2>&1; then
+			SC_ADDRS=$( { printf '%s\n' "$SC_ADDRS" | grep -v ':' | cidr4_ok; printf '%s\n' "$SC_ADDRS" | grep ':' | norm_cidr6; } | grep .)
+		fi
+	fi
 	[ "$(set -- $SC_GEO; echo $#)" -le "$SC_POOL_MAX" ] || SC_GEO=$(printf '%s\n' $SC_GEO | head -n "$SC_POOL_MAX" | tr '\n' ' ' | sed 's/ $//')
 	[ "$SC_LWD" -le 1440 ] || SC_LWD=0; [ "$SC_LWE" -le 1440 ] || SC_LWE=0
-	SC_WINS=$(printf '%s\n' "$_slt" | awk "$SC_WIN_AWK")
+	# capped as a save caps them (SC_WIN_MAX, SC_DEV_MAX below): an imported file of thousands of windows held every tick's lock
+	# for minutes (the change walk is quadratic) and hung the panel's list (review s.113, round 5)
+	SC_WINS=$(printf '%s\n' "$_slt" | awk "$SC_WIN_AWK" | head -n "$SC_WIN_MAX")
 	[ -n "$SC_WINS" ] && SC_WINS="$SC_WINS$SC_NL"
 	# devices: `dev=mac:` lines, lowercase, valid, each once
-	SC_DEVS=$(printf '%s\n' "$_slt" | awk '
+	SC_DEVS=$(printf '%s\n' "$_slt" | awk -v max="$SC_DEV_MAX" '
 		/^dev=mac:/ { m = tolower(substr($0, 9)); gsub(/[ \t]/, "", m)
-		  if (m ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/ && !(m in s)) {
+		  if (m ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/ && !(m in s) && n < max) {
 		    s[m] = 1; printf "%s%s", (n++ ? " " : ""), m } }')
 	return 0
 }
@@ -296,22 +326,38 @@ sc_write() {   # sc_write <id> — from SC_*: atomically (write next to it, comp
 	rm -f "$_wt"; return 1
 }
 sc_new_id() {   # under the lock: the highest id ever given (`.last-id`) + 1 — never a deleted one's
-	_ln=$(num_or "$(cat "$SC_DIR/.last-id" 2>/dev/null | tr -cd '0-9')" 0)
+	sc_num _ln "$(cat "$SC_DIR/.last-id" 2>/dev/null | tr -cd '0-9')" 0
 	for _li in $(sc_ids); do _lv=${_li#s}; [ "$_lv" -gt "$_ln" ] && _ln=$_lv; done
-	_ln=$((_ln + 1)); echo "$_ln" > "$SC_DIR/.last-id" 2>/dev/null
+	_ln=$((_ln + 1))
+	# a counter at its end (a crafted backup: `.last-id` 999999) — the lowest free number: s1000000 could be neither edited nor
+	# deleted (id_ok); and never a number whose file is there (review s.113, round 5: an archive's `010` overwrote s9)
+	[ "$_ln" -le 999999 ] || _ln=1
+	while [ -f "$SC_DIR/s$_ln.sch" ]; do _ln=$((_ln + 1)); done
+	echo "$_ln" > "$SC_DIR/.last-id" 2>/dev/null
 	echo "s$_ln"
 }
-# action over one schedule: «<state> <until epoch, 0 = until cancelled> <kind>»; over all: «<until>»
-sc_ovr_get() {   # <id> -> SC_OS SC_OU SC_OK (empty SC_OS = none or expired)
-	SC_OS=""; SC_OU=0; SC_OK=""
+# action over one schedule: «<state> <until epoch, 0 = until cancelled> <kind> [<state> <until> <kind>]»; over all: «<until>».
+# The optional second triple is the hand CLOSE an «open for…» was laid over: when the open expires the close is back — «Закрыть…
+# пока не откроете», then «Открыть на 15 мин» must close again after 15 minutes, not hand the device to the week (review s.112).
+sc_ovr_ok() {   # <state> <until> <kind> -> 0 = a live action
+	case "$1" in open|limited|closed) ;; *) return 1 ;; esac
+	case "$2" in ''|*[!0-9]*) return 1 ;; esac
+	case "$3" in close|open|postpone) ;; *) return 1 ;; esac
+	[ "$2" = 0 ] && [ "$1" != closed ] && return 1           # only a close may last until cancelled
+	[ "$2" != 0 ] && [ "$2" -le "$SC_E" ] && return 1        # expired
+	return 0
+}
+sc_ovr_get() {   # <id> -> SC_OS SC_OU SC_OK, SC_OB = 1 when a close comes back after it (empty SC_OS = none or expired)
+	SC_OS=""; SC_OU=0; SC_OK=""; SC_OB=0; SC_PB=""; SC_PBU=0
 	[ -f "$SC_DIR/$1.ovr" ] || return 1
-	read -r _os _ou _ok < "$SC_DIR/$1.ovr" 2>/dev/null
-	case "$_os" in open|limited|closed) ;; *) return 1 ;; esac
-	case "$_ou" in ''|*[!0-9]*) return 1 ;; esac
-	case "$_ok" in close|open|postpone) ;; *) return 1 ;; esac
-	[ "$_ou" = 0 ] && [ "$_os" != closed ] && return 1           # only a close may last until cancelled
-	[ "$_ou" != 0 ] && [ "$_ou" -le "$SC_E" ] && return 1         # expired
-	SC_OS=$_os; SC_OU=$_ou; SC_OK=$_ok
+	read -r _os _ou _ok _ps _pu _pk < "$SC_DIR/$1.ovr" 2>/dev/null
+	if sc_ovr_ok "$_os" "$_ou" "$_ok"; then
+		SC_OS=$_os; SC_OU=$_ou; SC_OK=$_ok
+		[ "$_ps" = closed ] && sc_ovr_ok "$_ps" "$_pu" "$_pk" && { SC_OB=1; SC_PB="$_ps $_pu $_pk"; SC_PBU=$_pu; }
+		return 0
+	fi
+	[ "$_ps" = closed ] && sc_ovr_ok "$_ps" "$_pu" "$_pk" || return 1
+	SC_OS=$_ps; SC_OU=$_pu; SC_OK=$_pk
 	return 0
 }
 sc_all_get() {   # -> SC_AU (until; 0 = until cancelled); rc 1 = not active
@@ -363,12 +409,20 @@ sc_eval() {
 	set -- $_sevl; case "$1" in open|limited|closed) SC_CUR=$1 ;; esac; [ "${2:-0}" = 1 ] && SC_INWIN=1
 	SC_CHG=$(printf '%s\n' "$_sev" | sed -n 's/^chg //p')
 }
-# The effective state of the loaded schedule NOW: SC_ST + SC_WHY (off|hol|all|ovr|win|base). Needs sc_now + sc_eval.
+# Is our tick in the crontab (header)? One read per process; a commented line is not a line.
+sc_ticking() {
+	if [ -z "${SC_TK:-}" ]; then if grep -qE '^[^#]*access-sched\.sh tick' "$SC_CRONTAB" 2>/dev/null; then SC_TK=1; else SC_TK=0; fi; fi
+	[ "$SC_TK" = 1 ]
+}
+# The effective state of the loaded schedule NOW: SC_ST + SC_WHY (stop|off|all|hol|ovr|win|base). Needs sc_now + sc_eval.
+# «Закрыть всем» stands above holidays: a pause «for every device of every schedule» that skipped the resting ones would lie
+# (review s.112); a switched-off schedule closes nothing, not even then.
 sc_effective() {
 	SC_ST=open; SC_WHY=base
+	if ! sc_ticking; then SC_WHY=stop; return 0; fi
 	if [ "$SC_ON" != 1 ]; then SC_WHY=off; return 0; fi
-	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then SC_WHY=hol; return 0; fi
 	if sc_all_get; then SC_ST=closed; SC_WHY=all; return 0; fi
+	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then SC_WHY=hol; return 0; fi
 	if sc_ovr_get "$SC_ID"; then SC_ST=$SC_OS; SC_WHY=ovr; return 0; fi
 	SC_ST=$SC_CUR
 	if [ "$SC_INWIN" = 1 ]; then SC_WHY=win; else SC_WHY=base; fi
@@ -379,7 +433,8 @@ sc_first_change() { _fc=$(printf '%s\n' "$SC_CHG" | awk 'NF==2{print $1; exit}')
 # ---- day limit: usage ---------------------------------------------------------------------------------------------
 sc_lim_today() { if [ "$SC_W" -ge 1 ] && [ "$SC_W" -le 5 ]; then SC_LT=$SC_LWD; else SC_LT=$SC_LWE; fi; }   # weekdays / weekend
 # Does today's limit act now? Only while the WEEK decides (holidays rest it, a hand action beats it) and nothing closes anyway.
-sc_lim_applies() { [ "$SC_LT" -gt 0 ] && [ "$SC_ST" != closed ] && { [ "$SC_WHY" = win ] || [ "$SC_WHY" = base ]; }; }
+# A postpone is not a hand «open»: it moves the week's closing by minutes, the day's limit keeps counting under it.
+sc_lim_applies() { [ "$SC_LT" -gt 0 ] && [ "$SC_ST" != closed ] && { [ "$SC_WHY" = win ] || [ "$SC_WHY" = base ] || { [ "$SC_WHY" = ovr ] && [ "$SC_OK" = postpone ]; }; }; }
 # The day's usage -> SC_USED («<mac> <minutes>» lines): RAM first (fresh), the flash copy after a reboot; another date = none yet.
 sc_use_load() {
 	SC_USED=""
@@ -405,7 +460,7 @@ sc_use_save() {
 	[ -f "$SC_USE" ] || return 0
 	_usv=$(cat "$SC_RUN/use.saved" 2>/dev/null); case "$_usv" in ''|*[!0-9]*) _usv=0 ;; esac
 	[ "${1:-}" = now ] || [ $(( SC_E - _usv )) -ge "$SC_USE_SAVE" ] || return 0   # clock-raw: both are this boot's synced clock
-	cmp -s "$SC_USE" "$SC_DIR/.use" 2>/dev/null && return 0
+	sc_same "$SC_USE" "$SC_DIR/.use" && return 0
 	mkdir -p "$SC_DIR" 2>/dev/null
 	cp "$SC_USE" "$SC_DIR/.use.$$" 2>/dev/null && mv -f "$SC_DIR/.use.$$" "$SC_DIR/.use" && echo "$SC_E" > "$SC_RUN/use.saved"
 	rm -f "$SC_DIR/.use.$$" 2>/dev/null
@@ -477,6 +532,7 @@ sc_use_tick() {
 sc_plan() {
 	SC_PLAN=""; SC_OVER=""
 	clock_trusted || return 0
+	sc_ticking || return 0
 	sc_use_load
 	for _pi in $(sc_ids); do
 		sc_load "$_pi" || continue
@@ -521,13 +577,22 @@ sc_fill() {
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
 				"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 853 -j REJECT 2>/dev/null ;;
 		esac
+		# v6 plain DNS to OUTSIDE resolvers of a captured device: refused — without ip6 nat nothing of v6 is steered, with it only
+		# the private sources are (sc_nat_put); a public v6 resolver would answer the real Google past safe search, or a category
+		# past «limited». A limited device without ip6 nat is closed whole in v6 already. It falls back to v4, where the REDIRECT stands.
+		if [ "$1" = ip6tables ] && { [ "$_ks" = safe ] || { [ "$_ks" = limited ] && [ "$SC_NAT6" = 1 ]; }; }; then
+			"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p tcp --dport 53 -j REJECT --reject-with tcp-reset 2>/dev/null
+			"$1" -A "$SC_CHAIN" -m mac --mac-source "$_km" -p udp --dport 53 -j REJECT 2>/dev/null
+		fi
 	done
 	return 0
 }
-sc_rules_n() {   # $1 = 4|6 — rules the plan makes in that family: the home RETURN, two per device, two per address set of a limited one
+sc_rules_n() {   # $1 = 4|6 — rules the plan makes in that family: the home RETURN, two per device, two per address set of a limited
+	# one, two more for a captured one in v6 (plain DNS to outside resolvers refused: «safe» always, «limited» with ip6 nat)
 	{ printf '%s\n' "$SC_ASETS" | sed 's/^/A /'; printf '%s\n' "$SC_PLAN" | sed 's/^/P /'; } | awk -v f="$1" -v n6="$SC_NAT6" '
 		$1 == "A" && NF == 4 { if ($3 == f) a[$2] += 2; next }
-		$1 == "P" && NF == 4 { n += 2; if ($3 == "limited" && (f == 4 || n6 == 1)) n += a[$4] }
+		$1 == "P" && NF == 4 { n += 2; if ($3 == "limited" && (f == 4 || n6 == 1)) n += a[$4]
+			if (f == 6 && ($3 == "safe" || ($3 == "limited" && n6 == 1))) n += 2 }
 		END { print n + 1 }'
 }
 # Is the plan's form standing in the kernel of one family? Jump in FORWARD + the expected count of rules in the chain.
@@ -555,15 +620,48 @@ sc_mac_ips() {
 }
 # Converge the kernel to SC_PLAN. Rebuild only when the plan changed or the form is gone (a firewall reload); flows of devices
 # whose state changed are dropped AFTER the rules stand (dropped before, the next packet would be offloaded again unjudged).
+# a record of what stands: a file per non-empty plan, NONE for an empty one (cmd_tick's cheap exit is «no schedules, no record»;
+# a file of one empty line kept every minute's tick full after the last schedule was deleted)
+sc_arec1() {   # <file> <content>
+	if [ -n "$2" ]; then printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"; else rm -f "$1"; fi
+}
 sc_apply() {
 	_aold=$(cat "$SC_APPLIED" 2>/dev/null); _anold=$(cat "$SC_APPLIED.nat" 2>/dev/null); _asold=$(cat "$SC_APPLIED.sets" 2>/dev/null)
 	sc_nplan
 	SC_NAT6=0
 	if [ -n "$SC_NPLAN" ] && have_nat6; then SC_NAT6=1; fi
-	_achg=0
+	_achg=0; _amiss=0
+	# a JUMP gone = a reload wiped the form: flows opened in the gap are offloaded past it (NSS/ECM) — every device of the plan is
+	# flushed. Only then: a count that differs (a foreign rule put above our accept, a rule the kernel does not take) is rebuilt
+	# without a flush — flushed, a «safe» device lost its calls every minute (review s.112, round 2)
+	# Probed only while there is a form to judge: nobody closed = no iptables call at all (the header's promise)
+	_ajf=0; [ -z "$SC_PLAN" ] || iptables -C FORWARD -j "$SC_CHAIN" 2>/dev/null || _ajf=1
+	_ajn=0; [ -z "$SC_NPLAN" ] || iptables -t nat -C PREROUTING -j "$SC_NAT" 2>/dev/null || _ajn=1
+	_aput=0; _anput=0
+	# A RECORD AHEAD OF ITS RULES IS A PROMISE until they stand (below): a tick killed in between left a record naming a plan the
+	# kernel never got — the same count of rules, other MACs (the day limit moved from A to B) — and the next tick saw plan = record
+	# and kept A closed, B open (review s.113, round 4). The mark goes down with the record and up after the rules; found here,
+	# the record is not trusted: the form is rebuilt and every device of the plan flushed.
+	_apend=0; [ -f "$SC_APPLIED.pend" ] && { _apend=1; _amiss=1; }
+	if [ -n "$SC_PLAN" ] && { [ "$_apend" = 1 ] || [ "$SC_PLAN" != "$_aold" ] || [ "$SC_ASETS" != "$_asold" ] || ! sc_wired iptables || { have_v6 && ! sc_wired ip6tables; }; }; then
+		_aput=1
+		# the plan the same and the form gone = a firewall reload wiped it: flows opened in the gap are offloaded past the
+		# REJECT now (NSS/ECM), so every device of the plan is flushed, not only the changed ones (review s.112)
+		[ "$SC_PLAN" = "$_aold" ] && [ "$SC_ASETS" = "$_asold" ] && [ "$_ajf" = 1 ] && _amiss=1
+	fi
+	if [ -n "$SC_NPLAN" ] && { [ "$_apend" = 1 ] || [ "$SC_NPLAN" != "$_anold" ] || ! sc_cap_wired; }; then
+		_anput=1
+		[ "$SC_NPLAN" = "$_anold" ] && [ "$_ajn" = 1 ] && _amiss=1   # wiped as above: a DNS flow to 8.8.8.8 opened in the gap keeps its old NAT
+	fi
+	# THE RECORD BEFORE THE KERNEL: a tick killed between putting the form and writing its record (OOM, an unwire that gave up on
+	# the lock) left a form no record named — an empty plan then never took it down, a device closed till the reboot (review s.112,
+	# round 3). A record is only ever written AHEAD of rules it names and removed AFTER the rules it names are gone.
+	if [ "$_aput" = 1 ] || [ "$_anput" = 1 ]; then : > "$SC_APPLIED.pend"; fi
+	[ "$_aput" = 1 ] && sc_arec1 "$SC_APPLIED" "$SC_PLAN"
+	[ "$_anput" = 1 ] && sc_arec1 "$SC_APPLIED.nat" "$SC_NPLAN"
 	if [ -z "$SC_PLAN" ]; then
 		if [ -n "$_aold" ]; then sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi; _achg=1; fi
-	elif [ "$SC_PLAN" != "$_aold" ] || [ "$SC_ASETS" != "$_asold" ] || ! sc_wired iptables || { have_v6 && ! sc_wired ip6tables; }; then
+	elif [ "$_aput" = 1 ]; then
 		sc_put_fam iptables; if have_v6; then sc_put_fam ip6tables; fi; _achg=1
 	fi
 	# address sets no rule refers to any more go AFTER the chains are rebuilt (a referenced set cannot be destroyed)
@@ -571,13 +669,12 @@ sc_apply() {
 	# the DNS of limited devices to their filter profile (a separate plan: a profile's port may change while the state does not)
 	if [ -z "$SC_NPLAN" ]; then
 		if [ -n "$_anold" ]; then sc_cap_drop; _achg=1; fi
-	elif [ "$SC_NPLAN" != "$_anold" ] || ! sc_cap_wired; then
+	elif [ "$_anput" = 1 ]; then
 		sc_cap_put; _achg=1
 	fi
+	rm -f "$SC_APPLIED.pend"
 	[ "$_achg" = 1 ] || return 0
-	printf '%s\n' "$SC_PLAN" > "$SC_APPLIED.$$" && mv -f "$SC_APPLIED.$$" "$SC_APPLIED"
-	printf '%s\n' "$SC_NPLAN" > "$SC_APPLIED.nat.$$" && mv -f "$SC_APPLIED.nat.$$" "$SC_APPLIED.nat"
-	printf '%s\n' "$SC_ASETS" > "$SC_APPLIED.sets.$$" && mv -f "$SC_APPLIED.sets.$$" "$SC_APPLIED.sets"
+	sc_arec1 "$SC_APPLIED" "$SC_PLAN"; sc_arec1 "$SC_APPLIED.nat" "$SC_NPLAN"; sc_arec1 "$SC_APPLIED.sets" "$SC_ASETS"
 	# devices whose line changed (new, gone, other state, another filter port): only a stricter state needs the flush, but
 	# opening is rare and a flush there is harmless — one rule, no second copy of «stricter». The filter needs it as much as
 	# REJECT does: a device's DNS flow to 8.8.8.8 that exists already keeps its old NAT decision.
@@ -586,6 +683,7 @@ sc_apply() {
 	# …and the devices of a schedule whose address sets changed (a category added: an open Telegram flow is offloaded otherwise)
 	{ { printf '%s\n' "$_asold"; printf '%s\n' "$SC_ASETS"; } | awk 'NF==3' | sort | uniq -u | awk '{print "I", $1}'
 	  printf '%s\n' "$SC_PLAN" | awk 'NF==3 {print "P", $1, $3}'; } | awk '$1 == "I" { c[$2] = 1; next } $1 == "P" && ($3 in c) { print $2 }' >> "$SC_RUN/chg.$$"
+	[ "$_amiss" = 1 ] && { printf '%s\n' "$SC_PLAN" | awk 'NF==3 {print $1}'; printf '%s\n' "$SC_NPLAN" | awk 'NF==2 {print $1}'; } >> "$SC_RUN/chg.$$"
 	sort -u "$SC_RUN/chg.$$" | while read -r _am; do
 		for _aip in $(sc_mac_ips "$_am" | sort -u); do ct_flush_src "$_aip"; done
 	done
@@ -625,29 +723,68 @@ sc_aset_gc() {   # our sets that SC_ASETS does not name (all of them with an emp
 }
 
 # ---- «ОГРАНИЧЕНО»: the DNS of limited devices → the filter ------------------------------------------------------------
-have_nat6() { have_v6 && ip6tables -t nat -S PREROUTING >/dev/null 2>&1; }
+# ip6 nat present and not found unusable this boot (a REDIRECT the kernel refused — sc_nat_put marks it; the no-nat6 form then)
+have_nat6() { have_v6 && [ ! -e "$SC_RUN/nat6.bad" ] && ip6tables -t nat -S PREROUTING >/dev/null 2>&1; }
 # the capture plan: «<mac> <port>» per limited device whose schedule has a profile in the filter now (SC_FMAP)
 sc_nplan() {
 	SC_NPLAN=$( { printf '%s\n' "$SC_FMAP" | sed 's/^/M /'; printf '%s\n' "$SC_PLAN" | sed 's/^/P /'; } |
 		awk '$1 == "M" && NF == 3 { p[$2] = $3; next } $1 == "P" && ($3 == "limited" || $3 == "safe") && ($4 in p) { print $2, p[$4] }' | sort)
 }
-sc_nat_put() {   # $1 = iptables|ip6tables — the chain refilled, the jump at the TOP of nat PREROUTING (above the stock guest DNAT)
+sc_nat_put() {   # $1 = iptables|ip6tables — the chain refilled, the jump at the TOP of nat PREROUTING (above the stock guest DNAT);
+	# the same DNS accepted at the top of INPUT (header: stock miot_input, zones without redirects)
 	"$1" -t nat -N "$SC_NAT" 2>/dev/null || "$1" -t nat -F "$SC_NAT" 2>/dev/null || return 1
+	"$1" -N "$SC_DNSIN" 2>/dev/null || "$1" -F "$SC_DNSIN" 2>/dev/null || return 1
 	printf '%s\n' "$SC_NPLAN" | while read -r _nm _np; do
 		[ -n "$_np" ] || continue
-		"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p udp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
-		"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p tcp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
+		if [ "$1" = ip6tables ]; then
+			# v6: only from the device's PRIVATE addresses (ULA, link-local) — the filter answers private sources only (its second
+			# lock against the WAN), and DNS from a GLOBAL address of a LAN with native IPv6 timed out there on every lookup. That
+			# DNS is refused instead (below and in sc_fill): the device falls back at once to v4 or its private address, which are
+			# REDIRECTed (review s.112, round 2). A REDIRECT the kernel cannot do (no target) marks ip6 nat unusable for this boot.
+			for _ns in fc00::/7 fe80::/10; do
+				"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -s "$_ns" -p udp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null &&
+				"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -s "$_ns" -p tcp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null ||
+					: > "$SC_RUN/nat6.bad"
+			done
+		else
+			"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p udp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
+			"$1" -t nat -A "$SC_NAT" -m mac --mac-source "$_nm" -p tcp --dport 53 -j REDIRECT --to-ports "$_np" 2>/dev/null
+		fi
+		"$1" -A "$SC_DNSIN" -m mac --mac-source "$_nm" -p udp --dport "$_np" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
+		"$1" -A "$SC_DNSIN" -m mac --mac-source "$_nm" -p tcp --dport "$_np" -m conntrack --ctstate DNAT -j ACCEPT 2>/dev/null
+		if [ "$1" = ip6tables ]; then   # plain DNS to the router from a global address: refused (the REDIRECTed one is not on 53)
+			"$1" -A "$SC_DNSIN" -m mac --mac-source "$_nm" -p udp --dport 53 -j REJECT 2>/dev/null
+			"$1" -A "$SC_DNSIN" -m mac --mac-source "$_nm" -p tcp --dport 53 -j REJECT --reject-with tcp-reset 2>/dev/null
+		fi
 	done
+	# the filter's ports take only REDIRECTed DNS: sent straight to <LAN-IP>:539x, a device reached ANOTHER profile — a list-less
+	# safe-search one of another schedule (review s.112, round 3); the tick's probe comes over lo
+	"$1" -A "$SC_DNSIN" ! -i lo -p udp --dport "$SC_FPORT0:$((SC_FPORT0 + SC_MAX - 1))" -m conntrack ! --ctstate DNAT -j DROP 2>/dev/null
+	"$1" -A "$SC_DNSIN" ! -i lo -p tcp --dport "$SC_FPORT0:$((SC_FPORT0 + SC_MAX - 1))" -m conntrack ! --ctstate DNAT -j DROP 2>/dev/null
+	sc_dnsin_top "$1" || { _dn=0; while "$1" -D INPUT -j "$SC_DNSIN" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
+		"$1" -I INPUT 1 -j "$SC_DNSIN" 2>/dev/null; }
 	"$1" -t nat -C PREROUTING -j "$SC_NAT" 2>/dev/null || "$1" -t nat -I PREROUTING 1 -j "$SC_NAT" 2>/dev/null
+}
+# the accept stands above every foreign INPUT rule: only our chains (ENODIA_*, «доступ домой» VPNSRV_*) may come before it — the
+# stock miot_input that DROPs br-miot is put back by the firmware's own hooks, and a jump below it accepts nothing
+sc_dnsin_top() {   # $1 = iptables|ip6tables
+	"$1" -S INPUT 2>/dev/null | awk -v c="$SC_DNSIN" '$1 == "-A" { if ($0 ~ ("-j " c "$")) { f = 1; exit } if ($0 !~ /-j[ ](ENODIA_|VPNSRV_)[A-Z0-9_]*$/) exit } END { exit !f }'
 }
 sc_nat_drop() {   # $1 = iptables|ip6tables
 	_dn=0; while "$1" -t nat -D PREROUTING -j "$SC_NAT" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
 	"$1" -t nat -F "$SC_NAT" 2>/dev/null; "$1" -t nat -X "$SC_NAT" 2>/dev/null
+	_dn=0; while "$1" -D INPUT -j "$SC_DNSIN" 2>/dev/null; do _dn=$((_dn + 1)); [ "$_dn" -ge 8 ] && break; done
+	"$1" -F "$SC_DNSIN" 2>/dev/null; "$1" -X "$SC_DNSIN" 2>/dev/null
 	return 0
 }
-sc_nat_wired() {   # $1 = iptables|ip6tables — the jump and two rules per device (the kernel rewrites the text; we count)
+sc_nat_wired() {   # $1 = iptables|ip6tables — both jumps and the rules per device: two each (v4), four each (v6: two prefixes; the
+	# accept and the refusal) — the kernel rewrites the text, we count
 	"$1" -t nat -C PREROUTING -j "$SC_NAT" 2>/dev/null || return 1
-	[ "$("$1" -t nat -S "$SC_NAT" 2>/dev/null | grep -c '^-A ' || true)" = "$(printf '%s\n' "$SC_NPLAN" | awk 'NF == 2 { n += 2 } END { print n + 0 }')" ]
+	sc_dnsin_top "$1" || return 1
+	_nwk=2; [ "$1" = ip6tables ] && _nwk=4
+	_nwn=$(printf '%s\n' "$SC_NPLAN" | awk -v k="$_nwk" 'NF == 2 { n += k } END { print n + 0 }')
+	[ "$("$1" -t nat -S "$SC_NAT" 2>/dev/null | grep -c '^-A ' || true)" = "$_nwn" ] || return 1
+	[ "$("$1" -S "$SC_DNSIN" 2>/dev/null | grep -c '^-A ' || true)" = "$((_nwn + 2))" ]   # + the two drops of straight traffic
 }
 # without ip6 nat: the device's DNS to the router's own v6 addresses refused (its v6 FORWARD is closed whole in sc_fill)
 sc_in6_put() {
@@ -671,7 +808,7 @@ sc_in6_wired() {
 sc_cap_put() {
 	sc_nat_put iptables
 	have_v6 || return 0
-	if [ "$SC_NAT6" = 1 ]; then sc_nat_put ip6tables; sc_in6_drop; else sc_in6_put; fi
+	if [ "$SC_NAT6" = 1 ]; then sc_nat_put ip6tables; sc_in6_drop; else sc_nat_drop ip6tables; sc_in6_put; fi
 }
 sc_cap_drop() {
 	sc_nat_drop iptables
@@ -693,12 +830,30 @@ sc_fstop() {
 		kill "$_fsp" 2>/dev/null
 		if command -v daemon_wait_gone >/dev/null 2>&1; then daemon_wait_gone "$_fsp" 3; fi
 	fi
-	rm -f "$SC_FPID" "$SC_FDIR/sig" 2>/dev/null
+	rm -f "$SC_FPID" "$SC_FDIR/sig" "$SC_FDIR/state" 2>/dev/null
 	return 0
+}
+# The config the daemon RUNS is the one in $SC_FDIR/conf: it says so in its state file (DNS_FILTER_STATE, «ok <inode> <size>
+# <mtime>» of the conf). The canary probe is answered by ANY config — the old one a refused reload kept (a list it could not
+# read, no memory for both) too, and the new categories then never acted while the panel showed them (review s.112, round 2).
+# A HUP is asynchronous: up to 3 s for the line. No state file at all = a binary older than 1.3 (it cannot say) — taken as applied.
+sc_fapplied() {
+	[ -e "$SC_FDIR/state" ] || return 0
+	_fst=$(stat -c '%i %s %Y' "$SC_FDIR/conf" 2>/dev/null)
+	_fsw=0; daemon_step_init
+	while :; do
+		case "$(cat "$SC_FDIR/state" 2>/dev/null)" in
+			"ok $_fst") return 0 ;;
+			"refused $_fst") return 1 ;;
+		esac
+		_fsw=$((_fsw + 1)); [ "$_fsw" -gt $((3 * DAEMON_STEP_Q)) ] && return 1
+		daemon_step   # fixed-wait: the daemon is alive and reloading in its own loop — a reload, not a start
+	done
 }
 sc_fstart() {   # $1 = a port of the config — 0 when it answers the probe
 	# the log's clock: a static musl binary reads TZ from the environment only, and the router keeps it in /etc/TZ
 	if [ -s /etc/TZ ]; then TZ=$(cat /etc/TZ 2>/dev/null); export TZ; fi
+	DNS_FILTER_STATE="$SC_FDIR/state"; export DNS_FILTER_STATE
 	start-stop-daemon -S -b -m -p "$SC_FPID" -x "$SC_FBIN" -- -c "$SC_FDIR/conf" -l "$SC_FLOG" >/dev/null 2>&1 || return 1
 	daemon_wait_uport "$SC_FPID" dns-filter 5 0.0.0.0 "$1" || return 1
 	"$SC_FBIN" -q "$1"
@@ -745,7 +900,7 @@ sc_fconf() {
 			case "$_flim" in *" $_fi "*) ;; *)
 				echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') block -$_fsf"
 				continue ;; esac
-			_fl=""; _fbp=" "; [ "$SC_LMODE" = allow ] && _fbp=" $(sc_bypass_keys | tr '\n' ' ') "
+			_fl=""; _fap=0; _fbp=" "; [ "$SC_LMODE" = allow ] && _fbp=" $(sc_bypass_keys | tr '\n' ' ') "
 			for _fkk in $(sc_keys); do
 				case "$_fkinds" in
 					*" $_fkk=domain "*)
@@ -754,7 +909,7 @@ sc_fconf() {
 						if [ "$SC_LMODE" = block ] || case "$_fbp" in *" $_fkk "*) true ;; *) false ;; esac; then
 							SC_AFILES="$SC_AFILES$(printf '%s\n' "$SC_GREADY" | awk -F'\t' -v k="$_fkk" -v i="$_fi" '$1 == k && $2 == "cidr" { print i, 4, $3 } $1 == k && $2 == "cidr6" { print i, 6, $3 }')$SC_NL"
 						fi ;;
-					*) SC_FPEND="$SC_FPEND $_fi:$_fkk" ;;
+					*) SC_FPEND="$SC_FPEND $_fi:$_fkk"; [ "$SC_LMODE" = allow ] && sc_fnames_key "$_fkk" && _fap=1 ;;
 				esac
 			done
 			if [ -n "$SC_SITES" ]; then
@@ -769,21 +924,46 @@ sc_fconf() {
 					sc_fput "addr-$_fi.$_faf" "$_fav"; SC_AFILES="$SC_AFILES$_fi $_faf $SC_FDIR/addr-$_fi.$_faf$SC_NL"
 				else rm -f "$SC_FDIR/addr-$_fi.$_faf"; fi
 			done
-			echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}$_fsf"
+			# «allow» with an allowed category not downloaded yet: the profile would allow almost NOTHING (fail-closed for minutes, for
+			# good while the source is unreachable) — it blocks nothing until the data is here; the panel says so (review s.112, round 3)
+			if [ "$SC_LMODE" = allow ] && [ "$_fap" = 1 ]; then
+				echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') block -$_fsf"
+			else
+				echo "port $(printf '%s\n' "$SC_FMAP" | awk -v i="$_fi" '$1 == i { print $2 }') $SC_LMODE ${_fl:--}$_fsf"
+			fi
 		done
 	} > "$SC_FDIR/conf.new"
 	SC_AFILES=$(printf '%s' "$SC_AFILES" | grep .)
 }
+# «allow»: does a key not downloaded yet feed the ALLOWED names (sc_fconf: only then the profile waits open)? Address keys never
+# do — the curated categories' (SC_CATS field 3: closed by address when not allowed, unused when allowed) and pools of addresses
+# (the kind by the key alone, geo.sh about): Telegram's network still downloading opened every name of an «allow» profile that
+# needed no data at all — own sites only (review s.113, round 4). Reads _fbp of the caller's loop.
+sc_fnames_key() {
+	case " $_fbp $(printf '%s\n' "$SC_CATS" | awk -F'|' '{ print $3 }' | tr '\n' ' ') " in *" $1 "*) return 1 ;; esac
+	case " $SC_GEO " in *" $1 "*)
+		[ "$(sh "$ENODIA_DIR/geo.sh" about "$1" 2>/dev/null | awk -F'\t' '{ print $2; exit }')" = domain ]; return ;; esac
+	return 0
+}
 sc_fput() {   # <name in SC_FDIR> <content> — rewritten only when it changes (its stat feeds the daemon's reload signature)
 	printf '%s\n' "$2" > "$SC_FDIR/$1.new"
-	if cmp -s "$SC_FDIR/$1.new" "$SC_FDIR/$1"; then rm -f "$SC_FDIR/$1.new"; else mv -f "$SC_FDIR/$1.new" "$SC_FDIR/$1"; fi
+	if sc_same "$SC_FDIR/$1.new" "$SC_FDIR/$1"; then rm -f "$SC_FDIR/$1.new"; else mv -f "$SC_FDIR/$1.new" "$SC_FDIR/$1"; fi
 }
 # Converge the filter to SC_PLAN: profiles of the limited schedules, the daemon started / reloaded / stopped, its probe. A filter
 # that cannot work ⇒ the limited lines leave SC_PLAN (fail-open: open, never «no DNS») and the journal says why, once.
+# `keep` (the tick's first pass, before sc_apply): ports the kernel still steers DNS to (the NAT record) that this plan has no
+# profile for stay open as pass-through — stopped or HUPped away first, the leaving devices' DNS hit a closed port until sc_apply
+# took their REDIRECT, ~3–14 s at every end of a limited window, for good when the tick died in between (review s.113, round 4).
+# They are in SC_FKEPT; the tick's second pass (no `keep`, after sc_apply) takes them.
 sc_filter_sync() {
-	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""; SC_AFILES=""
+	SC_FMAP=""; SC_FPEND=""; SC_ASETS=""; SC_AFILES=""; SC_FKEPT=""
 	_fids=$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" || $2 == "safe" { print $3 }' | sort -u | tr '\n' ' ')
 	if [ -z "$(echo $_fids)" ]; then
+		if [ "${1:-}" = keep ] && sc_falive; then
+			SC_FKEPT=$(awk 'NF == 2 { print $2 }' "$SC_APPLIED.nat" 2>/dev/null | sort -u | tr '\n' ' ')
+			# the daemon as it runs: its profiles answer the leaving devices until their REDIRECT goes
+			[ -n "$(echo $SC_FKEPT)" ] && return 0
+		fi
 		if sc_falive; then sc_fstop; fi
 		sc_fstate idle; return 0
 	fi
@@ -792,18 +972,24 @@ sc_filter_sync() {
 	[ -d "$SC_FDIR" ] || ( umask 077; mkdir -p "$SC_FDIR" ) 2>/dev/null
 	sc_fports "$_fids"
 	sc_fconf "$_fids"
-	_fp0=$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }')
+	if [ "${1:-}" = keep ]; then
+		SC_FKEPT=$(awk 'NF == 2 { print $2 }' "$SC_APPLIED.nat" 2>/dev/null | sort -u | while read -r _fkp; do
+			case "$SC_NL$SC_FMAP$SC_NL" in *" $_fkp$SC_NL"*) ;; *) echo "$_fkp" ;; esac; done | tr '\n' ' ')
+		for _fkp in $SC_FKEPT; do echo "port $_fkp block -"; done >> "$SC_FDIR/conf.new"
+	fi
+	_fp0=$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }'); _fpa=$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2 }')
 	_fsig=$( { cat "$SC_FDIR/conf.new"; awk '$1 == "list" { print $3 }' "$SC_FDIR/conf.new" | while read -r _fpth; do stat -c '%s %Y %n' "$_fpth" 2>/dev/null; done; } | md5sum | cut -c1-32)
 	if sc_falive; then
 		if [ "$_fsig" != "$(cat "$SC_FDIR/sig" 2>/dev/null)" ]; then
 			mv -f "$SC_FDIR/conf.new" "$SC_FDIR/conf"; kill -HUP "$(sc_fpid)" 2>/dev/null
 		else rm -f "$SC_FDIR/conf.new"; fi
-		# alive is not answering (map rake «демон жив ≠ работает»): one restart, then fail-open
-		if ! "$SC_FBIN" -q "$_fp0"; then sc_fstop; sc_fstart "$_fp0" || { sc_ffail dead; return 0; }; fi
+		# alive is not answering (map rake «демон жив ≠ работает»): one restart, then fail-open. EVERY port: a reload the daemon
+		# refused (a list it cannot read) keeps the old config, and a new profile's port never opens while its REDIRECT stands
+		if ! sc_fprobe_all "$_fpa" || ! sc_fapplied; then sc_fstop; sc_fstart "$_fp0" && sc_fprobe_all "$_fpa" && sc_fapplied || { sc_ffail dead; return 0; }; fi
 	else
 		mv -f "$SC_FDIR/conf.new" "$SC_FDIR/conf"
 		sc_fstop
-		sc_fstart "$_fp0" || { sc_ffail dead; return 0; }
+		sc_fstart "$_fp0" && sc_fprobe_all "$_fpa" && sc_fapplied || { sc_ffail dead; return 0; }
 	fi
 	echo "$_fsig" > "$SC_FDIR/sig"
 	sc_aset_sync
@@ -811,11 +997,31 @@ sc_filter_sync() {
 	if [ -n "$SC_FPEND" ]; then sc_want_fetch; fi
 	return 0
 }
-sc_ffail() {   # $1 = nobin|dead — «limited» acts whole or not at all: no address sets either
+# Every port of the config answers its probe. A HUP is asynchronous (the daemon reloads in its loop, lists of hundreds of
+# thousands of names take a moment on ARM): a port that does not answer yet is asked again for up to 3 s.
+sc_fprobe_all() {
+	daemon_step_init
+	for _fpq in $1; do
+		_fpw=0
+		until "$SC_FBIN" -q "$_fpq"; do
+			_fpw=$((_fpw + 1)); [ "$_fpw" -gt $((3 * DAEMON_STEP_Q)) ] && return 1
+			daemon_step   # fixed-wait: the daemon is alive (its first port answered or it was just started); a reload, not a start
+		done
+	done
+	return 0
+}
+sc_ffail() {   # $1 = nobin|dead — «limited» acts whole or not at all: no address sets either; SC_FFAILED for «Перезапустить»
+	SC_FFAILED=$1; SC_FKEPT=""
 	SC_PLAN=$(printf '%s\n' "$SC_PLAN" | awk 'NF == 3 && $2 != "limited" && $2 != "safe"')
 	SC_FMAP=""; SC_ASETS=""; SC_AFILES=""
-	if [ "$1" = dead ]; then sc_fstop; fi
+	sc_fstop
 	sc_fstate "$1"
+}
+# The installed filter is an OLDER build than this code's (gh-update.sh bin-status, no network; asked only once it failed): a
+# config word it does not know makes it refuse the whole config, and «did not start» did not say what helps (review s.113, round 4)
+sc_fold() {
+	[ -f "$ENODIA_DIR/gh-update.sh" ] || return 1
+	sh "$ENODIA_DIR/gh-update.sh" bin-status dns-filter 2>/dev/null | awk -F'\t' '$1 == "dns-filter" && $2 == "outdated" { f = 1 } END { exit !f }'
 }
 # the filter's state within this boot → a journal line on a change into a failure and back (not «idle ↔ ok»)
 sc_fstate() {
@@ -827,8 +1033,10 @@ sc_fstate() {
 	case "$1:$SC_LANG" in
 		nobin:en) sc_note sched-filter "«Limited» is not acting: the category filter component is not installed" "Devices in a limited state are fully open now. Install the «Category filter» component on the «Components» screen." ;;
 		nobin:*)  sc_note sched-filter "«Ограничено» не действует: нет компонента «Фильтр по категориям»" "Устройства с «ограничено» сейчас открыты целиком. Поставьте компонент «Фильтр по категориям» на экране «Компоненты»." ;;
-		dead:en)  sc_note sched-filter "«Limited» is not acting: the category filter did not start" "Devices in a limited state are fully open now. The filter's log is in the diagnostics archive; the next minute tries again." ;;
-		dead:*)   sc_note sched-filter "«Ограничено» не действует: фильтр по категориям не запустился" "Устройства с «ограничено» сейчас открыты целиком. Лог фильтра — в архиве диагностики; через минуту роутер попробует снова." ;;
+		dead:en)  if sc_fold; then sc_note sched-filter "«Limited» is not acting: the category filter is outdated" "Devices in a limited state are fully open now. The installed filter is an older build than Enodia's — update the «Category filter» component on the «Components» screen."
+		          else sc_note sched-filter "«Limited» is not acting: the category filter did not start" "Devices in a limited state are fully open now. The filter's log is in the diagnostics archive; the next minute tries again."; fi ;;
+		dead:*)   if sc_fold; then sc_note sched-filter "«Ограничено» не действует: фильтр по категориям устарел" "Устройства с «ограничено» сейчас открыты целиком. Стоит прежняя сборка фильтра — обновите компонент «Фильтр по категориям» на экране «Компоненты»."
+		          else sc_note sched-filter "«Ограничено» не действует: фильтр по категориям не запустился" "Устройства с «ограничено» сейчас открыты целиком. Лог фильтра — в архиве диагностики; через минуту роутер попробует снова."; fi ;;
 		*:en)     sc_note sched-filter "«Limited» acts again" "The category filter answers again." ;;
 		*)        sc_note sched-filter "«Ограничено» снова действует" "Фильтр по категориям снова отвечает." ;;
 	esac
@@ -923,8 +1131,12 @@ sc_tick_locked() {
 	SC_IDS=$(sc_ids)
 	clock_trusted && sc_use_tick
 	sc_plan
-	sc_filter_sync        # may take the limited lines out of the plan (fail-open) — before the kernel converges
+	sc_filter_sync keep   # may take the limited lines out of the plan (fail-open) — before the kernel converges
 	sc_apply
+	# the ports kept for leaving devices go now that no REDIRECT names them (a failure there takes lines out: sc_apply again)
+	# …not after a failure (sc_ffail stopped the daemon, the kept ports with it): the second pass wrote «idle» over «dead», and the
+	# panel showed «Ограничено» for devices open whole (review s.113, round 5)
+	if [ -n "$(echo $SC_FKEPT)" ] && [ -z "$SC_FFAILED" ]; then sc_filter_sync; sc_apply; fi
 	clock_trusted || return 0
 	SC_LANG=""
 	for _ti in $SC_IDS; do
@@ -972,16 +1184,23 @@ sc_over_note() {
 cmd_tick() {
 	# nothing registered and nothing in the kernel: the per-minute cron line costs one directory listing
 	[ -n "$(sc_ids)" ] || [ -s "$SC_APPLIED" ] || return 0
-	sc_lock || return 0      # another tick or a save holds it — it converges for us
+	if [ "${1:-}" = wait ]; then
+		# a caller that changed what a tick in flight has already read (tasks.sh raw-save: the tick line itself — the holder kept the
+		# rules it read as «ticking») waits for its own tick, ≤ 60 s, the way unwire does (review s.113, round 5)
+		_twn=0; until sc_lock; do _twn=$((_twn + 1)); [ "$_twn" -ge 12 ] && return 0; done
+	else
+		sc_lock || return 0      # another tick or a save holds it — it converges for us
+	fi
 	sc_tick_locked
 }
 cmd_unwire() {
-	sc_lock || true
+	# a tick in flight may hold the lock for its filter start: wait it out, else it would put back what we take
+	_uwn=0; until sc_lock; do _uwn=$((_uwn + 1)); [ "$_uwn" -ge 12 ] && break; done   # ≤ 60 s: a filter restart path takes ~33
 	sc_drop_fam iptables; if have_v6; then sc_drop_fam ip6tables; fi
 	sc_cap_drop
 	sc_fstop
 	SC_ASETS=""; sc_aset_gc
-	rm -f "$SC_APPLIED" "$SC_APPLIED.nat" "$SC_APPLIED.sets" "$SC_RUN"/st.* "$SC_RUN/filter.state" 2>/dev/null
+	rm -f "$SC_APPLIED" "$SC_APPLIED.nat" "$SC_APPLIED.sets" "$SC_APPLIED.pend" "$SC_RUN"/st.* "$SC_RUN/filter.state" 2>/dev/null
 	rm -rf "$SC_FDIR" 2>/dev/null
 	echo "Расписания доступа: правила сняты."
 }
@@ -1036,10 +1255,11 @@ sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
 	_ij=0
 	for _is in $SC_ADDRS; do [ "$_ij" = 1 ] && printf ','; _ij=1; printf '"%s"' "$_is"; done
 	printf '],"st":"%s","why":"%s","hol":' "$SC_ST" "$SC_WHY"
-	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then sc_at_json "$SC_HOL"; else printf 'null'; fi
+	# the LAST rested minute (23:59 of the chosen day): the panel says the day «включительно»; SC_HOL itself is the 00:00 after it
+	if [ "$SC_HOL" -gt "$SC_E" ] 2>/dev/null; then sc_at_json "$(( SC_HOL - 60 ))"; else printf 'null'; fi
 	printf ',"ovr":'
 	if sc_ovr_get "$SC_ID"; then
-		printf '{"s":"%s","kind":"%s","until":' "$SC_OS" "$SC_OK"
+		printf '{"s":"%s","kind":"%s","back":%s,"until":' "$SC_OS" "$SC_OK" "$SC_OB"
 		if [ "$SC_OU" = 0 ]; then printf 'null'; else sc_at_json "$SC_OU"; fi
 		printf '}'
 	else printf 'null'; fi
@@ -1049,7 +1269,7 @@ sc_item_json() {   # the loaded schedule, after sc_now + sc_use_load
 	printf '%s\n' "$SC_CHG" | while read -r _io _is; do
 		[ -n "$_is" ] || continue
 		[ "$_ij" = 1 ] && printf ','; _ij=1
-		sc_at "$(( SC_E0 + _io * 60 ))"; printf '{"at":"%s","w":%s,"s":"%s"}' "$SC_AT" "$SC_AW" "$_is"
+		sc_at "$(( SC_E0 + _io * 60 ))"; printf '{"at":"%s","w":%s,"ue":%s,"s":"%s"}' "$SC_AT" "$SC_AW" "$(( SC_E0 + _io * 60 ))" "$_is"
 	done
 	printf ']}'
 }
@@ -1057,8 +1277,10 @@ sc_head_json() {   # router clock + «close all» + limits, after sc_now
 	_hc=0; clock_trusted && _hc=1
 	sc_at "$SC_E"
 	# `ne` — «now» as an epoch: «in 20 min» is then one subtraction of two router numbers in the panel, not a calendar
-	printf '"clock":%s,"now":"%s","w":%s,"ne":%s,"max":%s,"wmax":%s,"dmax":%s,"all":' "$_hc" "$SC_AT" "$SC_AW" "$SC_E" "$SC_MAX" "$SC_WIN_MAX" "$SC_DEV_MAX"
-	if [ "$_hc" = 1 ] && sc_all_get; then
+	_htk=0; sc_ticking && _htk=1
+	printf '"clock":%s,"tick":%s,"now":"%s","w":%s,"ne":%s,"max":%s,"wmax":%s,"dmax":%s,"all":' "$_hc" "$_htk" "$SC_AT" "$SC_AW" "$SC_E" "$SC_MAX" "$SC_WIN_MAX" "$SC_DEV_MAX"
+	# said without the clock too: the panel's «Открыть всем» is the one way to cancel it then (cmd_all off needs no clock)
+	if sc_all_get; then
 		if [ "$SC_AU" = 0 ]; then printf '{"until":null}'; else printf '{"until":'; sc_at_json "$SC_AU"; printf '}'; fi
 	else printf 'null'; fi
 	# «limited»: the categories offered (the router's table — the panel words them) and the filter: installed? its state now
@@ -1066,7 +1288,10 @@ sc_head_json() {   # router clock + «close all» + limits, after sc_now
 	printf ',"cats":['
 	# a category that also closes by address says so (`addr`): «allow» closes it by address when it is not allowed
 	printf '%s\n' "$SC_CATS" | awk -F'|' 'NF == 4 { printf "%s{\"id\":\"%s\",\"name\":\"%s\",\"addr\":%s}", (n++ ? "," : ""), $1, $4, ($3 == "" ? "false" : "true") }'
-	printf '],"pmax":%s,"filter":{"inst":%s,"state":"%s"}' "$SC_POOL_MAX" "$_hfi" "$(cat "$SC_RUN/filter.state" 2>/dev/null | tr -cd 'a-z')"
+	_hfs=$(cat "$SC_RUN/filter.state" 2>/dev/null | tr -cd 'a-z')
+	# `old` — a dead filter that is an older build than the code's: the panel leads to «Компоненты» then (sc_fold)
+	_hfo=false; [ "$_hfs" = dead ] && sc_fold && _hfo=true
+	printf '],"pmax":%s,"filter":{"inst":%s,"state":"%s","old":%s}' "$SC_POOL_MAX" "$_hfi" "$_hfs" "$_hfo"
 }
 # the keys of the listed schedules that have READY data now → SC_FREADY, and what the catalogue says of their pools → SC_GABOUT
 # (one geo.sh call each per answer; `about` only when some schedule has pools)
@@ -1181,7 +1406,9 @@ cmd_save() {
 			# addresses by the project's ONE address normalisers, bogons cut (the map rake: a private range must never become a
 			# REJECT); the names' normaliser skips address lines itself (a bare IP or a CIDR is not a host name there)
 			_vaddrs=$( { printf '%s\n' "$_vraw" | norm_cidr | strip_bogon; printf '%s\n' "$_vraw" | norm_cidr6 | strip_bogon6; } | awk '!s[$0]++')
-			_vsites=$(printf '%s\n' "$_vraw" | norm_domains | awk '!s[$0]++')
+			# a leading www. goes: the filter closes a name AND its subdomains, so www.instagram.com would leave instagram.com
+			# and the app's own names open (and in «allow» let only www through); groups.sh norm_member does the same
+			_vsites=$(printf '%s\n' "$_vraw" | norm_domains | sed 's/^www\.//' | awk '!s[$0]++')
 		else
 			_vsites=$(printf '%s\n' "$_vraw" | tr 'A-Z' 'a-z' | awk '{ d = $1; sub(/^\*?\./, "", d) } d ~ /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/ && !s[d]++ { print d }')
 		fi
@@ -1244,18 +1471,29 @@ sc_until() {
 	case "$1" in
 		0) SC_UNTIL=0 ;;
 		*:*) sc_next_hhmm "$1" || return 1; SC_UNTIL=$SC_NEXT ;;
-		*) case "$1" in ''|*[!0-9]*) return 1 ;; esac
-		   [ "$1" -ge 1 ] && [ "$1" -le 10080 ] || return 1
-		   SC_UNTIL=$(( SC_E + $1 * 60 )) ;;
+		# minutes through sc_num: `060` was 48 minutes (octal), `08` killed the engine mid-request (review s.113, confirming)
+		*) sc_num _sum "$1" -1; [ "$_sum" -ge 1 ] && [ "$_sum" -le 10080 ] || return 1
+		   SC_UNTIL=$(( SC_E + _sum * 60 )) ;;
 	esac
 }
 cmd_ovr() {
 	id_ok "$1" || jfail "неверный номер расписания"
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	sc_now
-	clock_trusted || jfail "время роутера ещё не сверено — расписания не действуют"
+	# «вернуть по расписанию» takes an action away — no clock needed for that (the panel offers it while the clock is unsynced)
+	[ "$2" = clear ] || clock_trusted || jfail "время роутера ещё не сверено — расписания не действуют"
 	sc_load "$1" || jfail "нет такого расписания"
-	sc_eval 1
+	sc_eval 1; sc_effective
+	# an action the state above it would hide is refused, not «ok» with nothing done (review s.112: «Закрыть на час» on holidays
+	# answered ok, the screen said «закрыто вручную», the device stayed open)
+	if [ "$2" != clear ]; then
+		case "$SC_WHY" in
+			stop) jfail "расписания сейчас не действуют: Enodia снята с расписания — включите VPN" ;;
+			off)  jfail "расписание выключено — включите его" ;;
+			all)  jfail "сейчас закрыто всем — сначала «Открыть всем»" ;;
+			hol)  jfail "у расписания каникулы — сначала отмените их" ;;
+		esac
+	fi
 	case "$2" in
 		clear) rm -f "$SC_DIR/$1.ovr" ;;
 		close)
@@ -1268,12 +1506,22 @@ cmd_ovr() {
 			else
 				sc_until "${3:-}" && [ "$SC_UNTIL" != 0 ] || jfail "неверный срок"
 			fi
-			echo "open $SC_UNTIL open" > "$SC_DIR/$1.ovr" ;;
+			# over a hand close that outlives it, the close comes back when this open ends (sc_ovr_get)
+			_ob=""
+			if [ "$SC_WHY" = ovr ] && [ "$SC_OS" = closed ] && { [ "$SC_OU" = 0 ] || [ "$SC_OU" -gt "$SC_UNTIL" ]; }; then _ob=" closed $SC_OU $SC_OK"
+			# an open laid over such an open (extended): the close still waiting behind it is carried on
+			elif [ "$SC_WHY" = ovr ] && [ "$SC_OB" = 1 ] && { [ "$SC_PBU" = 0 ] || [ "$SC_PBU" -gt "$SC_UNTIL" ]; }; then _ob=" $SC_PB"
+			fi
+			echo "open $SC_UNTIL open$_ob" > "$SC_DIR/$1.ovr" ;;
 		postpone)
 			# «отложить закрытие»: the week is open now and is about to get stricter — stay open N minutes past that change
-			_pm=$(num_or "${3:-}" 0); [ "$_pm" -ge 1 ] && [ "$_pm" -le 1440 ] || jfail "неверный срок"
+			sc_num _pm "${3:-}" 0; [ "$_pm" -ge 1 ] && [ "$_pm" -le 1440 ] || jfail "неверный срок"
 			[ "$SC_CUR" = open ] || jfail "сейчас не открыто — откладывать нечего"
+			# a hand action decides now: a postpone over «Закрыть пока не откроете» opened the device and lost that close
+			[ "$SC_WHY" = win ] || [ "$SC_WHY" = base ] || jfail "сейчас действует ручное действие — сначала верните по расписанию"
 			_pc=$(sc_first_change); [ -n "$_pc" ] || jfail "закрытия впереди нет"
+			# near the closing only: far ahead an «open» till then would rest the day's limit and the week for hours
+			[ $(( _pc - SC_E )) -le 3600 ] || jfail "закрытие ещё не скоро — отложить можно за час до него"
 			echo "open $(( _pc + _pm * 60 )) postpone" > "$SC_DIR/$1.ovr" ;;
 		*) jfail "неизвестное действие" ;;
 	esac
@@ -1283,7 +1531,10 @@ cmd_ovr() {
 cmd_all() {
 	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
 	sc_now
-	clock_trusted || jfail "время роутера ещё не сверено — расписания не действуют"
+	# «open for all» needs no clock (as `ovr clear`, review s.112): a «close all until opened» set before a reboot with the provider
+	# down could not be cancelled, and every scheduled device closed the moment the time synced (review s.113, round 4)
+	[ "$1" = off ] || clock_trusted || jfail "время роутера ещё не сверено — расписания не действуют"
+	[ "$1" = off ] || sc_ticking || jfail "расписания сейчас не действуют: Enodia снята с расписания — включите VPN"
 	mkdir -p "$SC_DIR" 2>/dev/null
 	if [ "$1" = off ]; then rm -f "$SC_DIR/.all"
 	else
@@ -1319,7 +1570,8 @@ cmd_hol() {
 cmd_import() {
 	[ -d "$1" ] || jfail "нет каталога расписаний"
 	mkdir -p "$SC_DIR" 2>/dev/null || jfail "не удалось создать $SC_DIR"
-	sc_lock || jfail "расписания сейчас меняет другой запрос — повторите"
+	# a backup restore is not a click to repeat: wait out a tick in flight (≤ 30 s) rather than be refused for it
+	_imn=0; until sc_lock; do _imn=$((_imn + 1)); [ "$_imn" -ge 6 ] && jfail "расписания сейчас меняет другой запрос — повторите"; done
 	sc_now
 	_mi=""; _mdevs=""
 	for _mf in "$1"/s*.sch; do
@@ -1330,8 +1582,8 @@ cmd_import() {
 		SC_NAME=$(sc_name); [ -n "$SC_NAME" ] || SC_NAME=$_mid
 		SC_HOL=0                                   # a holiday of the archive's past means nothing here
 		# the version moves past BOTH: a panel tab open on the local schedule must see «changed elsewhere», not save over it
-		_mlv=$(sed -n 's/^ver=//p' "$SC_DIR/$_mid.sch" 2>/dev/null | head -n 1 | tr -cd '0-9')
-		[ "${_mlv:-0}" -gt "$SC_VER" ] 2>/dev/null && SC_VER=$_mlv
+		sc_num _mlv "$(sed -n 's/^ver=//p' "$SC_DIR/$_mid.sch" 2>/dev/null | head -n 1 | tr -cd '0-9')" 0
+		[ "$_mlv" -gt "$SC_VER" ] && SC_VER=$_mlv
 		SC_VER=$((SC_VER + 1))
 		[ "$(sc_ids | grep -cx "$_mid" || true)" = 0 ] && [ "$(sc_ids | wc -l | tr -d ' ')" -ge "$SC_MAX" ] && continue
 		sc_write "$_mid" || continue
@@ -1346,8 +1598,8 @@ cmd_import() {
 		[ "$_mch" = 1 ] || continue
 		SC_DEVS=$_mk; SC_VER=$((SC_VER + 1)); sc_write "$_mo"
 	done
-	_ma=$(cat "$1/.last-id" 2>/dev/null | tr -cd '0-9'); _ml=$(cat "$SC_DIR/.last-id" 2>/dev/null | tr -cd '0-9')
-	[ "${_ma:-0}" -gt "${_ml:-0}" ] 2>/dev/null && echo "$_ma" > "$SC_DIR/.last-id"
+	sc_num _ma "$(cat "$1/.last-id" 2>/dev/null | tr -cd '0-9')" 0; sc_num _ml "$(cat "$SC_DIR/.last-id" 2>/dev/null | tr -cd '0-9')" 0
+	[ "$_ma" -gt "$_ml" ] && [ "$_ma" -le 999999 ] && echo "$_ma" > "$SC_DIR/.last-id"
 	sc_want_sync
 	sc_tick_locked
 	jok "\"n\":$(set -- $_mi; echo $#)"
@@ -1370,7 +1622,10 @@ cmd_uses_filter() {
 cmd_filter_restart() {
 	sc_lock || { echo "расписания сейчас меняет другой запрос — повторите"; return 1; }
 	sc_fstop
+	SC_FFAILED=""
 	sc_tick_locked
+	# the tick's sc_ffail takes the limited lines out of the plan — «nothing limited» was then said of a filter that did not come up
+	if [ -n "$SC_FFAILED" ]; then echo "фильтр не поднялся — устройства с «ограничено» открыты (подробности в $SC_FLOG)"; return 1; fi
 	[ -z "$SC_FMAP" ] && [ -z "$(printf '%s\n' "$SC_PLAN" | awk '$2 == "limited" || $2 == "safe"')" ] && { echo "сейчас ничего не ограничено — фильтр не нужен"; return 0; }
 	if sc_falive && "$SC_FBIN" -q "$(printf '%s\n' "$SC_FMAP" | awk 'NF == 2 { print $2; exit }')"; then echo "фильтр перезапущен: $(sc_fpid)"; return 0; fi
 	echo "фильтр не поднялся — устройства с «ограничено» открыты (подробности в $SC_FLOG)"; return 1
@@ -1420,7 +1675,7 @@ case "$SC_VERB" in
 	all)       cmd_all "${1:-}" ;;
 	hol)       cmd_hol "$@" ;;
 	import)    cmd_import "${1:-}" ;;
-	tick)      cmd_tick ;;
+	tick)      cmd_tick "${1:-}" ;;
 	unwire)    cmd_unwire ;;
 	dump)      cmd_dump ;;
 	uses-filter)    cmd_uses_filter ;;

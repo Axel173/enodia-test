@@ -310,8 +310,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		# Access schedules: the OWNER writes each schedule through its own load (valid lines only), keeps «one device = one
 		# schedule» across the merge and the higher id counter (access-sched.sh import); same directories-in-the-call rule as above.
 		if [ "$f" = sched ] && [ -d "$tmp/sched" ]; then
-			[ -f "$ENODIA_DIR/access-sched.sh" ] && ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/access-sched.sh" import "$tmp/sched" >/dev/null 2>&1 \
-				&& restored=$((restored+1))
+			# its verdict is the JSON, not the exit code: a refusal («busy» — a tick holds the lock) exits 0 with "ok":false
+			if [ -f "$ENODIA_DIR/access-sched.sh" ]; then
+				case "$(ENODIA_DIR="$ENODIA_DIR" ENODIA_STATE="$ENODIA_STATE" sh "$ENODIA_DIR/access-sched.sh" import "$tmp/sched" 2>/dev/null)" in
+					*'"ok":true'*) restored=$((restored+1)) ;;
+				esac
+			fi
 			continue
 		fi
 		if [ -d "$tmp/$f" ]; then

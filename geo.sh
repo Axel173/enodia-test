@@ -593,15 +593,18 @@ ensure_cache() {
 				v2fly:*) fetch_v2fly "${_u#v2fly:}" "$_raw" ;;       # уже norm_geosite'нуто внутри
 				*)       fetch_url "$_u" "$_raw.dl" && norm_geosite < "$_raw.dl" > "$_raw"; rm -f "$_raw.dl" 2>/dev/null ;;
 			esac
-			[ -s "$_raw" ] && sort -u "$_raw" > "$_cf"
-			rm -f "$_raw" 2>/dev/null
+			# rename, never rewrite in place: `>` truncates first, and the schedules' filter reloading in that window would
+			# load half a category — or none (review s.112)
+			[ -s "$_raw" ] && sort -u "$_raw" > "$_cf.$$" && mv -f "$_cf.$$" "$_cf"
+			rm -f "$_raw" "$_cf.$$" 2>/dev/null
 		else
 			_raw="$RAM/.raw.$_k"
 			if fetch_url "$_u" "$_raw"; then
-				norm_cidr < "$_raw" | sort -u > "$_cf"
+				norm_cidr < "$_raw" | sort -u > "$_cf.$$" && mv -f "$_cf.$$" "$_cf"
 				# the IPv6 lines beside it, bogons cut (`<key>@6`): norm_cidr keeps IPv4 only, and a consumer closes a messenger by its
 				# network in both families. Written even empty — «fetched, the source has no v6» (CONSUMERS below)
-				norm_cidr6 < "$_raw" | strip_bogon6 | sort -u > "$_cf@6"
+				norm_cidr6 < "$_raw" | strip_bogon6 | sort -u > "$_cf@6.$$" && mv -f "$_cf@6.$$" "$_cf@6"
+				rm -f "$_cf.$$" "$_cf@6.$$" 2>/dev/null
 			fi
 			rm -f "$_raw" 2>/dev/null
 		fi
@@ -713,6 +716,8 @@ snap_q() {
 WANT_DIR="$GEO/want"                    # one file per consumer: a key per line
 WSNAP="$GEO/.wsnap.$RESOLVER_VER"       # gz snapshots of wanted keys; keyed by the resolver version (new logic = stale data)
 WSNAP_MAX=1048576                       # bytes of one gz snapshot; a bigger key lives in RAM only (a journal line, as snap_flash)
+WSNAP_TOTAL=${WSNAP_TOTAL:-4194304}                     # bytes of all of them (32 pools × 16 schedules could not reach /data's 20 MB otherwise)
+WSNAP_RESERVE=2097152                   # free bytes the volume keeps after a snapshot (store-lib.sh fs_free_b; none = no check)
 want_keys() { cat "$WANT_DIR"/* 2>/dev/null | tr -d '\r' | grep . | sort -u; }
 # Is the key one the catalogue OFFERS? The patterns of cat_url/cat_kind take any name after a prefix (v2fly-anything would pass and
 # stay «downloading» for ever), so the enumerated lists are asked too — the same files catalog_lines reads, no list built.
@@ -763,7 +768,11 @@ _wanted_pass() {
 		for _wf in $(want_forms "$_wn" | awk '{ print $1 }'); do
 			# a snapshot is rewritten only when the data changed: the flash is written by content, not by the clock
 			gzip -c "$CACHE/$_wf" > "$RAM/.wsnap.$$" 2>/dev/null || { rm -f "$RAM/.wsnap.$$"; continue; }
-			if [ "$(wc -c < "$RAM/.wsnap.$$" | tr -d ' ')" -gt "$WSNAP_MAX" ]; then
+			_wsz=$(wc -c < "$RAM/.wsnap.$$" | tr -d ' ')
+			# the total of the OTHER snapshots + this one, and the volume's reserve — over either: RAM only, said like a big key
+			_wtot=$(for _wq in "$WSNAP"/*.gz; do [ -f "$_wq" ] && [ "$_wq" != "$WSNAP/$_wf.gz" ] && wc -c < "$_wq"; done | awk '{ t += $1 } END { print t + 0 }')
+			_wfree=$(command -v fs_free_b >/dev/null 2>&1 && fs_free_b "$WSNAP")
+			if [ "$_wsz" -gt "$WSNAP_MAX" ] || [ $(( _wtot + _wsz )) -gt "$WSNAP_TOTAL" ] || { [ -n "$_wfree" ] && [ "$_wfree" -gt 0 ] && [ "$_wfree" -lt $(( _wsz + WSNAP_RESERVE )) ]; }; then
 				rm -f "$RAM/.wsnap.$$" "$WSNAP/$_wf.gz"
 				if [ -f "$ENODIA_DIR/events.sh" ]; then
 					sh "$ENODIA_DIR/events.sh" add geo-want-snap-skip 86400 \
@@ -772,7 +781,8 @@ _wanted_pass() {
 				fi
 				continue
 			fi
-			if [ -f "$WSNAP/$_wf.gz" ] && gunzip -c "$WSNAP/$_wf.gz" 2>/dev/null | cmp -s - "$CACHE/$_wf"; then
+			# by md5: a busybox without `cmp` would rewrite every snapshot on every pass (the flash is written by content)
+			if [ -f "$WSNAP/$_wf.gz" ] && [ "$(gunzip -c "$WSNAP/$_wf.gz" 2>/dev/null | md5sum)" = "$(md5sum < "$CACHE/$_wf" 2>/dev/null)" ]; then
 				rm -f "$RAM/.wsnap.$$"
 			else
 				mv -f "$RAM/.wsnap.$$" "$WSNAP/$_wf.gz"
@@ -1234,13 +1244,17 @@ case "$1" in
 	want)
 		case "$2" in ''|*[!a-z0-9-]*) echo "потребитель: [a-z0-9-]"; exit 1 ;; esac
 		_wc="$2"; shift 2
+		# a key the catalogue does not know is SKIPPED (said once on stdout), not a refusal of all: one stale or hand-edited pool
+		# of a schedule stopped the downloads of every schedule's categories (review s.112, round 3)
+		_wok=""; _wbad=""
 		for _wn in "$@"; do
-			case "$_wn" in */*|.*|*[!a-z0-9._!-]*) echo "неверный ключ гео: $_wn"; exit 1 ;; esac   # a key becomes a file name
-			[ -n "$(cat_url "$_wn")" ] && [ -n "$(cat_kind "$_wn")" ] || { echo "неизвестный ключ гео: $_wn"; exit 1; }
+			case "$_wn" in */*|.*|*[!a-z0-9._!-]*) _wbad="$_wbad $_wn"; continue ;; esac   # a key becomes a file name
+			if [ -n "$(cat_url "$_wn")" ] && [ -n "$(cat_kind "$_wn")" ]; then _wok="$_wok $_wn"; else _wbad="$_wbad $_wn"; fi
 		done
+		[ -z "$_wbad" ] || echo "неизвестный ключ гео:$_wbad — пропущен"
 		mkdir -p "$WANT_DIR" 2>/dev/null
-		if [ "$#" = 0 ]; then rm -f "$WANT_DIR/$_wc"; exit 0; fi
-		printf '%s\n' "$@" | sort -u > "$WANT_DIR/.$_wc.$$" && mv -f "$WANT_DIR/.$_wc.$$" "$WANT_DIR/$_wc" ;;
+		if [ -z "$_wok" ]; then rm -f "$WANT_DIR/$_wc"; exit 0; fi
+		printf '%s\n' $_wok | sort -u > "$WANT_DIR/.$_wc.$$" && mv -f "$WANT_DIR/.$_wc.$$" "$WANT_DIR/$_wc" ;;
 	# ready <key>… — «<key><TAB><kind><TAB><path>» for every READY form of the keys (want_forms): the RAM cache, or the flash
 	# snapshot put back into it. A key with neither is left out (the consumer goes without it until `wanted` brings it) — never a
 	# fetch here. A cidr key is ready by its `@4` (a `cidr` line); its `cidr6` line follows only then, and only when `@6` is not
@@ -1286,8 +1300,27 @@ case "$1" in
 		rm -f "$RAM/.wanted.wait" 2>/dev/null
 		trap 'ls_lock_drop "$GEO_LOCK"' EXIT
 		trap 'exit 1' INT TERM HUP PIPE
-		_wanted_pass 0
+		# `refresh` — every wanted key fetched AGAIN: the daily lists job on a router with no Гео action (an `update` refreshes
+		# them in its pass; without actions nothing ran it, and Telegram's network stayed at its first download — review s.112)
+		# …and AGAINST THE UPSTREAM'S NEWEST COMMIT, as `update` does: the URLs are pinned to the commit in $SHAS (jsDelivr
+		# `@<sha>` never changes), and without moving the pin «again» re-fetched the same bytes every day (review s.113, round 4)
+		_wpr=0; if [ "${2:-}" = refresh ]; then resolve_upstream; set_source_urls; _wpr=1; fi
+		# A consumer that saved WHILE we ran (its `wanted` found us running and left) — a pass reads the keys once at its start, and
+		# the new key waited for the daily job (review s.113, round 4): the pass again while the wanted set moved, refetch only once
+		_wpi=0
+		while :; do
+			_wps=$(want_keys | md5sum)
+			_wanted_pass "$_wpr"; _wpr=0
+			[ "$(want_keys | md5sum)" = "$_wps" ] && break
+			_wpi=$((_wpi + 1)); [ "$_wpi" -lt 8 ] || break
+		done
 		trap - EXIT INT TERM HUP PIPE; ls_lock_drop "$GEO_LOCK"
+		# A build that arrived while we held the lock only left its mark (do_build: «учту свежий выбор в ней») and returned — the
+		# holder is the one to run it, and that holder was us: a «Гео» action, «Обновить», the 5:00 update or `wire` after a
+		# reload was lost otherwise (review s.112, round 3). A fresh build of the mark's kind; do_build loops on a new mark itself.
+		if [ -f "$GEO_DIRTY" ]; then
+			case "$(cat "$GEO_DIRTY" 2>/dev/null | tr -d ' \r\n')" in 1) exec sh "$0" update ;; *) exec sh "$0" apply ;; esac
+		fi
 		exit 0 ;;
 	apply)   do_build 0 ;;     # собрать из кэша (быстро; после смены действия)
 	update)  resolve_upstream; set_source_urls; v2fly_enumerate; do_build 1 ;;   # SHA+даты → пиновка URL → перечислить v2fly (rf=baked) → перекачать (пиновано) + собрать

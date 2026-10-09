@@ -166,7 +166,7 @@ pkg_run_old() { for b in $(pkg_files "$1"); do [ "$(bst_field "$b" 5)" = old ] &
 #     of an exit since disabled or moved to another transport. No owner verb reaches it (`slot-down` of a disabled exit refuses,
 #     `down` of an inactive transport would tear the ACTIVE one's routing), so it is named, not restarted — a reboot clears it;
 #   · NOT OURS — in no pidfile at all (a throwaway xray-test.sh instance): it ends by itself.
-RST_ORDER="doh zapret slot2 slot3 slot4 slot5 slot6 slot7 server warm-awg main tls"   # short cuts first; the main tunnel late, the panel's own HTTPS last
+RST_ORDER="doh zapret filter slot2 slot3 slot4 slot5 slot6 slot7 server warm-awg main tls"   # short cuts first; the main tunnel late, the panel's own HTTPS last
 # What the scan reads — top-level, so the sandbox stand points them at its own world (dev/pkg-restart-test.sh), as with LOCK/BGPID.
 RST_PROC=/proc
 RST_PIDDIR=/tmp

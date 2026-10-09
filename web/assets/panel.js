@@ -1317,18 +1317,29 @@
   // ФОКУС ПЕРЕЖИВАЕТ ПЕРЕРИСОВКУ ЭКРАНА. Экран после действия рисуется заново целиком, и фокус клавиатуры уходил в body:
   // нажал пробелом тумблер выхода — и следующий Tab начинается с начала страницы (тот же класс, что лечили у ленты в
   // шаге 2 и у плиток «Транспорта»). Примету узла берём ДО перерисовки, возвращаем фокус на узел с той же приметой.
-  var FOCUS_ATTRS=['data-xa','data-fb','data-fo','data-xk','data-sa','data-si','data-va','data-pa','data-pm','data-ck','data-ap','data-cact','data-rdel','data-rb','data-rdon','data-rst','data-rstg','data-rstale','data-ga','data-gd','data-gs','data-tab','data-t','data-dvm','data-dvs','data-dvos','data-dvps','data-dvt','data-dvod','data-dvpp','data-dvpd','data-dvpr','data-dwd','data-dwc','data-dwa','data-dwr','data-dwx','data-dws','data-dwg','data-dwgd','data-dva','data-gact','data-gsrc','data-gtab','data-rna','data-rns','data-rnd','data-rnx','data-rnpr','data-rnc','data-ris','data-ric','data-rix','data-rit','data-dnsp','data-dnsa','data-ntm','data-nta','data-dha','data-dhd','data-wfa','data-wfo','data-blka','data-lsi','data-dk','data-dkm','data-dkc','data-pkg','data-pka','data-pku','data-pkrs','data-upd','data-sia','data-sup','data-sud','data-unm','data-una','data-hk','data-paa','data-tfa','data-pvt','data-pvl','data-sid','data-nfa','data-eva','data-evs','data-ala','data-sv','id'];
+  var FOCUS_ATTRS=['data-xa','data-fb','data-fo','data-xk','data-sa','data-si','data-va','data-pa','data-pm','data-ck','data-ap','data-cact','data-rdel','data-rb','data-rdon','data-rst','data-rstg','data-rstale','data-ga','data-gd','data-gs','data-tab','data-t','data-dvm','data-dvs','data-dvos','data-dvps','data-dvt','data-dvod','data-dvpp','data-dvpd','data-dvpr','data-dwd','data-dwc','data-dwa','data-dwr','data-dwx','data-dws','data-dwg','data-dwgd','data-dva','data-gact','data-gsrc','data-gtab','data-rna','data-rns','data-rnd','data-rnx','data-rnpr','data-rnc','data-ris','data-ric','data-rix','data-rit','data-dnsp','data-dnsa','data-ntm','data-nta','data-dha','data-dhd','data-wfa','data-wfo','data-blka','data-lsi','data-dk','data-dkm','data-dkc','data-pkg','data-pka','data-pku','data-pkrs','data-upd','data-sia','data-sup','data-sud','data-unm','data-una','data-hk','data-paa','data-tfa','data-pvt','data-pvl','data-sid','data-nfa','data-eva','data-evs','data-ala','data-sv','data-sc-lmode','data-scact','data-scov','data-sccat','data-scd','data-sc-base','data-sc-ws','data-scwdel','data-scdel','data-scgdel','data-scgadd','data-sctpl','id'];
+  // …and of a TEXT field its caret, selection and inner scroll: a field built from markup comes back with the caret at 0, and text
+  // typed after a background repaint glued onto the start (`newsite.comroblox.com` — the schedule's own sites; review s.113, r.5)
   function focusMark(){
     var a=document.activeElement;
+    focusMark.sel=null;
     if(!a || !a.getAttribute) return null;
     smFocusKeep(a);
-    for(var i=0;i<FOCUS_ATTRS.length;i++){ var v=a.getAttribute(FOCUS_ATTRS[i]); if(v) return '['+FOCUS_ATTRS[i]+'="'+selVal(v)+'"]'; }
+    for(var i=0;i<FOCUS_ATTRS.length;i++){
+      var v=a.getAttribute(FOCUS_ATTRS[i]); if(!v) continue;
+      var sig='['+FOCUS_ATTRS[i]+'="'+selVal(v)+'"]';
+      try{ if(typeof a.selectionStart==='number') focusMark.sel={sig:sig, s:a.selectionStart, e:a.selectionEnd, t:a.scrollTop|0, v:a.value}; }catch(e){}
+      return sig;
+    }
     return null;
   }
   function focusBack(body, sig){
     if(!body || !sig) return;
     var n=body.querySelector(sig);
     if(n && n.focus){ try{ n.focus({preventScroll:true}); }catch(e){} }
+    // the caret only into the SAME text (the draft gave it back): another value means another place
+    var f=focusMark.sel;
+    if(n && f && f.sig===sig && n.value===f.v){ try{ n.setSelectionRange(f.s, f.e); n.scrollTop=f.t; }catch(e){} }
   }
   // ---- КАРТОЧКИ «ОБЗОРА»: ОДИН ПЛАНИРОВЩИК НА ВСЮ КОЛОДУ (шаг 2e переноса) -----------------
   // ПОЧЕМУ ПЛАНИРОВЩИК, А НЕ ЧЕТЫРЕ `setInterval`. Каждая карточка колоды — это отдельный ответ
@@ -1847,7 +1858,7 @@
   // must not hold the list back. The answer repaints the rows only when the schedules' states changed (a repaint recreates nodes —
   // focus and selection would go on every tick for nothing).
   var _schDevSig={};   // per consumer (the home card, the routing page): each repaints its own rows
-  function schDevSig(d){ return (d && d.ok===true && Array.isArray(d.items)) ? (d.clock ? 1 : 0)+'|'+d.items.map(function(x){ return x.id+':'+x.on+':'+x.st+':'+(x.devs||[]).join(',')+':'+JSON.stringify(x.next && x.next[0] || x.ovr || null); }).join(';') : ''; }
+  function schDevSig(d){ return (d && d.ok===true && Array.isArray(d.items)) ? (d.clock ? 1 : 0)+':'+d.tick+':'+JSON.stringify(d.all || null)+':'+((d.filter && d.filter.state) || '')+'|'+d.items.map(function(x){ return x.id+':'+x.on+':'+x.st+':'+x.why+':'+(x.devs||[]).join(',')+':'+(x.over||[]).join(',')+':'+JSON.stringify(x.ovr || null)+':'+JSON.stringify(x.next && x.next[0] || null)+':'+x.name; }).join(';') : ''; }
   function schDevRepaint(key, paint){
     schLoad().then(function(d){ var s=schDevSig(d); if(s && s!==_schDevSig[key]){ _schDevSig[key]=s; paint(); } }, function(){});
   }
@@ -1903,16 +1914,17 @@
       if(!d.items.length) h+='<div class="lempty">Расписаний нет. Расписание закрывает устройствам интернет по времени — ночью, в учебные часы или всегда, кроме выбранных окон.</div>';
       else {
         if(!d.clock) h+='<div class="cline" style="margin-top:0">Не действуют: время роутера ещё не сверено.</div>';
+        else if(d.tick===0) h+='<div class="cline" style="margin-top:0">Не действуют: Enodia снята с расписания.</div>';
         d.items.forEach(function(it){
-          var s=schSay(it, d), live=d.clock && it.on, open=(it.st==='open'), on=schOverN(it, d);
-          if(open && on) s.t+=' · '+tkL('лимит исчерпан: ','limit used up: ')+on;   // «открыто» must not hide a device the limit closed
+          // one tap only where the router keeps it: holidays and «закрыто всем» stand above a hand action (it refuses it)
+          var s=schSayOver(it, d), live=schLive(d) && it.on, act=live && it.why!=='hol' && it.why!=='all', open=(it.st==='open');
           h+=lrowGo('sch:'+it.id, '')+'<span class="dot'+(!live ? ' off' : open ? '' : ' bad')+'"></span>'
-            + '<div class="grow"><div class="nm"><span translate="no">'+esc(it.name)+'</span></div><div class="ds" translate="no">'+esc(s.t.toLowerCase())+'</div></div>'
-            + (live ? '<button type="button" class="btn sm'+(open ? '' : ' gh')+'" data-scov="'+(open ? 'close' : 'open')+'" data-scid="'+esc(it.id)+'" aria-haspopup="menu">'+(open ? 'Закрыть…' : 'Открыть на…')+'</button>' : '')+'</div>';
+            + '<div class="grow"><div class="nm"><span translate="no">'+esc(it.name)+'</span></div><div class="ds" translate="no">'+esc(schLow(s.t))+'</div></div>'
+            + (act ? '<button type="button" class="btn sm'+(open ? '' : ' gh')+'" data-scov="'+(open ? 'close' : 'open')+'" data-scid="'+esc(it.id)+'" aria-haspopup="menu">'+(open ? 'Закрыть…' : 'Открыть на…')+'</button>' : '')+'</div>';
         });
         h+='<div class="acts" style="justify-content:flex-start;margin-top:11px">'
           + (d.all ? '<button type="button" class="btn sm" data-scov="allopen">Открыть всем</button>'
-                   : '<button type="button" class="btn sm" data-scov="all" aria-haspopup="menu"'+(d.clock ? '' : ' disabled')+'>'+icUse('i-lock','s')+'Закрыть всем сейчас…</button>')+'</div>';
+                   : '<button type="button" class="btn sm" data-scov="all" aria-haspopup="menu"'+(schLive(d) ? '' : ' disabled')+'>'+icUse('i-lock','s')+'Закрыть всем сейчас…</button>')+'</div>';
       }
       ovcPaint('sched', h);
       var b=ovcBody('sched');
@@ -2186,6 +2198,7 @@
       case 'tasks':   openTasks();   break;
       case 'tasknew': openTaskNew(); break;
       case 'sched':   openSched();   break;   // «Расписания доступа» (the routing page's «Ещё здесь», the home card)
+      case 'rr-pkg':  openPackages(); break;  // «Компоненты» — the schedules' «нужен компонент» notes (filter missing or dead)
       case 'schednew': schNew();     break;
       case 'ram':     openRam();  break;
       case 'disk':    openDisk(); break;
@@ -2201,7 +2214,11 @@
   // ДЕЛЕГИРОВАННЫЙ ПЕРЕХОД — тоже один: содержимое и колоды, и разрезов экрана перерисовывается
   // целиком, и персональные слушатели пришлось бы вешать заново после каждого тика.
   function wireCacts(cont){
-    if(!cont) return;
+    // ONCE per container: the handlers read `data-cact` from the click itself, so one pair serves any content later painted into
+    // it. A screen repainted in place (the schedules' list asked again every minute) added a pair per repaint, and after ten
+    // minutes one click opened the schedule ten times — ten list-json runs and 503s from uhttpd (review s.113, round 5)
+    if(!cont || cont._cacts) return;
+    cont._cacts=true;
     function actOf(t){ while(t && t!==cont){ if(t.getAttribute && t.getAttribute('data-cact')) return t.getAttribute('data-cact'); t=t.parentNode; } return null; }
     cont.addEventListener('click', function(e){ cardGo(actOf(e.target)); });
     // С КЛАВИАТУРЫ — ТЕМ ЖЕ путём. `<button>` в заголовке срабатывает сам, а строки-кнопки —
@@ -3867,9 +3884,10 @@
   // Переходы (`wireCacts`) висят на САМОМ теле экрана, а перерисовка поверх (`evRefresh`) тело не меняет — второй обработчик
   // отправлял бы по каждой двери дважды. Признак — НА УЗЛЕ тела, а не «кто рисовал»: первую разметку бывает рисует перерисовка
   // (первый ответ в пути или был отказом, а новое событие успело раньше), и дверь осталась бы мёртвой (ревью шага 7b, круг 1).
+  // Признак ведёт сам `wireCacts` (один раз на контейнер — ревью s.113: тот же класс у списка расписаний), здесь — только зов.
   // Кнопку «Очистить» разметка рожает заново — её проводим всегда.
   function evWire(body, rep){
-    if(!body._evWired){ wireCacts(body); body._evWired=1; }
+    wireCacts(body);
     var cl=body.querySelector('[data-eva="clear"]');
     if(cl) cl.addEventListener('click', function(){
       // «Очистить» пропадёт вместе со списком — фокус к соседней двери. Только если очистка НАЧАЛАСЬ: после «Отмены» примета
@@ -5328,6 +5346,20 @@
     if(dd>1 && dd<7) return tkL(SCH_WD[x.w], SCH_WD_EN[x.w])+' '+a[4];
     return a[3]+'.'+a[2]+' '+a[4];
   }
+  // a day of the router's calendar without the time: «сегодня» / «завтра» / a weekday this week / «20.10»
+  function schDay(x, now){
+    var a=/^(\d{4})-(\d\d)-(\d\d)/.exec((x && x.at)||''), b=/^(\d{4})-(\d\d)-(\d\d)/.exec(now||'');
+    if(!a) return '';
+    var dd=b ? Math.round((Date.UTC(+a[1],+a[2]-1,+a[3])-Date.UTC(+b[1],+b[2]-1,+b[3]))/864e5) : 99;
+    if(dd===0) return tkL('сегодня','today');
+    if(dd===1) return tkL('завтра','tomorrow');
+    if(dd>1 && dd<7) return tkL(SCH_WD[x.w], SCH_WD_EN[x.w]);
+    return a[3]+'.'+a[2];
+  }
+  // holidays — «Каникулы по 20.10 включительно»: `hol` is the last rested minute (the router acts again at 00:00 after it)
+  // lowercase for a phrase inside another — in Russian only: English keeps «Mon», «Tue» and the like
+  function schLow(t){ t=String(t); return tkL(t.toLowerCase(), t); }
+  function schHolWord(it, d){ var w=schDay(it.hol, d.now); return tkL('Каникулы по '+w+' включительно','Holidays through '+w); }
   // «через 20 мин» / «через 2 ч 10 мин» — the router's epochs, one subtraction; further than a day — nothing (the date says it)
   function schIn(x, d){
     if(!x || x.ue==null || d.ne==null) return '';
@@ -5339,11 +5371,30 @@
   function schStWord(s){ var w=SCH_ST[s]||SCH_ST.open; return tkL(w[0], w[1]); }
   function schVerb(s){ return s==='closed' ? tkL('закроется','closes') : s==='open' ? tkL('откроется','opens') : tkL('будет ограничено','gets limited'); }
   // The state for a person: words + the chip's colour. Not synced / switched off — said and not coloured: nothing acts then.
+  // ACTING NOW = the clock synced AND the router's tick scheduled (`tick`: deactivation takes its cron line, and then nothing may
+  // stand — nobody would lift it; access-sched.sh sc_ticking). The panel locks actions and says why by the same two facts.
+  function schLive(d){ return !!(d && d.clock && d.tick!==0); }
+  // «ограничено» needs the filter: dead (it did not answer after a restart) or missing — the router opened those devices whole
+  // (access-sched.sh sc_ffail; fail-open), and the panel must not call them «Ограничено»
+  function schLimDead(d){ var f=d && d.filter && d.filter.state; return f==='dead' || f==='nobin'; }
+  function schLimNote(d){
+    if(!schLimDead(d)) return '';
+    var pkg='<div class="acts" style="justify-content:flex-start;margin-top:9px"><button type="button" class="btn" data-cact="rr-pkg">Компоненты</button></div>';
+    // `old` — the filter that did not answer is an older build than the router's code (a config word it does not know): the cure
+    // is in «Компоненты», not «the next minute» (access-sched.sh sc_fold; review s.113, round 4)
+    if(d.filter.state==='dead' && d.filter.old) return noteBox('<b>«Ограничено» и безопасный поиск сейчас не действуют:</b> стоит прежняя сборка фильтра по категориям. Эти устройства открыты целиком — обновите компонент «Фильтр по категориям».', 'warn')+pkg;
+    return d.filter.state==='nobin'
+      ? noteBox('<b>«Ограничено» и безопасный поиск сейчас не действуют:</b> нет компонента «Фильтр по категориям». Эти устройства открыты целиком.', 'warn')
+        + pkg
+      : noteBox('<b>«Ограничено» и безопасный поиск сейчас не действуют:</b> фильтр по категориям не ответил после перезапуска. Эти устройства открыты целиком; роутер пробует снова каждую минуту.', 'warn');
+  }
   function schSay(it, d){
     if(!d.clock) return {k:'', t:tkL('не действует — время не сверено','not acting — the clock is not synced')};
+    if(d.tick===0) return {k:'', t:tkL('не действует — Enodia снята с расписания','not acting — Enodia is off the schedule')};
     if(!it.on) return {k:'', t:tkL('выключено','switched off')};
+    if(it.st==='limited' && schLimDead(d)) return {k:'', t:tkL('Ограничено не действует — открыто','Limited is not acting — open')};
     var w=schStWord(it.st), k=(SCH_ST[it.st]||SCH_ST.open)[2], u=null;
-    if(it.why==='hol') return {k:'opn', t:w+' · '+tkL('каникулы до ','holidays until ')+schWhen(it.hol, d.now)};
+    if(it.why==='hol') return {k:'opn', t:w+' · '+schLow(schHolWord(it, d))};
     if(it.why==='ovr') u=it.ovr && it.ovr.until;
     else if(it.why==='all') u=d.all && d.all.until;
     else u=it.next && it.next[0];
@@ -5356,9 +5407,9 @@
   function schChip(it, d){ return schChipHtml(schSay(it, d)); }
   // THE DAY LIMIT closes one device while its schedule stays open — the router names who (`over`), the panel only words it
   function schOver(it, mac){ return (it.over||[]).indexOf(String(mac||'').toLowerCase())>=0; }
-  function schOverN(it, d){ return (d.clock && it.on) ? (it.over||[]).length : 0; }   // devices its limit closes NOW
+  function schOverN(it, d){ return (schLive(d) && it.on) ? (it.over||[]).length : 0; }   // devices its limit closes NOW
   function schDevSay(it, mac, d){
-    if(d.clock && it.on && schOver(it, mac)) return {k:'blk', t:tkL('Закрыто · лимит на сегодня исчерпан','Closed · today\'s limit used up')};
+    if(schLive(d) && it.on && schOver(it, mac)) return {k:'blk', t:tkL('Закрыто · лимит на сегодня исчерпан','Closed · today\'s limit used up')};
     return schSay(it, d);
   }
   function schDevChip(it, mac, d){ return schChipHtml(schDevSay(it, mac, d)); }
@@ -5429,43 +5480,73 @@
     var body=document.getElementById('modal-body'), rep=navIfShown('rt-sched', openSched); loading(body);
     schLoad().then(function(d){
       if(!screenAlive(body)) return;
-      if(!d || d.ok!==true || !Array.isArray(d.items)){ body.innerHTML=pnErrHtml('sc-list', 'Расписания', (d && d.msg) ? trNow(String(d.msg)) : pnErrText(null)); return; }
+      if(!d || d.ok!==true || !Array.isArray(d.items)){ body.innerHTML=pnErrHtml('sc-list', 'Расписания', (d && d.msg) ? esc(trNow(String(d.msg))) : pnErrText(null)); return; }
       body.innerHTML=schListHtml(d);
       nwFocusBack(body, fsig);
       schListWire(body, d, rep);
+      schAgain(body, d, null, function(){ schListRefresh(body, rep); });
     }, function(e){ if(screenAlive(body)) body.innerHTML=pnErrHtml('sc-list', 'Расписания', pnErrText(e)); });
+  }
+  // the list asked again in place: the answer first, then the repaint (openSched blanked the cards for the fetch every minute)
+  function schListRefresh(body, rep){
+    schLoad().then(function(d){
+      if(!screenAlive(body) || !navShows('rt-sched')) return;
+      // an answer that is not the list (ok:false mid-update: access-sched.sh replaced) — the drawn list stays, asked again in a
+      // minute; returning here stopped the live states for good (review s.113, round 4)
+      if(!d || d.ok!==true || !Array.isArray(d.items)){ schAgain(body, null, null, function(){ schListRefresh(body, rep); }); return; }
+      var fsig=focusMark();
+      body.innerHTML=schListHtml(d);
+      nwFocusBack(body, fsig);
+      schListWire(body, d, rep);
+      schAgain(body, d, null, function(){ schListRefresh(body, rep); });
+    }, function(){ if(screenAlive(body)) schAgain(body, null, null, function(){ schListRefresh(body, rep); }); });
   }
   function schRow(it, d){
     return lrowGo('sch:'+it.id, '')+'<span class="av">'+icUse('i-clock','s','',true)+'</span>'
       + '<div class="grow"><div class="nm"><span translate="no">'+esc(it.name)+'</span></div>'
-      + '<div class="ds" translate="no">'+esc(schDevN((it.devs||[]).length)+' · '+schSum(it))+'</div></div>'
+      // who the day limit closed — in the line under the name: in the chip the ellipsis cut it off at 320 px (review s.113, round 4)
+      + '<div class="ds" translate="no">'+esc(schDevN((it.devs||[]).length)+' · '+schSum(it)+schOverTail(it, d))+'</div></div>'
       + schChip(it, d)+CHEV+'</div>';
   }
+  // the schedule's state + who its day limit closed now (an «открыто» or «ограничено» schedule must not hide a device the limit closed)
+  function schOverTail(it, d){ var on=schOverN(it, d); return (it.st!=='closed' && on) ? ' · '+tkL('лимит исчерпан: ','limit used up: ')+on : ''; }
+  function schSayOver(it, d){ var s=schSay(it, d); return {k:s.k, t:s.t+schOverTail(it, d)}; }
+  // `lim` — the tile needs «ограничено» (1) or stands in for one that does (0): the mockup's «Учёба и сон» closes social, video and
+  // games in school hours, and without the filter component a limited window closes nothing — the same nights are offered alone
+  // then, under a name that does not promise the school hours (schTpls)
   var SCH_TPL=[
     {k:'night', ic:'i-clock', t:'Ночь без интернета', d:'закрыто каждую ночь с 23:00 до 07:00', base:'open', wins:[{d:'0123456', a:'23:00', b:'07:00', s:'closed'}]},
-    {k:'school', ic:'i-shield', t:'Будни и сон', d:'по будням ночью закрыто, в выходные — ночью дольше', base:'open',
+    {k:'school', lim:1, ic:'i-shield', t:'Учёба и сон', d:'ночью закрыто, в учебные часы — без соцсетей, видео и игр', base:'open',
+     wins:[{d:'01234', a:'22:00', b:'07:00', s:'closed'}, {d:'56', a:'23:30', b:'09:00', s:'closed'}, {d:'12345', a:'08:30', b:'14:30', s:'limited'}],
+     cats:['social', 'video', 'games']},
+    {k:'sleep', lim:0, ic:'i-shield', t:'Будни и сон', d:'по будням ночью закрыто, в выходные — ночью дольше', base:'open',
      wins:[{d:'01234', a:'22:00', b:'07:00', s:'closed'}, {d:'56', a:'23:30', b:'09:00', s:'closed'}]},
     {k:'hours', ic:'i-lock', t:'Только в эти часы', d:'закрыто всегда, кроме окон, которые вы зададите', base:'closed', wins:[{d:'12345', a:'18:00', b:'20:00', s:'open'}, {d:'06', a:'10:00', b:'21:00', s:'open'}]},
     {k:'never', ic:'i-home', t:'Без интернета', d:'закрыто всегда; в домашней сети видно — камеры, принтер, умный дом', base:'closed', wins:[]}
   ];
+  function schTpls(d){ var on=schLimOn(d); return SCH_TPL.filter(function(t){ return t.lim==null || !!t.lim===on; }); }
   function schListHtml(d){
     var its=d.items, h='<div class="vwrap c3">';
     if(!d.clock) h+=noteBox('<b>Расписания сейчас не действуют: роутер ещё не знает, который час.</b> Своих часов у него нет — время приходит из сети после загрузки. Как только оно сверится, расписания начнут действовать сами: закрыть интернет по неверным часам хуже, чем не закрыть.', 'warn');
+    else if(d.tick===0) h+=noteBox('<b>Расписания сейчас не действуют: Enodia снята с расписания.</b> В crontab нет строки, которой роутер раз в минуту проверяет окна, — открыть закрытое в срок было бы некому, поэтому не закрыто ничего. «Включить VPN» возвращает её вместе с остальным.', 'warn');
+    else h+=schLimNote(d);
     h+='<div class="card w2" id="sc-list"><div class="wt"><span>Расписания</span><span class="sp"></span><span class="chip">'+its.length+'</span></div>'
       + (its.length ? its.map(function(x){ return schRow(x, d); }).join('')
                     : '<div class="cline">Расписаний пока нет. Расписание — это устройства и неделя: когда им открыт интернет, а когда закрыт. Начните с готового или создайте своё.</div>')
       + (d.all ? '<div class="cline" translate="no">'+esc(tkL('Закрыто всем ','Closed for all ')+(d.all.until ? tkL('до ','until ')+schWhen(d.all.until, d.now) : tkL('— пока не откроете','— until opened')))+'</div>' : '')
-      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" data-cact="schednew">'+icUse('i-plus','s')+'Новое расписание</button>'
+      // the router's cap (d.max): at it a new one is refused after the whole form is filled — said here instead
+      + (its.length>=(d.max||16) ? '<div class="cline">'+esc(tkL('Расписаний не больше ','At most '))+(d.max||16)+esc(tkL(' — чтобы добавить новое, удалите одно из этих.',' schedules — delete one of these to add a new one.'))+'</div>' : '')
+      + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn pri" data-cact="schednew"'+(its.length>=(d.max||16) ? ' disabled' : '')+'>'+icUse('i-plus','s')+'Новое расписание</button>'
       + (d.all ? '<button type="button" class="btn" id="sc-allopen">Открыть всем</button>'
-               : '<button type="button" class="btn" id="sc-all" aria-haspopup="menu"'+((d.clock && its.length) ? '' : ' disabled')+'>'+icUse('i-lock','s')+'Закрыть всем сейчас…</button>')+'</div>'
-      + '<div class="cline">«Закрыть всем сейчас» — пауза для всех устройств из всех расписаний: на 30 минут, на час, до утра или пока не откроете. Потом каждое расписание идёт своим чередом.</div></div>';
+               : '<button type="button" class="btn" id="sc-all" aria-haspopup="menu"'+((schLive(d) && its.length) ? '' : ' disabled')+'>'+icUse('i-lock','s')+'Закрыть всем сейчас…</button>')+'</div>'
+      + '<div class="cline">«Закрыть всем сейчас» — пауза для всех устройств из всех включённых расписаний, и на каникулах тоже: на 30 минут, на час, до утра или пока не откроете. Потом каждое расписание идёт своим чередом.</div></div>';
     h+='<div class="card"><div class="wt">Как это работает</div>'
       + schKv('Устройство узнаётся по MAC', 'правило не уедет на соседа, когда сменится адрес')
       + schKv('«Закрыто» — закрыто всё', 'сильнее всей маршрутизации: ни правила по портам, ни свой VPN на устройстве не выпустят наружу. Домашняя сеть остаётся')
       + (schLimOn(d) ? schKv('«Ограничено» — закрыто выбранное', 'категории и сайты из расписания, остальное работает') : '')
       + schKv('Не остановит', 'мобильный интернет телефона и новый MAC')+'</div>';
     h+='<div class="card w2"><div class="wt">Начать с готового</div><div class="opt c2">'
-      + SCH_TPL.map(function(t){ return optTile('data-sctpl', t.k, false, t.ic, t.t, t.d); }).join('')+'</div></div>';
+      + schTpls(d).map(function(t){ return optTile('data-sctpl', t.k, false, t.ic, t.t, t.d, its.length>=(d.max||16)); }).join('')+'</div></div>';
     h+='<div class="card"><div class="wt">Время роутера</div>'
       + '<div class="kv"><div class="grow"><div class="k">Сейчас на роутере</div><div class="v" translate="no">'+esc(schWhenNow(d))+'</div></div>'
       + '<span class="chip'+(d.clock ? ' acc' : ' bd')+'">'+(d.clock ? 'сверено' : 'не сверено')+'</span></div>'
@@ -5475,9 +5556,9 @@
   function schKv(k, v){ return '<div class="kv"><div class="grow"><div class="k">'+k+'</div><div class="v">'+v+'</div></div></div>'; }
   function schWhenNow(d){ var m=/ (\d\d:\d\d)$/.exec(d.now||''); return tkL(SCH_WD[d.w], SCH_WD_EN[d.w])+' '+(m ? m[1] : ''); }
   // «Закрыть всем сейчас…» / «Закрыть сейчас…» — one menu of terms; `HH:MM` = until that time comes (the router finds it)
-  function schCloseMenu(anchor, go){
+  function schCloseMenu(anchor, go, head){
     openMenu(anchor, [
-      {header:tkL('Закрыть','Close')},
+      {header:head || tkL('Закрыть','Close')},
       {label:tkL('на 30 минут','for 30 minutes'), onClick:function(){ go('30'); }},
       {label:tkL('на час','for an hour'), onClick:function(){ go('60'); }},
       {label:tkL('до утра (07:00)','until the morning (07:00)'), onClick:function(){ go('07:00'); }},
@@ -5485,8 +5566,8 @@
     ], anchor);
   }
   // «Открыть на…» — the schedule's screen, the device tab and the home card; «до конца окна» only when the week itself will open it
-  function schOpenMenu(anchor, it, go){
-    var items=[{header:tkL('Открыть','Open')},
+  function schOpenMenu(anchor, it, go, head){
+    var items=[{header:head || tkL('Открыть','Open')},
       {label:tkL('на 15 минут','for 15 minutes'), onClick:function(){ go('15'); }},
       {label:tkL('на 30 минут','for 30 minutes'), onClick:function(){ go('30'); }},
       {label:tkL('на час','for an hour'), onClick:function(){ go('60'); }}];
@@ -5502,7 +5583,7 @@
     var ao=document.getElementById('sc-allopen');
     if(ao) ao.addEventListener('click', function(){ postAction('sched_all', null, 'открываю всем…', {arg:'off'}, function(){ rep(); }); });
     Array.prototype.forEach.call(body.querySelectorAll('[data-sctpl]'), function(el){
-      function go(){ var k=el.getAttribute('data-sctpl'); schNew(SCH_TPL.filter(function(t){ return t.k===k; })[0]); }
+      function go(){ if(el.classList.contains('na')) return; var k=el.getAttribute('data-sctpl'); schNew(SCH_TPL.filter(function(t){ return t.k===k; })[0]); }
       el.addEventListener('click', go);
       el.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); go(); } });
     });
@@ -5510,7 +5591,7 @@
 
   // ---- one schedule: resolver, the head (state + actions over it), the editor (draft until «Сохранить») ----
   // The draft lives across redraws of the same schedule (an action over it repaints the screen) and dies with another one.
-  var _schDraft=null, _schNewTpl=null, _schNewDev='';
+  var _schDraft=null, _schNewTpl=null, _schNewDev='', _schRepG=0, _schRepId='';
   function schNew(tpl, mac){
     _schNewTpl=tpl||null; _schNewDev=mac ? String(mac).toLowerCase() : '';
     _schDraft=null;
@@ -5521,10 +5602,25 @@
     if(rep) id=navSplit(_navKey).a;
     id=String(id==null?'':id);
     if(id!=='' && !/^s[0-9]{1,6}$/.test(id)){ if(!rep) openSched(); return; }
+    // a re-ask while ANOTHER screen is opening (Back/Forward, an address typed): `++_navGen` below would cancel that open and redraw
+    // this one under the new address (review s.113, round 5) — it waits for the next turn instead
+    // …unless the pending open IS this screen's own re-ask of the same schedule: an action's refresh then supersedes it as before —
+    // deferred, the older answer drew the state before the action (a switch flipped back) for a minute (review s.113, confirming)
+    if(rep && _navPend && !(_schRepG===_navGen && _schRepId===id)){ var nb=document.getElementById('modal-body'); if(nb) schAgain(nb, null, null, navIfShown('rt-sched-p', schScrOpen), 30); return; }
     var g=++_navGen;
     _navPend=true;
-    function back(msg){
-      if(rep){ showToast(msg || 'не удалось обновить экран расписания', false); return; }
+    _schRepG=rep ? g : 0; _schRepId=id;
+    // a re-ask (rep) that failed tries again in half a minute — one miss stopped the live state for good; a schedule deleted
+    // elsewhere leaves its screen in both modes (its buttons would all be refused)
+    // …through schAgain (review s.113, round 4): a bare timer redrew the form under the caret of a human typing by then, and — the
+    // address read again at its end — redrew s2 or the new form opened meanwhile; now only THIS schedule, never mid-typing
+    function back(msg, gone){
+      if(rep && !gone){
+        showToast(msg || 'не удалось обновить экран расписания', false);
+        var again=navIfShown('rt-sched-p', schScrOpen), b=document.getElementById('modal-body');
+        if(b) schAgain(b, null, null, function(){ if(navSplit(_navKey).a===id) again(); }, 30);
+        return;
+      }
       showToast(msg || 'роутер не ответил — открываю список расписаний', false); if(navSplit(location.hash).r==='rt-sched-p') navReplace('rt-sched'); openSched();
     }
     // The LIST answer, not one schedule's: «add a device» offers only devices no other schedule holds (one device = one schedule),
@@ -5535,21 +5631,59 @@
       if(rep && !navShows('rt-sched-p')) return;
       var d=r[0], it=null;
       if(!d || d.ok!==true || !Array.isArray(d.items)){ back(d && d.msg ? String(d.msg) : null); return; }
-      if(id){ it=d.items.filter(function(x){ return x.id===id; })[0]; if(!it){ back('расписание удалено — открываю список'); return; } }
+      if(id){ it=d.items.filter(function(x){ return x.id===id; })[0]; if(!it){ back('расписание удалено — открываю список', true); return; } }
       schShow(d, it, (r[1] && Array.isArray(r[1].devices)) ? r[1].devices : []);
     }, function(){ if(g!==_navGen) return; _navPend=false; back(); });
   }
   function schDraftOf(it){
     var key=it ? it.id : 'new';
-    if(_schDraft && _schDraft.key===key && (!it || _schDraft.ver===it.ver)) return _schDraft;
+    // `>=`: the tab's own toggle or holidays moved the draft one version ahead of the screen's `it` until the router is asked
+    // again — a redraw in that window (a mode tile, a device) must keep it, not call the tab's own action «another place»
+    if(_schDraft && _schDraft.key===key && (!it || _schDraft.ver>=it.ver)) return _schDraft;
+    // the same schedule at a NEWER version (a save from another tab or device): edits not saved yet cannot be laid over it
+    if(_schDraft && _schDraft.key===key && _schDraft.dirty && !_schDraft.sent) showToast(tkL('расписание изменили в другом месте — несохранённые правки сброшены','the schedule was changed elsewhere — unsaved edits were dropped'), false);
     var t=_schNewTpl;
     _schDraft=it ? {key:key, ver:it.ver, name:it.name, on:it.on, base:it.base, wins:(it.wins||[]).map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }), devs:(it.devs||[]).slice(),
                     lim:{wd:(it.lim && it.lim.wd)|0, we:(it.lim && it.lim.we)|0},
                     safe:it.safe ? 1 : 0, lmode:it.lmode||'block', cats:(it.cats||[]).slice(), geo:(it.geo||[]).map(function(g){ return {k:g.k, kind:g.kind, t:g.t, l:g.l}; }),
-                    sites:(it.sites||[]).concat(it.addrs||[]).join('\n'), dirty:false}
+                    sites:(it.sites||[]).concat(it.addrs||[]).join('\n'), nw:schNwDef(it.base), gq:'', dirty:false}
                  : {key:key, ver:0, name:t ? trNow(t.t) : '', on:1, base:t ? t.base : 'open', wins:t ? t.wins.map(function(w){ return {d:w.d, a:w.a, b:w.b, s:w.s}; }) : [],
-                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, safe:0, lmode:'block', cats:[], geo:[], sites:'', dirty:!!(t || _schNewDev)};
+                    devs:_schNewDev ? [_schNewDev] : [], lim:{wd:0, we:0}, safe:0, lmode:'block', cats:(t && t.cats) ? t.cats.slice() : [], geo:[], sites:'',
+                    nw:schNwDef(t ? t.base : 'open'), gq:'', dirty:!!(t || _schNewDev)};
     return _schDraft;
+  }
+  // «Новое окно» — days, from, to, state; part of the draft so a redraw (a mode tile, a device, the router asked again) keeps what
+  // was set there: it went back to Пн–Пт 19:00–21:00 and «Добавить окно» added a window nobody set (review s.112, round 2)
+  function schNwDef(base){ return {d:'12345', a:'19:00', b:'21:00', s:base==='closed' ? 'open' : 'closed'}; }
+  // focus after a repaint: the control by its attribute (FOCUS_ATTRS); an action button that changed («Закрыть» → «Открыть») —
+  // the first button of the same row of actions
+  function schFocusActs(root, fsig, sel){
+    focusBack(root, fsig);
+    if(!fsig || !/data-sc(act|ov)/.test(fsig) || (document.activeElement && root.contains(document.activeElement))) return;
+    var b=root.querySelector(sel+' button:not([disabled])'); if(b) b.focus();
+  }
+  // THE ROUTER IS ASKED AGAIN when its next change is due (a window opens, an action ends — a few seconds after) or in a minute:
+  // the screen said «закроется через 20 мин» long after it closed. Never while a field has the focus (a redraw takes the caret
+  // away) — then ten seconds later. One timer per surface; it dies with its node (screenAlive). `sec` — a fixed delay (a retry).
+  var _schT={};
+  function schAgain(node, d, it, fn, sec){
+    var key=node.id || 'x', n=0; clearTimeout(_schT[key]);
+    var t=sec||60, x=it && (it.why==='ovr' && it.ovr && it.ovr.until ? it.ovr.until : (it.next && it.next[0]));
+    if(!sec && x && x.ue!=null && d && d.ne!=null) t=Math.max(15, Math.min(60, x.ue-d.ne+3));
+    _schT[key]=setTimeout(function again(){
+      if(!screenAlive(node)) return;
+      // the human is in the middle of something (review s.112, round 3: focus, menus and errors were swept away) — but not for
+      // ever (review s.113, round 4: a switch left focused by the mouse, a select picked, a refusal line or the holidays form held
+      // the head at «закроется в 22:00» for hours): TYPING (a text field and a key within NW_TYPING_MS — the network screens'
+      // rule, nwTyping) waits as long as it lasts, an open menu up to five minutes, a focused control, the holidays form or a
+      // refusal being read — one minute. Then the redraw: the draft keeps every input, the focus comes back by its attribute.
+      var a=document.activeElement, mine=a && a!==document.body && node.contains(a);
+      var soft=(mine && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || !focusMark())) || node.querySelector('#sc-holf:not([hidden])')
+        || [].some.call(node.querySelectorAll('.cline.wr'), function(x){ return !!x.textContent && x.offsetParent!==null; });
+      n++;
+      if((mine && nwTyping()) || (_menuEl && n<=30) || (soft && n<=6)){ _schT[key]=setTimeout(again, 10000); return; }
+      fn();
+    }, t*1000);
   }
   function schShow(d, it, devs){
     var dr=schDraftOf(it), fsig=focusMark();
@@ -5557,7 +5691,9 @@
     var body=document.getElementById('modal-body');
     if(screenAlive(body) && !it) scrTitle(tkL('Новое расписание','New schedule'), true);
     body.innerHTML=schFormHtml(d, it, dr, devs);
-    focusBack(body, fsig);
+    // the new form asks nobody again: a timer the previous schedule's screen left on this body would redraw it (review s.113)
+    if(!it) clearTimeout(_schT[body.id||'x']);
+    schFocusActs(body, fsig, '#sc-head .acts.sc-acts');
     schFormWire(body, d, it, dr, devs);
   }
   function schDevNm(mac, devs){
@@ -5568,31 +5704,36 @@
     var s=schSay(it, d), h='<div class="card wfull" id="sc-head"><div class="dv-top"><span class="av">'+icUse('i-clock','','',true)+'</span><div class="grow">'
       + '<div class="dv-nm"><span translate="no">'+esc(it.name)+'</span></div>';
     var line=schDevN((it.devs||[]).length)+' · ';
-    if(!d.clock || !it.on) line+=s.t;
+    if(!schLive(d) || !it.on) line+=s.t;
     else {
       var nx=it.next && it.next[0];
       line+=tkL('сейчас ','now ')+schStWord(it.st).toLowerCase();
       if(it.why==='win' || it.why==='base'){ if(nx) line+=' — '+schVerb(nx.s)+' '+tkL('в ','at ')+schWhen(nx, d.now)+(schIn(nx, d) ? ', '+schIn(nx, d) : ''); }
-      else if(it.why==='hol') line+=' — '+tkL('каникулы до ','holidays until ')+schWhen(it.hol, d.now);
+      else if(it.why==='hol') line+=' — '+schLow(schHolWord(it, d));
+      else if(it.why==='all') line+=' — '+(d.all && d.all.until ? tkL('закрыто всем до ','closed for all until ')+schWhen(d.all.until, d.now) : tkL('закрыто всем, пока не откроете','closed for all until opened'));
     }
     h+='<div class="dv-meta" translate="no">'+esc(line)+'</div>';
-    if(d.clock && it.on && (it.why==='win' || it.why==='base') && it.next && it.next.length>1)
+    if(schLive(d) && it.on && (it.why==='win' || it.why==='base') && it.next && it.next.length>1)
       h+='<div class="dv-meta" translate="no">'+esc(tkL('дальше: ','then: ')+it.next.slice(1, 4).map(function(x){ return schWhen(x, d.now)+' — '+schStWord(x.s).toLowerCase(); }).join(' · '))+'</div>';
     h+='</div></div>';
     // the switch as a list row (.lrow keeps it on the right at any width)
     h+='<div class="lrow"><div class="grow"><div class="nm">Расписание действует</div><div class="ds">выключенное хранится, но ничего не закрывает</div></div>'
       + '<label class="sw"><input type="checkbox" id="sc-on" aria-label="'+esc(tkL('расписание действует','the schedule acts'))+'"'+(it.on?' checked':'')+'><i></i></label></div>';
     if(!d.clock) h+=noteBox('<b>Расписание сейчас не действует:</b> роутер ещё не знает, который час. Действия поверх расписания станут доступны, когда время сверится.', 'warn');
+    else if(d.tick===0) h+=noteBox('<b>Расписание сейчас не действует:</b> Enodia снята с расписания — «Включить VPN» возвращает её.', 'warn');
+    else if(it.st==='limited' || it.safe) h+=schLimNote(d);
     // an action over the schedule: its row and «back to the schedule»
     if(it.ovr){
       var ow=it.ovr.s==='closed' ? tkL('Закрыто вручную','Closed by hand') : tkL('Открыто вручную','Opened by hand');
       h+='<div class="lrow"><div class="grow"><div class="nm" translate="no">'+esc(ow+' '+(it.ovr.until ? tkL('до ','until ')+schWhen(it.ovr.until, d.now) : tkL('— пока не откроете','— until opened')))+'</div>'
-        + '<div class="ds">действие поверх расписания — до своего срока</div></div><button type="button" class="btn sm gh" data-scact="clear">Вернуть по расписанию</button></div>';
+        // an «open for…» laid over a hand close: the router brings the close back when it ends (`back`)
+        + '<div class="ds">'+(it.ovr.back ? 'потом — снова закрыто вручную' : 'действие поверх расписания — до своего срока')+'</div></div><button type="button" class="btn sm gh" data-scact="clear">Вернуть по расписанию</button></div>';
     }
-    if(it.hol) h+='<div class="lrow"><div class="grow"><div class="nm" translate="no">'+esc(tkL('Каникулы до ','Holidays until ')+schWhen(it.hol, d.now))+'</div><div class="ds">расписание не действует до этого дня включительно</div></div><button type="button" class="btn sm gh" data-scact="holoff">Отменить</button></div>';
+    if(it.hol) h+='<div class="lrow"><div class="grow"><div class="nm" translate="no">'+esc(schHolWord(it, d))+'</div><div class="ds">окна и лимит расписания в эти дни не действуют</div></div><button type="button" class="btn sm gh" data-scact="holoff">Отменить</button></div>';
     h+=schActsHtml(it, d, true)
       + '<div class="f" id="sc-holf" hidden><label for="sc-hold">Расписание не действует до этого дня включительно</label><div class="row" style="gap:9px">'
-      + '<input id="sc-hold" type="date" autocomplete="off"><button type="button" class="btn sm pri" id="sc-holgo">Включить каникулы</button></div></div>'
+      + '<input id="sc-hold" type="date" autocomplete="off"><button type="button" class="btn sm pri" id="sc-holgo">Включить каникулы</button></div>'
+      + '<div class="cline wr" id="sc-holerr" role="alert"></div></div>'
       + '<div class="cline">В закрытое окно вместо «Закрыть сейчас» — «Открыть на…»: 15 мин · 30 мин · 1 ч · до конца окна. Действие поверх расписания живёт до своего срока и пишется в журнал событий.</div>';
     return h+'</div>';
   }
@@ -5600,28 +5741,41 @@
   // parent needs right there). Open now ⇒ «Закрыть сейчас…» (+ «Отложить», when the week is about to get stricter); otherwise
   // «Открыть на…». Not synced or switched off ⇒ locked: the router refuses actions it cannot keep by the clock.
   // `st` — the state the actions are for: the device tab passes «closed» for a device its day limit closed («Открыть на…» adds time)
+  // Above a hand action stand «закрыто всем» and holidays (access-sched.sh sc_effective; the router refuses an action under them):
+  // under «закрыто всем» the one action is «Открыть всем», on holidays — «Отменить каникулы» (the schedule screen has it in the row).
+  // «Отложить» — near the closing only (≤ 60 min, the router's epochs): far ahead it would rest the week and the limit for hours.
   function schActsHtml(it, d, full, st){
-    var dis=(d.clock && it.on) ? '' : ' disabled', h='', nx=it.next && it.next[0];
+    var dis=(schLive(d) && it.on) ? '' : ' disabled', h='', nx=it.next && it.next[0];
     st=st||it.st;
+    if(schLive(d) && it.on && it.why==='all') return '<div class="acts sc-acts" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn" data-scact="allopen">Открыть всем</button></div>';
+    if(schLive(d) && it.on && it.why==='hol') return full ? '' : '<div class="acts sc-acts" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn" data-scact="holoff">Отменить каникулы</button></div>';
     // «limited» is both: stricter (close it all) and looser (open it) are offered (BE7000 08.10.2026: only «Открыть на…» was)
     if(st!=='closed') h+='<button type="button" class="btn" data-scact="close" aria-haspopup="menu"'+dis+'>'+icUse('i-lock','s')+'Закрыть сейчас…</button>';
     // the schedule's own screen while its day limit closes some device: «Открыть на…» too — the journal line sends the parent
     // here to add time (BE7000 08.10.2026: the schedule was «открыто», so only «Закрыть сейчас…» was offered)
     if(st!=='open' || (full && schOverN(it, d)>0)) h+='<button type="button" class="btn" data-scact="open" aria-haspopup="menu"'+dis+'>Открыть на…</button>';
-    if(st==='open' && (it.why==='win' || it.why==='base') && nx && SCH_RK[nx.s]>0) h+='<button type="button" class="btn" data-scact="post"'+dis+'>Отложить закрытие на 30 мин</button>';
+    if(st==='open' && (it.why==='win' || it.why==='base') && nx && SCH_RK[nx.s]>0 && nx.ue!=null && d.ne!=null && nx.ue-d.ne<=3600) h+='<button type="button" class="btn" data-scact="post"'+dis+'>Отложить закрытие на 30 мин</button>';
     if(full) h+='<button type="button" class="btn gh" data-scact="hol"'+dis+'>Каникулы…</button>';
-    return '<div class="acts" style="justify-content:flex-start;flex-wrap:wrap">'+h+'</div>';
+    return '<div class="acts sc-acts" style="justify-content:flex-start;flex-wrap:wrap">'+h+'</div>';
   }
-  function schActsWire(root, it, rep){
+  // a holidays switch bumps the schedule's version: the draft open on its screen keeps its edits (the toggle does the same)
+  // …only onto a draft that WAS the version before this action (r.ver = its ver + 1): a draft built from an older one (another tab
+  // saved since) keeps its old version, and its «Сохранить» is refused as stale instead of silently undoing that save (review
+  // s.112, round 2)
+  function schVerKeep(it, r){ if(r && r.ok && r.ver!=null && _schDraft && _schDraft.key===it.id && +r.ver===_schDraft.ver+1) _schDraft.ver=r.ver; }
+  // `whole` — the device tab: the action is over the WHOLE schedule (every device of it), and its menus say so
+  function schActsWire(root, it, rep, whole){
     function ovr(op, arg, l){ postAction('sched_ovr', null, l, {id:it.id, op:op, arg:arg||''}, function(){ rep(); }); }
+    var n=(it.devs||[]).length, hd=whole ? function(v){ return tkL(v+' всё расписание «'+it.name+'» · '+schDevN(n), (v==='Закрыть' ? 'Close' : 'Open')+' the whole schedule «'+it.name+'» · '+n+' '+(n===1 ? 'device' : 'devices')); } : function(){ return null; };
     Array.prototype.forEach.call(root.querySelectorAll('[data-scact]'), function(b){
       var a=b.getAttribute('data-scact');
       b.addEventListener('click', function(){
-        if(a==='close') schCloseMenu(b, function(t){ ovr('close', t, 'закрываю…'); });
-        else if(a==='open') schOpenMenu(b, it, function(v){ ovr('open', v, 'открываю…'); });
+        if(a==='close') schCloseMenu(b, function(t){ ovr('close', t, 'закрываю…'); }, hd('Закрыть'));
+        else if(a==='open') schOpenMenu(b, it, function(v){ ovr('open', v, 'открываю…'); }, hd('Открыть'));
         else if(a==='post') ovr('postpone', '30', 'откладываю закрытие…');
         else if(a==='clear') ovr('clear', '', 'возвращаю расписание…');
-        else if(a==='holoff') postAction('sched_hol', null, 'отменяю каникулы…', {id:it.id, date:'off'}, function(){ rep(); });
+        else if(a==='holoff') postAction('sched_hol', null, 'отменяю каникулы…', {id:it.id, date:'off'}, function(r){ schVerKeep(it, r); rep(); });
+        else if(a==='allopen') postAction('sched_all', null, 'открываю всем…', {arg:'off'}, function(){ rep(); });
         else if(a==='hol'){ var f=document.getElementById('sc-holf'); if(f){ f.hidden=!f.hidden; if(!f.hidden) document.getElementById('sc-hold').focus(); } }
       });
     });
@@ -5649,10 +5803,10 @@
     h+='<div class="card" id="sc-edit"><div class="wt">Изменить неделю</div>'
       + '<div class="cline" style="margin-top:0">Вне окон</div>'+schStSeg('sc-base', dr.base, d)
       + '<div class="cline">Новое окно</div>'
-      + '<div class="segbar sm" id="sc-days" role="group" aria-label="Дни недели">'+SCH_ORD.map(function(x){ return '<div class="seg'+(x>=1 && x<=5 ? ' on' : '')+'" data-scd="'+x+'">'+SCH_DN[x]+'</div>'; }).join('')+'</div>'
-      + '<div class="f2 keep" style="margin-top:11px"><div class="f"><label for="sc-a">С</label><input id="sc-a" type="time" value="19:00" autocomplete="off"></div>'
-      + '<div class="f"><label for="sc-b">До</label><input id="sc-b" type="time" value="21:00" autocomplete="off"></div></div>'
-      + '<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap">'+schStSeg('sc-ws', dr.base==='closed' ? 'open' : 'closed', d)
+      + '<div class="segbar sm" id="sc-days" role="group" aria-label="Дни недели">'+SCH_ORD.map(function(x){ return '<div class="seg'+(dr.nw.d.indexOf(String(x))>=0 ? ' on' : '')+'" data-scd="'+x+'">'+SCH_DN[x]+'</div>'; }).join('')+'</div>'
+      + '<div class="f2 keep" style="margin-top:11px"><div class="f"><label for="sc-a">С</label><input id="sc-a" type="time" value="'+esc(dr.nw.a)+'" autocomplete="off"></div>'
+      + '<div class="f"><label for="sc-b">До</label><input id="sc-b" type="time" value="'+esc(dr.nw.b)+'" autocomplete="off"></div></div>'
+      + '<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap">'+schStSeg('sc-ws', dr.nw.s, d)
       + '<button type="button" class="btn pri" id="sc-wadd">Добавить окно</button></div>'
       + '<div class="cline wr" id="sc-werr" role="alert"></div>'
       + '<div class="cline">Пересеклись окна — действует более строгое. Окно, которое кончается раньше, чем началось, идёт через полночь.</div></div>';
@@ -5663,15 +5817,18 @@
       + (mine.length ? mine.map(function(m){ var x=schDevNm(m, devs);
           return '<div class="lrow"><span class="av">'+icUse('i-dev','s','',true)+'</span><div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(x.nm)+'</span>'
             + (schMacPriv(m) ? ' <span class="badge inh" title="'+esc(tkL('MAC выдуман самим телефоном для этой сети и может смениться','the phone made this MAC up for this network and may change it'))+'">'+esc(tkL('частный адрес','private address'))+'</span>' : '')+'</div>'
-            + '<div class="ds"><span class="mono sens">'+esc(m.toUpperCase())+'</span> · '+(x.on ? 'в сети' : 'не в сети')
-            + (it && schUseWord(it, m) ? ' · <span translate="no">'+esc(schUseWord(it, m))+'</span>' : '')+'</div></div>'
-            + (it && d.clock && it.on && schOver(it, m) ? schDevChip(it, m, d) : '')
+            + '<div class="ds"><span class="mono sens">'+esc(m.toUpperCase())+'</span> · <span>'+(x.on ? 'в сети' : 'не в сети')+'</span>'
+            + (it && schUseWord(it, m) ? ' · <span translate="no">'+esc(schUseWord(it, m))+'</span>' : '')
+            // closed by the limit — said in this line: a chip beside the name squeezed it to 0 px and pushed ✕ past the card's edge
+            // at 320 px (review s.113, round 4)
+            + (it && schLive(d) && it.on && schOver(it, m) ? ' · <b translate="no">'+esc(tkL('закрыто — лимит на сегодня исчерпан','closed — today\'s limit used up'))+'</b>' : '')+'</div></div>'
             + '<button type="button" class="btn sm gh" data-scdel="'+esc(m)+'" aria-label="'+esc(tkL('убрать из расписания','remove from the schedule'))+'">✕</button></div>'; }).join('')
         : '<div class="cline">Устройств пока нет — расписанию некого закрывать.</div>')
       + (priv.length ? noteBox('<b>Частный адрес Wi-Fi.</b> Устройство с таким MAC может его сменить и выпасть из расписания — выключите частный адрес для этой сети в настройках телефона.', 'warn') : '')
       + '<div class="row" style="gap:9px;margin-top:11px;align-items:flex-end"><div class="grow f"><label for="sc-dadd">Добавить устройство без расписания</label><select id="sc-dadd">'
       + '<option value="">—</option>'+devPickSort(other).map(function(v){ var m=String(v.mac).toLowerCase(); return '<option value="'+esc(m)+'">'+esc(devName(v)+' · '+m.toUpperCase())+'</option>'; }).join('')
-      + '</select></div><button type="button" class="btn" id="sc-daddgo"'+(other.length?'':' disabled')+'>Добавить</button></div></div>';
+      + '</select></div><button type="button" class="btn" id="sc-daddgo"'+((other.length && mine.length<(d.dmax||32)) ? '' : ' disabled')+'>Добавить</button></div>'
+      + (mine.length>=(d.dmax||32) ? '<div class="cline">'+esc(tkL('устройств в расписании не больше ','devices in a schedule at most '))+(d.dmax||32)+'</div>' : '')+'</div>';
     // DAY LIMIT (mockup «Лимит в день»): minutes of real activity per weekday / weekend day — part of the draft, saved with it
     // A limit the choices do not have (a backup, a hand edit — the router takes any 0..1440) is offered as is: shown as «без
     // лимита», the next «Сохранить» would silently drop it (BE7000 08.10.2026, a 3-minute test limit).
@@ -5695,7 +5852,9 @@
       + '<div style="margin-top:11px">'+noteBox('Шифрованный DNS, включённый в браузере вручную, идёт мимо роутера — его не подменить.', 'info')+'</div></div>';
     h+='<div class="card"><div class="wt">Что расписание не остановит</div>'
       + '<div class="lrow"><div class="grow"><div class="nm">Мобильный интернет</div><div class="ds">телефон с выключенным Wi-Fi роутеру не виден</div></div></div>'
-      + '<div class="lrow"><div class="grow"><div class="nm">Новый MAC</div><div class="ds">частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет</div></div></div></div>';
+      + '<div class="lrow"><div class="grow"><div class="nm">Новый MAC</div><div class="ds">частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет</div></div></div>'
+      // without the filter «ограничено» closes nothing at all — a row about getting past it would talk of a lock that is not there
+      + (schLimOn(d) ? '<div class="lrow"><div class="grow"><div class="nm">Свой VPN на устройстве</div><div class="ds">обходит «ограничено»; «закрыто» не обходит</div></div></div>' : '')+'</div>';
     h+='<div class="card wfull"><div class="cline wr" id="sc-err" role="alert" style="margin-top:0"></div><div class="acts" style="justify-content:flex-start">'
       + '<button type="button" class="btn pri" id="sc-save">'+(it ? 'Сохранить' : 'Создать расписание')+'</button>'
       + (it ? '<button type="button" class="btn gh" id="sc-del">'+icUse('i-trash','s')+'Удалить расписание</button>' : '<button type="button" class="btn gh" id="sc-cancel">Отмена</button>')+'</div></div>';
@@ -5716,8 +5875,10 @@
     var h='<div class="card w2" id="sc-lmt"><div class="wt">'+(al ? 'Ограничено — что разрешено' : 'Ограничено — что закрыто')+'</div>';
     if(!schLimOn(d)) h+=noteBox('<b>Нужен компонент «Фильтр по категориям».</b> Без него «ограничено» не закрывает ничего — устройство остаётся открытым целиком.', 'warn')
       + '<div class="acts" style="justify-content:flex-start;margin-top:9px"><button type="button" class="btn" data-cact="rr-pkg">Компоненты</button></div>';
-    h+='<div class="segbar sm" id="sc-lmode" role="group" aria-label="'+esc(tkL('Режим «ограничено»','The «limited» mode'))+'" style="margin-top:'+(schLimOn(d) ? '0' : '13px')+'">'
-      + dvSeg('data-sc-lmode', 'block', '<span>Закрыть выбранное</span>', dr.lmode) + dvSeg('data-sc-lmode', 'allow', '<span>Только разрешённое</span>', dr.lmode)+'</div>'
+    // the mode — two tiles of the mockup (what each one does is said on the tile itself)
+    h+='<div class="opt c2" id="sc-lmode" role="group" aria-label="'+esc(tkL('Режим «ограничено»','The «limited» mode'))+'"'+(schLimOn(d) ? '' : ' style="margin-top:13px"')+'>'
+      + optTile('data-sc-lmode', 'block', !al, 'i-ban', 'Закрыть выбранное', 'категории и сайты ниже не открываются, остальное работает')
+      + optTile('data-sc-lmode', 'allow', al, 'i-lock', 'Только разрешённое', 'открыто лишь выбранное — мессенджеры, школа, карты')+'</div>'
       + '<div class="cline">Категории — из каталога гео-категорий</div>'
       + '<div class="segbar sm" id="sc-cats" role="group" aria-label="'+esc(tkL('Категории','Categories'))+'">'
       + cats.map(function(c){ var on=dr.cats.indexOf(c.id)>=0, pd=on && pend.indexOf(c.id)>=0;
@@ -5726,7 +5887,7 @@
       + '</div>'
       + '<div class="cline">Любой пул из каталога гео — сервис, страна, «заблокировано в РФ»</div>'
       + '<div id="sc-geo">'+schGeoChips(d, it, dr)+'</div>'
-      + '<div class="f" style="margin-top:9px"><label for="sc-gq">Найти в каталоге</label><input id="sc-gq" type="search" autocomplete="off" spellcheck="false" translate="no" placeholder="telegram, discord, cn…"></div>'
+      + '<div class="f" style="margin-top:9px"><label for="sc-gq">Найти в каталоге</label><input id="sc-gq" type="search" autocomplete="off" spellcheck="false" translate="no" placeholder="telegram, discord, cn…" value="'+esc(dr.gq)+'"></div>'
       + '<div id="sc-gres"></div>'
       + '<div class="f" style="margin-top:12px"><label for="sc-sites">'+(al ? 'Свои сайты — по одному в строке' : 'Свои сайты и адреса — по одному в строке')+'</label>'
       + '<textarea id="sc-sites" spellcheck="false" autocapitalize="off" translate="no" placeholder="roblox.com">'+esc(dr.sites)+'</textarea></div>'
@@ -5790,21 +5951,25 @@
   function schSegVal(id){ var s=document.querySelector('#'+id+' .seg.on'); return s ? s.getAttribute('data-'+id) : ''; }
   function schFormWire(body, d, it, dr, devs){
     function el(id){ return document.getElementById(id); }
-    var rep=function(){ schScrOpen(it ? it.id : null); };
+    // a router answer that comes after the human left repaints nothing (schScrOpen with an id skips the «still shown?» check)
+    var rep=navIfShown('rt-sched-p', schScrOpen);
     function repaintWeek(){
       el('sc-bars').innerHTML=schWeekHtml({base:dr.base, wins:dr.wins}, d);
       el('sc-wins').innerHTML=schWinRows(dr); wireWinDel();
     }
     function wireWinDel(){
       Array.prototype.forEach.call(body.querySelectorAll('[data-scwdel]'), function(b){
-        b.addEventListener('click', function(){ dr.wins.splice(+b.getAttribute('data-scwdel'), 1); dr.dirty=true; repaintWeek(); });
+        b.addEventListener('click', function(){
+          var i=+b.getAttribute('data-scwdel'); dr.wins.splice(i, 1); dr.dirty=true; repaintWeek();
+          var n=body.querySelector('[data-scwdel="'+Math.min(i, dr.wins.length-1)+'"]') || el('sc-wadd'); if(n) n.focus();   // focus stays in the list
+        });
       });
     }
     // the name — a draft on `input` (not `change`: Chrome sends `change` to a field the redraw carries away, after the success)
-    el('sc-name').addEventListener('input', function(){ dr.name=this.value; dr.dirty=true; });
+    el('sc-name').addEventListener('input', function(){ nwTyped(); dr.name=this.value; dr.dirty=true; });
     el('sc-lwd').addEventListener('change', function(){ dr.lim.wd=+this.value||0; dr.dirty=true; });
     // own sites — a draft on `input` (see the name above)
-    el('sc-sites').addEventListener('input', function(){ dr.sites=this.value; dr.dirty=true; });
+    el('sc-sites').addEventListener('input', function(){ nwTyped(); dr.sites=this.value; dr.dirty=true; });
     Array.prototype.forEach.call(body.querySelectorAll('#sc-cats [data-sccat]'), function(s){
       function flip(){
         var c=s.getAttribute('data-sccat'), i=dr.cats.indexOf(c);
@@ -5815,13 +5980,21 @@
       s.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); flip(); } });
     });
     wireCacts(el('sc-lmt'));
+    if(it) wireCacts(el('sc-head'));   // the head's filter note carries the «Компоненты» door too
     // the mode redraws the screen from the draft (the card's words change with it)
-    wireSeg('sc-lmode', 'data-sc-lmode', function(v){ if(v===dr.lmode) return; dr.lmode=v; dr.dirty=true; schShow(d, it, devs); });
+    Array.prototype.forEach.call(body.querySelectorAll('[data-sc-lmode]'), function(t){
+      function pick(){ var v=t.getAttribute('data-sc-lmode'); if(v===dr.lmode) return; dr.lmode=v; dr.dirty=true; schShow(d, it, devs); }
+      t.addEventListener('click', pick);
+      t.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); pick(); } });
+    });
     // pools: the chips and the search results are repainted in place — the search field keeps its text and focus
     function scGeoPaint(){
       el('sc-geo').innerHTML=schGeoChips(d, it, dr);
       Array.prototype.forEach.call(body.querySelectorAll('[data-scgdel]'), function(b){
-        b.addEventListener('click', function(){ dr.geo.splice(+b.getAttribute('data-scgdel'), 1); dr.dirty=true; scGeoPaint(); scGeoFind(); });
+        b.addEventListener('click', function(){
+          var i=+b.getAttribute('data-scgdel'); dr.geo.splice(i, 1); dr.dirty=true; scGeoPaint(); scGeoFind();
+          var n=body.querySelector('[data-scgdel="'+Math.min(i, dr.geo.length-1)+'"]') || el('sc-gq'); if(n) n.focus();
+        });
       });
     }
     function scGeoFind(){
@@ -5832,25 +6005,34 @@
           var k=r.getAttribute('data-scgadd'), g=rtGeoKeys && rtGeoKeys[k];
           if(!g || dr.geo.some(function(x){ return x.k===k; })) return;
           if(dr.geo.length>=((d.pmax|0) || 32)){ showToast(tkL('пулов не больше ','pools at most ')+((d.pmax|0) || 32), false); return; }
-          dr.geo.push({k:k, kind:g.kind, t:g.type, l:g.label || k}); dr.dirty=true; scGeoPaint(); scGeoFind();
+          dr.geo.push({k:k, kind:g.kind, t:g.type, l:g.label || k}); dr.dirty=true; scGeoPaint(); scGeoFind(); el('sc-gq').focus();
         }
         r.addEventListener('click', add);
         r.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); add(); } });
       });
     }
     el('sc-gq').addEventListener('input', function(){
+      nwTyped(); dr.gq=this.value;
       if(rtGeoKeys){ scGeoFind(); return; }
       el('sc-gres').innerHTML='<div class="cline">'+esc(trNow('загружаю каталог гео…'))+'</div>';
       rtLoadGeoKeys().then(function(){ if(screenAlive(body)) scGeoFind(); });
     });
     scGeoPaint();
+    if(dr.gq && rtGeoKeys) scGeoFind();   // the search a redraw found typed in (the draft keeps it)
+    // the router asked again when its next change is due (schAgain) — the draft keeps every input across that redraw
+    if(it) schAgain(body, d, it, rep);
     el('sc-lwe').addEventListener('change', function(){ dr.lim.we=+this.value||0; dr.dirty=true; });
     el('sc-safe-on').addEventListener('change', function(){ dr.safe=this.checked ? 1 : 0; dr.dirty=true; });
     wireSeg('sc-base', 'data-sc-base', function(v){ dr.base=v; dr.dirty=true; repaintWeek(); });
-    wireSeg('sc-ws', 'data-sc-ws', function(){});
+    wireSeg('sc-ws', 'data-sc-ws', function(v){ dr.nw.s=v; });
+    el('sc-a').addEventListener('input', function(){ nwTyped(); dr.nw.a=this.value; });
+    el('sc-b').addEventListener('input', function(){ nwTyped(); dr.nw.b=this.value; });
     Array.prototype.forEach.call(body.querySelectorAll('#sc-days [data-scd]'), function(s){
       s.setAttribute('role','button'); s.setAttribute('tabindex','0'); s.setAttribute('aria-pressed', s.classList.contains('on') ? 'true' : 'false');
-      function flip(){ s.classList.toggle('on'); s.setAttribute('aria-pressed', s.classList.contains('on') ? 'true' : 'false'); }
+      function flip(){
+        s.classList.toggle('on'); s.setAttribute('aria-pressed', s.classList.contains('on') ? 'true' : 'false');
+        dr.nw.d=Array.prototype.map.call(body.querySelectorAll('#sc-days .seg.on'), function(x){ return x.getAttribute('data-scd'); }).sort().join('');
+      }
       s.addEventListener('click', flip);
       s.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); flip(); } });
     });
@@ -5865,7 +6047,10 @@
     });
     wireWinDel();
     Array.prototype.forEach.call(body.querySelectorAll('[data-scdel]'), function(b){
-      b.addEventListener('click', function(){ var m=b.getAttribute('data-scdel'); dr.devs=dr.devs.filter(function(x){ return x!==m; }); dr.dirty=true; schShow(d, it, devs); });
+      b.addEventListener('click', function(){
+        var m=b.getAttribute('data-scdel'), i=dr.devs.indexOf(m); dr.devs=dr.devs.filter(function(x){ return x!==m; }); dr.dirty=true; schShow(d, it, devs);
+        var bd=document.getElementById('modal-body'), n=bd && (bd.querySelectorAll('[data-scdel]')[Math.min(i, dr.devs.length-1)] || document.getElementById('sc-dadd')); if(n) n.focus();
+      });
     });
     el('sc-daddgo').addEventListener('click', function(){
       var m=el('sc-dadd').value; if(!m || dr.devs.indexOf(m)>=0) return;
@@ -5875,34 +6060,49 @@
       var nm=String(dr.name||'').trim(), er=el('sc-err');
       if(!nm){ er.textContent=trNow('нужно имя расписания'); el('sc-name').focus(); return; }
       er.textContent='';
-      var p=schSpec(it ? it.id : 'new', it ? it.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, geo:dr.geo, sites:dr.sites, safe:dr.safe});
-      postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
+      // the DRAFT's version: it may be ahead of the screen's `it` by the tab's own toggle / holidays (schVerKeep)
+      var p=schSpec(it ? it.id : 'new', it ? dr.ver : 0, nm, dr.on, dr.base, dr.wins, dr.devs, dr.lim, {lmode:dr.lmode, cats:dr.cats, geo:dr.geo, sites:dr.sites, safe:dr.safe});
+      // ONE save in flight per draft: the answer comes at once, but the screen moves on 1.2 s later — a second click in between
+      // created the schedule twice (review s.112, round 2); `sent` dies with the draft or with the answer
+      if(dr.sent) return;
+      var sent=postAction('sched_save', null, it ? 'сохраняю расписание…' : 'создаю расписание…', p, function(r){
+        dr.sent=false;
         if(!r || !r.ok){ if(r && r.msg && screenAlive(er)) er.textContent=trNow(String(r.msg)); return; }
         // lines of «Свои сайты» the router could not read as a site — said, not silently lost
         if((r.dropped|0)>0) showToast(tkL('не похожи на сайт или адрес и пропущены — строк: ','not a site or an address and skipped — lines: ')+(r.dropped|0), false);
-        _schDraft=null; _schNewTpl=null; _schNewDev='';
+        // only THIS draft goes: the human may already be editing another schedule (its draft must survive this answer)
+        if(_schDraft===dr){ _schDraft=null; _schNewTpl=null; _schNewDev=''; }
+        // the human left while the router saved: its answer must neither pull them back nor rewrite another screen's address
+        if(!navShows('rt-sched-p') || navSplit(_navKey).a!==(it ? it.id : '')) return;
         if(!it) navReplace(navKey('rt-sched-p', r.id));
         schScrOpen(r.id);
-      });
+      }, function(){ dr.sent=false; });
+      if(sent) dr.sent=true;
     });
     if(el('sc-cancel')) el('sc-cancel').addEventListener('click', function(){ _schDraft=null; navUp(); });
     if(!it) return;
     el('sc-del').addEventListener('click', function(){
       postAction('sched_del', tkL('Удалить расписание «'+it.name+'»?\n\nЕго устройства сразу станут открыты.', 'Delete the schedule «'+it.name+'»?\n\nIts devices become open at once.'), 'удаляю расписание…', {id:it.id},
-        function(r){ if(r && r.ok){ _schDraft=null; navReplace('rt-sched'); openSched(); } });
+        function(r){ if(r && r.ok){ if(_schDraft===dr) _schDraft=null; if(navShows('rt-sched-p') && navSplit(_navKey).a===it.id){ navReplace('rt-sched'); openSched(); } } });
     });
     var on=el('sc-on');
     on.addEventListener('change', function(){
       swPost(on, 'sched_toggle', null, on.checked ? 'включаю расписание…' : 'выключаю расписание…', {id:it.id, on:on.checked ? 1 : 0}, function(r){
-        if(r && r.ok && r.ver!=null && _schDraft && _schDraft.key===it.id){ _schDraft.ver=r.ver; _schDraft.on=on.checked ? 1 : 0; }
+        if(r && r.ok && r.ver!=null && _schDraft && _schDraft.key===it.id && +r.ver===_schDraft.ver+1){ _schDraft.ver=r.ver; _schDraft.on=on.checked ? 1 : 0; }
         rep();
       });
     });
     schActsWire(el('sc-head'), it, rep);
+    el('sc-hold').addEventListener('input', nwTyped);
     el('sc-holgo').addEventListener('click', function(){
       var v=el('sc-hold').value;
-      if(!/^\d{4}-\d\d-\d\d$/.test(v)){ el('sc-err').textContent=trNow('выберите дату'); return; }
-      postAction('sched_hol', null, 'включаю каникулы…', {id:it.id, date:v}, function(){ rep(); });
+      if(!/^\d{4}-\d\d-\d\d$/.test(v)){ el('sc-holerr').textContent=trNow('выберите дату'); return; }
+      el('sc-holerr').textContent='';
+      // a refusal stays beside the button with the date it is about (a redraw closed the form a second after saying it)
+      postAction('sched_hol', null, 'включаю каникулы…', {id:it.id, date:v}, function(r){
+        if(r && !r.ok){ if(r.msg && screenAlive(el('sc-holerr'))) el('sc-holerr').textContent=trNow(String(r.msg)); return; }
+        schVerKeep(it, r); rep();
+      });
     });
   }
 
@@ -6994,13 +7194,30 @@
     "Расписания":"Schedules","Расписание доступа":"Access schedule",
     "Ночь без интернета":"A night without internet","закрыто каждую ночь с 23:00 до 07:00":"closed every night from 23:00 to 07:00",
     "Будни и сон":"Weekdays and sleep","по будням ночью закрыто, в выходные — ночью дольше":"closed at night on weekdays, longer at night on weekends",
+    "Учёба и сон":"School and sleep","ночью закрыто, в учебные часы — без соцсетей, видео и игр":"closed at night; in school hours without social media, video and games",
     "Только в эти часы":"Only these hours","закрыто всегда, кроме окон, которые вы зададите":"always closed except the windows you set",
     "Без интернета":"No internet","закрыто всегда; в домашней сети видно — камеры, принтер, умный дом":"always closed; seen in the home network — cameras, a printer, the smart home",
     "Расписания сейчас не действуют: роутер ещё не знает, который час.":"The schedules are not acting now: the router does not know the time yet.",
     "Своих часов у него нет — время приходит из сети после загрузки. Как только оно сверится, расписания начнут действовать сами: закрыть интернет по неверным часам хуже, чем не закрыть.":"It has no clock of its own — the time comes from the network after a boot. Once it is synced, the schedules start acting by themselves: closing the internet by a wrong clock is worse than not closing.",
     "Расписаний пока нет. Расписание — это устройства и неделя: когда им открыт интернет, а когда закрыт. Начните с готового или создайте своё.":"No schedules yet. A schedule is devices and a week: when their internet is open and when it is closed. Start from a template or create your own.",
-    "Новое расписание":"New schedule","Открыть всем":"Open for all","Закрыть всем сейчас…":"Close for all now…",
-    "«Закрыть всем сейчас» — пауза для всех устройств из всех расписаний: на 30 минут, на час, до утра или пока не откроете. Потом каждое расписание идёт своим чередом.":"«Close for all now» is a pause for every device of every schedule: for 30 minutes, an hour, until the morning or until you open it. Then each schedule goes its own way.",
+    "Новое расписание":"New schedule","Открыть всем":"Open for all",
+    "Расписания сейчас не действуют: Enodia снята с расписания.":"The schedules are not acting now: Enodia is off the schedule.",
+    "В crontab нет строки, которой роутер раз в минуту проверяет окна, — открыть закрытое в срок было бы некому, поэтому не закрыто ничего. «Включить VPN» возвращает её вместе с остальным.":"The crontab has no line by which the router checks the windows every minute — nobody would open the closed in time, so nothing is closed. «Turn the VPN on» brings it back with the rest.",
+    "Enodia снята с расписания — «Включить VPN» возвращает её.":"Enodia is off the schedule — «Turn the VPN on» brings it back.",
+    "Не действуют: Enodia снята с расписания.":"Not acting: Enodia is off the schedule.",
+    "«Ограничено» и безопасный поиск сейчас не действуют:":"«Limited» and safe search are not acting now:",
+    "нет компонента «Фильтр по категориям». Эти устройства открыты целиком.":"the «Category filter» component is missing. These devices are fully open.",
+    "фильтр по категориям не ответил после перезапуска. Эти устройства открыты целиком; роутер пробует снова каждую минуту.":"the category filter did not answer after a restart. These devices are fully open; the router tries again every minute.",
+    "стоит прежняя сборка фильтра по категориям. Эти устройства открыты целиком — обновите компонент «Фильтр по категориям».":"an older build of the category filter is installed. These devices are fully open — update the «Category filter» component.",
+    "на роутере нет geo.sh — обновите скрипты роутера":"there is no geo.sh on the router — update the router's scripts","нет данных расписания":"no schedule data",
+    "потом — снова закрыто вручную":"then closed by hand again","Отменить каникулы":"Cancel the holidays","Отменить":"Cancel","С":"From","До":"To",
+    "сейчас закрыто всем — сначала «Открыть всем»":"closed for all now — «Open for all» first",
+    "сейчас действует ручное действие — сначала верните по расписанию":"a hand action is acting now — first go back to the schedule",
+    "у расписания каникулы — сначала отмените их":"the schedule is on holidays — cancel them first",
+    "расписание выключено — включите его":"the schedule is switched off — switch it on",
+    "расписания сейчас не действуют: Enodia снята с расписания — включите VPN":"the schedules are not acting now: Enodia is off the schedule — turn the VPN on",
+    "закрытие ещё не скоро — отложить можно за час до него":"the closing is not soon — it can be postponed an hour before it","Закрыть всем сейчас…":"Close for all now…",
+    "«Закрыть всем сейчас» — пауза для всех устройств из всех включённых расписаний, и на каникулах тоже: на 30 минут, на час, до утра или пока не откроете. Потом каждое расписание идёт своим чередом.":"«Close for all now» pauses every device of every switched-on schedule, on holidays too: for 30 minutes, an hour, till morning or until you open. Then each schedule goes its own way.",
     "Как это работает":"How it works","Устройство узнаётся по MAC":"A device is known by its MAC","правило не уедет на соседа, когда сменится адрес":"the rule does not move to a neighbour when the address changes",
     "«Закрыто» — закрыто всё":"«Closed» closes everything",
     "сильнее всей маршрутизации: ни правила по портам, ни свой VPN на устройстве не выпустят наружу. Домашняя сеть остаётся":"stronger than all the routing: neither port rules nor a VPN on the device let it out. The home network stays",
@@ -7015,7 +7232,7 @@
     "Расписание сейчас не действует:":"The schedule is not acting now:",
     "роутер ещё не знает, который час. Действия поверх расписания станут доступны, когда время сверится.":"the router does not know the time yet. Actions over the schedule become available once the time is synced.",
     "действие поверх расписания — до своего срока":"an action over the schedule — until its own end","Вернуть по расписанию":"Back to the schedule",
-    "расписание не действует до этого дня включительно":"the schedule does not act up to and including this day",
+    "окна и лимит расписания в эти дни не действуют":"the schedule's windows and limit do not act on these days",
     "Расписание не действует до этого дня включительно":"The schedule does not act up to and including this day","Включить каникулы":"Start the holidays",
     "В закрытое окно вместо «Закрыть сейчас» — «Открыть на…»: 15 мин · 30 мин · 1 ч · до конца окна. Действие поверх расписания живёт до своего срока и пишется в журнал событий.":"In a closed window «Open for…» replaces «Close now»: 15 min · 30 min · 1 h · until the window ends. An action over the schedule lives until its own end and goes to the event log.",
     "Закрыть сейчас…":"Close now…","Открыть на…":"Open for…","Отложить закрытие на 30 мин":"Postpone the closing by 30 min","Каникулы…":"Holidays…","Закрыть…":"Close…",
@@ -7031,11 +7248,12 @@
     "Добавить устройство без расписания":"Add a device without a schedule",
     "Что расписание не остановит":"What a schedule will not stop","Мобильный интернет":"Mobile internet","телефон с выключенным Wi-Fi роутеру не виден":"a phone with Wi-Fi off is not seen by the router",
     "Новый MAC":"A new MAC","частный адрес Wi-Fi или сменённый MAC — для роутера новое устройство, расписания у него нет":"a private Wi-Fi address or a changed MAC is a new device for the router, without a schedule",
+    "Свой VPN на устройстве":"A VPN on the device","обходит «ограничено»; «закрыто» не обходит":"gets past «limited»; not past «closed»",
     "Создать расписание":"Create the schedule","Удалить расписание":"Delete the schedule",
     "выберите хотя бы один день":"choose at least one day","время — часы и минуты, например 22:00":"the time is hours and minutes, e.g. 22:00","окон не больше":"windows at most",
     "нужно имя расписания":"a schedule name is needed","сохраняю расписание…":"saving the schedule…","создаю расписание…":"creating the schedule…","удаляю расписание…":"deleting the schedule…",
     "включаю расписание…":"switching the schedule on…","выключаю расписание…":"switching the schedule off…","выберите дату":"choose a date",
-    "Роутер не ответил про расписания — откройте вкладку ещё раз.":"The router did not answer about schedules — open the tab again.",
+    "Роутер не ответил про расписания — спрошу ещё раз.":"The router did not answer about schedules — asking again.",
     "У этого устройства нет MAC — расписанию не к чему привязаться.":"This device has no MAC — a schedule has nothing to hold on to.",
     "роутер ещё не знает, который час.":"the router does not know the time yet.",
     "Устройство не входит ни в одно расписание — интернет ему открыт всегда.":"The device is in no schedule — its internet is always open.",
@@ -7066,6 +7284,8 @@
     // «Ограничено — что закрыто» (the DNS filter of schedules); category names come from the router's table (access-sched.sh SC_CATS)
     "Ограничено — что закрыто":"Limited — what is closed","Ограничено — что разрешено":"Limited — what is allowed",
     "Закрыть выбранное":"Close the chosen","Только разрешённое":"Only the allowed",
+    "категории и сайты ниже не открываются, остальное работает":"the categories and sites below do not open, the rest works",
+    "открыто лишь выбранное — мессенджеры, школа, карты":"only the chosen is open — messengers, school, maps",
     "Безопасный поиск":"Safe search","Поиск и YouTube — в безопасном режиме":"Search and YouTube — in safe mode","Google, Яндекс, Bing, DuckDuckGo, YouTube":"Google, Yandex, Bing, DuckDuckGo, YouTube",
     "Без него безопасный поиск не включится.":"Without it safe search does not turn on.",
     "Весь день, кроме закрытого времени: имена этих устройств отвечает фильтр роутера, правила по доменам продолжают работать. YouTube — умеренный режим.":"All day except closed time: the router's filter answers these devices' names, the domain rules keep working. YouTube — moderate mode.",
@@ -10843,6 +11063,14 @@
     [/^это ссылка на (.*) — откройте сам файл$/,"this is a link to $1 — open the file itself"],
     [/^неверные данные задачи \(([a-z_0-9]+)\)$/,"invalid task data ($1)"],
     [/^неверные данные расписания \(([a-z_0-9]+)\)$/,"invalid schedule data ($1)"],
+    // access-sched.sh refusals that carry a number or a name: an exact key never matches them (review s.112)
+    [/^расписаний не больше (\d+)$/,"at most $1 schedules"],[/^окон больше (\d+)$/,"more than $1 windows"],
+    [/^устройств больше (\d+)$/,"more than $1 devices"],[/^пулов больше (\d+)$/,"more than $1 pools"],
+    [/^своих сайтов и адресов больше (\d+)$/,"more than $1 own sites and addresses"],[/^имя длиннее (\d+) знаков$/,"the name is longer than $1 characters"],
+    [/^устройство ([0-9a-f:]+) уже в расписании «([^»]*)»$/,"the device $1 is already in the schedule «$2»"],
+    [/^неизвестная категория: (.+)$/,"unknown category: $1"],[/^неверный пул: (.+)$/,"wrong pool: $1"],[/^неизвестный пул: (.+)$/,"unknown pool: $1"],
+    [/^неверный MAC: (.+)$/,"wrong MAC: $1"],[/^неверное окно: (.+)$/,"wrong window: $1"],
+    [/^не удалось создать (\S+)$/,"could not create $1"],[/^нет каталога расписаний$/,"no schedules directory"],
     [/день недели \(0–6, воскресенье — 0\): /,"weekday (0–6, Sunday is 0): "],
     [/день месяца: /,"day of month: "],
     [/минута: /,"minute: "],
@@ -13323,14 +13551,18 @@
     if(/^(direct|bypass|dns)([-_ .]|$)/.test(t)) return 'bypass';   // тоже целым словом: «directory», «dnsproxy» — не «мимо»
     return 'vpn:0';
   }
+  // ONE request in flight: the schedules' pool search asks on every keystroke while the catalogue loads (305 KB, ~1.5 s of CGI on
+  // BE7000) — eight letters were eight parallel catalogues (review s.112)
+  var _rtGeoP=null;
   function rtLoadGeoKeys(){
     if(rtGeoKeys) return Promise.resolve();
-    return fetchJson('/cgi-bin/data?section=geo').then(function(d){
+    if(_rtGeoP) return _rtGeoP;
+    return (_rtGeoP=fetchJson('/cgi-bin/data?section=geo').then(function(d){
       // Ответ не той формы (`{need_login}`, `{error}` старого CGI) — это «каталог не отдали», а не пустой каталог: иначе до
       // перезагрузки вкладки каждая категория читалась бы «нет в каталоге», а geoip выпадали бы ещё на разборе.
       if(rpBadResp(d) || Object.prototype.toString.call(d.items)!=='[object Array]'){ rtGeoKeys=null; return; }
       rtGeoKeys={}; d.items.forEach(function(it){ if(it && it.key) rtGeoKeys[it.key]=it; });
-    }).catch(function(){ rtGeoKeys=null; });
+    }).catch(function(){ rtGeoKeys=null; }).then(function(){ _rtGeoP=null; }));
   }
   // ============================================================================
   // ШАГ 4d-3 ПЕРЕНОСА: ИМПОРТ ПРАВИЛ — СВОЙ ЭКРАН С АДРЕСОМ (`rt-import`).
@@ -16933,11 +17165,12 @@
   var _dvSch=null, _dvSchNote='';
   function dvSchHtml(dev, d, devs){
     if(!d || d.ok!==true || !Array.isArray(d.items))
-      return '<div class="card w2"><div class="wt">Расписание доступа</div><div class="cline">'+esc(trNow((d && d.msg) ? String(d.msg) : 'Роутер не ответил про расписания — откройте вкладку ещё раз.'))+'</div></div>';
+      return '<div class="card w2"><div class="wt">Расписание доступа</div><div class="cline">'+esc(trNow((d && d.msg) ? String(d.msg) : 'Роутер не ответил про расписания — спрошу ещё раз.'))+'</div></div>';
     var mac=String(dev.mac||'').toLowerCase();
     if(!mac) return '<div class="card w2"><div class="wt">Расписание доступа</div><div class="cline">У этого устройства нет MAC — расписанию не к чему привязаться.</div></div>';
     // A private MAC is warned about by the screen's own header (devPinHtml) — not a second time here.
-    var it=schOfMac(mac, d), h=d.clock ? '' : noteBox('<b>Расписание сейчас не действует:</b> роутер ещё не знает, который час.', 'warn');
+    var it=schOfMac(mac, d), h=!d.clock ? noteBox('<b>Расписание сейчас не действует:</b> роутер ещё не знает, который час.', 'warn')
+      : d.tick===0 ? noteBox('<b>Расписание сейчас не действует:</b> Enodia снята с расписания — «Включить VPN» возвращает её.', 'warn') : '';
     if(!it){
       var opts=d.items.filter(function(x){ return (x.devs||[]).length<(d.dmax||32); });
       return h+'<div class="card w2"><div class="wt">Расписание доступа</div>'
@@ -16945,12 +17178,14 @@
         + (opts.length ? '<div class="row" style="gap:9px;margin-top:11px;align-items:flex-end"><div class="grow f"><label for="dv-schpick">Добавить в расписание</label><select id="dv-schpick">'
             + opts.map(function(x){ return '<option value="'+esc(x.id)+'" translate="no">'+esc(x.name)+'</option>'; }).join('')+'</select></div>'
             + '<button type="button" class="btn" data-dva="sch-add">Добавить</button></div>' : '')
-        + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn'+(opts.length ? ' gh' : ' pri')+'" data-dva="sch-new">'+icUse('i-plus','s')+'Новое для этого устройства</button></div></div>';
+        // the router's cap (d.max): at it a new schedule is refused after the whole form is filled — said and locked, as the list does
+        + (d.items.length>=(d.max||16) ? '<div class="cline">'+esc(tkL('Расписаний не больше ','At most '))+(d.max||16)+esc(tkL(' — чтобы создать новое, удалите одно из расписаний.',' schedules — delete one to create a new one.'))+'</div>' : '')
+        + '<div class="acts" style="justify-content:flex-start"><button type="button" class="btn'+(opts.length ? ' gh' : ' pri')+'" data-dva="sch-new"'+(d.items.length>=(d.max||16) ? ' disabled' : '')+'>'+icUse('i-plus','s')+'Новое для этого устройства</button></div></div>';
     }
-    var nx=it.next && it.next[0], line=schDevSay(it, mac, d).t, more=(it.devs||[]).length-1, over=d.clock && it.on && schOver(it, mac);
-    if(!over && d.clock && it.on && (it.why==='win' || it.why==='base') && nx) line=schStWord(it.st)+' · '+schVerb(nx.s)+' '+tkL('в ','at ')+schWhen(nx, d.now);
-    var sub=[(d.clock && it.on && !over) ? schIn(nx, d) : '', schUseWord(it, mac), more>0 ? tkL('в этом расписании ещё '+schDevN(more), more+' more in this schedule') : ''].filter(Boolean).join(' · ');
-    h+='<div class="card w2" id="dv-schc"><div class="wt"><span>Расписание доступа</span>&nbsp;«<span translate="no">'+esc(it.name)+'</span>»</div>'
+    var nx=it.next && it.next[0], line=schDevSay(it, mac, d).t, more=(it.devs||[]).length-1, over=schLive(d) && it.on && schOver(it, mac);
+    if(!over && schLive(d) && it.on && (it.why==='win' || it.why==='base') && nx) line=schStWord(it.st)+' · '+schVerb(nx.s)+' '+tkL('в ','at ')+schWhen(nx, d.now);
+    var sub=[(schLive(d) && it.on && !over && (it.why==='win' || it.why==='base')) ? schIn(nx, d) : '', schUseWord(it, mac), more>0 ? tkL('в этом расписании ещё '+schDevN(more), more+' more in this schedule') : ''].filter(Boolean).join(' · ');
+    h+='<div class="card w2" id="dv-schc"><div class="wt"><span class="wt-long"><span>Расписание доступа</span>&nbsp;«<span translate="no">'+esc(it.name)+'</span>»</span></div>'
       + '<div class="dv-schst" translate="no">'+esc(line)+'</div>'+(sub ? '<div class="cline" style="margin-top:2px" translate="no">'+esc(sub)+'</div>' : '')
       + schActsHtml(it, d, false, over ? 'closed' : it.st)+'<div style="margin-top:14px">'+schWeekHtml(it, d)+'</div></div>';
     h+='<div class="card"><div class="wt">В этом расписании</div>'
@@ -16967,15 +17202,18 @@
     var it=(d && d.ok===true) ? schOfMac(dev.mac, d) : null;
     if(!it || !it.on) return '';
     return '<div style="margin-top:9px">'+noteBox('<b>'+esc(tkL('Сильнее всей лестницы — расписание доступа «','Above the whole ladder — the access schedule «'))+'<span translate="no">'+esc(it.name)+'</span>».</b> '
-      + esc(tkL('В его закрытое окно устройство не выходит наружу никаким путём. Сейчас: ','In its closed window the device goes out by no path at all. Now: '))+'<span translate="no">'+esc(schSay(it, d).t.toLowerCase())+'</span>.', 'info')+'</div>';
+      + esc(tkL('В его закрытое окно устройство не выходит наружу никаким путём. Сейчас: ','In its closed window the device goes out by no path at all. Now: '))+'<span translate="no">'+esc(schLow(schDevSay(it, dev.mac, d).t))+'</span>.', 'info')+'</div>';
   }
   // the pane from an answer: a repaint of the same device starts from its previous answer (no «Загрузка…» flash), the fresh one follows
   function dvSchPut(ip, dev, d, devs, rep){
     var b=document.getElementById('dv-sch'); if(!b) return;
     _dvSch={ip:ip, dev:dev, d:d};
+    var fsig=focusMark();
     b.innerHTML=dvSchHtml(dev, d, devs);
+    schFocusActs(b, fsig, '#dv-schc .acts.sc-acts');
+    schAgain(b, d, (d && d.ok===true) ? schOfMac(dev.mac, d) : null, function(){ dvSchLoad(ip, dev, devs, rep); });
     var it=(d && d.ok===true) ? schOfMac(dev.mac, d) : null;
-    if(it) schActsWire(b, it, rep);
+    if(it) schActsWire(b, it, rep, true);
     _dvSchNote=dvSchNoteHtml(dev, d);
     var n=document.getElementById('dv-schnote'); if(n) n.innerHTML=_dvSchNote;
   }
@@ -16983,12 +17221,19 @@
     var g=_dvGen;
     if(_dvSch && _dvSch.ip===ip) dvSchPut(ip, dev, _dvSch.d, devs, rep);
     schLoad().then(function(d){
-      if(g!==_dvGen || !screenAlive(document.getElementById('dv-sch'))) return;
+      var b=document.getElementById('dv-sch');
+      if(g!==_dvGen || !screenAlive(b)) return;
+      // an answer that is not the list (ok:false mid-update) is a refusal too: the drawn state and its buttons stay, asked again in
+      // half a minute — drawn as an error, it took the tab's actions with it (review s.113, confirming)
+      if((!d || d.ok!==true) && _dvSch && _dvSch.ip===ip && _dvSch.d && _dvSch.d.ok===true){ schAgain(b, null, null, function(){ dvSchLoad(ip, dev, devs, rep); }, 30); return; }
       dvSchPut(ip, dev, d, devs, rep);
     }, function(e){
       var b=document.getElementById('dv-sch');
       if(g!==_dvGen || !screenAlive(b)) return;
-      b.innerHTML=dvSchHtml(dev, {ok:false, msg:pnErrText(e)}, devs);
+      // a refusal (a 503 «busy», the network) keeps a state already drawn and asks again in half a minute: a click on the tab only
+      // shows it, and «откройте вкладку ещё раз» was a dead end (review s.113, round 5)
+      if(!(_dvSch && _dvSch.ip===ip)) b.innerHTML=dvSchHtml(dev, {ok:false, msg:pnErrText(e)}, devs);
+      schAgain(b, null, null, function(){ dvSchLoad(ip, dev, devs, rep); }, 30);
     });
   }
   // add / remove = a save of the WHOLE schedule against its version (the router refuses a stale one) — the editor's own verb

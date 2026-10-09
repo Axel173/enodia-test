@@ -159,7 +159,9 @@ reg_get() { grep "^$1$TAB" "$REG" 2>/dev/null | head -1; }
 # Следующий id — max+1 (детерминированно; удалённые id не переиспользуем, чтобы старый
 # .list-файл-сирота не «прилип» к новой группе). Идиома взята из reg_next_id lists-lib.sh.
 next_id() {
-	_m=$(cut -f1 "$REG" 2>/dev/null | sed -n 's/^g\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1)
+	# the number read in awk (decimal): `g012` from an imported registry was octal 10 in ash arithmetic (the next id g11 could be a
+	# live group's) and `g08` an arithmetic error — review s.113, the class of the access schedules' id counter
+	_m=$(cut -f1 "$REG" 2>/dev/null | awk '/^g[0-9]+$/ { n = substr($0, 2) + 0; if (n > m) m = n } END { print m + 0 }')
 	case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
 	printf 'g%s' $((_m + 1))
 }

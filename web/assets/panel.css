@@ -490,7 +490,8 @@
      простыни-caption — пояснение прячется за иконкой-подсказкой. */
   .popmenu-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
                 padding:6px 8px 7px 11px;border-bottom:1px solid var(--border-t);margin-bottom:2px}
-  .popmenu-head b{font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.03em}
+  .popmenu-head b{font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.03em;
+                  min-width:0;overflow-wrap:anywhere;word-break:break-word}
   /* «(?)»-подсказка: кружок «?», раскрывает пояснение по наведению (десктоп) И тапу (мобайл;
      там native title недоступен). Глиф — литерал «?», в icon-шрифте нужного нет (17-подмножество).
      Всплывашка — фикс-поз, как popmenu (флип вверх при нехватке места). */
@@ -897,7 +898,10 @@
      card took the whole row and its partner stood alone beside an empty half (mockup: 24 rows; 9 after — all the last row of an
      odd card count). `.vwrap.c3` did this for the tasks screens; now for all. Every card lays out at phone width (~330), so half
      of 715 is never too narrow for it. */
+  /* …and the band is TWO columns, not «as many 330s as fit»: from a 1010-px deck (viewports ~1317–1456: 1366, 1440) auto-fit gave
+     three, a two-column card stood in one third and the third column of every pair stayed blank (review s.113, round 5) */
   @container view (min-width:700px) and (max-width:1149px){
+    .vwrap{grid-template-columns:repeat(auto-fit,minmax(max(330px,calc((100% - 10px) / 2)),1fr))}
     .vwrap>.w2,.vwrap>.tpane>.w2{grid-column:span 1}
   }
   /* A SCREEN BUILT OF «2+1» PAIRS (`.vwrap.c3`: the tasks screens): EXACTLY three columns, not as many as fit — at 1920 auto-fit
@@ -1052,6 +1056,9 @@
   .card>.ct{font-size:14.5px;font-weight:600;letter-spacing:-.01em;color:var(--ink);margin-bottom:11px;
             display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0}
   .card>.ct .sub{font-size:12px;font-weight:400;color:var(--ink3)}
+  /* a NAME inside a `.wt` title (the device tab's «Расписание доступа «Дети»»): one shrinkable item that wraps anywhere — a 60-character
+     name without spaces ran 482 px past the card's edge at 320 (review s.113, round 5) */
+  .wt>.wt-long{min-width:0;overflow-wrap:anywhere;word-break:break-word}
   .card>.ct .sub.dotb::before{content:'· '}
   .card>.ct .sp{flex:1}
   /* ВКЛАДКИ ЭКРАНА — `Tabs` макета: пилюли, выбранная — тёмная. */
