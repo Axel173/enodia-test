@@ -151,8 +151,9 @@ td_close() {
 	_cdt=$(date +%F)
 	_cl=$(awk -v today="$_cdt" "$TD_LINE_OK { d = \$1 } END { print d }" "$TD_HIST" 2>/dev/null)   # the last VALID closed day (a once-a-day pass)
 	if [ -n "$_cl" ] && ! td_lt "$_cl" "$_cd"; then return 0; fi
-	# busybox sort has no -k: the volume goes first, sort -rn orders by it, and the second pass drops it
-	awk 'NR > 1 && NF == 3 && ($2 + $3) > 0 { printf "%.0f %s %.0f %.0f\n", $2 + $3, $1, $2, $3 }' "$1" | sort -rn |
+	# busybox sort has no -k: the volume goes first, zero-padded to a fixed width, and a TEXT sort orders it — its `-n` compares
+	# modulo 2^32 (BE7000 09.10.2026: 4294967297 sorts as 1), and a device past 4 GB a day fell out of the top into «other»
+	awk 'NR > 1 && NF == 3 && ($2 + $3) > 0 { printf "%017.0f %s %.0f %.0f\n", $2 + $3, $1, $2, $3 }' "$1" | sort -r |
 		awk -v d="$_cd" -v n="$TD_DAY_MAX" 'BEGIN { OFMT = "%.0f"; CONVFMT = "%.0f" }
 			NR <= n && $2 != "other" { printf "%s %s %.0f %.0f\n", d, $2, $3, $4; next }
 			{ r += $3; t += $4 }
@@ -336,15 +337,16 @@ td_read() {   # list <today|week|month|year> | mac <mac>
 				if (k == "other") { orx = r; otx = t; continue }
 				if (r + t <= 0) continue
 				h = (k in lh) ? lh[k] : ((k in sh) ? sh[k] : rh[k])
-				printf "%.0f\t{\"mac\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"ip\":\"%s\",\"ifn\":\"%s\",\"host\":\"%s\",\"alias\":\"%s\"}\n", r + t, k, r, t, sip[k], sif[k], h, al[k]
+				printf "%017.0f\t{\"mac\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"ip\":\"%s\",\"ifn\":\"%s\",\"host\":\"%s\",\"alias\":\"%s\"}\n", r + t, k, r, t, sip[k], sif[k], h, al[k]
 			}
-			printf "-1\t%s\t%.0f\t%.0f\n", since, orx, otx
+			printf "-\t%s\t%.0f\t%.0f\n", since, orx, otx
 		}' > "$TD_RUN/rout.$$"
 	if [ "$1" = mac ]; then cat "$TD_RUN/rout.$$"; return 0; fi
-	sort -rn "$TD_RUN/rout.$$" | awk -F'\t' -v per="$2" -v from="$(case "$2" in today) echo "$_rt" ;; week) echo "$_rw" ;; month) echo "$_rm" ;; *) echo "$_ry" ;; esac)" \
+	# the same zero-padded TEXT sort (busybox `sort -n` wraps at 2^32 — the TV with 6.9 GB was listed last); «-» = the meta line, last
+	sort -r "$TD_RUN/rout.$$" | awk -F'\t' -v per="$2" -v from="$(case "$2" in today) echo "$_rt" ;; week) echo "$_rw" ;; month) echo "$_rm" ;; *) echo "$_ry" ;; esac)" \
 		-v src="$_rsrc" -v tr="$_rtr" '
 		BEGIN { printf "{\"ok\":true,\"per\":\"%s\",\"from\":\"%s\",\"src\":%s,\"trusted\":%s,\"devs\":[", per, from, src, tr }
-		$1 == "-1" { since = $2; orx = $3; otx = $4; next }
+		$1 == "-" { since = $2; orx = $3; otx = $4; next }
 		{ printf "%s%s", (n++ ? "," : ""), $2 }
 		END { printf "],\"since\":\"%s\",\"other_rx\":%s,\"other_tx\":%s}\n", since, (orx == "" ? 0 : orx), (otx == "" ? 0 : otx) }'
 }
