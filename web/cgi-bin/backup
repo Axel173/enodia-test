@@ -98,6 +98,7 @@ SETTINGS="$SETTINGS tasks"                                                      
 SETTINGS="$SETTINGS sched"                                                           # access schedules: the registry only (actions «now» — .ovr/.all — stay out, export below)
 SETTINGS="$SETTINGS .prefs .panel-layout"                                            # язык, тема, порядок карточек
 SETTINGS="$SETTINGS .traffic-daily"                                                  # история трафика (посуточно)
+SETTINGS="$SETTINGS .traffic-dev .traffic-dev-hosts"                                # traffic by device: closed days + the names of devices gone
 # --- ЧТО НЕ ВХОДИТ И ПОЧЕМУ ------------------------------------------------------------------
 # Блок ниже — не комментарий «на память», а ВТОРАЯ ПОЛОВИНА whitelist'а и единственный способ
 # отличить «забыли дописать» от «решили не возить». Формат строки строгий и машиночитаемый:
@@ -125,6 +126,8 @@ SETTINGS="$SETTINGS .traffic-daily"                                             
 #   (дельта = разница двух чужих счётчиков), и когда у WAN там другое имя (eth0 против eth1).
 #   Ровно тот симптом, который уже чинили как «сегодня 14.2 ГБ на свежей установке». Без файла
 #   первый тик просто пропускает интервал (≤5 мин) — это штатное поведение первого запуска.
+# EXCLUDE: .traffic-dev-day — TODAY's per-device split carrying THIS boot's id (traffic-dev.sh): restored on a running router
+#          after its RAM is lost, another boot id reads as «rebooted» and the counters since boot are charged to today again
 # EXCLUDE: .dns-seed-cache — «последний рабочий адрес server-host»: производное резолва (чинится первым же успешным подъёмом), к тому же на ДРУГОМ роутере это чужие адреса
 # EXCLUDE: .ip-owner — снимок «кому принадлежал адрес, когда завели правило»: на ДРУГОМ роутере
 #          MAC'и другие, и каждое восстановленное правило получило бы ложное «правила от другого

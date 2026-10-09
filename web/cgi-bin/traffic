@@ -14,8 +14,8 @@
 # минус выходы» обязано иметь ОДНОГО владельца — панель своего не считает.
 # С `?live=1` — ТОЛЬКО пункт (1), без проходов по посуточному файлу: его просит живая скорость
 # в шапке, когда карточки трафика не видны (разбор у ветки «ЛЁГКИЙ ОТВЕТ» ниже).
-# Per-device НЕТ сознательно: NSS-offload уводит потоки
-# мимо netfilter → учёт по IP недостоверен (карта проекта). Числа — %.0f (awk-double до 2^53),
+# С `?dev=<окно>` / `?dmac=<mac>` — РАЗРЕЗ ПО УСТРОЙСТВАМ, свой ответ у своего владельца (traffic-dev.sh: счётчики прошивки
+# trafficd по MAC; по IP роутер считать не может — NSS-offload уводит потоки мимо netfilter). Числа — %.0f (awk-double до 2^53),
 # НЕ %d (busybox awk %d 32-битный → переполнение на счётчиках >2 ГБ).
 # 2FA-гейт (totp.sh) — см. разбор в cgi-bin/status.
 # uhttpd НЕ ПЕРЕДАЁТ CGI своё окружение (замер на железе 01.09.2026 пробным CGI: все ENODIA_*
@@ -49,6 +49,19 @@ D=${ENODIA_DIR:-/data/usr/app/enodia}
 DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
 LAST="$DS/.traffic-last"
 DAILY="$DS/.traffic-daily"
+# BY DEVICE (`?dev=<window>` — the «Устройства» tab, `?dmac=<mac>` — the device screen): its own answer from its owner
+# (traffic-dev.sh), before every pass below — the tab asks for the devices only, and none of the interface sums is needed.
+# The values are checked by the script (window from a list, MAC by mac_ok); `%3A` — a MAC the browser encoded.
+case "$QUERY_STRING" in
+	*dmac=*|dev=*|*'&dev='*)
+		if [ ! -f "$D/traffic-dev.sh" ]; then printf '{"ok":false,"msg":"traffic-dev.sh не установлен (обновите панель)"}\n'; exit 0; fi
+		case "$QUERY_STRING" in
+			*dmac=*) _tq=${QUERY_STRING#*dmac=}; _tq=${_tq%%&*}; _tq=$(printf '%s' "$_tq" | sed 's/%3[Aa]/:/g')
+			         sh "$D/traffic-dev.sh" json-mac "$_tq" 2>/dev/null ;;
+			*) _tq=${QUERY_STRING#*dev=}; _tq=${_tq%%&*}; sh "$D/traffic-dev.sh" json "$_tq" 2>/dev/null ;;
+		esac
+		exit 0 ;;
+esac
 # trim + дефолт: `cat || echo awg` не ловил пустой-но-существующий .transport (t="" → vif=xtun,
 # и счётчики VPN читались с xtun вместо awg0). См. ту же грабля в cgi-bin/status.
 t=$(cat "$DS/.transport" 2>/dev/null | tr -d ' \r\n')

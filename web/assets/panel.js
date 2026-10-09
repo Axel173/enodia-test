@@ -3129,10 +3129,9 @@
   //   · КОНФИГИ — интерфейс ОДИН, серверов много ⇒ нужна отметка счётчика В МОМЕНТ переключения;
   //   · СЕТИ — счётчики сетевых интерфейсов считают и обмен ВНУТРИ сети: это «в сети», а не
   //     «в интернет», и сумма по сетям будет больше, чем через провайдера;
-  //   · УСТРОЙСТВА — упираются не в интерфейс, а в аппаратный ускоритель: NSS/ECM уводит
-  //     установленные потоки мимо netfilter, и цифры из счётчиков правил были бы не
-  //     «примерными», а случайными.
-  // Три последних — обещания и невозможности, и они помечены как обещания. Нули вместо них
+  //   · УСТРОЙСТВА — by address the router cannot count (NSS/ECM takes flows past netfilter), but the firmware's trafficd counts
+  //     per MAC, offloaded bytes included: «через роутер», not «в интернет» — home traffic is in it (traffic-dev.sh, 09.10.2026).
+  // Конфиги и сети — обещания, и они помечены как обещания. Нули вместо них
   // ставить нельзя: ноль это ответ «трафика не было», а у нас ответа НЕТ ВОВСЕ.
   //
   // ПЕРИОДЫ СЧИТАЕТ РОУТЕР. Все четыре окна приезжают готовыми из `cgi-bin/traffic` — включая
@@ -3215,6 +3214,11 @@
     // Обработчик вешаем НА КОНТЕЙНЕР, который переживает перерисовку: строки разреза меняются
     // каждые пять секунд, и слушатель на самой строке умер бы на первом же тике.
     wireCacts(document.getElementById('ts-cut-body'));
+    // «Показать ещё» of the devices' tab — on the same surviving container; the choice lives in `tdMore`, so a repaint keeps it.
+    document.getElementById('ts-cut-body').addEventListener('click', function(e){
+      var t=e.target && e.target.closest ? e.target.closest('[data-tdmore]') : null;
+      if(t){ tdMore=true; tsPaintCut(); }
+    });
     tsFetch(true);   // запрос прошлого открытия ещё в воздухе — повторить сразу за ним, а не ждать тика
     var tm=setInterval(function(){ if(!tsAlive(myGen)){ clearInterval(tm); return; } tsFetch(); }, 5000);
   }
@@ -3338,14 +3342,97 @@
     // широкая карточка с честной причиной, а не нули.
     if(tsCut===1)      h='<div class="card w2"><div class="wt">По конфигам</div>'+noteBox('<b>Пока не считается.</b> Интерфейс у туннеля один, а серверов много: awg0 остаётся awg0 и после переключения. Единственный честный путь — фиксировать счётчик В МОМЕНТ смены конфига и засчитывать объём тому серверу, который был активен. Это отметка на роутере, а не арифметика в панели, — поэтому разрез ждёт своей очереди, а не рисуется примерно.','warn')+'</div>';
     else if(tsCut===2) h='<div class="card w2"><div class="wt">По сетям</div>'+noteBox('<b>Пока не считается.</b> Считать пришлось бы по счётчикам сетевых интерфейсов, а это ЭФИР: туда попадут и обмен между устройствами, и широковещание — сумма по сетям выйдет больше, чем через провайдера. Разрез полезный, но подписывать его придётся «в сети», а не «в интернет», и сделать это надо аккуратно.','warn')+'</div>';
-    else if(tsCut===3) h='<div class="card w2"><div class="wt">По устройствам</div>'+noteBox('<b>Роутер этого не считает — и мы говорим это прямо, а не рисуем нули.</b> Мешает аппаратный ускоритель: установленные соединения уходят в NSS/ECM мимо netfilter, и счётчики правил по адресам почти не тикают — числа из них были бы не «примерными», а случайными. Оба пути (счётчики точки доступа — только Wi-Fi и только пока клиент в эфире — и статистика самого ускорителя) требуют замера на железе.','warn')
-      + '<div style="margin-top:10px">'
-      +   lrowGo('devices','посмотреть, кто в сети и что запрашивает')
-      +   '<div class="grow"><div class="nm">Устройства в сети</div>'
-      +   '<div class="ds">за минуту наблюдения видно, куда ходит одно устройство — на его экране</div></div>'+CHEV+'</div>'
-      + '</div></div>';
+    else if(tsCut===3){ h=tdHtml(); tdFetch(tdPer!==tsPer); }
     else               h=tsCutExits(d);
     box.innerHTML=h;
+  }
+  // ---- «ТРАФИК → УСТРОЙСТВА» (traffic-dev.sh, 09.10.2026; mockup ov-traffic tab 3) ------------------------------------------------
+  // The router answers per window (`?dev=<per>`): the devices by volume, «other», since when it counts — the counters of the firmware's
+  // trafficd per MAC (by address the router cannot count at all: NSS/ECM offload). Its own request and gate: the interface answer of
+  // the screen does not carry it, and the tab asks only while shown — at once on a new period, then every TD_POLL (the router's day
+  // moves every five minutes, plus a live delta of «now»). Shares are of the list's own total: devices + «other».
+  var TD_TOP=7, TD_POLL=15000, TD_COL=['var(--g1)','var(--g2)','var(--g3)','var(--g4)','var(--g5)'];
+  var tdData=null, tdPer='', tdAt=0, tdErr=0, tdMore=false, _tdGate=flightGate(TR_CEIL);
+  // A day of the router («2026-10-09») in words of the language — the table of the chart, not the dictionary (lcDay's reason).
+  // A share of the list: a device that moved a few megabytes of tens of gigabytes is not «0.0 %» — it is there, just tiny.
+  function tdPct(p){ return (p>0 && p<0.1) ? '<0.1 %' : (p.toFixed(p<10?1:0)+' %'); }
+  function tdDay(iso){
+    var m=/^(\d{4})-(\d\d)-(\d\d)$/.exec(iso||''); if(!m) return iso||'';
+    var L=(LANG==='en')?'en':'ru', mn=LC_MON[L][(+m[2])-1]||m[2], D=+m[3], y=(+m[1]!==new Date().getFullYear()) ? ' '+m[1] : '';
+    return L==='en' ? mn+' '+D+y : D+' '+mn+y;
+  }
+  function tdFetch(force){
+    if(!force && tdPer===tsPer && (Date.now()-tdAt)<TD_POLL) return;
+    var tok=_tdGate.take(force); if(!tok) return;
+    var per=tsPer, gen=tsGen;
+    function retry(){ if(tsAlive(tsGen) && tsCut===3) tdFetch(true); }
+    fetchJson('/cgi-bin/traffic?dev='+per).then(function(d){
+      var gr=_tdGate.settle(tok, false, retry);
+      if(gr<0 || per!==tsPer || !tsAlive(gen)) return;
+      tdData=d; tdPer=per; tdAt=Date.now(); tdErr=0;
+      if(tsCut===3) tsPaintCut();
+    }).catch(function(e){
+      var gr=_tdGate.settle(tok, true, retry);
+      if((gr!==0 && gr!==1) || per!==tsPer || !tsAlive(gen)) return;
+      // a refusal keeps an answer already drawn for this window; the next try waits TD_POLL, not the next 5-s tick
+      tdErr=(e && e.net) ? 2 : 1; tdAt=Date.now();
+      if(tsCut===3) tsPaintCut();
+    });
+  }
+  function tdHtml(){
+    var h='<div class="card w2"><div class="wt">По устройствам</div>', d=(tdPer===tsPer) ? tdData : null, per=tsPer, i;
+    if(!d) return h+'<div class="lempty">'+(tdErr ? noteText(tdErr===2) : 'загрузка…')+'</div></div>';
+    // A router older than the cut answers `?dev=` with the interface answer (no `devs`): say so, do not draw an empty list.
+    if(!Array.isArray(d.devs))
+      return h+noteBox(d.ok===false && d.msg ? esc(trNow(String(d.msg))) : 'Этот роутер устройства ещё не считает — обновите панель на роутере, и разрез появится.', 'warn')+'</div>';
+    var devs=d.devs, oth=(Number(d.other_rx)||0)+(Number(d.other_tx)||0), tot=oth;
+    for(i=0;i<devs.length;i++) tot+=(Number(devs[i].rx)||0)+(Number(devs[i].tx)||0);
+    if(d.src===false) h+='<div style="margin-bottom:10px">'+noteBox('<b>Прошивка сейчас не отвечает про устройства.</b> Служба trafficd молчит — показано то, что роутер успел записать.', 'warn')+'</div>';
+    if(d.trusted===false) h+='<div style="margin-bottom:10px">'+noteBox('<b>Время на роутере ещё не сверено.</b> Новые байты устройств лягут в свой день, как только оно сверится.', 'info')+'</div>';
+    if(!(tot>0)){
+      h+='<div class="lempty">'+(d.since ? 'за этот период через роутер ничего не прошло' : 'роутер начнёт считать устройства с ближайшего шага учёта — раз в пять минут')+'</div>';
+    } else {
+      // The share bar — the same markup as the exits' (`.tstack`): the top five in colour, the rest one grey piece.
+      var bar='', rest=oth, n=(tdMore || devs.length<=TD_TOP+1) ? devs.length : TD_TOP;
+      for(i=0;i<devs.length;i++){
+        var b=(Number(devs[i].rx)||0)+(Number(devs[i].tx)||0);
+        if(i<TD_COL.length) bar+='<i style="width:'+Math.max(FLOW_MIN_SHARE, b*100/tot).toFixed(2)+'%;background:'+TD_COL[i]+'"></i>';
+        else rest+=b;
+      }
+      if(rest>0) bar+='<i style="width:'+Math.max(FLOW_MIN_SHARE, rest*100/tot).toFixed(2)+'%;background:var(--text-tertiary)"></i>';
+      h+='<div class="tstack" aria-hidden="true">'+bar+'</div>';
+      for(i=0;i<n;i++){
+        var x=devs[i], rx=Number(x.rx)||0, tx=Number(x.tx)||0, nm=devName({alias:x.alias, host:x.host, mac:x.mac}), sh=(rx+tx)*100/tot;
+        // A device trafficd no longer knows has no address now — and no door: the device screen is keyed by the current address.
+        var ip=argIp(x.ip) ? x.ip : '', pre=[];
+        if(x.alias && x.host && x.host!==x.alias) pre.push('<span class="sens" translate="no">'+esc(x.host)+'</span>');
+        if(!x.alias && !x.host) pre.push('<span>имени не сообщает</span>');
+        if(!ip) pre.push('<span>не в сети</span>');
+        pre.push('<span>'+esc(tdPct(sh)+' · ↓ '+humanBytes(rx)+' · ↑ '+humanBytes(tx))+'</span>');   // «<0.1 %» is text, not markup
+        h+=(ip ? lrowGo('dev:'+ip, 'открыть устройство') : '<div class="lrow">')
+          + '<span class="pipe" style="background:'+(i<TD_COL.length ? TD_COL[i] : 'var(--text-tertiary)')+'"></span>'
+          + '<div class="grow"><div class="nm"><span class="sens" translate="no">'+esc(nm)+'</span></div><div class="ds">'+pre.join(' · ')+'</div></div>'
+          + '<span class="chip'+(i===0?' acc':'')+'">'+humanBytes(rx+tx)+'</span>'+(ip?CHEV:'')+'</div>';
+      }
+      // «Прочие» — only a day that had more devices than the router keeps by name: their bytes are whole, not lost.
+      if(oth>0){
+        var osh=oth*100/tot;
+        h+='<div class="lrow"><span class="pipe" style="background:var(--text-tertiary)"></span><div class="grow"><div class="nm">Прочие</div>'
+          + '<div class="ds"><span>устройства сверх 16 за день — их объём целиком здесь</span> · <span>'+esc(tdPct(osh))+'</span></div></div>'
+          + '<span class="chip">'+humanBytes(oth)+'</span></div>';
+      }
+      if(n<devs.length) h+='<div class="acts" style="justify-content:flex-start"><button type="button" class="btn gh sm" data-tdmore="1">'+tkL('Показать ещё '+schDevN(devs.length-n), 'Show '+(devs.length-n)+' more')+'</button></div>';
+    }
+    h+='<div class="lfoot">'+(TS_WHEN[per]||TS_WHEN.today)+' · считает прошивка роутера по MAC-адресу</div>';
+    h+='<div style="margin-top:12px">'+noteBox('<b>Это трафик через роутер, а не «в интернет».</b> Прошивка считает всё, что устройство передало через роутер: и показ на телевизор, и обмен с домашним NAS. Поэтому сумма по устройствам не обязана совпасть со «Всего» наверху: там нет домашнего обмена, а здесь — трафика самого роутера (обновления, проверки туннеля).', 'warn')+'</div>';
+    // What the window lacks — the same honesty as the exits' tab. The first counted day comes from the router (`since`); a window
+    // that starts before it is partial. A private MAC per network is a separate device here — said always, it is not a passing state.
+    if(per!=='today'){
+      h+='<div class="wt" style="margin-top:16px">Чего в окнах пока нет</div><div class="tiny">';
+      if(d.since && d.from && d.since>d.from) h+='<span>'+tkL('Роутер считает устройства с '+tdDay(d.since), 'The router counts devices since '+tdDay(d.since))+'</span> <span>— дни до этого в разрезе пусты, и доли за длинное окно посчитаны только по тем дням, что есть.</span> ';
+      h+='<span>Телефон со «случайным» MAC в каждой сети здесь — отдельное устройство: другого имени, кроме MAC, у роутера для него нет.</span></div>';
+    }
+    return h+'</div>';
   }
   function tsCutExits(d){
     // Роутер старше самой карточки «Куда идёт трафик» — разреза нет вовсе (то же правило, что у
@@ -3381,9 +3468,11 @@
       // ПОВТОРЕНО словами для человека. Расхождение ловит чекер (C92) — иначе панель однажды
       // пообещала бы год там, где роутер режет историю раньше.
       + kv('Посуточно', '<span>приём и отдача: через несущую, через провайдера и через каждый дополнительный выход</span> · <span class="keep-days">400 дней</span>')
+      // By device: the same kind of borrowed numbers — TD_KEEP and TD_DAY_MAX of traffic-dev.sh (C92 compares both).
+      + kv('По устройствам', '<span>счётчики прошивки по MAC — и через аппаратный ускоритель тоже; сутки копятся в памяти и сохраняются раз в 4 часа</span> · <span class="keep-dev-days">400 дней</span> · <span class="keep-dev-max">до 16 устройств в день</span>, <span>остальные — «прочие»</span>')
       + kv('По часам', 'не ведётся: дельты снимаются раз в пять минут и складываются в сутки')
       + kv('Где лежит', 'в настройках на роутере — счёт переживает и перезагрузку, и обновление')
-      + kv('Цена на флеше', 'одна строка в сутки — сырьё закачек и кэш на /data не пишем никогда')
+      + kv('Цена на флеше', '<span>строка в сутки и строка на устройство за сутки (около 15 КБ в месяц на десяток устройств)</span> <span>— сырьё закачек и кэш на /data не пишем никогда</span>')
       + '<div style="margin-top:11px">'+noteBox('/data смонтирован в режиме <span class="mono kw">sync</span> и его всего 20 МБ: история обязана быть кольцом с заранее известным размером. Та же причина, по которой закачки и кэш списков живут в оперативной памяти, а не на флеше.', 'info')+'</div>';
   }
   // ИСХОД КЛИКА ПО ПИНГУ ПОКАЗЫВАЕТ ТОЛЬКО ПОСЛЕДНИЙ КЛИК (независимое ревью шага 2k, круги 14–17). `_pingClick` — номер
@@ -3604,7 +3693,7 @@
       + '<button type="button" class="btn gh" data-dgo="ev">Журнал событий</button></div>'
       + '<div class="cline">«Починить правила» заново ставит правила маршрутизации, если их смыло: например, сохранение настроек в родной панели Xiaomi снимает их все.</div></div>'
       + '<div class="card wfull" id="dg-in"><div class="wt">Что внутри</div>'
-      + diagRow('Версия и состояние подсистем','что установлено и что несёт трафик: транспорт, дополнительные выходы, десинк, доступ домой, шифрованный DNS; включены ли письма и о чём; у секретных файлов — только «есть ли»')
+      + diagRow('Версия и состояние подсистем','что установлено и что несёт трафик: транспорт, дополнительные выходы, десинк, доступ домой, шифрованный DNS, учёт трафика по устройствам; включены ли письма и о чём; у секретных файлов — только «есть ли»')
       + diagRow('Правила ядра','маршрутизация, метки, цепочки, наборы адресов и проба прямого пути')
       + diagRow('DNS','настройки резолвера и что он положил в наборы')
       + diagRow('Клиенты сети','адреса домашней сети и производитель по MAC; имена из аренд заменены метками')
@@ -7580,6 +7669,27 @@
     "за 7 дней · считает роутер по счётчикам интерфейсов":"for 7 days · counted by the router from interface counters",
     "за 30 дней · считает роутер по счётчикам интерфейсов":"for 30 days · counted by the router from interface counters",
     "за год · считает роутер по счётчикам интерфейсов":"for the year · counted by the router from interface counters",
+    // — «Устройства» (traffic-dev.sh, 09.10.2026): the footer is glued to the window, as above —
+    "за сегодня · считает прошивка роутера по MAC-адресу":"for today · counted by the router's firmware per MAC address",
+    "за 7 дней · считает прошивка роутера по MAC-адресу":"for 7 days · counted by the router's firmware per MAC address",
+    "за 30 дней · считает прошивка роутера по MAC-адресу":"for 30 days · counted by the router's firmware per MAC address",
+    "за год · считает прошивка роутера по MAC-адресу":"for the year · counted by the router's firmware per MAC address",
+    "Этот роутер устройства ещё не считает — обновите панель на роутере, и разрез появится.":"This router does not count devices yet — update the panel on the router and the cut will appear.",
+    "Прошивка сейчас не отвечает про устройства.":"The firmware is not answering about devices right now.",
+    "Служба trafficd молчит — показано то, что роутер успел записать.":"The trafficd service is silent — shown is what the router managed to record.",
+    "Время на роутере ещё не сверено.":"The router's clock is not synced yet.",
+    "Новые байты устройств лягут в свой день, как только оно сверится.":"New device bytes will land on their day as soon as it syncs.",
+    "за этот период через роутер ничего не прошло":"nothing went through the router in this period",
+    "роутер начнёт считать устройства с ближайшего шага учёта — раз в пять минут":"the router starts counting devices at the next accounting step — every five minutes",
+    "имени не сообщает":"reports no name","Прочие":"Other",
+    "устройства сверх 16 за день — их объём целиком здесь":"devices beyond 16 a day — their whole volume is here",
+    "Это трафик через роутер, а не «в интернет».":"This is traffic through the router, not «to the internet».",
+    "Прошивка считает всё, что устройство передало через роутер: и показ на телевизор, и обмен с домашним NAS. Поэтому сумма по устройствам не обязана совпасть со «Всего» наверху: там нет домашнего обмена, а здесь — трафика самого роутера (обновления, проверки туннеля).":"The firmware counts everything a device moved through the router: casting to the TV and traffic with a home NAS too. So the sum over devices does not have to match «Total» above: that has no home traffic, and this has none of the router's own (updates, tunnel checks).",
+    "— дни до этого в разрезе пусты, и доли за длинное окно посчитаны только по тем дням, что есть.":"— the days before are empty in this cut, and shares over a long window are counted only over the days there are.",
+    "Телефон со «случайным» MAC в каждой сети здесь — отдельное устройство: другого имени, кроме MAC, у роутера для него нет.":"A phone with a «random» MAC per network is a separate device here: the router has no other name for it than the MAC.",
+    "Статистика":"Statistics","Трафик через роутер":"Traffic through the router",
+    "У этого устройства нет MAC — роутеру не по чему его считать.":"This device has no MAC — the router has nothing to count it by.",
+    "Это трафик через роутер, а не «в интернет»: домашний обмен (показ на телевизор, NAS) в нём тоже.":"This is traffic through the router, not «to the internet»: home traffic (casting to the TV, a NAS) is in it too.",
     "Конфиги":"Configs","Сети":"Networks","Всего":"Total","Через туннель":"Through the tunnel","Сейчас":"Now",
     "туннеля нет":"no tunnel","меряю…":"measuring…","через туннель":"through the tunnel",
     "весь трафик через провайдера: и то, что ушло в туннели, и то, что пошло мимо них":"all traffic through the ISP: both what went into the tunnels and what went past them",
@@ -7598,10 +7708,6 @@
     "Пока не считается.":"Not counted yet.",
     "Интерфейс у туннеля один, а серверов много: awg0 остаётся awg0 и после переключения. Единственный честный путь — фиксировать счётчик В МОМЕНТ смены конфига и засчитывать объём тому серверу, который был активен. Это отметка на роутере, а не арифметика в панели, — поэтому разрез ждёт своей очереди, а не рисуется примерно.":"The tunnel has one interface and many servers: awg0 stays awg0 after a switch. The only honest way is to snapshot the counter AT THE MOMENT the config changes and credit the volume to the server that was active. That is a mark on the router, not arithmetic in the panel — so this cut waits its turn instead of being drawn approximately.",
     "Считать пришлось бы по счётчикам сетевых интерфейсов, а это ЭФИР: туда попадут и обмен между устройствами, и широковещание — сумма по сетям выйдет больше, чем через провайдера. Разрез полезный, но подписывать его придётся «в сети», а не «в интернет», и сделать это надо аккуратно.":"It would have to be counted from the network interfaces' counters, and that is THE AIR: traffic between devices and broadcasts land there too — the sum over networks comes out larger than what went through the ISP. The cut is useful, but it has to be labelled «on the network», not «to the internet», and that must be done carefully.",
-    "Роутер этого не считает — и мы говорим это прямо, а не рисуем нули.":"The router does not count this — and we say so plainly instead of drawing zeros.",
-    "Мешает аппаратный ускоритель: установленные соединения уходят в NSS/ECM мимо netfilter, и счётчики правил по адресам почти не тикают — числа из них были бы не «примерными», а случайными. Оба пути (счётчики точки доступа — только Wi-Fi и только пока клиент в эфире — и статистика самого ускорителя) требуют замера на железе.":"The hardware accelerator is in the way: established connections go into NSS/ECM past netfilter, and per-address rule counters barely tick — numbers taken from them would not be «approximate» but random. Both ways (the access point's own counters — Wi-Fi only, and only while the client is on the air — and the accelerator's statistics) need measuring on real hardware.",
-    "за минуту наблюдения видно, куда ходит одно устройство — на его экране":"a minute of watching shows where a single device goes — on its own screen",
-    "посмотреть, кто в сети и что запрашивает":"see who is on the network and what they request",
     "Этот роутер разрез по выходам ещё не считает — обновите панель на роутере, и он появится.":"This router does not count the per-exit cut yet — update the panel on the router and it will appear.",
     "Этот роутер считает выходы только за сегодня.":"This router counts exits for today only.",
     "Окна за неделю, месяц и год добавлены в более новой версии панели — обновите её на роутере, и периоды включатся.":"The week, month and year windows were added in a newer panel version — update it on the router and the periods will switch on.",
@@ -7610,7 +7716,10 @@
     "приём и отдача: через несущую, через провайдера и через каждый дополнительный выход":"received and sent: through the carrier, through the ISP and through every additional exit",
     "не ведётся: дельты снимаются раз в пять минут и складываются в сутки":"not kept: deltas are taken every five minutes and added up into days",
     "в настройках на роутере — счёт переживает и перезагрузку, и обновление":"in the settings on the router — the count survives both a reboot and an update",
-    "одна строка в сутки; сырьё закачек и кэш на флеш не пишутся никогда":"one line per day; download payloads and caches are never written to flash",
+    "строка в сутки и строка на устройство за сутки (около 15 КБ в месяц на десяток устройств)":"a line per day and a line per device per day (about 15 KB a month for ten devices)",
+    "— сырьё закачек и кэш на /data не пишем никогда":"— download payloads and caches never go to /data",
+    "счётчики прошивки по MAC — и через аппаратный ускоритель тоже; сутки копятся в памяти и сохраняются раз в 4 часа":"the firmware's counters per MAC — through the hardware accelerator too; the day builds up in memory and is saved every 4 hours",
+    "до 16 устройств в день":"up to 16 devices a day","остальные — «прочие»":"the rest — «other»",
     // Короткие метки «почему выход не везёт» (длинные фразы того же ответа — на экране самого выхода).
     "компонент не установлен":"component not installed","ядро без NFQUEUE":"kernel without NFQUEUE",
     "идёт основным":"goes via the main tunnel","не отвечает":"not responding","идёт напрямую":"goes direct","правил нет":"no rules",
@@ -7777,8 +7886,8 @@
     "«Только текст» — тот же срез одним файлом: от наших логов в нём последние строки, системного журнала нет. Собирается быстрее; прикладывайте его файлом — в сообщение он не поместится.":
       "«Text only» is the same snapshot as a single file: it has the last lines of our logs and no system log. It builds faster; attach it as a file — it will not fit into a message.",
     "Что внутри":"What's inside","Версия и состояние подсистем":"Version and subsystem state",
-    "что установлено и что несёт трафик: транспорт, дополнительные выходы, десинк, доступ домой, шифрованный DNS; включены ли письма и о чём; у секретных файлов — только «есть ли»":
-      "what is installed and what carries traffic: transport, extra exits, desync, home access, encrypted DNS; whether emails are on and what about; for secret files — only whether they exist",
+    "что установлено и что несёт трафик: транспорт, дополнительные выходы, десинк, доступ домой, шифрованный DNS, учёт трафика по устройствам; включены ли письма и о чём; у секретных файлов — только «есть ли»":
+      "what is installed and what carries traffic: transport, extra exits, desync, home access, encrypted DNS, per-device traffic accounting; whether emails are on and what about; for secret files — only whether they exist",
     "Правила ядра":"Kernel rules","маршрутизация, метки, цепочки, наборы адресов и проба прямого пути":"routing, marks, chains, address sets and a direct-path probe",
     "Клиенты сети":"Network clients","адреса домашней сети и производитель по MAC; имена из аренд заменены метками":"home network addresses and the vendor by MAC; names from leases are replaced with labels",
     "Расписания доступа":"Access schedules","сверено ли время роутера, что сейчас закрыто и правила в ядре; имена расписаний не входят":"whether the router clock is synced, what is closed now and the kernel rules; schedule names are not included",
@@ -11759,7 +11868,6 @@
     ["Сегодня всего через интернет (WAN):","Today total via internet (WAN):"],
     ["прошивка","firmware"],["сохраняю настройку","saving setting"],["настройка сохранена","setting saved"],
     ["Копится на роутере, переживает ребут.","Accumulated on the router, survives reboot."],
-    ["По устройствам недоступно (аппаратный ускоритель NSS).","Per-device unavailable (hardware NSS accelerator)."],
     ["метод: сетевой пинг по порту","method: network ping on port"],
     ["метод: TCP-подключение к порту","method: TCP connect to port"],
     ["метод: ICMP-пинг","method: ICMP ping"],["метод: ICMP","method: ICMP"],
@@ -16088,7 +16196,7 @@
   // здесь на каждую отвечено для одного устройства (`dvWho` — кто забирает весь его остальной трафик).
   // ============================================================================
   // «Расписание» (access schedules) between «Порты» and «Что запрашивает» — the mockup's order; «Статистика» waits for its counters.
-  var DV_TABS=[['route','Маршрут'],['ports','Порты'],['sched','Расписание'],['watch','Что запрашивает']];
+  var DV_TABS=[['route','Маршрут'],['ports','Порты'],['sched','Расписание'],['stat','Статистика'],['watch','Что запрашивает']];
   var _dvTab={ip:'', tab:'route'}, _dvF=null, _dvGen=0, _dvGlob=null;
   function dvTabOf(ip){ return _dvTab.ip===String(ip) ? _dvTab.tab : 'route'; }
   function dvTabSet(ip, tab){ _dvTab={ip:String(ip), tab:tab}; }
@@ -17072,12 +17180,14 @@
       + dvKeepCard(dev)
       + dvPortsCard(rules, guest, rany)+dvPortCard(f)
       + '<div class="tpane" data-dvp="sched" id="dv-sch">'+RP_WAIT+'</div>'
+      + '<div class="tpane" data-dvp="stat" id="dv-stat">'+dvStatHtml(dev, (_dvStat && _dvStat.mac===String(dev.mac||'').toLowerCase()) ? _dvStat.d : null)+'</div>'
       + dwCardsHtml()+'</div>';
     dvTabShow(body, tab);
     wireCacts(body);
     wireSeg('dv-tabs', 'data-dvt', function(t){
       dvTabSet(ip, t); dvTabShow(body, t);
       if(t==='watch') dwShow(ip); else dwHalt();
+      if(t==='stat') dvStatLoad(dev);
     });
     dvOwnFormWire(ip); dvPortFormWire(ip);
     var wsd=document.getElementById('dv-wsd');
@@ -17085,6 +17195,7 @@
     // Первый ответ станции экран уже нарисовал — тик начнёт через 5 с (поколение отсекает цикл прежней разметки).
     var wg=++wsGen; setTimeout(function(){ wsTick(ip, wg); }, 5000);
     if(tab==='watch') dwShow(ip);
+    if(tab==='stat') dvStatLoad(dev);
     if(!gl) dvGlobPaint(ip);
     dvSchLoad(ip, dev, d.devices||[], rep);
     body.addEventListener('input', function(e){
@@ -17158,6 +17269,47 @@
     else if(a==='own-del' && (r=drules[i])) dvPost('dev_dst_del', null, ip+' → снимаю правило '+r.val, {ip:ip, val:r.val}, rep);
     else if(a==='port-del' && (r=rules[i])) dvPost('port_del', null, ip+' → снимаю правило по портам', {ip:ip, proto:r.proto, ports:r.ports}, rep);
     else if(a==='sch-new' || a==='sch-add' || a==='sch-rm') dvSchAct(a, ip, rep);
+    else if(a==='traffic'){ tsCut=3; openTraffic(); }   // «Все устройства» of the statistics tab — the screen «Трафик» on its devices' cut
+  }
+  // ── ВКЛАДКА «СТАТИСТИКА» (traffic by device; mockup rt-dev tab 3, in the feature by the user's word 09.10.2026) — the device's
+  // bytes through the router in the four windows of the screen «Трафик» and its share of the house, answered by the router for ONE
+  // MAC (`?dmac=`, traffic-dev.sh json-mac). Asked when the tab is shown, not with every paint of the screen: nothing else needs it.
+  // The last answer is drawn at once on a repaint (`_dvStat`), then asked again. No daily chart: charts belong to «Трафик».
+  var _dvStat=null, _dvStatGen=0;
+  function dvStatHtml(dev, d){
+    var h='<div class="card w2"><div class="wt">Трафик через роутер</div>';
+    if(!dev.mac) return h+'<div class="cline">У этого устройства нет MAC — роутеру не по чему его считать.</div></div>';
+    if(!d) return h+'<div class="lempty">загрузка…</div></div>';   // no data-loading: a hidden tab is not «the screen waits» (scrHold)
+    if(d.err) return h+'<div class="cline">'+esc(noteText(d.err===2))+'</div></div>';
+    if(d.ok!==true || !d.w) return h+noteBox(d.msg ? esc(trNow(String(d.msg))) : 'Этот роутер устройства ещё не считает — обновите панель на роутере, и разрез появится.', 'warn')+'</div>';
+    function w(k, j){ var a=d.w[k]||[]; return Number(a[j])||0; }
+    h+='<div class="stats" style="margin-top:4px">'+TS_PER.map(function(p){
+        return '<div class="s"><div class="l">'+p[1]+'</div><div class="v">'+humanBytes(w(p[0],0)+w(p[0],1))+'</div></div>'; }).join('')+'</div>';
+    // The share of the house over 7 days — of everything the router counted per device in that window (devices + «прочие»).
+    var me=w('week',0)+w('week',1), all=w('week',2)+w('week',3);
+    var line=all>0 ? tkL('За 7 дней — '+tsShare(me, all)+' всего, что прошло через роутер · ↓ '+humanBytes(w('week',0))+' · ↑ '+humanBytes(w('week',1))+'.',
+                         'Over 7 days — '+tsShare(me, all)+' of everything through the router · ↓ '+humanBytes(w('week',0))+' · ↑ '+humanBytes(w('week',1))+'.')
+                   : tkL('За 7 дней через роутер ничего не прошло.', 'Nothing went through the router over 7 days.');
+    if(d.since) line+=' '+tkL('Считается с '+tdDay(d.since)+'.', 'Counted since '+tdDay(d.since)+'.');
+    // Both languages by tkL; NOT translate="no" — the byte units inside still go through the dictionary's unit rules.
+    h+='<div class="tiny" style="margin-top:10px">'+esc(line)+'</div>';
+    if(d.src===false) h+='<div style="margin-top:10px">'+noteBox('<b>Прошивка сейчас не отвечает про устройства.</b> Служба trafficd молчит — показано то, что роутер успел записать.', 'warn')+'</div>';
+    h+='<div class="cline" style="margin-top:8px">Это трафик через роутер, а не «в интернет»: домашний обмен (показ на телевизор, NAS) в нём тоже.</div>';
+    return h+'<div class="acts" style="justify-content:flex-start"><button type="button" class="btn gh" data-dva="traffic">Все устройства</button></div></div>';
+  }
+  function dvStatLoad(dev){
+    var mac=String(dev.mac||'').toLowerCase(), g=++_dvStatGen;
+    if(!mac) return;
+    fetchJson('/cgi-bin/traffic?dmac='+mac).then(function(d){
+      var b=document.getElementById('dv-stat');
+      if(g!==_dvStatGen || !screenAlive(b)) return;
+      _dvStat={mac:mac, d:d}; b.innerHTML=dvStatHtml(dev, d);
+    }, function(e){
+      var b=document.getElementById('dv-stat');
+      if(g!==_dvStatGen || !screenAlive(b)) return;
+      // a refusal keeps an answer already drawn for this device
+      if(!(_dvStat && _dvStat.mac===mac)) b.innerHTML=dvStatHtml(dev, {err:(e && e.net) ? 2 : 1});
+    });
   }
   // ── ВКЛАДКА «РАСПИСАНИЕ» (access schedules, mockup rt-dev tab 08.10.2026) — the device's side of a schedule: which one, what now,
   // the actions a parent needs right here, the week. EDITING lives on the schedule: several devices share it, and a second editor here

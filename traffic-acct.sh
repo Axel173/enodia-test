@@ -60,6 +60,11 @@ date +%s > "$LOCK"; trap 'rm -f "$LOCK"' EXIT; trap 'exit 1' INT TERM HUP PIPE
 # Порог — у владельца (clock-lib.sh::clock_sane, следит C82).
 clock_sane || exit 0
 
+# Traffic BY DEVICE rides this cron line and this lock (one schedule, no second writer of its files): its own step, its own
+# state (traffic-dev.sh). Here, before the interface accounting's early exits — its first run must not wait for theirs.
+# `</dev/null`: nothing below reads stdin, but the child must not either. The script gates on the synced clock itself.
+if [ -f "$ENODIA_DIR/traffic-dev.sh" ]; then sh "$ENODIA_DIR/traffic-dev.sh" tick </dev/null >/dev/null 2>&1; fi
+
 # trim + дефолт: `cat || echo awg` НЕ ловит пустой-но-существующий .transport (t="" → vif=xtun, и
 # трафик awg0 молча считался бы нулём). Зеркало той же строки в cgi-bin/traffic — читатель эту
 # граблю уже пережил, писатель отстал.

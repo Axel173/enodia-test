@@ -446,12 +446,12 @@ sc_use_load() {
 	return 0
 }
 sc_used_of() { printf '%s\n' "$SC_USED" | awk -v m="$1" '$1 == m { print $2 + 0; f = 1; exit } END { if (!f) print 0 }'; }
-# trafficd -> «<mac> <bytes in+out>» per MAC, lowercase (it answers MACs in capitals). The counters pass 32 bits: awk's doubles,
-# printed as integers. A device's own `hw` line and its addresses' lines carry the same MAC — the sum is over its addresses.
+# trafficd -> «<mac> <bytes in+out>» per MAC, lowercase. The counters pass 32 bits: awk's doubles, printed as integers.
+# trafficd is parsed by ONE owner (traffic-dev.sh snap, a line per address of a device); here — summed over the addresses.
 sc_traffic() {
-	ubus call trafficd hw 2>/dev/null | awk '
-		/"hw":/ { m = $0; sub(/.*"hw": *"/, "", m); sub(/".*/, "", m); mac = tolower(m) }
-		/"(rx|tx)_bytes":/ { v = $0; gsub(/[^0-9]/, "", v); if (mac != "") s[mac] += v }
+	[ -f "$ENODIA_DIR/traffic-dev.sh" ] || return 0
+	sh "$ENODIA_DIR/traffic-dev.sh" snap 2>/dev/null | awk -F'\t' '
+		{ s[$1] += $3 + $4 }
 		END { for (k in s) printf "%s %.0f\n", k, s[k] }'
 }
 # Save the day's usage to the flash: every SC_USE_SAVE while it changes, at once when $1 = now (a device just ran out — a

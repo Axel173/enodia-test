@@ -179,6 +179,7 @@ web/cgi-bin/diag
 web/cgi-bin/binup
 web-ui.sh
 traffic-acct.sh
+traffic-dev.sh
 support.sh
 devwatch.sh
 dns-hosts.sh

@@ -409,6 +409,28 @@ else
     echo "(slots.sh нет — установка до мульти-транспорта)"
 fi
 
+# Traffic by device answers «why is the split empty / wrong» with its STATE, never with names: the files' shape (how many days
+# and devices, the first and last day, the checkpoint's day and boot vs this boot), whether trafficd answers and how many
+# devices it knows, and whether the clock is synced — the tick waits for it. MACs (if any) are masked by redact() as everywhere.
+sec "ТРАФИК ПО УСТРОЙСТВАМ (trafficd → traffic-dev.sh)"
+if [ -f "$ENODIA_DIR/traffic-dev.sh" ]; then
+    _tdh="$ENODIA_STATE/.traffic-dev"
+    if [ -s "$_tdh" ]; then
+        awk 'NF == 4 { n++; d[$1] = 1; if (f == "") f = $1; l = $1; if ($2 == "other") o++ }
+             END { k = 0; for (x in d) k++; printf "история: строк %d, дней %d (с %s по %s), дней с «прочими» %d\n", n, k, f, l, o + 0 }' "$_tdh"
+    else echo "(истории .traffic-dev нет — ни один день ещё не закрыт)"; fi
+    if [ -s "$ENODIA_STATE/.traffic-dev-day" ]; then
+        echo "сохранённый день: $(head -n 1 "$ENODIA_STATE/.traffic-dev-day"), устройств $(awk 'NR > 1' "$ENODIA_STATE/.traffic-dev-day" | grep -c . || true)"
+    else echo "(сохранённого дня .traffic-dev-day нет)"; fi
+    echo "эта загрузка: $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo '?') · аптайм $(uptime_s) с"
+    echo "ОЗУ: $(ls /tmp/enodia-traffic-dev 2>/dev/null | tr '\n' ' ')· день в ОЗУ: $(head -n 1 /tmp/enodia-traffic-dev/day 2>/dev/null || echo нет)"
+    echo "trafficd сейчас: пар (устройство+адрес) $(sh "$ENODIA_DIR/traffic-dev.sh" snap 2>/dev/null | grep -c . || true)"
+    if command -v clock_trusted >/dev/null 2>&1 && clock_trusted; then echo "часы сверены — тик считает"
+    else echo "часы НЕ сверены — тик ждёт (дельты копятся в счётчиках trafficd)"; fi
+else
+    echo "(traffic-dev.sh нет — установка до разреза по устройствам)"
+fi
+
 sec "ZAPRET / ДЕСИНК (nfqws, NFQUEUE, пулы)"
 if [ -f "$ENODIA_DIR/zapret.sh" ]; then
     # БЕЗ `head`: срез zapret растёт с числом выбранных категорий и правил в ENODIA_ZAPRET, а резали
