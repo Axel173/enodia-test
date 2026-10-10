@@ -14,6 +14,7 @@
 #   lbl_list <файл> <регулярка ключа> [lower]         — ЕДИНСТВЕННЫЙ разбор: `ключ⇥имя` построчно, ключ — первый на строку
 #   lbl_write <файл> <ключ> <имя|пусто> <регулярка ключа> [lower] — записать (пусто = снять), атомарно; 0 — записано
 #   lbl_merge <файл> <файл-источник> <регулярка ключа> [lower]   — влить метки источника (у своего ключа побеждает источник)
+#   lbl_import <файл> <файл-архива> <ключи привезённого> <регулярка ключа> — импорт бэкапа «по привезённому» (см. функцию)
 LBL_TAB=$(printf '\t')
 LBL_NL='
 '
@@ -72,6 +73,32 @@ lbl_merge() {
     _lblw=$( { lbl_list "$2" "$3" "$4"; lbl_list "$1" "$3" "$4"; } | awk -F"$LBL_TAB" '!($1 in s) { s[$1] = 1; print }')
     lbl_commit "$1" "$_lblw"
 }
+# Backup import BY WHAT THE ARCHIVE BROUGHT ($3 — its keys, one per line): an archive line counts only for a key the archive
+# brought (a line stuck in the archive would land on SOMEONE ELSE'S local file of the same name — review s.96, round 3); a
+# local line of a key the archive brought is dropped even when the archive has none (it described the replaced file — the
+# same review, round 2); other local lines stay. Owners: cfg-names.sh (config names) and road.sh (config roads). No lock here:
+# the caller holds its own.
+lbl_import() {   # $1 = store, $2 = archive's file (may be absent), $3 = brought keys, $4 = key regex
+    _lbia=""
+    if [ -f "$2" ]; then
+        while IFS= read -r _lbir || [ -n "$_lbir" ]; do
+            [ -n "$_lbir" ] || continue
+            case "$LBL_NL$3$LBL_NL" in *"$LBL_NL${_lbir%%"$LBL_TAB"*}$LBL_NL"*) _lbia="${_lbia:+$_lbia$LBL_NL}$_lbir" ;; esac
+        done <<EOF
+$(lbl_list "$2" "$4")
+EOF
+    fi
+    _lbik=""
+    while IFS= read -r _lbir || [ -n "$_lbir" ]; do
+        [ -n "$_lbir" ] || continue
+        case "$LBL_NL$3$LBL_NL" in *"$LBL_NL${_lbir%%"$LBL_TAB"*}$LBL_NL"*) continue ;; esac
+        _lbik="${_lbik:+$_lbik$LBL_NL}$_lbir"
+    done <<EOF
+$(lbl_list "$1" "$4")
+EOF
+    lbl_commit "$1" "$(printf '%s\n%s\n' "$_lbia" "$_lbik" | awk -F"$LBL_TAB" 'NF >= 2 && !($1 in s) { s[$1] = 1; print }')"
+}
+
 # Записать готовое содержимое АТОМАРНО (пусто = файл снять). Временный файл сверяем с тем, что хотели записать: полный раздел
 # обрезал бы его молча.
 lbl_commit() {

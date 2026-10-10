@@ -1265,26 +1265,34 @@ emit_tech() {
 		"$dsrc" "$dadr" "$dvia" "$dpro" "$dres" "$dprx" "$dbin" "$dspl" "$mtu" "$mif"
 }
 
-# --- Кэш проверок серверов (.srv-checks, TSV key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts) → JSON-объект
-# key→{st,ms,method,cdn,mbps,kind,ts}. Пишет панель (action save_checks); тут только читаем. -----
+# --- Кэш проверок серверов (.srv-checks, TSV key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb]) → JSON-объект
+# key→{st,ms,method,cdn,mbps,kind,ts,tms,via,dms,chb}. Пишет панель (action save_checks); тут только читаем. Хвост — «дорога к
+# серверу» (10.10.2026): st=blk — напрямую молчит, через туннель отвечает (tms); via — номер выхода-дороги, число ms — через неё,
+# dms — напрямую; chb — второе мнение «вердикт:блоков:ответили». Строка прежней формы (8 полей) — без хвоста. -----
 emit_checks() {
 	F="$DS/.srv-checks"
 	printf '{'
 	first=1
 	if [ -f "$F" ]; then
 		TAB=$(printf '\t')
-		while IFS="$TAB" read -r key st ms method cdn mbps kind ts; do
+		chb_on=0; [ -f "$DS/.chebur" ] && chb_on=1
+		while IFS="$TAB" read -r key st ms method cdn mbps kind ts tms via dms chb; do
 			case "$key" in 'awg|'*|'xray|'*|'hy2|'*) : ;; *) continue ;; esac
 			msj=$ms;   case "$msj" in ''|*[!0-9]*) msj=null ;; esac
 			mbj=$mbps; case "$mbj" in ''|*[!0-9.]*) mbj=null ;; esac
 			case "$cdn" in 1) cdj=true ;; *) cdj=false ;; esac
-			case "$st" in ok) stj=ok ;; *) stj=dead ;; esac
+			case "$st" in ok) stj=ok ;; blk) stj=blk ;; *) stj=dead ;; esac
+			tmj=$tms;  case "$tmj" in ''|*[!0-9]*) tmj=null ;; esac
+			dmj=$dms;  case "$dmj" in ''|*[!0-9]*) dmj=null ;; esac
+			case "$via" in [2-7]) ;; *) via="" ;; esac
+			printf '%s' "$chb" | grep -qE '^(blocked|clear|uncertain):[0-9]{1,3}:[0-9]{1,3}$' || chb=""
+			[ "$chb_on" = 1 ] || chb=""   # второе мнение выключено — ни следа его вердикта (кэш пишет панель, выключение его не чистит)
 			case "$kind" in speed) kj=speed ;; *) kj=ping ;; esac
 			case "$ts" in ''|*[!0-9]*) ts=0 ;; esac
 			case "$method" in *[!A-Za-z0-9:._-]*|'') method="-" ;; esac
 			[ "$first" = 1 ] || printf ','; first=0
-			printf '"%s":{"st":"%s","ms":%s,"method":"%s","cdn":%s,"mbps":%s,"kind":"%s","ts":%s}' \
-				"$key" "$stj" "$msj" "$method" "$cdj" "$mbj" "$kj" "$ts"
+			printf '"%s":{"st":"%s","ms":%s,"method":"%s","cdn":%s,"mbps":%s,"kind":"%s","ts":%s,"tms":%s,"via":"%s","dms":%s,"chb":"%s"}' \
+				"$key" "$stj" "$msj" "$method" "$cdj" "$mbj" "$kj" "$ts" "$tmj" "$via" "$dmj" "$chb"
 		done < "$F"
 	fi
 	printf '}\n'

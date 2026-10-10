@@ -531,10 +531,18 @@ bring_up() {
 
     # Ждём появления интерфейса
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-        ip link show awg0 >/dev/null 2>&1 && return 0
+        ip link show awg0 >/dev/null 2>&1 && { road_rewire; return 0; }
         sleep 1
     done
     return 1
+}
+# ДОРОГА К СЕРВЕРУ (road.sh) — ДО ожидания рукопожатия. Правило «пакеты к серверу — через выход» `wire` строит по `.active` (его уже
+# записал install_config) и адресу из конфига или awg0.conf (его только что сгенерировал awg_setup); прежде оно вставало лишь в
+# apply_routing — ПОСЛЕ ожидания, и рукопожатие сервера на дороге 25 с шло напрямую к заблокированному адресу: смена, перебор и
+# возврат на такой сервер откатывались «не подключается» (ревью с.118, круг 2). Нет дорог — ни одного лишнего запуска.
+road_rewire() {
+    [ -f "$ENODIA_DIR/road.sh" ] && [ -s "$ENODIA_STATE/.cfg-via" ] && sh "$ENODIA_DIR/road.sh" wire >/dev/null 2>&1
+    return 0
 }
 
 bring_down() {

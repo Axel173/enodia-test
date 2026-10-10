@@ -1654,8 +1654,14 @@ EOF
 		[ -f "$ENODIA_STATE/configs/$name.conf" ] || fail "нет конфига $name"
 		active=$(cat "$ENODIA_STATE/.active" 2>/dev/null | tr -d ' \r\n')
 		[ "$name" = "$active" ] && fail "нельзя удалить активный конфиг ($name) — сначала переключитесь на другой"
+		# Конфиг служит ДОРОГОЙ (road.sh: на нём выход, по которому едут серверы) — удалить его значило бы снять дорогу у пассажиров молча.
+		if [ -f "$ENODIA_DIR/road.sh" ]; then
+			_dsv=$(sh "$ENODIA_DIR/road.sh" serves awg "$name" 2>/dev/null | tr -cd '0-9')
+			[ -n "$_dsv" ] && fail "конфиг $name служит дорогой (выход №$_dsv) — сначала переключите дорогу его пассажиров на «напрямую»"
+		fi
 		rm -f "$ENODIA_STATE/configs/$name.conf" || fail "не удалось удалить $name"
 		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del awg "$name" >/dev/null 2>&1   # настоящее имя — вместе с файлом
+		[ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" del awg "$name" >/dev/null 2>&1           # и дорога к серверу (road.sh)
 		printf '{"ok":true,"code":0,"msg":"awg-конфиг %s удалён"}\n' "$name"
 		exit 0 ;;
 	del_xray_server)
@@ -1772,6 +1778,8 @@ EOF
 			for _rf in .failover-home .last.bak.name; do
 				_rv=$(cat "$ENODIA_STATE/$_rf" 2>/dev/null | tr -d ' \r\n'); [ "$_rv" = "$old" ] && echo "$new" > "$ENODIA_STATE/$_rf"
 			done
+			# Дорога к серверу (road.sh) — свойство файла конфига: едет за ним, иначе новое имя шло бы напрямую к заблокированному адресу.
+			[ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" mv awg "$old" "$new" >/dev/null 2>&1
 		fi
 		if [ -n "$_rnw" ]; then
 			printf '{"ok":true,"code":0,"name":"%s","slots":%s,"msg":"конфиг «%s» переименован в «%s», но имя не записано: %s"}\n' "$new" "$_rs" "$old" "$new" "$_rnw"
@@ -1822,7 +1830,18 @@ EOF
 		xs=$(awk -F'\t' -v n="$name" '$3=="awg" && $4==n { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,')
 		if [ -n "$_tm" ]; then mtu=$_tm; msrc=tun; elif [ -z "$mtu" ]; then mtu=1376; msrc=default; fi
 		[ "$_tmu" = 1 ] && msrc=unknown
-		printf '{"ok":true,"code":0,"endpoint":"%s","mtu":%s,"mtu_src":"%s","exits":[%s],"exit_mtu":%s,"exit_mtu_src":"%s"}\n' "$ep" "$mtu" "$msrc" "$xs" "$xmtu" "$xsrc"; exit 0 ;;
+		# ДОРОГА К СЕРВЕРУ (road.sh): её номер и потолок MTU — поверх всего прочего (сервер живёт внутри туннеля дороги). Потолка нет,
+		# пока дорога не поднята: считать не от чего — и экран так и скажет, без своей арифметики.
+		road=""; rcap=""
+		if [ -f "$ENODIA_DIR/road.sh" ]; then
+			road=$(sh "$ENODIA_DIR/road.sh" get awg "$name" 2>/dev/null | tr -cd '0-9' | cut -c1)
+			rcap=$(sh "$ENODIA_DIR/road.sh" mtu-cap awg "$name" 2>/dev/null | tr -cd '0-9' | cut -c1-5)
+		fi
+		if [ -n "$rcap" ]; then
+			[ "$mtu" -gt "$rcap" ] 2>/dev/null && { mtu=$rcap; msrc=road; }
+			[ "$xmtu" -gt "$rcap" ] 2>/dev/null && { xmtu=$rcap; xsrc=road; }
+		fi
+		printf '{"ok":true,"code":0,"endpoint":"%s","mtu":%s,"mtu_src":"%s","exits":[%s],"exit_mtu":%s,"exit_mtu_src":"%s","road":"%s","road_mtu":%s}\n' "$ep" "$mtu" "$msrc" "$xs" "$xmtu" "$xsrc" "$road" "${rcap:-null}"; exit 0 ;;
 	# save_config_raw: пишет ПОЛНЫЙ конфиг (из формы — пересобран фронтом, или сырой текст).
 	# Валидация: xray → JSON через jsonfilter (на роутере есть) + наличие outbound-протокола;
 	# hy2 → наличие server:. Атомарно (.new+mv). Если конфиг активен и транспорт его несёт —
@@ -2144,8 +2163,8 @@ EOF
 		mv "$NM.new" "$NM" 2>/dev/null
 		printf '{"ok":true,"code":0,"msg":"имена сохранены"}\n'; exit 0 ;;
 	# save_checks: кэш проверок серверов (пинг/скорость). Панель шлёт ВЕСЬ кэш (data=b64 TSV
-	# key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts). Полная замена — это хинты производительности, не критич-
-	# ные данные (last-writer-wins). Валидируем построчно (ключ + 8 полей), кап 2000 строк.
+	# key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb]). Полная замена — это хинты производительности, не критич-
+	# ные данные (last-writer-wins). Валидируем построчно (ключ + ≥8 полей), кап 2000 строк; значения проверяет читатель (data).
 	save_checks)
 		raw=$(urldecode "$(field data)" | base64 -d 2>/dev/null)
 		TAB=$(printf '\t')
@@ -2412,6 +2431,46 @@ EOF
 			                 *) fail "поле: name|transport|config|fallback" ;;
 			             esac ;;
 		esac ;;
+	# road_set: ДОРОГА К СЕРВЕРУ (road.sh) — пакеты конфига AmneziaWG к его серверу через выход <id> (пусто = напрямую). Проверки
+	# («в один шаг», только включённый AWG-выход) и ответ словами — у владельца; снятие дороги с работающей несущей переподнимает её
+	# (MTU пишет только подъём), поэтому — через run (cap_run), как смена конфига выхода.
+	road_set)
+		name=$(urldecode "$(field name)")
+		echo "$name" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя конфига"
+		rid=$(field id); case "$rid" in ''|[2-7]) ;; *) fail "битый номер выхода" ;; esac
+		# Лок смены — как у смены сервера: снятие дороги переподнимает несущую (`transport.sh restart`), а он без лока шёл бы поверх
+		# лестницы сторожа (ревью с.118, круг 2; класс C127).
+		hold_switch
+		run road.sh set awg "$name" "$rid" ;;
+	# chebur_*: ВТОРОЕ МНЕНИЕ О БЛОКИРОВКЕ (cheburcheck.sh) — переключатели, запуск проверки, её ответ. Opt-in, по умолчанию выкл:
+	# адрес сервера уходит стороннему российскому сервису, а панель ставят не только в России (решение человека 10.10.2026).
+	# Проверка — фоном у владельца (до ~80 с потока), панель опрашивает chebur_get.
+	chebur_set)
+		case "$(field what)" in
+			on) run cheburcheck.sh on ;; off) run cheburcheck.sh off ;;
+			auto_on) run cheburcheck.sh auto on ;; auto_off) run cheburcheck.sh auto off ;;
+			*) fail "что включить: on|off|auto_on|auto_off" ;;
+		esac ;;
+	chebur_check)
+		ip=$(field ip); echo "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || fail "нужен адрес IPv4"
+		run cheburcheck.sh check "$ip" force ;;
+	chebur_state)
+		owner_relay cheburcheck.sh state ;;
+	chebur_get)
+		ip=$(field ip); echo "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || fail "нужен адрес IPv4"
+		owner_relay cheburcheck.sh get "$ip" ;;
+	# warp_*: «ПОЛУЧИТЬ WARP» (warp.sh) — регистрация у Cloudflare, конфиг, выход и (по выбору) дорога для сервера. Фоном у
+	# владельца, панель опрашивает warp_status.
+	warp_get)
+		rider=$(urldecode "$(field rider)")
+		[ -z "$rider" ] || echo "$rider" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя конфига"
+		run warp.sh get "$rider" ;;
+	warp_status)
+		owner_relay warp.sh status ;;
+	# Где Cloudflare принял подключение выхода (экран выхода-WARP): трасса через его интерфейс — у владельца.
+	warp_colo)
+		sid=$(field id); case "$sid" in [2-7]) ;; *) fail "битый номер выхода" ;; esac
+		owner_relay warp.sh colo "$sid" ;;
 	slot_pool)
 		# «Свой пул…» на десинк-выходе: создать «в VPN»-группу, СРАЗУ привязанную к слоту
 		# (домены юзер добавит в редакторе группы). id строгий 2..7; имя не валидируем —

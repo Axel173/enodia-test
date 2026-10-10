@@ -85,6 +85,10 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
 command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
 command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
+# The config probe's lock (cmd_try) — label-lib.sh's shared lock directory (the holder is judged by daemon-lib.sh's pid_runs). No
+# library — the probe refuses in words, everything else works as before.
+command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -qE "$2"; }
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi
 # Смерть демона ждём по процессу с шагом 0.1 с (daemon-lib.sh). Нет библиотеки — прежний секундный шаг.
 command -v daemon_wait_gone >/dev/null 2>&1 || daemon_wait_gone() { _dwg=0; while [ -d "/proc/$1" ]; do [ "$_dwg" -ge "${2:-5}" ] && return 1; sleep 1; _dwg=$((_dwg+1)); done; return 0; }
 # Поколение firewall reload (ipt-lib.sh). Нет библиотеки — «reload был всегда»: каждое чтение даёт новую строку, как раньше.
@@ -393,17 +397,25 @@ slot_carrier_conf() {   # $1 = id ; $2 = cfg
 }
 # Стартовать демон awgN на УЖЕ собранном ifconf: $2 — вывод slot_carrier_conf.
 slot_carrier_start() {   # $1 = id ; $2 = "ADDRESS<TAB>MTU"
-    _id="$1"; _if=$(slot_iface "$_id"); _dst=$(slot_ifconf "$_id")
-    _addr=$(printf '%s' "$2" | cut -f1); _mtu=$(printf '%s' "$2" | cut -f2)
-    awg_kill_daemon "$_if"                      # добить возможный stale-демон/сокет ИМЕННО awgN
+    awg_if_start "$(slot_iface "$1")" "$(slot_ifconf "$1")" "$2" "слот №$1"
+}
+# An AmneziaWG daemon on interface $1 from an ALREADY built ifconf $2 ($3 — "ADDRESS<TAB>MTU", $4 — who, for the log). ONE start code
+# for an exit (slot_carrier_start) and the config probe (cmd_try): GOMEMLIMIT, the wait for the interface, keepalive before the first
+# packet — no second copy.
+awg_if_start() {   # $1 = iface ; $2 = ifconf ; $3 = "ADDRESS<TAB>MTU" ; $4 = кто
+    _if="$1"; _dst="$2"; _wh="$4"
+    _addr=$(printf '%s' "$3" | cut -f1); _mtu=$(printf '%s' "$3" | cut -f2)
+    awg_kill_daemon "$_if"                      # добить возможный stale-демон/сокет ИМЕННО этого интерфейса
     # GOMEMLIMIT — см. разбор в шапке net-tune.sh (он единственный владелец значения). Слот такой
     # же демон, как awg0: без потолка его куча растёт по трафику, а на тесной модели их несколько.
     # grep по ФОРМЕ — гард на рассинхрон версий: старый net-tune.sh печатает на этот верб `usage: …`
     # в stdout, и оно стало бы первым аргументом env (демон не стартует). См. шапку net-tune.sh.
-    env $(sh "$ENODIA_DIR/net-tune.sh" memlimit-env 2>/dev/null | grep -E '^GOMEMLIMIT=[0-9]+MiB$') "$ENODIA_BIN/amneziawg-go" "$_if" || { log "слот №$_id: amneziawg-go $_if не стартовал"; return 1; }
+    env $(sh "$ENODIA_DIR/net-tune.sh" memlimit-env 2>/dev/null | grep -E '^GOMEMLIMIT=[0-9]+MiB$') "$ENODIA_BIN/amneziawg-go" "$_if" || { log "$_wh: amneziawg-go $_if не стартовал"; return 1; }
     _i=0; while ! ip link show "$_if" >/dev/null 2>&1 && [ "$_i" -lt 10 ]; do sleep 1; _i=$((_i+1)); done
-    ip link show "$_if" >/dev/null 2>&1 || { log "слот №$_id: $_if не появился"; awg_kill_daemon "$_if"; return 1; }
-    "$ENODIA_BIN/awg" setconf "$_if" "$_dst"
+    ip link show "$_if" >/dev/null 2>&1 || { log "$_wh: $_if не появился"; awg_kill_daemon "$_if"; return 1; }
+    # setconf rejects a config WHOLE (wg-quick lines, a name in Endpoint, empty I1..I5) — the interface would stay without a peer: an
+    # exit «up» swallowing its groups' traffic, the probe reading «the server is silent». Not accepted — no start (review s.118).
+    "$ENODIA_BIN/awg" setconf "$_if" "$_dst" || { log "$_wh: awg setconf отверг конфиг $_if"; awg_kill_daemon "$_if"; ip link del "$_if" 2>/dev/null; return 1; }
     slot_keepalive "$_if"
     ip a add "$_addr" dev "$_if" 2>/dev/null
     ip link set dev "$_if" mtu "${_mtu:-$AWG_MTU_DEFAULT}" 2>/dev/null
@@ -411,11 +423,15 @@ slot_carrier_start() {   # $1 = id ; $2 = "ADDRESS<TAB>MTU"
     return 0
 }
 
+# The Endpoint host from a GENERATED ifconf (slot_gen_conf already put the IP in place of a name), port cut. Exits and the probe — one
+# parse.
+ifconf_ep_host() { grep -E '^[[:space:]]*Endpoint' "$1" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | sed 's/:[0-9]*$//; s/[[:space:]]//g'; }
+
 # Вывести endpoint слота из-под маркировки (анти-петля). Берём IP из СГЕНЕРИРОВАННОГО ifconf (там
 # Endpoint уже подставлен как IP). Аддитивно, не затирая основной endpoint-bypass (apply-bypass).
 slot_exclude_endpoint() {   # $1 = id
-    _id="$1"; _dst=$(slot_ifconf "$_id")
-    _ep=$(grep -E '^[[:space:]]*Endpoint' "$_dst" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | sed 's/:[0-9]*$//; s/[[:space:]]//g')
+    _id="$1"
+    _ep=$(ifconf_ep_host "$(slot_ifconf "$_id")")
     if echo "$_ep" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
         [ -f "$APPLY_BYPASS" ] && sh "$APPLY_BYPASS" endpoint-slot-set "$_id" "$_ep" >/dev/null 2>&1
         log "слот №$_id: endpoint $_ep исключён из маркировки (анти-петля)"
@@ -538,6 +554,9 @@ cmd_slot_probe() {   # $1 = id, $2 = cfg
                 # Последняя сверка перед маршрутом: выход выключили или сменили за эти секунды — маршрут не ставим, поднятое снимаем.
                 if ! slot_reg_is "$_id" "$_cfg"; then _spr=6; break; fi
                 slot_apply_routing "$_id"
+                # Потолок MTU дороги (road.sh): mtu-fix бежал при анти-петле — ДО интерфейса, и вернувшийся выход ехал бы по WARP 1280
+                # со своими 1376 (ревью с.118, круг 2). slot-up этим не страдает: несущую он поднимает раньше анти-петли.
+                [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" mtu-fix >/dev/null 2>&1
                 ct_flush
                 log "слот №$_id: сервер ответил за ${_w}с — awg-несущая $_if снова в table $(slot_table "$_id") (конфиг $_cfg)"
                 return 0
@@ -569,6 +588,56 @@ cmd_slot_probe() {   # $1 = id, $2 = cfg
     ip link del "$_if" 2>/dev/null
     [ -f "$APPLY_BYPASS" ] && sh "$APPLY_BYPASS" endpoint-slot-set "$_id" "" >/dev/null 2>&1   # проба не удалась: анти-петлю снять
     return "$_spr"
+}
+
+# CONFIG PROBE — DOES THE SERVER CARRY DATA FROM HERE, not «is there a handshake» (`try <config> <URL> [s]`): the ISP lets a WireGuard
+# handshake through and cuts the flow right after it (WARP on port 2408: a handshake, 92 bytes of answer, then silence; BE7000
+# 10.10.2026, dev notes «сервер-через-WARP-дизайн» §10). A throwaway interface TRY_IF on a copy of the config (slot_gen_conf: the same
+# cleaning and Endpoint resolve as an exit's), a request to the URL THROUGH it (`curl --interface`), the body to stdout — the caller
+# judges it; the live awg0/awgN/awgs0 are untouched. The packets to the server leave past every mark: `ip rule to <server> lookup
+# main` before all of ours (82…99) — a server address in iplist_set would carry the handshake into the main tunnel, and the probe
+# would «pass» where the direct path is closed. No routes, no iptables, no ct_flush: only the probe's own request uses the interface,
+# and without a route the kernel sends it by the device binding. Cleanup — in the verb process's EXIT trap (rule, daemon, interface,
+# key-copy directory, lock). stdout — the answer body only, reasons — stderr. Codes: 0 — an answer · 1 — no answer · 4 — the interface didn't
+# come up (no config, no AmneziaWG programs, no address; Endpoint not IPv4 — nothing to take past the marks) · 5 — another probe runs.
+TRY_IF=awgt0
+TRY_PREF=51
+TRY_LOCK=/tmp/enodia-awg-try.lock
+# The config copy with the private key lives in a PRIVATE directory made by THIS run (mkdir fails on anything already there — a
+# planted file or symlink): a fixed path in shared /tmp would be truncated and written in place with ITS owner and mode (review
+# s.118). RAM, 700, removed by the cleanup.
+TRY_DIR=/tmp/enodia-awg-try.d
+TRY_CONF="$TRY_DIR/conf"
+try_clean() {
+    awg_kill_daemon "$TRY_IF"
+    ip link del "$TRY_IF" 2>/dev/null
+    [ -n "$_tep" ] && ip rule del to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null
+    [ "${_tdir:-0}" = 1 ] && rm -rf "$TRY_DIR"
+    lbl_lock_drop "$TRY_LOCK"
+}
+cmd_try() {   # $1 = путь конфига ; $2 = URL ; $3 = потолок запроса, с (по умолчанию 10)
+    [ -f "$1" ] && [ -n "$2" ] || { log >&2 "проба: нужны конфиг и URL"; return 4; }
+    [ -x "$ENODIA_BIN/amneziawg-go" ] && [ -x "$ENODIA_BIN/awg" ] || { log >&2 "проба: нет программ AmneziaWG"; return 4; }
+    command -v lbl_lock_take >/dev/null 2>&1 || { log >&2 "проба: нет label-lib.sh — обновите скрипты"; return 4; }
+    lbl_lock_take "$TRY_LOCK" 'transport-awg\.sh' || { log >&2 "проба: идёт другая проба"; return 5; }
+    _tep=""; _tdir=0
+    trap try_clean EXIT
+    trap 'exit 1' INT TERM HUP PIPE
+    # Under our lock a leftover is a killed probe's (its pid is gone) — removed, then made anew; mkdir refuses a planted name.
+    rm -rf "$TRY_DIR" 2>/dev/null
+    ( umask 077; mkdir "$TRY_DIR" ) 2>/dev/null || { log >&2 "проба: не создать свой каталог $TRY_DIR"; return 4; }
+    _tdir=1
+    _tam=$(umask 077; slot_gen_conf "$1" "$TRY_CONF")
+    [ -n "$(printf '%s' "$_tam" | cut -f1)" ] || { log >&2 "проба: в конфиге нет Address"; return 4; }
+    _tep=$(ifconf_ep_host "$TRY_CONF")
+    printf '%s' "$_tep" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { _tep=""; log >&2 "проба: Endpoint не IPv4"; return 4; }
+    ip rule del to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null   # a killed probe's trace: `ip rule add` doesn't dedupe
+    ip rule add to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null || { _tep=""; log >&2 "проба: правило к серверу не встало"; return 4; }
+    awg_if_start "$TRY_IF" "$TRY_CONF" "$_tam" "проба" >&2 || return 4
+    _tca=$(curl_ca_opt "$2" --interface "$TRY_IF")   # the CA probe — by the probe's own path, not the default route
+    # shellcheck disable=SC2086
+    curl -s $_tca --interface "$TRY_IF" --connect-timeout 6 --max-time "${3:-10}" "$2" 2>/dev/null && return 0
+    return 1
 }
 
 # ---- команды контракта ----------------------------------------------------
@@ -742,5 +811,7 @@ case "$1" in
     # живёт в двух местах (здесь и slot_tun в slot-tun-lib.sh), и разъехались бы они молча.
     slot-iface) slot_iface "$2" ;;
     conf-gen)   shift; cmd_conf_gen "$@" ;;   # поколение протокола конфигов (разбор у cmd_conf_gen)
-    *) echo "usage: $0 up|down|cold|rewarm|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-probe <id> <cfg>|slot-iface <id>|conf-gen <файл>…"; exit 2 ;;
+    # The config probe on a throwaway interface takes no carrier (its own awgt0, no route, no marks) — hence no carrier_run.
+    try)        cmd_try "$2" "$3" "$4"; exit $? ;;
+    *) echo "usage: $0 up|down|cold|rewarm|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-probe <id> <cfg>|slot-iface <id>|conf-gen <файл>…|try <конфиг> <URL> [с]"; exit 2 ;;
 esac

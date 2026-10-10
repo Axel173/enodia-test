@@ -170,6 +170,9 @@ cmd_off() {
         ip rule del fwmark "0x$_s" table "100$_s" 2>/dev/null
         ip rule del fwmark "0x$_s" table $TABLE 2>/dev/null
     done
+    # Roads to servers (road.sh, pref 82..87) — ours too: «off» leaves the router as it is after a reboot with the flag. `on`
+    # brings them back by the carriers' raise (endpoint-set → wire), the same path as a boot.
+    [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" unwire >/dev/null 2>&1
     # ЛОК СМЕНЫ НЕСУЩЕЙ — И НА СНЯТИИ ТОЖЕ (зеркало cmd_on). Флаг `.vpn-off` записан выше, и тик
     # сторожа, который начнётся ПОСЛЕ него, из тика выйдет. Но тик, уже прошедший проверку флага,
     # может прямо сейчас вести failover — и поднять несущую ровно между нашим `down` и `cold`.

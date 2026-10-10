@@ -444,6 +444,8 @@
   .lrow.dis>.grow{opacity:.6}
   /* Пробел С ОБЕИХ сторон: замер клеится к тексту без своего пробела («salamander· 61 мс» — ревью пачки 2, круг 2). */
   .lrow .ds .srv-ping:not(:first-child):not(:empty)::before{content:' · '}
+  /* Хвост строки сервера (дорога к серверу, «дорога для»): разделитель — только если перед ним есть непустой сосед (пинг пуст до проверки). */
+  .lrow .ds > :not(:empty) ~ .srv-tail::before{content:' · '}
   /* Метка-кнопка («выбрать →»): вид чипа, поведение кнопки — ею строку активируют с клавиатуры. */
   button.chip{border:0;font:inherit;font-size:12.5px;cursor:pointer}
   @media (hover:hover){ button.chip:hover{color:var(--ink);background:var(--soft2)} }

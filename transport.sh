@@ -501,6 +501,7 @@ cmd_cold() {
 # флаг «несёт весь дом»), тёплый резерв awg0 (его гасит `cold`). Своей копии «как выключить» тут нет — только «осталось ли».
 cmd_live() {
     ip rule show 2>/dev/null | grep -qE 'fwmark 0x[1-7] lookup (1000|100[2-7])' && return 0
+    ip rule show 2>/dev/null | grep -qE '^8[2-7]:' && return 0   # roads to servers (road.sh) — «off» removes them too
     for _lt in 1000 1002 1003 1004 1005 1006 1007; do [ -n "$(ip route show table "$_lt" 2>/dev/null)" ] && return 0; done   # not-wan: таблицы НЕСУЩИХ, про аплинк отвечает ip-lib.sh
     ip link show awg0 >/dev/null 2>&1 && return 0
     [ -f "$ENODIA_STATE/.zapret-on" ] && return 0

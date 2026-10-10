@@ -45,6 +45,8 @@
 #                                  другим выходом (0 = занят, причина словами; 1 = свободен; 2 = не судить);
 #                                  без `live` — «можно ли назначить», с `live` — «поднимать ли сейчас» (см. блок ключей)
 #   slots.sh key-map             — «конфиг⇥держатель» по занятым ключам configs/ (пометки в выборе панели)
+#   (выход-ДОРОГА, по которому едут конфиги road.sh, не выключается, не удаляется, не меняет транспорт и не берёт конфиг,
+#    который сам едет по дороге — slot_road_guard)
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
@@ -383,6 +385,11 @@ cmd_list_json() {
     _gtsv="$ENODIA_STATE/groups/groups.tsv"
     _geor="$ENODIA_STATE/geo/actions.tsv"
     _n=0; _first=1; _krlx=0; _krix=0   # держатели ключей — один раз на ответ, а не на выход (живой ключ = вызовы awg)
+    # Roads (road.sh) and WARP (warp.sh) — once per answer: «who rides this exit» (the panel refuses to disable or delete a ridden
+    # exit before the click and names the riders) and «is its config WARP» (the Cloudflare point card). The owners answer; here
+    # only the filter by id / config name.
+    _rdl=''; if [ -f "$ENODIA_DIR/road.sh" ] && [ -s "$ENODIA_STATE/.cfg-via" ]; then _rdl=$(sh "$ENODIA_DIR/road.sh" list 2>/dev/null); fi
+    _wpl=''; if [ -f "$ENODIA_DIR/warp.sh" ]; then _wpl=$(sh "$ENODIA_DIR/warp.sh" list 2>/dev/null | cut -f1); fi
     printf '{"slots":['
     if [ -s "$SLOTS_FILE" ]; then
         while IFS="$TAB" read -r id nb t cfg fb en; do
@@ -405,8 +412,10 @@ cmd_list_json() {
                 else [ "$_krix" = 1 ] || { _kri=$(key_rows intent); _krix=1; }; _kr=$_kri; fi
                 _kcl=$(awg_ids "$AWG_CONFIGS/$cfg.conf" | key_match "$_kr" "s$id" | head -n1 | cut -f2)
             fi
-            printf '{"id":%s,"name_b64":"%s","transport":"%s","config":"%s","fallback":"%s","enabled":%s,"state":"%s","groups":%s,"geo":%s,"geo_keys":[%s],"key_clash":"%s"}' \
-                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_bc" "$_be" "$_bk" "$_kcl"
+            _rdr=''; [ -n "$_rdl" ] && _rdr=$(printf '%s\n' "$_rdl" | awk -F"$TAB" -v i="$id" '$2 == i { sub(/^[a-z0-9]*\//, "", $1); printf "%s\"%s\"", (c++ ? "," : ""), $1 }')
+            _wp=false; if [ "$t" = awg ] && [ -n "$_wpl" ] && printf '%s\n' "$_wpl" | grep -qxF -- "$cfg"; then _wp=true; fi
+            printf '{"id":%s,"name_b64":"%s","transport":"%s","config":"%s","fallback":"%s","enabled":%s,"state":"%s","groups":%s,"geo":%s,"geo_keys":[%s],"key_clash":"%s","riders":[%s],"warp":%s}' \
+                "$id" "$nb" "$t" "$cfg" "$fb" "$([ "$en" = on ] && echo true || echo false)" "$_st" "$_bc" "$_be" "$_bk" "$_kcl" "$_rdr" "$_wp"
         done < "$SLOTS_FILE"
     fi
     # Транспорты, готовые нести ДОП-ВЫХОД, — от ОРКЕСТРАТОРА (`transport.sh slot-list`),
@@ -623,6 +632,17 @@ slot_key_guard() {
     return 1
 }
 
+# A ROAD exit (road.sh: a server's packets ride it) somebody rides can't be disabled, deleted or moved to another transport, and
+# can't take a config that rides a road itself (a road is one step): the rider would be left on a cut road — a server that
+# silently goes direct to its blocked address. Refusal in words with the riders named; the panel's door leads to them.
+slot_road_guard() {   # $1 = id, $2 = what the person tried (words)
+    [ -f "$ENODIA_DIR/road.sh" ] || return 0
+    _srr=$(sh "$ENODIA_DIR/road.sh" riders "$1" 2>/dev/null | sed 's#^[a-z0-9]*/##' | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+    [ -n "$_srr" ] || return 0
+    echo "[slots] выход №$1 служит дорогой к серверу ($_srr) — сначала переключите их дорогу на «напрямую», потом $2"
+    return 1
+}
+
 cmd_add() {
     name="$1"; t="$2"; cfg="${3:--}"; fb="${4:-main}"
     [ -n "$name" ] || { echo "[slots] имя обязательно"; return 1; }
@@ -701,6 +721,17 @@ cmd_set() {
     esac
     # Сверка ключа — и при смене КОНФИГА, и при смене ТРАНСПОРТА на awg (конфиг тот, что уже записан).
     case "$field" in transport|config) slot_key_guard "$old_t" "$old_cfg" "$id" || return 1 ;; esac
+    # Road exit: only AmneziaWG carries a road, and its config must go direct itself (road.sh, one step).
+    [ "$field" = transport ] && [ "$old_t" != awg ] && { slot_road_guard "$id" "меняйте транспорт" || return 1; }
+    if [ "$field" = config ] && [ -f "$ENODIA_DIR/road.sh" ] && [ -n "$(sh "$ENODIA_DIR/road.sh" get awg "$old_cfg" 2>/dev/null)" ]; then
+        slot_road_guard "$id" "ставьте ему конфиг, который сам едет по дороге" || return 1
+    fi
+    # The new config goes to the server of one of this road's riders — its own packets to that server would go into itself (road.sh
+    # would silently drop the rule, and the rider would go direct to the blocked address): a refusal in words instead.
+    if [ "$field" = config ] && [ -f "$ENODIA_DIR/road.sh" ]; then
+        _scl=$(sh "$ENODIA_DIR/road.sh" clash "$id" "$old_cfg" 2>/dev/null)
+        [ -z "$_scl" ] || { echo "[slots] выход №$id служит дорогой серверу $_scl, а новый конфиг идёт к тому же серверу — его пакеты к серверу пошли бы сами в себя; выберите конфиг к другому серверу"; return 1; }
+    fi
     # Несущая ВКЛЮЧЁННОГО выхода уже поднята по СТАРЫМ (транспорт, конфиг) — одной записи в реестр
     # мало: демон продолжил бы ходить прежним сервером («сменил сервер, а выход тот же»), а смена
     # ТРАНСПОРТА ещё и осиротила бы старую несущую (следующий slot-down ушёл бы уже в НОВЫЙ плагин,
@@ -817,6 +848,7 @@ cmd_toggle() {
         slot_activate "$id"
         echo "[slots] слот №$id включён"
     else
+        slot_road_guard "$id" "выключайте выход" || return 1
         # Порядок: slot-down ПОКА слот ещё on (диспетч требует on: плагин снимает свою несущую/
         # десинк), ПОТОМ пишем off и снимаем ядро-следы (mark/ip rule) — cmd_unwire.
         [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$id" >/dev/null 2>&1
@@ -851,6 +883,7 @@ cmd_del() {
     id="$1"
     valid_id "$id" || { echo "[slots] id = $MIN_ID..$MAX_ID"; return 1; }
     line=$(slot_line "$id"); [ -n "$line" ] || { echo "[slots] нет слота №$id"; return 1; }
+    slot_road_guard "$id" "удаляйте выход" || return 1
     # Включённый слот — сперва опустить несущую/десинк через оркестратор (строка ещё on, диспетч
     # работает), потом снять ядро-следы и удалить из реестра.
     if [ "$(printf '%s' "$line" | cut -f6)" = on ] && [ -f "$ENODIA_DIR/transport.sh" ]; then

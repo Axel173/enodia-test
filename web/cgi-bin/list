@@ -209,5 +209,10 @@ printf '"hy2":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},'  
 printf '"subs":[%s],' "$(subs_list)"
 # Настоящие имена конфигов, добавленных руками (cfg-names.sh, ключ «вид/файл»): разбор — у владельца, один запуск на список.
 printf '"cfgnames":{%s},' "$([ -f "$D/cfg-names.sh" ] && sh "$D/cfg-names.sh" json 2>/dev/null)"
+# Дороги к серверам (road.sh: «вид/файл» → номер выхода-дороги) — тот же приём: разбор у владельца, один запуск на список.
+printf '"roads":{%s},' "$([ -f "$D/road.sh" ] && [ -s "$DS/.cfg-via" ] && sh "$D/road.sh" json 2>/dev/null)"
+# Which AmneziaWG configs ARE WARP (warp.sh list: `name⇥i1`) → {"name":1|0} — 1 = carries a masking I1. The owner judges by the
+# server key; the panel only draws (the «WARP» badge, the road exits, the «no masking» warning).
+printf '"warp":{%s},' "$([ -f "$D/warp.sh" ] && sh "$D/warp.sh" list 2>/dev/null | awk -F'\t' '{ printf "%s\"%s\":%s", (c++ ? "," : ""), $1, $2 }')"
 printf '"names":{%s}}' "$(names_map)"
 printf '\n'

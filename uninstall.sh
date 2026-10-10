@@ -301,6 +301,7 @@ step_rules() {
     _t=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
     [ -n "$_t" ] && run transport.sh down "$_t"           # несущая: default/FORWARD/MASQ/DNS
     run mark-core.sh unwire                               # маркировка, гарды, ip rule
+    run road.sh unwire                                    # дороги к серверам (pref 82..87; доборка ниже ловит их и по таблице)
     for _c in $CHAINS_MANGLE; do
         while iptables -t mangle -D PREROUTING -j "$_c" 2>/dev/null; do :; done
         while iptables -t mangle -D OUTPUT -j "$_c" 2>/dev/null; do :; done

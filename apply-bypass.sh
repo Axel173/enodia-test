@@ -518,6 +518,10 @@ allow_sync() {
     return 0
 }
 
+# Road rules («дорога к серверу», road.sh) are DERIVED from the endpoint stores: whoever changes a store rebuilds them, so a
+# carrier riding another exit gets its `to <server> lookup 100N` the moment its endpoint is known, and loses it with it.
+road_wire() { [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" wire >/dev/null 2>&1; return 0; }
+
 # --- endpoint активной несущей мимо VPN (анти-петля, см. шапку про .endpoint-bypass) ---
 # Replace-семантика: храним ОДИН IP (endpoint активной несущей). Зовётся из
 # transport-*.sh up (а switch-vpn делегирует в transport-awg up -> покрыты и смена
@@ -540,15 +544,16 @@ endpoint_set() {   # $1 = IPv4 endpoint'а (пусто = снять)
         done < "$STORE_EP"
     fi
     : > "$STORE_EP"
-    [ -z "$new" ] && { echo "[apply-bypass] endpoint-исключение снято"; return 0; }
+    [ -z "$new" ] && { road_wire; echo "[apply-bypass] endpoint-исключение снято"; return 0; }
     # строго IPv4 — в VPN_EXCLUDE кладём только числовой адрес (не имя: iptables -d
     # с именем резолвит ОДИН раз и может уйти в дохлый туннель; имя резолвит несущая).
     echo "$new" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || {
-        echo "[apply-bypass] endpoint '$new' не IPv4 — пропуск"; return 0; }
+        road_wire; echo "[apply-bypass] endpoint '$new' не IPv4 — пропуск"; return 0; }
     echo "$new" > "$STORE_EP"
     rule_add_dst "$new"
     allow_sync
     ct_flush_dst "$new"                              # сбросить уже зациклившиеся сессии к VPS
+    road_wire
     echo "[apply-bypass] endpoint $new -> мимо VPN (анти-петля)"
 }
 
@@ -592,13 +597,14 @@ endpoint_slot_set() {   # $1 = id слота (2..7); $2 = IPv4 endpoint'а (пу
         fi
     fi
     : > "$store"
-    if [ -z "$new" ]; then rm -f "$store"; echo "[apply-bypass] endpoint слота №$_sid снят"; return 0; fi
+    if [ -z "$new" ]; then rm -f "$store"; road_wire; echo "[apply-bypass] endpoint слота №$_sid снят"; return 0; fi
     echo "$new" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || {
-        rm -f "$store"; echo "[apply-bypass] endpoint слота №$_sid '$new' не IPv4 — пропуск"; return 0; }
+        rm -f "$store"; road_wire; echo "[apply-bypass] endpoint слота №$_sid '$new' не IPv4 — пропуск"; return 0; }
     echo "$new" > "$store"
     rule_add_dst "$new"
     allow_sync
     ct_flush_dst "$new"
+    road_wire
     echo "[apply-bypass] endpoint слота №$_sid $new -> мимо VPN (анти-петля)"
 }
 
@@ -1115,6 +1121,7 @@ apply_all() {
         _e=$(head -1 "$_f" | tr -d ' \r\n')
         [ -n "$_e" ] && { rule_add_dst "$_e"; eps="$eps${eps:+,}$_e"; }
     done
+    road_wire   # дороги к серверам — следом за эндпоинтами (boot/repair: ip rule пережил fw3 reload, но не ребут)
     echo "[apply-bypass] восстановлено: ip=$n_ip, dst=$n_dst, vpn-dst=$n_vdst, iface=$n_if, guest=$g, endpoint=${ep:-нет}${eps:+, слот-endpoint=$eps}"
     # «целиком через VPN» (force) — отдельная цепочка VPN_FORCE
     rebuild_force

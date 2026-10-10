@@ -553,6 +553,26 @@ slot_hs_age() {   # $1 = iface (awgN) -> возраст handshake в сек (999
     _hs=$($WG show "$1" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
     age_since "$_hs"          # не «now - hs»: скачок часов иначе хоронит живой выход (clock-lib.sh)
 }
+# ROADS («дорога к серверу», road.sh): a carrier whose packets to its server ride another exit. While that road is down, the
+# rider's silence says nothing about its server — no reup, no failover, no probe of the server, no «server is dead» mail; the
+# road is an exit like any other and this sweep heals it, the rider follows. The map is read ONCE per tick (forks) and comes from
+# the REGISTRY (`road.sh carriers`), not from the rules: an exit this sweep took down loses its endpoint store, and `want` would
+# forget its road — the next tick probed it as a dead server with a backoff up to 30 min (review s.118).
+ROADS_LOADED=0; ROADS=""
+ROAD_FO=/tmp/enodia-road-failopen   # прямой режим поставлен из-за ЛЕЖАЩЕЙ ДОРОГИ (не сервера): ожила — переподъём, а не перебор
+road_of() {   # $1 = main | <exit id> → the id of the exit it rides, or empty
+    if [ "$ROADS_LOADED" = 0 ]; then
+        ROADS_LOADED=1
+        [ -f "$ENODIA_DIR/road.sh" ] && [ -s "$ENODIA_STATE/.cfg-via" ] && ROADS=$(sh "$ENODIA_DIR/road.sh" carriers 2>/dev/null)
+    fi
+    [ -n "$ROADS" ] || return 0
+    case "$1" in main) _rok=main ;; *) _rok="s$1" ;; esac
+    printf '%s\n' "$ROADS" | awk -F"$TAB" -v c="$_rok" '$1==c { print $2; exit }'
+}
+road_down() {   # $1 = the road exit's id → 0 when its carrier is gone or its handshake is dead
+    ip link show "awg$1" >/dev/null 2>&1 || return 0
+    [ "$(slot_hs_age "awg$1")" -ge "$HS_DEAD" ]
+}
 # ОКНО БУТА: судить доп-выход ещё рано. Тик со СНЯТЫМ грейсом доходит до свипа на 60–120-й секунде
 # (раскладка `bins`: несущие слотов только что подняли — heal или мы сами), а egress-проба идёт по
 # ХОЛОДНОМУ outbound'у: у основной несущей ради этого заведён прогревочный повтор (health_warm),
@@ -586,6 +606,7 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
         hevpath)  _sfr="сервер отвечает, но путь клиентов через прослойку hev не работает и перезапуск её не помог"
                   _sfe="the server answers, but the clients' path through the hev layer does not work and restarting it did not help" ;;
         hs:*)     _sfr="рукопожатие ${4#hs:} с назад"; _sfe="last handshake ${4#hs:} s ago" ;;
+        road:*)   _sfr="не отвечает дорога к его серверу — выход №${4#road:}"; _sfe="the road to its server — exit #${4#road:} — does not answer" ;;
         *)        _sfr=$4; _sfe=$4 ;;
     esac
     # ЧТО БУДЕТ ДАЛЬШЕ — по ФАКТУ поведения свипа, а не одной фразой на всех: несущие xray/hy2/byedpi он поднимает заново каждый
@@ -605,6 +626,20 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
     if [ "$4" = hevpath ]; then
         _sfn="Роутер поднимает выход заново с растущей паузой — сперва через 2 минуты, потом всё реже, до раза в полчаса; когда путь заработает, выход вернётся сам, и придёт письмо «снова работает»."
         _sfne="The router brings the exit up again with a growing pause — first in 2 minutes, then less and less often, down to once every half hour; once the path works, the exit comes back by itself and a \"works again\" email follows."
+    fi
+    case "$4" in road:*)
+        _sfn="Сам сервер при этом не проверялся: лежит дорога к нему. Роутер поднимает дорогу заново; когда она ответит, этот выход вернётся следом, и придёт письмо «снова работает»."
+        _sfne="The server itself was not checked: the road to it is down. The router brings the road back up; once it answers, this exit follows, and a \"works again\" email arrives." ;;
+    esac
+    # THIS exit is a ROAD (road.sh): whoever rides it is cut off with it — say so in the same mail, and that the watchdog does not
+    # fail them over nor call their servers dead (their own lines in the log say «сервер не трогаю»).
+    _sfrd=""
+    [ -f "$ENODIA_DIR/road.sh" ] && _sfrd=$(sh "$ENODIA_DIR/road.sh" riders "$1" 2>/dev/null | sed 's#^[a-z0-9]*/##' | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+    if [ -n "$_sfrd" ]; then
+        _sfn="$_sfn
+По этому выходу едут к своим серверам: $_sfrd. Пока он лежит, они недоступны; роутер их не переключает и мёртвыми не считает — сами серверы, скорее всего, исправны."
+        _sfne="$_sfne
+These ride this exit to their servers: $_sfrd. While it is down they are unreachable; the router does not switch them and does not call them dead — the servers themselves are most likely fine."
     fi
     if [ "$NF_LANG" = en ]; then
         _fbl=$([ "$3" = direct ] && echo "direct" || echo "through the main tunnel")
@@ -843,6 +878,19 @@ slot_health_sweep() {
         # ПОГАШЕН по ложному «мёртв». Нечем судить — не трогаем (как rc=2 у плагинов выше).
         [ -n "$WG" ] || continue
         sif="awg$sid"
+        # Выход едет по ДОРОГЕ (road.sh), а она лежит: молчание его сервера о сервере ничего не говорит. Пробу сервера не гоняем
+        # (провалится заведомо и раскрутит паузу), живую несущую гасим как обычно — иначе трафик его групп стоял бы в мёртвом
+        # туннеле, — а причиной называем дорогу. Дорога — тоже выход этого свипа, её поднимает своя строка; ожила — этот выход
+        # вернётся обычной пробой возврата (паузу не взводим: она отсчитывалась бы от простоя чужого выхода).
+        _sroad=$(road_of "$sid")
+        if [ -n "$_sroad" ] && road_down "$_sroad"; then
+            if ip link show "$sif" >/dev/null 2>&1; then
+                log "slot-health: awg-выход №$sid едет по дороге (выход №$_sroad), а она лежит → гашу несущую → fallback=$sfb; сервер не сужу"
+                [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
+                slot_boot_window || slot_fail_event "$sid" "$scfg" "$sfb" "road:$_sroad" "$st"
+            fi
+            continue
+        fi
         if ! ip link show "$sif" >/dev/null 2>&1; then
             # несущая исчезла (демон упал). fallback=main требует ip rule -> table 1000, но mark-core
             # ставил её на 100N при живой несущей; пустая 100N проваливает трафик в main=НАПРЯМУЮ,
@@ -3201,6 +3249,42 @@ if [ "$age" -ge "$HS_DEAD" ]; then
     # awg0 подняли, а сервер молчит — это уже не бут, а отказ. Снимаем, иначе возврат из ЭТОГО
     # эпизода прошёл бы молча (ревью 06.09.2026).
     rm -f "$AWG0_FIRSTUP" 2>/dev/null
+    # ДОРОГА К СЕРВЕРУ ЛЕЖИТ (road.sh: пакеты к серверу едут через выход №N, а его несущей нет или она молчит). Сервер, скорее
+    # всего, исправен — молчит дорога: reup awg0 её не вылечит, а перебор резервов увёл бы с исправного сервера (и резерв на той
+    # же дороге не поедет тоже). Делаем только fail-open — прямой режим, иначе сайты из списков стояли бы в мёртвом туннеле, — и
+    # ждём дорогу: это выход, его чинит свип в finish (там же письмо о нём, с перечнем тех, кто по нему едет). Дорога ожила —
+    # рукопожатие вернётся, и ветка «VPS жив» вернёт туннель штатно.
+    _wroad=$(road_of main)
+    if [ -n "$_wroad" ] && road_down "$_wroad"; then
+        if [ "$cur" != "FAILOPEN" ]; then
+            log "handshake ${age}с, но сервер едет по дороге (выход №$_wroad), а она лежит → прямой режим; сервер не переключаю — сперва дорога"
+            [ -f "$SWITCH_VPN" ] && sh "$SWITCH_VPN" safety-off >>"$LOG" 2>&1
+            echo "FAILOPEN" > "$STATE"
+            echo "$_wroad" > "$ROAD_FO"
+            active=$(cat "$ACTIVE_NAME" 2>/dev/null)
+            if [ "$NF_LANG" = en ]; then
+                failopen_mail "BE7000: the road to the VPN server is down, direct mode" \
+"Server ${active:-?} rides the road through extra exit #$_wroad, and that exit does not answer.
+The server itself is most likely fine — it is the road that is down, so the router does not
+switch servers.
+
+The router switched to DIRECT mode: traffic and DNS bypass the VPN — if the ISP link is up,
+the internet works; listed sites are temporarily unavailable. The router brings the road
+back up; once it answers, the VPN returns by itself and a second email arrives."
+            else
+                failopen_mail "BE7000: дорога к серверу VPN не отвечает, прямой режим" \
+"Сервер ${active:-?} едет по дороге — через дополнительный выход №$_wroad, — а этот выход не отвечает.
+Сам сервер, скорее всего, исправен: лежит дорога, поэтому роутер сервер не переключает.
+
+Роутер перешёл в ПРЯМОЙ режим: трафик и DNS идут мимо VPN — если связь с провайдером есть,
+интернет работает; сайты из списка временно недоступны. Роутер поднимает дорогу заново;
+когда она ответит, VPN вернётся сам и придёт второе письмо."
+            fi
+        else
+            log "handshake ${age}с, уже FAILOPEN: дорога (выход №$_wroad) всё ещё лежит — жду её, сервер не трогаю"
+        fi
+        finish
+    fi
     # --- Reup: ОДИН переподъём ТЕКУЩЕЙ несущей ПЕРЕД перебором резервов ---
     # ГРАБЛЯ (железо 30.07.2026): «handshake устарел» ≠ «VPS умер». На буте heal поднимает awg0
     # на 39-й секунде аптайма — одновременно с fw3 reload и до того, как сеть устоялась; если
@@ -3212,9 +3296,18 @@ if [ "$age" -ge "$HS_DEAD" ]; then
     # failover), и лишь если handshake так и не пришёл, идём по лестнице резервов.
     # Троттл обязателен: reup рвёт awg0 на несколько секунд, крутить его каждый тик нельзя.
     # Гейт [ -f awg.conf ]: без конфига пересоздавать нечего (hy2/xray-only установка).
-    if [ "$cur" != "FAILOPEN" ] && [ -f "$ENODIA_STATE/awg.conf" ] && [ -f "$TRANSPORT_SH" ] \
-       && [ "$(stamp_age "$REUP_STAMP")" -ge "$REUP_RETRY" ]; then
+    # ПРЯМОЙ РЕЖИМ ИЗ-ЗА ДОРОГИ (`ROAD_FO`), а дорога уже жива: сервер не судили — его молчание лишь след safety-off (маршрута в awg0
+    # нет, а без keepalive несущая сама рукопожатия не начнёт). Один переподъём — тот же, что у NORMAL; без него вместо возврата шла
+    # бы лестница перебора с исправного сервера (ревью с.118, круг 2). Отметку снимаем, ВЗЯВ лок (занят — попытка не потрачена, как и
+    # штамп ниже): удался — вернёт ветка «VPS жив», нет — это уже честная авария сервера, и прямой режим возвращаем сами (ниже).
+    # Вне FAILOPEN отметка — след прежнего эпизода (ушли иначе: другой транспорт, ручная смена): снимаем, чтобы не подарила переподъём
+    # чужому прямому режиму.
+    _wrfo=0; [ "$cur" = "FAILOPEN" ] && [ -f "$ROAD_FO" ] && _wrfo=1
+    [ "$cur" = "FAILOPEN" ] || rm -f "$ROAD_FO" 2>/dev/null
+    if { [ "$cur" != "FAILOPEN" ] || [ "$_wrfo" = 1 ]; } && [ -f "$ENODIA_STATE/awg.conf" ] && [ -f "$TRANSPORT_SH" ] \
+       && { [ "$_wrfo" = 1 ] || [ "$(stamp_age "$REUP_STAMP")" -ge "$REUP_RETRY" ]; }; then
         wd_switch_take "переподъём awg0"   # ДО отметки: при ручной смене попытка не потрачена
+        rm -f "$ROAD_FO" 2>/dev/null
         date +%s > "$REUP_STAMP"
         # Часы сверит сам плагин в `up` (transport-awg cmd_up → clock_boot_sync): с отставшими
         # часами сервер отбрасывает рукопожатие как повтор, и reup повторял бы тот же отказ (замер
@@ -3238,6 +3331,13 @@ if [ "$age" -ge "$HS_DEAD" ]; then
             i=$((i + 1))
         done
         log "reup не помог (handshake так и не пришёл) — иду по лестнице failover"
+        # ПРЯМОЙ РЕЖИМ БЫЛ — ВЕРНУТЬ ЕГО: `up awg` вернул маршрут в awg0, ip rule метки и туннельный DNS, а ветка «уже FAILOPEN» ниже
+        # прямой режим считает настоящим и safety-off не зовёт — дом ехал бы в мёртвый туннель (без DoH — и без имён вовсе), пока
+        # состояние, письмо и панель говорят «прямой режим» (ревью с.118, круг 3).
+        if [ "$_wrfo" = 1 ] && [ -f "$SWITCH_VPN" ]; then
+            log "переподъём после ожившей дороги не помог — возвращаю прямой режим (safety-off)"
+            sh "$SWITCH_VPN" safety-off >>"$LOG" 2>&1
+        fi
     fi
     mode=$(fo_mode)
     nbk=$(count_backups)
@@ -3312,7 +3412,7 @@ elif awg_hs_alive "$age"; then
     # ===== VPS жив =====
     # Туннель здоров ⇒ прошлый reup-троттл своё отработал: снимаем штамп, чтобы СЛЕДУЮЩАЯ авария
     # снова получила попытку «починить на месте», а не упёрлась в остаток получасового окна.
-    rm -f "$REUP_STAMP" 2>/dev/null
+    rm -f "$REUP_STAMP" "$ROAD_FO" 2>/dev/null
     health_back   # бэкофф перебора, «интернета нет» и (продержавшись) «прямой режим» закрыты: handshake свежий ⇒ аплинк жив
     doh_follow_carrier ok       # awg0 везёт ⇒ резолвер можно вернуть в туннель
     if [ "$cur" = "FAILOPEN" ] && [ -f "$AWG0_FIRSTUP" ]; then

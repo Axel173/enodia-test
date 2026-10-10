@@ -394,6 +394,13 @@ if [ -f "$ENODIA_DIR/slots.sh" ]; then
     sh "$ENODIA_DIR/slots.sh" carriers 2>/dev/null || echo "(нет)"
     sub "слот-марки и таблицы (ip rule)"
     ip rule 2>/dev/null | grep -E 'fwmark 0x[2-7]' || echo "(слот-правил в ip rule нет)"
+    # Roads (road.sh): «server X rides exit N» — the store (intent) and the rules standing now (fact) side by side, because the
+    # question people bring is exactly «I set the road, why does the server still go direct».
+    if [ -f "$ENODIA_DIR/road.sh" ]; then
+        sub "дороги к серверам (road.sh: конфиг → выход; правила pref 82..87)"
+        sh "$ENODIA_DIR/road.sh" list 2>/dev/null | awk -F'\t' '{ print $1 " → выход №" $2 }'
+        ip rule 2>/dev/null | grep -E '^8[2-7]:' || echo "(правил дорог в ip rule нет)"
+    fi
     # УЧЁТ ПО ВЫХОДАМ — сюда же, а не в «ресурсы»: разбирают его вместе с самими выходами
     # («карточка показывает не то»), и ответ на это ровно два файла: СЫРОЙ последний замер
     # (первая строка — несущая и WAN, ниже по строке на выход: "s<id> <iface> <rx> <tx>") и
@@ -896,6 +903,7 @@ showmeta "$ENODIA_STATE/notify.conf"
 showmeta "$ENODIA_STATE/.subs"
 showmeta "$ENODIA_STATE/.sub-names"
 showmeta "$ENODIA_STATE/.cfg-names"   # свои имена конфигов (cfg-names.sh): в бэкапе — с конфигами; содержимое — имена человека
+showmeta "$ENODIA_STATE/.cfg-via"     # дороги к серверам (road.sh): конфиг → номер выхода-дороги
 showmeta "$ENODIA_STATE/.sub-picks"
 # Вход в панель: только режим/размер. Содержимое — ключи от панели (хэш пароля вскрывают офлайн,
 # .totp-recovery = коды восстановления, .totp-sessions = живые сессии), и в дамп оно не едет.

@@ -1228,7 +1228,10 @@ cmd_run() {
 		case "$_sv" in ''|*[!0-9]*) ;; *) if [ "$_seq" -le "$_sv" ]; then _flag=stopped; tk_kill_tree "$_wp"; break; fi ;; esac
 		if [ "$T_TIMEOUT" -gt 0 ] 2>/dev/null && [ $(( $(uptime_s) - _up0 )) -ge "$T_TIMEOUT" ]; then _flag=killed; tk_kill_tree "$_wp"; break; fi
 		if [ "$(wc -c < "$_out.run" 2>/dev/null)" -gt "$TK_OUT_CAP" ] 2>/dev/null; then _flag=cut; tk_kill_tree "$_wp"; break; fi
-		tk_alive "$_wp" || { sleep 1; [ -s "$_rcf" ] || { _flag=err; break; }; }
+		# gone already: its code is read NOW — the grace second is for a run that never wrote one. A short run ends while this
+		# body forks wc/awk (tens of ms each on the router), and every «Запустить» of `echo` paid that second (BE7000 10.10.2026:
+		# 1.25 s → 0.05 s)
+		tk_alive "$_wp" || { [ -s "$_rcf" ] && break; sleep 1; [ -s "$_rcf" ] || { _flag=err; break; }; }
 		# the first two seconds in short steps (daemon-lib.sh::daemon_step): most runs end in a fraction of a second, and a
 		# whole-second step made «Запустить» of `true` take a second; a long run is then polled once a second as before
 		_rpq=$((_rpq + 1)); if [ "$_rpq" -le $((2 * DAEMON_STEP_Q)) ]; then daemon_step; else sleep 1; fi

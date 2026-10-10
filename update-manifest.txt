@@ -119,6 +119,14 @@ dhcp-static.sh
 dev-names.sh
 label-lib.sh
 cfg-names.sh
+# «Дорога к серверу»: пакеты несущей к её серверу — через другой выход (адрес VPS заблокирован провайдером). Правила pref 82..87
+# выводит из хранилищ эндпоинтов; зовут apply-bypass, net-tune, slots, vpn-toggle, uninstall — все с гардом `-f`: нет файла —
+# дорог нет, поведение прежнее.
+road.sh
+# «Второе мнение о блокировке» (cheburcheck.sh, opt-in, по умолчанию выкл) и «Получить WARP» (warp.sh): зовут CGI action/ping
+# с гардом `-f`; нет файла — панель честно отказывает, остальное как раньше.
+cheburcheck.sh
+warp.sh
 lists-update.sh
 groups.sh
 geo.sh

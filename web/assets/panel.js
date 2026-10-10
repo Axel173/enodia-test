@@ -1755,6 +1755,25 @@
     var h=(held && held[name]) ? String(held[name]).split(',').filter(function(x){ return /^s\d$/.test(x); }) : [];
     return h[0]||'';
   }
+  // ДОРОГА К СЕРВЕРУ И WARP (road.sh, warp.sh) — панель только рисует ответы роутера: карта дорог (`roads` из /cgi-bin/list:
+  // {"awg/<файл>":"<номер выхода>"}), какие конфиги — WARP (`warp`: {"<файл>":1|0}, 1 — с маскировкой I1; узнаёт роутер по ключу
+  // сервера Cloudflare) и реестр выходов (`slotAll` из section=slots: у выхода — пассажиры `riders` и признак `warp`). Один разбор
+  // на «Серверы», экран сервера, выходы и «WARP от Cloudflare».
+  var roadMap={}, warpMap={}, slotAll=[];
+  function roadTake(d){ if(!d || typeof d!=='object' || d.error || d.need_login) return; roadMap=d.roads||{}; warpMap=d.warp||{}; }
+  function roadOf(name){ var v=roadMap['awg/'+name]; return v ? String(v) : ''; }
+  function isWarp(name){ return Object.prototype.hasOwnProperty.call(warpMap, name); }
+  function slotById(id){ id=String(id); for(var i=0; i<slotAll.length; i++){ if(String(slotAll[i].id)===id) return slotAll[i]; } return null; }
+  // Имя выхода-дороги: имя человека (под меткой стримера) или «выход №N», пока реестр не пришёл.
+  function roadExitHtml(id){ var s=slotById(id); return s ? slotNmHtml(s) : '<span>'+esc('выход №'+id)+'</span>'; }
+  // Кто едет по ЭТОМУ конфигу как по дороге: пассажиры выходов на нём (ключ AmneziaWG не делят — выход на конфиге один).
+  function cfgRiders(name){ var r=[]; slotAll.forEach(function(s){ if(s.transport==='awg' && s.config===name && s.riders) r=r.concat(s.riders); }); return r; }
+  // Выходы, которые могут служить дорогой конфигу: включённый AmneziaWG на ДРУГОМ конфиге, сам по дороге не едущий (road.sh:
+  // «в один шаг»). Роутер проверит всё равно — панель лишь не предлагает того, в чём он откажет.
+  function roadCands(name){ return slotAll.filter(function(s){ return s.enabled && s.transport==='awg' && s.config && s.config!=='-' && s.config!==name && !roadOf(s.config); }); }
+  function warpExitFor(name){ return roadCands(name).filter(function(s){ return s.warp; })[0]||null; }
+  // Пассажиры словами — список имён конфигов (показ, под меткой стримера).
+  function ridersHtml(list){ return list.map(function(n){ return '<span class="sens" translate="no">'+esc(cfgDisp('awg', n))+'</span>'; }).join(', '); }
   // `key_clash` у включённого выхода — держатель, занимающий сессию СЕЙЧАС (подъём откажет), у выключенного — держатель по
   // намерению (откажет включение): slots.sh list-json. Отсюда и глагол.
   function slotClashLong(h, on){
@@ -2157,6 +2176,8 @@
     // «liberty» — и спрашивает про неё. Метку и номер проверяет разрешитель — они приходят из разметки.
     if(a.indexOf('sub:')===0){ subScrOpen(a.slice(4)); return; }
     if(a.indexOf('exit:')===0){ exitScrOpen(a.slice(5)); return; }
+    // Пассажир дороги — к экрану своего сервера (`srv:<транспорт>/<файл>`; аргумент проверит разрешитель экрана).
+    if(a.indexOf('srv:')===0){ srvScrOpen(a.slice(4)); return; }
     if(a.indexOf('peer:')===0){ vsPeerOpen(a.slice(5)); return; }
     if(a.indexOf('grp:')===0){ grpScrOpen(a.slice(4)); return; }
     if(a.indexOf('task:')===0){ taskScrOpen(a.slice(5)); return; }   // «Задачи»: строка задачи — в её экран
@@ -2176,6 +2197,8 @@
       case 'exits':   openExits(); break;
       case 'subs':    openSubs();  break;
       case 'servers': openServers(); break;
+      case 'checks':  openChecks();  break;   // карточка второго мнения: где его включают и выключают
+      case 'warp':    openWarp();    break;
       case 'routes':  rpGo('all');   break;   // «Все маршруты» — это РАЗДЕЛ (область «Весь роутер»), а не экран поверх
       // Проверялка «Что победит» живёт в боковине раздела: туда и доводим взгляд (боковина на телефоне — под списком).
       case 'rq':      rpGo('all'); focusTo('rq-card', 12); break;
@@ -6241,7 +6264,8 @@
       CHK=d; _chkOk=true; return true;
     }, function(){ return false; }); }
   function chkTsv(){ var o=[]; for(var k in CHK){ var c=CHK[k]||{};
-      o.push([k,(c.st||''),(c.ms==null?'-':c.ms),(c.method||'-'),(c.cdn?1:0),(c.mbps==null?'-':c.mbps),(c.kind||'ping'),(c.ts||0)].join('\t')); }
+      o.push([k,(c.st||''),(c.ms==null?'-':c.ms),(c.method||'-'),(c.cdn?1:0),(c.mbps==null?'-':c.mbps),(c.kind||'ping'),(c.ts||0),
+              (c.tms==null?'-':c.tms),(c.via||'-'),(c.dms==null?'-':c.dms),(c.chb||'-')].join('\t')); }
     return o.join('\n'); }
   function saveChecks(){ if(chkSaveT) clearTimeout(chkSaveT);
     // .catch ОБЯЗАТЕЛЕН, как у layoutSave: это ТИХИЙ фоновый персист, а не действие человека.
@@ -6298,15 +6322,26 @@
     if(c.st==='ok' && c.ms!=null){
       var suf=pingSuffix(c);
       var pc=(c.ms<REC_FAST)?'var(--text-success)':((c.ms<REC_SLOW)?'':'var(--text-warning)');
-      parts.push('<span'+(pc?' style="color:'+pc+'"':'')+'>'+c.ms+' мс'+esc(suf)+'</span>'+(c.cdn?' <span style="color:var(--text-warning)">CDN</span>':''));
+      parts.push('<span'+(pc?' style="color:'+pc+'"':'')+'>'+c.ms+' мс'+esc(suf)+'</span>'+(c.cdn?' <span style="color:var(--text-warning)">CDN</span>':'')+recVia(c));
       tips.push('пинг '+c.ms+' мс — связь/выход подтверждён'+(c.cdn?' · за CDN (до edge-узла)':''));
+      if(c.via) tips.push('сервер едет по дороге — число меряно через неё');
     } else if(c.st==='ok' && c.mbps==null){
       parts.push('<span style="color:var(--text-success)">✓</span>');
       // ✓ ставит только Xray на UDP/QUIC-сети без ответа на пинг: выход там не проверяется (checkOne) — «подтверждён» было бы неправдой.
       tips.push('пинга нет, выход не проверялся: у Xray на UDP или QUIC проверки выхода нет');
+    } else if(c.st==='blk'){
+      // Напрямую молчит, через работающий туннель отвечает — сервер жив, его адрес не пускает провайдер. Число через туннель — рядом.
+      // Число через туннель — своим узлом, который переносится (у `.srv-ping` nowrap): на узкой строке фраза уходит второй строкой, а
+      // не под шеврон. Чем ответил сервер, — на экране сервера (клетка «Через туннель»), строке хватает числа (макет).
+      parts.push('<span style="color:var(--text-warning)">'+(c.tms!=null ? 'адрес заблокирован провайдером' : 'адрес заблокирован')+'</span>'
+        + (c.tms!=null ? '<span style="white-space:normal"> · через туннель '+c.tms+' мс</span>' : ''));
+      tips.push('напрямую сервер молчит, а через работающий туннель отвечает — сервер жив, его адрес не пускает ваш провайдер');
     } else if(c.st==='dead'){
-      parts.push('<span style="color:var(--text-warning)">✗</span>');
-      tips.push('сервер не отвечает или не даёт интернета (пинг мог врать)');
+      // Сравнить не с чем (туннеля нет), а второе мнение сказало своё — его слова вместо голого ✗ (только при включённом Cheburcheck).
+      var cb=chbParse(c.chb);
+      if(cb && cb.v==='blocked'){ parts.push('<span style="color:var(--text-warning)">похоже, блокировка ('+cb.b+' из '+cb.n+')</span>'); tips.push('туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России'); }
+      else if(cb && cb.v==='clear'){ parts.push('<span style="color:var(--text-warning)">из России доступен</span>'); tips.push('второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне'); }
+      else { parts.push('<span style="color:var(--text-warning)">✗</span>'+recVia(c)); tips.push(c.via ? 'через дорогу сервер не отвечает: лежит дорога или сам сервер' : 'сервер не отвечает или не даёт интернета (пинг мог врать)'); }
     }
     if(c.mbps!=null){
       var sc=(c.mbps>=20?'var(--text-success)':(c.mbps>=5?'':'var(--text-warning)'));
@@ -6316,6 +6351,11 @@
     if(!parts.length) return null;
     return {html:parts.join('<span style="color:var(--text-tertiary)"> · </span>'), tip:tips.join(' · ')};
   }
+  // Хвост «↳ выход» у числа — только у образца легенды (`viaNm`): в строке сервера дорогу пишет сама строка (serverRow), она видна
+  // и до первой проверки.
+  function recVia(c){ return (c && c.via && c.viaNm) ? ' <span style="color:var(--text-tertiary)">↳ '+esc(c.viaNm)+'</span>' : ''; }
+  // Второе мнение из записи кэша: «вердикт:блоков:ответили» → {v,b,n}; пусто — нет мнения.
+  function chbParse(x){ var m=/^(blocked|clear|uncertain):(\d+):(\d+)$/.exec(String(x||'')); return m ? {v:m[1], b:+m[2], n:+m[3]} : null; }
   function paintRec(s, c){
     var v=recView(c);
     s.style.color='';
@@ -6339,6 +6379,25 @@
   // Заполнить все спаны .srv-ping из кэша после перерисовки экрана («Серверы» и экран подписки).
   function hydrateChecks(root){ Array.prototype.forEach.call((root||document).querySelectorAll('.srv-ping[data-name]'), function(s){
       var c=CHK[chkKey(s.getAttribute('data-tpt'), s.getAttribute('data-name'))]; if(c) paintRec(s,c); }); }
+  // ЗАПИСЬ КЭША ИЗ ОТВЕТА cgi-bin/ping — одна на фоновый обход и проверку сервера. Роутер различает и говорит сам: число напрямую;
+  // молчит напрямую, а через работающий туннель отвечает (`blk` — «адрес заблокирован провайдером», не «не отвечает»); сервер на
+  // дороге — число ЧЕРЕЗ НЕЁ (`via`/`vms`), прямое — рядом (`dms`); второе мнение (`chb`, только при включённом Cheburcheck).
+  // Своей арифметики у панели нет.
+  function chbOf(c){ var b=c && c.chb; return (b && b.state==='done' && /^(blocked|clear|uncertain)$/.test(b.verdict||'')) ? (b.verdict+':'+(b.blocked|0)+':'+(b.online|0)) : ''; }
+  function pingRec(c){
+    var r={kind:'ping', via:'', tms:null, dms:null, chb:chbOf(c), cdn:0, method:(c && c.method)||''};
+    // Дорога ПОДНЯТА (`vup`) — сервер судят через неё; лежит — пакеты к нему идут напрямую (fail-open), и честное число — прямое
+    // (ревью с.118: работающий напрямую сервер рисовался ✗). Роутер старше поля `vup` — прежний путь: судим через дорогу.
+    if(c && c.via && c.vup!==false){
+      r.via=String(c.via); r.dms=(c.ms!=null) ? c.ms : null; r.tms=(c.blk && c.tms!=null) ? c.tms : null;
+      if(c.vms!=null){ r.st='ok'; r.ms=c.vms; r.method=c.vmt||''; } else { r.st='dead'; r.ms=null; r.mbps=null; }
+      return r;
+    }
+    if(c && c.ms!=null){ r.st='ok'; r.ms=c.ms; r.cdn=c.cdn ? 1 : 0; return r; }
+    r.ms=null; r.mbps=null;
+    if(c && c.blk){ r.st='blk'; r.tms=(c.tms!=null) ? c.tms : null; r.method=c.tmt||''; } else r.st='dead';
+    return r;
+  }
   // ЕДИНЫЙ проход проверки ОДНОГО сервера. xray (TCP): пинг → СРАЗУ реальный выход (xray-test.sh
   // на временном socks-порту `port`; port=null → дефолтный), вердикт = выход. awg/hy2 (UDP-несущие):
   // egress-теста без socks нет → только пинг (есть число ⇒ ✓ с числом, нет ⇒ ✗). Результат кладём
@@ -6347,13 +6406,12 @@
     fetchJson('/cgi-bin/ping?one='+encodeURIComponent(name)+'&tpt='+encodeURIComponent(tpt)).then(function(d){
       var c=(d.configs||[])[0]||null;
       if(tpt!=='xray'){                                 // awg/hy2 — только пинг эндпоинта (UDP-несущая)
-        var uok=!!(c && c.ms!=null);
-        chkSet(tpt, name, uok?{st:'ok',ms:c.ms,method:c.method||'',cdn:(c.cdn?1:0),kind:'ping'}
-                             :{st:'dead',ms:null,method:(c&&c.method)||'',cdn:0,mbps:null,kind:'ping'});
-        cb(uok, c, null); return;
+        var ur=pingRec(c);
+        chkSet(tpt, name, ur);
+        cb(ur.st==='ok', c, null, false, ur.st==='blk'); return;
       }
-      if(c && c.ms==null && c.proto!=='udp'){           // xray совсем недостижим — прокси мёртв, выход не гоняем
-        chkSet('xray', name, {st:'dead',ms:null,method:(c&&c.method)||'',cdn:0,mbps:null,kind:'ping'}); cb(false, c, null); return;
+      if(c && c.ms==null && c.proto!=='udp'){           // xray совсем недостижим (или его адрес заблокирован) — выход не гоняем
+        var xr=pingRec(c); chkSet('xray', name, xr); cb(false, c, null, false, xr.st==='blk'); return;
       }
       if(c && c.proto==='udp'){                         // xray на UDP-сети (quic/kcp) — egress-теста нет, берём пинг
         chkSet('xray', name, {st:'ok',ms:(c.ms!=null?c.ms:null),method:c.method||'',cdn:(c.cdn?1:0),kind:'ping'}); cb(true, c, null); return;
@@ -6416,8 +6474,9 @@
     // Человеку — НАСТОЯЩЕЕ имя в «…» (данные: под английским кириллица показа в ёлочках строку не держит), роутеру — файл.
     var dn=cfgDisp('xray', name);
     logLine('→ проверка: «'+dn+'»', null);
-    checkOne('xray', name, null, function(ok, c, r, unknown){
+    checkOne('xray', name, null, function(ok, c, r, unknown, blocked){
       srvRunSet('xray', name, null);
+      if(blocked){ var bm='«'+dn+'»: адрес заблокирован провайдером — сервер отвечает через туннель'; showToast(bm,false); logLine(bm,false); if(after) after(ok, c, r, unknown); return; }
       // «Роутер не ответил» — не «сервер недоступен»: вердикта нет, и кэш его не пишет (разбор у checkOne).
       if(ok){ var m='✓ «'+dn+'» работает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'')+' · выход '+((r&&r.ip)||'?'); showToast(m,true); logLine(m,true); }
       else { var em=unknown ? ((r && r.busy && r.msg) ? r.msg : 'роутер не ответил') : ((r&&r.msg)?r.msg:'недоступен'); showToast('✗ «'+dn+'»: '+em,false); logLine('✗ «'+dn+'»: '+em,false); }
@@ -11156,13 +11215,244 @@
     "VPN тут ни при чём; пока связи нет, письму уйти не на чем — обычно приходит одно, когда она вернулась":"the VPN has nothing to do with it; while there's no connection an email has no way out — usually one arrives when it's back",
     "Журнал «Событий» ведётся всегда — выбор здесь касается только писем. Письма на портах 25, 465 и 587 уходят мимо туннеля по построению: иначе при мёртвом сервере не дошло бы именно то письмо, ради которого почту и заводят.":"The “Events” log is always kept — the choice here is about emails only. Emails on ports 25, 465 and 587 bypass the tunnel by design: otherwise with a dead server the very email you set up email for would never arrive.",
     "Журнал ведёт эта вкладка браузера: он переживает перезагрузку страницы, в другой вкладке и на другом устройстве он свой, а выход из панели его стирает. На роутере его нет — история роутера в «Событиях». Новые строки — внизу, коробка докручена к ним.":"This browser tab keeps the log: it survives a page reload, another tab or device has its own, and signing out of the panel erases it. It isn't on the router — the router's history is in “Events”. New lines go at the bottom, and the box is scrolled down to them.",
-    "Очистить журнал событий?\n\nИстория удалится с роутера, на работу VPN это не влияет.":"Clear the event log?\n\nThe history is deleted from the router; the VPN isn't affected."
+    "Очистить журнал событий?\n\nИстория удалится с роутера, на работу VPN это не влияет.":"Clear the event log?\n\nThe history is deleted from the router; the VPN isn't affected.",
+    // ─── Дорога к серверу, WARP, второе мнение (10.10.2026): экраны «Серверы», сервер, выходы, «WARP от Cloudflare», «Проверка серверов» и ответы роутера ───
+    "дорога для":"road for",
+    "дорога":"road",
+    "У активного конфига крестика нет — удалить то, на чём стоит несущая, нельзя. У конфига, который служит дорогой другому серверу, — тоже.":"The active config has no cross — what the carrier stands on can't be deleted. Nor can a config that serves as another server's road.",
+    "WARP от Cloudflare":"WARP from Cloudflare",
+    "бесплатная дорога к серверу, чей адрес заблокировал провайдер — роутер получит свой конфиг сам":"a free road to a server whose address your ISP blocked — the router gets its own config by itself",
+    "Получить WARP":"Get WARP",
+    "адрес заблокирован провайдером":"address blocked by the ISP",
+    "адрес заблокирован":"address blocked",
+    "из России доступен":"reachable from Russia",
+    "напрямую молчит, а через работающий туннель отвечает — сервер жив, не пускает ваш провайдер":"silent directly but answers through a working tunnel — the server is alive, your ISP doesn't let you through",
+    "туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России":"there is no tunnel to compare with, and the second opinion sees a block at Russian ISPs",
+    "второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне":"the second opinion reaches the server — your ISP cuts it or the fault is on your side",
+    "сервер едет по дороге — число меряно через неё":"the server rides a road — the number is measured through it",
+    "Пинг через":"Ping via",
+    "Дорога":"Road",
+    "Дорога к серверу":"Road to the server",
+    "через вашего провайдера — адрес заблокирован":"through your ISP — the address is blocked",
+    "через вашего провайдера":"through your ISP",
+    "через вашего провайдера — как сейчас":"through your ISP — as now",
+    "пакеты к серверу едут через другой выход — блокировка адреса у провайдера их не касается":"packets to the server ride another exit — the ISP's address block doesn't touch them",
+    "этот выход сейчас дорогой служить не может — выберите другой или «напрямую»":"this exit can't serve as a road now — pick another one or «direct»",
+    "через WARP":"via WARP",
+    "выхода WARP ещё нет — откроется «WARP от Cloudflare»":"there is no WARP exit yet — «WARP from Cloudflare» opens",
+    "Дорога упала — пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.":"If the road falls, packets to the server go directly, to the blocked address: the server becomes unreachable, while the internet without VPN stays. The watchdog repairs the road — restarts its exit — and neither switches the server nor reports it dead.",
+    "Нужна, когда провайдер заблокировал адрес сервера. Если дорога упадёт, пакеты к серверу пойдут напрямую — интернет не пропадёт, сервер станет недоступен, пока сторож её не поднимет. Через дорогу ездят только серверы AmneziaWG.":"Needed when your ISP blocked the server's address. If the road falls, packets to the server go directly — the internet stays, the server is unreachable until the watchdog brings the road back. Only AmneziaWG servers ride a road.",
+    "прокладываю дорогу":"laying the road",
+    "снимаю дорогу":"removing the road",
+    "Адрес заблокирован провайдером":"Address blocked by the ISP",
+    "Сервер работает — ваш провайдер не пускает к его адресу.":"The server works — your ISP doesn't let you reach its address.",
+    "Напрямую он молчит на всех портах, а через работающий туннель отвечает. В публичных списках блокировок такого адреса обычно нет: узнать можно только так.":"Directly it is silent on every port, while through a working tunnel it answers. Such an address is usually absent from public block lists: this is the only way to find out.",
+    "Подключать через WARP":"Connect via WARP",
+    "Сервер поедет через выход":"The server will ride exit",
+    ": роутер проложит дорогу, и панель сразу проверит сервер через неё.":": the router lays the road, and the panel checks the server through it at once.",
+    "Выхода WARP ещё нет — кнопка сначала откроет «WARP от Cloudflare».":"There is no WARP exit yet — the button opens «WARP from Cloudflare» first.",
+    "Другой путь — попросить у хостера новый адрес: блокируют адрес, а не сервер.":"Another way — ask the host for a new address: it is the address that is blocked, not the server.",
+    "В конфиге WARP нет маскировки":"The WARP config has no masking",
+    "(строки":"(no",
+    "): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».":"line): many ISPs let a plain WireGuard handshake through and then cut the flow. The router gets its own WARP with masking — «Servers» → «Get WARP».",
+    "Дорога — в один шаг.":"A road is one step.",
+    "Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.":"An exit that serves as a road doesn't ride a road itself, and a server can't ride an exit that runs on it: the router refuses in words.",
+    "Конфиг служит дорогой:":"The config serves as a road for:",
+    ". Удалить его можно, когда по нему никто не едет.":". It can be deleted once nobody rides it.",
+    "Второе мнение · Cheburcheck":"Second opinion · Cheburcheck",
+    "Второе мнение спрашивают по адресу IPv4, а в конфиге сервера — имя.":"The second opinion is asked by an IPv4 address, and the server's config has a name.",
+    "блокируют":"blocked by",
+    "не блокирует никто из":"blocked by none of",
+    "не ясно: блокируют":"unclear: blocked by",
+    "не смогли проверить":"could not check",
+    "Блокировка ТСПУ":"DPI (TSPU) block",
+    "не ясно":"unclear",
+    "Реестр блокировок":"Block registry",
+    "адрес в реестре":"the address is in the registry",
+    "адреса нет — блокировка ТСПУ реестра не ждёт":"not there — a DPI (TSPU) block doesn't wait for the registry",
+    "проверяю с ~30 точек российских провайдеров — до полутора минут…":"checking from ~30 points of Russian ISPs — up to a minute and a half…",
+    "нет данных:":"no data:",
+    "сервис не ответил":"the service did not answer",
+    "Ещё не спрашивали.":"Not asked yet.",
+    "Проверить ещё раз":"Check again",
+    "Адрес сервера уходит на cheburcheck.ru — российский сервис, проверяет с ~30 точек российских провайдеров. Ответ он хранит до 3 ч.":"The server's address goes to cheburcheck.ru — a Russian service that checks from ~30 points of Russian ISPs. It keeps an answer up to 3 h.",
+    "Проверено":"Checked",
+    "Сервис не ответил или ответил не по форме — «нет данных», а не вердикт.":"The service didn't answer or answered off the format — «no data», not a verdict.",
+    "Карточка видна, потому что второе мнение включено в":"The card is shown because the second opinion is on in",
+    "«Проверке серверов»":"«Server checks»",
+    ". Выключено — её нет вовсе.":". Off — it isn't there at all.",
+    "нет места для ответа":"no room for the answer",
+    "сервис не вернул номер проверки":"the service returned no check number",
+    "сервис ответил не потоком событий":"the service answered not with an event stream",
+    "поток проверки не дошёл до конца":"the check stream did not reach its end",
+    "сервис прислал неверные числа":"the service sent wrong numbers",
+    "сервис прислал неверный ответ точки":"the service sent a wrong point answer",
+    "сервис прислал незнакомый вердикт":"the service sent an unknown verdict",
+    "получены не все ответы точек":"not all point answers arrived",
+    "проверка оборвалась — запустите ещё раз":"the check broke off — run it again",
+    "не удалось получить список серверов":"could not get the list of servers",
+    "Получить":"Get",
+    "Сразу подключить через него":"Connect through it right away",
+    "никого, только получить":"nobody, just get it",
+    "нужен AmneziaWG — поставьте его в «Компонентах»":"AmneziaWG is needed — install it in «Components»",
+    "Роутер зарегистрируется у Cloudflare, найдёт порт, который провайдер не режет, сохранит конфиг «WARP» и создаст выход без групп; выбранный сервер поедет через него. Обычно до 30 секунд.":"The router registers at Cloudflare, finds a port your ISP doesn't cut, saves the «WARP» config and creates an exit without groups; the chosen server rides it. Usually up to 30 seconds.",
+    "Маскировка первого пакета":"First-packet masking",
+    "роутер собирает её сам: начало соединения выглядит как QUIC, а содержимое случайное и новое при каждом подключении — шаблона, который можно выучить, нет":"the router builds it itself: the start of the connection looks like QUIC, and the content is random and new on every connection — there is no template to learn",
+    "WARP этого роутера":"This router's WARP",
+    "без маскировки":"without masking",
+    "выхода на нём нет":"no exit on it",
+    "никого":"nobody",
+    "Дорогу выбирают на экране сервера — карточка «Дорога к серверу».":"The road is chosen on the server's screen — the «Road to the server» card.",
+    "Что это":"What it is",
+    "Бесплатный VPN Cloudflare":"Cloudflare's free VPN",
+    "на обычном WireGuard, трафик без лимита":"on plain WireGuard, traffic unlimited",
+    "Страну не меняет":"Doesn't change the country",
+    "сайты видят вас в вашей стране — WARP не замена вашему серверу":"sites see you in your country — WARP doesn't replace your server",
+    "Нужен как дорога":"Needed as a road",
+    "к серверу, чей адрес заблокировал провайдер: пакеты к нему едут через Cloudflare":"to a server whose address your ISP blocked: packets to it ride through Cloudflare",
+    "замер: сервер через WARP — 6–9 МБ/с, тот же сервер напрямую через туннель — 7–9 МБ/с":"measured: a server via WARP — 6–9 MB/s, the same server directly through the tunnel — 7–9 MB/s",
+    "Уже есть свой конфиг WARP":"Already have your own WARP config",
+    "Загрузите его как обычный конфиг AmneziaWG на":"Upload it as a regular AmneziaWG config on",
+    "«Серверах»":"«Servers»",
+    "— роутер узнает WARP по ключу сервера Cloudflare. Выход из него — в":"— the router recognizes WARP by Cloudflare's server key. An exit from it — in",
+    "«Дополнительных выходах»":"«Additional exits»",
+    "В конфиге нет маскировки (строки":"The config has no masking (no",
+    ") — панель предупредит: многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток.":"line) — the panel warns: many ISPs let a plain WireGuard handshake through and then cut the flow.",
+    "Один конфиг на двух устройствах — связь рвётся у обоих:":"One config on two devices — both lose the connection:",
+    "сервер держит одну сессию на ключ и мечется между ними. Конфиг, которым пользуется кто-то ещё (из бота, от знакомого), на роутер не ставьте.":"the server keeps one session per key and roams between them. Don't put on the router a config somebody else uses (from a bot, from a friend).",
+    "роутер отказал":"the router refused",
+    "получаю…":"getting…",
+    "получаю WARP":"getting WARP",
+    "Открыть":"Open",
+    "заблокирован":"blocked",
+    "доступен":"reachable",
+    "WARP получен":"WARP received",
+    "начинаю":"starting",
+    "создаю ключ на роутере":"creating the key on the router",
+    "регистрируюсь у Cloudflare":"registering at Cloudflare",
+    "создаю выход":"creating the exit",
+    "нет места для работы":"no room to work",
+    "не удалось создать ключ (awg genkey)":"could not create a key (awg genkey)",
+    "Cloudflare не ответил — попробуйте позже":"Cloudflare did not answer — try later",
+    "Cloudflare прислал незнакомый ключ сервера — нужна новая версия панели":"Cloudflare sent an unknown server key — a new panel version is needed",
+    "Cloudflare не прислал адрес — нужна новая версия панели":"Cloudflare sent no address — a new panel version is needed",
+    "Cloudflare не прислал адрес сервера — нужна новая версия панели":"Cloudflare sent no server address — a new panel version is needed",
+    "не удалось записать конфиг":"could not write the config",
+    "не поднялся пробный интерфейс AmneziaWG — проверьте его в «Компонентах»":"the trial AmneziaWG interface didn't come up — check it in «Components»",
+    "сейчас идёт другая проба конфига — повторите через минуту":"another config probe is running now — retry in a minute",
+    "нет каталога конфигов":"no configs directory",
+    "не удалось записать конфиг (место на разделе?)":"could not write the config (space on the partition?)",
+    "[warp] получение уже идёт":"[warp] getting is already running",
+    "[warp] нет AmneziaWG — поставьте его в «Компонентах»":"[warp] no AmneziaWG — install it in «Components»",
+    "[warp] получаю WARP — обычно до 30 секунд":"[warp] getting WARP — usually up to 30 seconds",
+    "выключить нельзя, пока по нему едут серверы":"can't be turned off while servers ride it",
+    "Выключить или удалить его нельзя, пока по нему едет":"It can't be turned off or deleted while it carries",
+    ": сервер остался бы без дороги. Сначала переключите его дорогу на «напрямую».":": the server would lose its road. Switch its road to «direct» first.",
+    "Дорога для":"Road for",
+    "открыть сервер":"open the server",
+    "через дорогу":"via the road",
+    "Дорогу выбирают на экране сервера, здесь — кто по ней едет.":"The road is chosen on the server's screen; here — who rides it.",
+    "Где Cloudflare принял подключение":"Where Cloudflare took the connection",
+    "Точка":"Point",
+    "спрашиваю…":"asking…",
+    "Точку выбирает Cloudflare по адресу подключения. Окажется DME (Москва) — здесь встанет предупреждение: там Cloudflare с весны 2026 фильтрует адреса назначения, и дорога может не довезти.":"Cloudflare picks the point by the connecting address. If it turns out DME (Moscow), a warning appears here: since spring 2026 Cloudflare filters destination addresses there, and the road may not deliver.",
+    "Точка — Москва (DME).":"The point is Moscow (DME).",
+    "Там Cloudflare с весны 2026 фильтрует адреса назначения, и дорога к серверу может не довезти.":"Since spring 2026 Cloudflare filters destination addresses there, and the road to the server may not deliver.",
+    "выход не поднят":"the exit is not up",
+    "Cloudflare не ответил через выход":"Cloudflare did not answer through the exit",
+    "Это о сайтах, привязанных к выходу; у дороги их нет. Привязать можно, как к любому выходу, но WARP страну не меняет: сайты видят вас в вашей стране.":"This is about sites bound to the exit; a road has none. You can bind them as to any exit, but WARP doesn't change the country: sites see you in your country.",
+    "Москва":"Moscow",
+    "Санкт-Петербург":"Saint Petersburg",
+    "Хельсинки":"Helsinki",
+    "Стокгольм":"Stockholm",
+    "Варшава":"Warsaw",
+    "Франкфурт":"Frankfurt",
+    "Амстердам":"Amsterdam",
+    "Рига":"Riga",
+    "Таллин":"Tallinn",
+    "Вильнюс":"Vilnius",
+    "Киев":"Kyiv",
+    "Стамбул":"Istanbul",
+    "Тбилиси":"Tbilisi",
+    "Ереван":"Yerevan",
+    "Алматы":"Almaty",
+    "Прага":"Prague",
+    "Второе мнение о блокировке":"Second opinion on a block",
+    "Cheburcheck — проверка из России":"Cheburcheck — a check from Russia",
+    "сервис проверяет адрес сервера с ~30 точек российских провайдеров. Адрес уйдёт на cheburcheck.ru":"the service checks the server's address from ~30 points of Russian ISPs. The address goes to cheburcheck.ru",
+    "Спрашивать самому, когда сервер не отвечает":"Ask by itself when a server doesn't answer",
+    "не чаще раза в 3 ч на адрес":"no more than once per 3 h per address",
+    "Выключено — на экранах нет ни кнопки, ни строки о нём. Пригодится, когда сравнить не с чем: VPN выключен или сервер единственный, — и перед покупкой сервера: заблокированный адрес лучше сразу попросить заменить.":"Off — no button or line about it on any screen. Useful when there is nothing to compare with: the VPN is off or the server is the only one — and before buying a server: a blocked address is better replaced right away.",
+    "включаю второе мнение":"turning the second opinion on",
+    "выключаю второе мнение":"turning the second opinion off",
+    "[road] дорога есть только у конфигов AmneziaWG":"[road] only AmneziaWG configs have a road",
+    "[road] номер выхода — от 2 до 7":"[road] the exit number is 2 to 7",
+    "[road] дорогой служит только выход AmneziaWG":"[road] only an AmneziaWG exit serves as a road",
+    "[road] дороги и так нет — сервер идёт напрямую":"[road] there is no road anyway — the server goes directly",
+    "[road] дорога снята — сервер идёт напрямую":"[road] the road is removed — the server goes directly",
+    "[road] не удалось записать дорогу (место на разделе?)":"[road] could not write the road (space on the partition?)",
+    "[road] не удалось перенести дорогу":"[road] could not move the road",
+    "[road] не удалось записать дороги (место на разделе?)":"[road] could not write the roads (space on the partition?)",
+    "[road] дороги сейчас правит другая операция — повторите":"[road] another operation is editing the roads now — retry",
+    "[road] правила дорог сейчас пересобирает другая операция — повторите":"[road] another operation is rebuilding the road rules now — retry",
+    "[chebur] второе мнение выключено — включите его в «Проверке серверов»":"[chebur] the second opinion is off — turn it on in «Server checks»",
+    "[chebur] нужен адрес IPv4":"[chebur] an IPv4 address is needed",
+    "[chebur] проверка уже идёт":"[chebur] a check is already running",
+    "[chebur] свежий ответ уже есть":"[chebur] a fresh answer is already there",
+    "[chebur] проверка запущена — до полутора минут":"[chebur] the check started — up to a minute and a half",
+    "[chebur] второе мнение включено":"[chebur] the second opinion is on",
+    "[chebur] второе мнение выключено":"[chebur] the second opinion is off",
+    "[chebur] сперва включите второе мнение":"[chebur] turn the second opinion on first",
+    "[chebur] спрашиваю сам, когда сервер молчит":"[chebur] I ask by myself when a server is silent",
+    "[chebur] сам не спрашиваю":"[chebur] I don't ask by myself",
+    "нужен адрес IPv4":"an IPv4 address is needed",
+    "что включить: on|off|auto_on|auto_off":"what to turn on: on|off|auto_on|auto_off",
   };
   // Правила для составных/динамических строк (нет точного совпадения в словаре). Порядок: длинные/
   // специфичные фразы → короткие токены → единицы (с якорем на предшествующую цифру, чтобы не задеть
   // буквы внутри слов). i18nStr применяет их подряд и, если в итоге остаётся кириллица, ВОЗВРАЩАЕТ
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
+    // ─── Дорога к серверу, WARP, второе мнение (10.10.2026): склейки с числами и именами, шаги и отказы роутера — ПЕРВЫМИ ───
+    [/^похоже, блокировка \((\d+) из (\d+)\)$/,"looks blocked ($1 of $2)"],
+    [/^· через туннель (\d+) мс$/,"· through the tunnel $1 ms"],
+    [/^(\d+) — потолок дороги: туннелю внутри неё нужно на 80 меньше\. Ручной MTU в «Параметрах сети» выше потолка не поднимется$/,"$1 — the road's ceiling: the tunnel inside it needs 80 less. A manual MTU in «Network settings» won't go above the ceiling"],
+    [/^(.+) — адрес заблокирован$/,"$1 — address blocked"],
+    [/^ищу порт, который провайдер не режет: (\d+) \((\d+) из (\d+)\)$/,"looking for a port the ISP doesn't cut: $1 ($2 of $3)"],
+    [/^сохраняю конфиг \(порт (\d+)\)$/,"saving the config (port $1)"],
+    [/^прокладываю дорогу для (\S+)$/,"laying the road for $1"],
+    [/^WARP получен: выход №([2-7]), (\S+) едет через него$/,"WARP received: exit #$1, $2 rides it"],
+    [/^WARP получен: выход №([2-7])$/,"WARP received: exit #$1"],
+    [/^WARP получен \(выход №([2-7])\), а дорога не встала: (.*)$/,"WARP received (exit #$1), but the road didn't come up: $2"],
+    [/^конфиг «([^«»]*)» сохранён, а выход не создался: (.*)$/,"the config «$1» is saved, but the exit wasn't created: $2"],
+    [/^Cloudflare отклонил регистрацию \(HTTP (\d+)\): он сменил порядок — нужна новая версия панели$/,"Cloudflare refused the registration (HTTP $1): it changed the procedure — a new panel version is needed"],
+    [/^Cloudflare выдал WARP, но провайдер режет его на всех портах \(([0-9, ]+)\) — конфиг не сохранён$/,"Cloudflare issued WARP, but your ISP cuts it on every port ($1) — the config isn't saved"],
+    [/^\[warp\] WARP этого роутера уже есть \(конфиг «([^«»]*)»\) — сперва удалите его$/,"[warp] this router's WARP already exists (config «$1») — delete it first"],
+    [/^\[warp\] нет конфига «([^«»]*)»$/,"[warp] no config «$1»"],
+    [/^\[road\] выхода №([2-7]) нет$/,"[road] there is no exit #$1"],
+    [/^\[road\] выход №([2-7]) выключен — включите его, тогда он станет дорогой$/,"[road] exit #$1 is off — turn it on, then it becomes a road"],
+    [/^\[road\] выход №([2-7]) работает на этом же конфиге — по самому себе ехать нельзя$/,"[road] exit #$1 runs on this very config — a server can't ride itself"],
+    [/^\[road\] выход №([2-7]) сам едет по дороге — выберите выход, который идёт напрямую$/,"[road] exit #$1 rides a road itself — pick an exit that goes directly"],
+    [/^\[road\] этот конфиг сам служит дорогой \(выход №([2-7])\) — дорога бывает только в один шаг$/,"[road] this config serves as a road itself (exit #$1) — a road is only one step"],
+    [/^\[road\] дорога уже через выход №([2-7])$/,"[road] the road already goes via exit #$1"],
+    [/^\[road\] нет конфига «([^«»]*)»$/,"[road] no config «$1»"],
+    [/^\[slots\] выход №([2-7]) служит дорогой серверу (\S+), а новый конфиг идёт к тому же серверу — его пакеты к серверу пошли бы сами в себя; выберите конфиг к другому серверу$/,"[slots] exit #$1 serves as a road to the server $2, and the new config goes to the same server — its packets to the server would go into itself; pick a config to another server"],
+    [/^«(.+)»: адрес заблокирован провайдером — сервер отвечает через туннель$/,"«$1»: address blocked by the ISP — the server answers through the tunnel"],
+    [/^\[road\] выход №([2-7]) идёт к тому же серверу \(([0-9.]+)\) — его пакеты к серверу пошли бы сами в себя; выберите выход к другому серверу$/,"[road] exit #$1 goes to the same server ($2) — its packets to the server would go into itself; pick an exit to another server"],
+    [/^\[road\] дорога к серверу — через выход №([2-7])$/,"[road] the road to the server — via exit #$1"],
+    [/^\[slots\] выход №([2-7]) служит дорогой к серверу \(([^()]*)\) — сначала переключите их дорогу на «напрямую», потом (.*)$/,"[slots] exit #$1 serves as a road to a server ($2) — switch their road to «direct» first, then $3"],
+    [/^конфиг (\S+) служит дорогой \(выход №([2-7])\) — сначала переключите дорогу его пассажиров на «напрямую»$/,"the config $1 serves as a road (exit #$2) — switch its riders' road to «direct» first"],
+    [/^сервис проверки не ответил \(HTTP ([^()]*)\)$/,"the check service did not answer (HTTP $1)"],
+    [/^сервис не ответил \(HTTP ([^()]*)\)$/,"the service did not answer (HTTP $1)"],
+    ["HTTP нет связи","HTTP no connection"],
+    [/^создаю выход «WARP»$/,"creating the «WARP» exit"],
+    ["сервер едет по дороге — число меряно через неё","the server rides a road — the number is measured through it"],
+    ["напрямую сервер молчит, а через работающий туннель отвечает — сервер жив, его адрес не пускает ваш провайдер","directly the server is silent, while through a working tunnel it answers — the server is alive, your ISP blocks its address"],
+    ["через дорогу сервер не отвечает: лежит дорога или сам сервер","the server doesn't answer through the road: the road or the server is down"],
+    ["выключайте выход","turn the exit off"],
+    ["удаляйте выход","delete the exit"],
+    ["меняйте транспорт","change the transport"],
+    ["ставьте ему конфиг, который сам едет по дороге","give it a config that rides a road itself"],
     // ─── «Задачи» (07.10.2026): the router's composed answers (tasks.sh) — FIRST, before the short tokens below ───
     // Its REASONS as rules, not only keys: an exact key matches a whole string, and the router puts a reason after a wrapper
     // («строка 3: », «расписание: », «минута: ») — the whole toast stayed Russian (review s.106, round 2; dev/tasks-i18n-test.js).
@@ -14384,7 +14674,7 @@
   function actLbl(canAct){ return canAct ? 'активен' : 'выбран · нет бинаря'; }
   // Точка строки — итог ПОСЛЕДНЕЙ проверки из кэша (`.srv-checks`): зелёная — отвечал, жёлтая — не ответил, серая — не проверялся.
   // Её же перекрашивает `paintRec`, когда проверка кончается, — второго ответа «что значит точка» нет.
-  function recDot(c){ return (c && c.st==='ok') ? '' : ((c && c.st==='dead') ? ' warn' : ' off'); }
+  function recDot(c){ return (c && c.st==='ok') ? '' : ((c && (c.st==='dead' || c.st==='blk')) ? ' warn' : ' off'); }
   function srvChev(tpt, name, disp){
     return '<button type="button" class="srv-edit srv-chev" data-tpt="'+tpt+'" data-name="'+esc(name)+'" title="Открыть сервер" aria-label="'+esc('Открыть сервер «'+(disp||name)+'»')+'">'+icUse('i-chev','s')+'</button>';
   }
@@ -14402,18 +14692,25 @@
   // Несущий конфиг удалить нельзя — крестика у него нет.
   function serverRow(key, name, grp, disp){
     var act = name===grp.active, canAct = canActivate(grp);
-    var canDel = !(act && (key==='awg' || key===cur.transport));
+    var rd = (key==='awg') ? cfgRiders(name) : [], rv = (key==='awg') ? roadOf(name) : '';
+    var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length;
     var m = key==='hy2' ? (hy2Meta[name]||{}) : {};
     var ds = m.host ? '<span class="mono">'+esc(m.host)+'</span>'+(m.obfs?' · '+esc(m.obfs):'') : '';
+    // WARP узнаёт роутер (по ключу сервера Cloudflare): под именем — «Cloudflare», у дороги — кого она везёт (макет).
+    var wp = (key==='awg') && isWarp(name);
+    if(wp) ds='<span>Cloudflare</span>';
     // Конфиг выхода — не «выбрать →», а причина чипом: клик по строке всё равно дойдёт до роутера, и отказ скажет всё словами.
     var hx = (key==='awg' && !act) ? srvHeldByExit(grp.held, name) : '';
-    var gl = (key==='awg') ? awgGenLbl(name) : '';
+    var gl = wp ? 'WARP' : ((key==='awg') ? awgGenLbl(name) : '');
     var st = act ? '<span class="chip'+(canAct?' acc':'')+'">'+actLbl(canAct)+'</span>'
            : hx ? '<span class="chip">занят: '+esc(slotHeldBy(hx))+'</span>'
                  : '<button type="button" class="chip srv-pick"'+(canAct ? ' aria-label="'+esc('Выбрать «'+(disp||name)+'»')+'"' : '')+'>'+(canAct?'выбрать →':notReadyLbl(grp))+'</button>';
     return srvRowOpen('srv', key, name, act, canAct)
       + '<div class="grow">'+srvNm(disp||name)+'<div class="ds">'+ds
-      + '<span class="srv-ping" data-tpt="'+key+'" data-name="'+esc(name)+'"></span></div></div>'
+      + '<span class="srv-ping" data-tpt="'+key+'" data-name="'+esc(name)+'"></span>'
+      // Дорога — свойство конфига: хвост виден и до первой проверки (разделитель ставит CSS, только после непустого соседа).
+      + (rv ? '<span class="srv-tail">↳ <span>через выход</span> «'+roadExitHtml(rv)+'»</span>' : '')
+      + (rd.length ? '<span class="srv-tail"><span>дорога для</span> '+ridersHtml(rd)+'</span>' : '')+'</div></div>'
       + '<span class="srv-r">'+(gl ? '<span class="badge">'+esc(gl)+'</span> ' : '')+st
       + (key==='hy2' ? '<button type="button" class="btn sm gh srv-edit" data-tpt="hy2" data-name="'+esc(name)+'" title="Изменить конфиг" aria-label="'+esc('Изменить конфиг «'+(disp||name)+'»')+'">✎</button>' : '')
       + (canDel ? '<button type="button" class="btn sm gh srv-del" data-tpt="'+key+'" data-name="'+esc(name)+'" title="Удалить конфиг" aria-label="'+esc('Удалить конфиг «'+(disp||name)+'»')+'">✕</button>' : '')
@@ -14580,6 +14877,8 @@
       + '<div class="dz dz-line" data-kind="'+key+'">'+SRV_DZ[key]
       + '<input class="file-in" data-kind="'+key+'" type="file" accept="'+acc+'" multiple></div>';
     if(key==='xray') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">Подписка</div><div class="v">пул серверов по ссылке провайдера — роутер сам его обновляет</div></div><button type="button" class="act srv-to-subs">Подписки</button></div>';
+    // Второй путь получить конфиг AmneziaWG — у роутера самого (как «Подписка» у Xray — строкой): свой WARP от Cloudflare.
+    if(key==='awg') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">WARP от Cloudflare</div><div class="v">бесплатная дорога к серверу, чей адрес заблокировал провайдер — роутер получит свой конфиг сам</div></div><button type="button" class="act srv-to-warp">Получить WARP</button></div>';
     if(key==='awg') h+='<div style="margin-top:11px">'+noteBox('<span class="mono kw">vpn://</span>-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный <span class="mono kw">.conf</span>, вставленный вместо ссылки, тоже принимается.','info')+'</div>';
     if(key==='xray') h+='<div style="margin-top:11px">'+noteBox('Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»), флаг страны — её кодом (🇳🇱 → NL): роутер хранит имена латиницей. В ссылке нет <span class="mono kw">pbk</span> (Reality publicKey) — панель предупредит: без него сервер не поднимется.','info')+'</div>';
     if(key==='hy2') h+='<div style="margin-top:11px">'+noteBox('В ссылке нет <span class="mono kw">obfs</span> (Salamander) — панель скажет об этом: для российских провайдеров обфускация на сервере желательна, без неё поток узнаётся.','info')+'</div>';
@@ -14594,7 +14893,7 @@
           // Настоящее имя (эмодзи/флаги) — и у Hysteria2: её конфиг может приехать из подписки (иначе «sub-de-nidjerlandy»).
           return serverRow(key, name, grp, cfgDisp(key, name, subs)); }).join('') : '<div class="lempty">нет конфигов</div>')
       + '<div class="tiny" style="margin-top:10px">'+(key==='awg'
-          ? 'У активного конфига крестика нет — удалить то, на чём стоит несущая, нельзя.'
+          ? 'У активного конфига крестика нет — удалить то, на чём стоит несущая, нельзя. У конфига, который служит дорогой другому серверу, — тоже.'
           : 'Имена могут прийти из подписки вместе с флагами. «✎» — редактор конфига: форма и сырой YAML; у AmneziaWG его нет.')+'</div></div>';
     h+='<div class="card dz-area" data-kind="'+key+'"><div class="wt">Добавить конфиг</div>'+srvAddHtml(key)+'</div>';
     if(key==='awg') h+=noteBox('<b>Редактора конфига у AmneziaWG нет</b>: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — панель спросит, заменить ли им прежний. Endpoint и MTU — на экране сервера.','info');
@@ -14616,6 +14915,7 @@
     xrayMeta = (d.xray && d.xray.meta) || {};   // host/sni/fp по конфигу (host — под именем)
     hy2Meta = (d.hy2 && d.hy2.meta) || {};      // host (сервер:порт) и obfs — строка Hysteria2 под именем
     awgGen = (d.awg && d.awg.gen) || {};        // поколение протокола конфига AmneziaWG (transport-awg.sh conf-gen) — бейдж строки
+    roadTake(d);                                // дороги к серверам и какие конфиги — WARP (road.sh, warp.sh)
     // Установлен ли БИНАРЬ транспорта (bin_present). Тест выхода/скорости xray без бинаря падал бы
     // в бэкенде и рисовал ложное «недоступен» — по этому флагу гейтим кнопки заранее (engineMissing).
     srvBin={awg:!(d.awg&&d.awg.bin===false), xray:!(d.xray&&d.xray.bin===false), hy2:!(d.hy2&&d.hy2.bin===false)};
@@ -14699,7 +14999,9 @@
     openModal(null, {route:'cn-servers', deck:true});
     var body=document.getElementById('modal-body'); loading(body);
     // Возраст подписок (строка под именем группы) знает `section=subs`; не ответила она — экран тот же, строки возраста нет.
-    Promise.all([fetchJson('/cgi-bin/list'), fetchJson('/cgi-bin/data?section=subs').then(function(x){ return x; }, function(){ return null; })]).then(function(r){
+    // Реестр выходов — ради дорог (имя выхода-дороги, кого везёт WARP); не ответил — строки без этих хвостов, экран тот же.
+    Promise.all([fetchJson('/cgi-bin/list'), fetchJson('/cgi-bin/data?section=subs').then(function(x){ return x; }, function(){ return null; }),
+                 refreshEnabledSlots()]).then(function(r){
       var d=r[0], sd=r[1];
       if(!screenAlive(body)) return;   // ответ доехал, когда человек уже на другом экране
       srvListTake(d);
@@ -14764,6 +15066,7 @@
         });
       });
       Array.prototype.forEach.call(body.querySelectorAll('.srv-to-subs'), function(el){ el.addEventListener('click', function(){ openSubs(); }); });
+      Array.prototype.forEach.call(body.querySelectorAll('.srv-to-warp'), function(el){ el.addEventListener('click', function(){ openWarp(); }); });
       // Подписки на вкладке Xray: разворот аккордеона и ⋮-меню группы. ⋮ внутри шапки — stopPropagation,
       // иначе клик по кнопке ещё и свернул/развернул бы группу.
       Array.prototype.forEach.call(body.querySelectorAll('.sub-hd'), function(hd){
@@ -15245,7 +15548,10 @@
       if(rep){ showToast('не удалось обновить экран сервера', false); return; }
       showToast('роутер не ответил — открываю список серверов', false); if(navSplit(location.hash).r==='cn-server') navReplace('cn-servers'); openServers();
     }
-    fetchJson('/cgi-bin/list').then(function(d){
+    // Реестр выходов — ради дороги к серверу (кто может ею служить, чьё имя писать); не ответил — карточка без выходов, экран тот же.
+    // Кэш проверок — тоже: «адрес заблокирован» и дорога строятся по нему (прямая ссылка открывает экран раньше, чем он приходит).
+    Promise.all([fetchJson('/cgi-bin/list'), refreshEnabledSlots(), _chkOk ? null : loadChecks()]).then(function(rr){
+      var d=rr[0];
       if(g!==_navGen) return;      // пока ждали роутер, человек ушёл — его выбор важнее
       _navPend=false;
       if(rep && !navShows('cn-server')) return;   // за время ответа поверх экрана встал шаг без адреса — не сносим его
@@ -15265,6 +15571,19 @@
     var k=chkKey(tpt,name), c=CHK[k]||null;
     function cell(l, v, wr){ return '<div class="s"><div class="l">'+l+'</div><div class="v'+(wr?' wr':'')+'">'+v+'</div></div>'; }
     var run=_srvRun[k]||'', ping;
+    // Сервер на дороге: число — через неё, прямое — рядом, и чья дорога (макет). Адрес заблокирован: напрямую молчит, через туннель
+    // отвечает. Остальное — как у любого сервера.
+    if(!run && c && c.via){
+      return cell('<span>Пинг через</span> '+roadExitHtml(c.via), (c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : 'нет ответа', c.ms==null)
+        + cell('Напрямую', (c.dms!=null) ? esc(c.dms+' мс') : 'не отвечает', c.dms==null)
+        + cell('Дорога', roadExitHtml(c.via)+'<span id="srv-colo"></span>')
+        + srvStatsTail(tpt, name, act, c);
+    }
+    if(!run && c && c.st==='blk'){
+      return cell('Напрямую', 'не отвечает', true)
+        + cell('Через туннель', (c.tms!=null) ? esc(c.tms+' мс'+pingSuffix(c)) : '—')
+        + srvStatsTail(tpt, name, act, c);
+    }
     if(run==='check') ping='проверяю…';
     else if(c && c.ms!=null) ping=c.ms+' мс'+pingSuffix(c)+(c.cdn?' · CDN':'');
     else if(c && c.st==='dead' && c.kind!=='speed') ping='нет ответа';
@@ -15278,6 +15597,12 @@
     }
     // Роутер старше поля `obfs` о нём молчит — «нет» соврало бы про сервер с salamander: прочерк.
     if(tpt==='hy2'){ var hm=hy2Meta[name]||{}; h+=cell('Обфускация', hm.obfs ? esc(hm.obfs) : (('obfs' in hm) ? 'нет' : '—')); }
+    return h+srvStatsTail(tpt, name, act, c);
+  }
+  // Хвост клеток — один на все виды экрана: рукопожатие и MTU у AmneziaWG, «проверен», несущая у Hysteria2.
+  function srvStatsTail(tpt, name, act, c){
+    var h='', k=chkKey(tpt,name);
+    function cell(l, v, wr){ return '<div class="s"><div class="l">'+l+'</div><div class="v'+(wr?' wr':'')+'">'+v+'</div></div>'; }
     if(tpt==='awg'){
       // Рукопожатие — только у несущего сейчас конфига и только при включённом VPN: выключенный человеком туннель — не поломка.
       if(act && cur.transport==='awg' && cur.hs!=null && !cur.vpnOff) h+=cell('Рукопожатие', esc(fmtAge(cur.hs)), cur.hs<0 || cur.hs>=180);
@@ -15325,7 +15650,9 @@
     // Ключ этого конфига держит выход — «Сделать активным» роутер откажет (switch-vpn.sh key_busy): вместо кнопки та же пометка,
     // что у строки «Серверов» (`srvHeldByExit`), а не приглашение к отказу (ревью ветки fix/awg-exits, круг 2).
     var hx=(tpt==='awg' && !act) ? srvHeldByExit(grp.held, name) : '';
-    var canDel=!(act && (tpt==='awg' || tpt===cur.transport));
+    // Конфиг, который служит ДОРОГОЙ (на нём выход, по которому едут серверы), — тоже не удалить: пассажиры остались бы без дороги.
+    var rdr=(tpt==='awg') ? cfgRiders(name) : [];
+    var canDel=!(act && (tpt==='awg' || tpt===cur.transport)) && !rdr.length;
     var meta=(tpt==='xray') ? (xrayMeta[name]||{}) : {};
     var rep=navIfShown('cn-server', srvScrOpen), fsig=focusMark();
     // Заголовок — имя как есть: у сервера подписки это имя от провайдера (с флагом и кириллицей), метка стримера прячет его.
@@ -15336,7 +15663,7 @@
     var ml='<span>'+esc(names[tpt]+(/^AWG /.test(agl) ? agl.slice(3) : ''))+'</span>'+(agl==='WireGuard' ? ' · <span>WireGuard</span>' : '');
     if(tpt==='xray'){ ml+=' · <span>'+esc(protoBadge(meta))+'</span>'; if(meta.host) ml+=' · <span class="sens">'+esc(meta.host)+'</span>'; }
     if(tpt==='hy2'){ var hm=hy2Meta[name]||{}; ml+=' · <span>QUIC</span>'+(hm.host ? ' · <span class="sens">'+esc(hm.host)+'</span>' : '')+(hm.obfs ? ' · <span>'+esc(hm.obfs)+'</span>' : ''); }
-    if(tpt==='awg') ml+=' · <span>нативный .conf</span>'+(carrier ? ' · <span>интерфейс awg0</span>' : '');
+    if(tpt==='awg') ml+=(isWarp(name) ? ' · <span>WARP</span>' : '')+' · <span>нативный .conf</span>'+(carrier ? ' · <span>интерфейс awg0</span>' : '');
     if(subLbl) ml+=' · <span>подписка</span> «<span class="sens" translate="no">'+esc(subLbl)+'</span>»';
     var h='<div class="vwrap"><div class="card wfull dv-hd" id="srv-head"><div class="dv-top">'
       + '<span class="av"'+(fl.flag ? ' style="font-size:22px"' : '')+'>'+(fl.flag ? fl.flag : icUse('i-globe','','',true))+'</span>'
@@ -15348,14 +15675,24 @@
       + '<div class="stats" id="srv-stats">'+srvStatsHtml(tpt, name, act)+'</div>'
       + (tpt==='xray' ? '<div class="tiny" style="margin-top:9px">У Xray «проверить» — это реальный выход через временный socks на свободном порту: конфиг с живым эндпоинтом, но мёртвым outbound так не спрячется. Тест скорости — четыре потока через VPS, около 12 секунд, меряет потолок канала роутер↔VPS (телефон покажет меньше).</div>' : '')
       + '</div>';
+    // Адрес заблокирован — сразу под шапкой, за ним второе мнение (если включено); сервер на дороге — карточка дороги здесь же.
+    var crec=CHK[chkKey(tpt,name)]||null, roadOk=srvRoadOk(tpt, name), via=roadOk && roadOf(name);
+    h+=srvBlkHtml(tpt, name, crec);
+    if(tpt==='awg') h+='<div id="srv-chb" hidden></div>';
+    if(via) h+=srvRoadHtml(name, crec);
     var del=canDel ? '<button type="button" class="btn bad" data-sv="del">'+icUse('i-trash','s','',true)+(tpt==='awg' ? 'Удалить конфиг' : 'Удалить')+'</button>' : '';
-    var why=!canDel ? '<div class="cline">'+(tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
+    var why=!canDel ? '<div class="cline">'+(rdr.length ? '<span>Конфиг служит дорогой:</span> '+ridersHtml(rdr)+'<span>. Удалить его можно, когда по нему никто не едет.</span>'
+                                   : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
     if(tpt==='awg'){
       h+='<div class="card"><div class="wt">Что панель о нём показывает</div><div id="srv-awg"><div class="cline">читаю конфиг…</div></div>'
         + '<div style="margin-top:9px">'+noteBox('Ключи и конфиг целиком AmneziaWG панель не показывает и не правит: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — файлом или ссылкой на «Серверах»: панель спросит, заменить ли им этот.', 'info')+'</div></div>'
         + '<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why
         + '<div style="margin-top:11px">'+noteBox('У AmneziaWG проверяется пинг эндпоинта, а не выход: демон один на интерфейс, поднять его временно на другом порту нельзя. Поэтому «сервер отвечает» здесь значит меньше, чем у Xray, — и панель не выдаёт одно за другое.', 'info')+'</div></div>';
+      if(roadOk && !via) h+=srvRoadHtml(name, crec);
+      // WARP без маскировки (I1): провайдер пропускает рукопожатие чистого WireGuard и обрывает поток после него (замер 10.10.2026).
+      if(isWarp(name) && warpMap[name]===0) h+=noteBox('<b>В конфиге WARP нет маскировки</b> (строки <span class="mono kw">I1</span>): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».', 'warn');
+      if(via) h+=noteBox('<b>Дорога — в один шаг.</b> Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.', 'info');
     } else h+='<div id="srv-ed" class="wfull"></div>';
     h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
     if(tpt==='hy2') h+=noteBox('Hysteria2 делит <b>один tun2socks и один socks</b> с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».', 'info');
@@ -15366,12 +15703,23 @@
     // Действия — делегатом на обёртке ЭКРАНА: кнопки Xray/Hysteria2 рождаются в карточке параметров после ответа роутера, а обёртка
     // пересоздаётся с каждым показом — провод не копится между экранами.
     var wrap=body.querySelector('.vwrap');
+    wireCacts(body);   // «Проверке серверов» в карточке второго мнения, пассажиры дороги
+    // Плитки дороги — <div role="button">: клик и Enter/пробел ведут в одно место.
+    function roadPick(t){ var b=t; while(b && b!==wrap && !(b.getAttribute && b.getAttribute('data-road')!=null)) b=b.parentNode;
+      if(!b || b===wrap) return false;
+      var v=b.getAttribute('data-road');
+      if(v==='warp') openWarp(name); else if(v!==roadOf(name)) srvRoadSet(name, v);
+      return true; }
+    wrap.addEventListener('keydown', function(e){ if((e.key==='Enter' || e.key===' ') && e.target && e.target.getAttribute && e.target.getAttribute('data-road')!=null){ e.preventDefault(); roadPick(e.target); } });
     wrap.addEventListener('click', function(e){
+      if(roadPick(e.target)) return;
       var b=e.target; while(b && b!==wrap && !(b.getAttribute && b.getAttribute('data-sv'))) b=b.parentNode;
       if(!b || b===wrap) return;
       var v=b.getAttribute('data-sv');
       if(v==='use') activateServer(tpt, name, canAct, subs);
       else if(v==='check') srvCheck(tpt, name);
+      else if(v==='viawarp'){ var wx=warpExitFor(name); if(wx) srvRoadSet(name, String(wx.id)); else openWarp(name); }
+      else if(v==='chb') srvChbCheck(body);
       else if(v==='speed') speedServer(name);   // числа перерисует конец прогона (srvRunSet)
       else if(v==='del'){
         if(_srvRun[chkKey(tpt,name)]){ showToast('«'+disp+'» сейчас проверяется — дождитесь итога', false); return; }
@@ -15416,7 +15764,7 @@
         // Своей арифметики нет: старый роутер источника не называет — показываем только то, что он сказал.
         var src=r.mtu_src||'', mtu=r.mtu ? String(r.mtu) : '';
         // `unknown` — копия net-tune.sh на роутере старше верба: ручной MTU она применяет, а сказать о нём не может (ревью пачки 2, круг 3).
-        var mtuTxt=!mtu ? '—' : (src==='tun' ? mtu+' — задан в «Параметрах сети» (поверх конфига)' : src==='default' ? mtu+' — по умолчанию'
+        var mtuTxt=!mtu ? '—' : (src==='road' ? mtu+' — потолок дороги: туннелю внутри неё нужно на 80 меньше. Ручной MTU в «Параметрах сети» выше потолка не поднимется' : src==='tun' ? mtu+' — задан в «Параметрах сети» (поверх конфига)' : src==='default' ? mtu+' — по умолчанию'
           : src==='unknown' ? mtu+' — по конфигу; ручной MTU «Параметров сети» эта версия роутера не сообщает — обновите Enodia' : mtu+' — задан в конфиге');
         _srvMtu[k]=mtu ? {mtu:mtu, src:src} : null; srvStatsRepaint(body, tpt, name, act);
         // «Параметры сети» действуют только на основной туннель: на выходе этот конфиг несёт СВОЁ число (строка конфига или 1376) —
@@ -15426,14 +15774,135 @@
         if(xm) xs.forEach(function(x){ xh+='<div class="v"><span>на выходе №'+esc(String(x))+':</span> <span>'+esc(xm+(r.exit_mtu_src==='default' ? ' — по умолчанию' : ' — задан в конфиге'))+'</span></div>'; });
         if(box) box.innerHTML='<div class="kv"><div class="grow"><div class="k">Endpoint</div><div class="v">'+(r.endpoint ? '<span class="mono sens">'+esc(r.endpoint)+'</span>' : 'в конфиге нет')+'</div></div></div>'
           + '<div class="kv"><div class="grow"><div class="k">MTU</div><div class="v">'+esc(mtuTxt)+'</div>'+xh+'</div></div>';
+        srvChbLoad(body, r.endpoint);
+        srvColoLoad(body, crec);
       }, function(){ if(!screenAlive(body)) return; var box=document.getElementById('srv-awg'); if(box) box.innerHTML=noteBox('роутер не ответил', 'warn'); });
     } else srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep,
       chk+(tpt==='xray' ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '')+'<span class="grow"></span>'+del);
     if(tpt!=='awg' && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
   }
+  // ==== ДОРОГА, «АДРЕС ЗАБЛОКИРОВАН» И ВТОРОЕ МНЕНИЕ НА ЭКРАНЕ СЕРВЕРА (road.sh, cgi-bin/ping, cheburcheck.sh) =================
+  // Дорога — свойство КОНФИГА (`roads`), а не выхода: один сервер едет по ней и основным транспортом, и выходом. Плитки, а не кнопка —
+  // видно, какая дорога выбрана (как «Если выход упадёт»). Выходов-дорог нет — вторая плитка ведёт получить WARP, а не прячется.
+  // Дорога в ОДИН шаг: у конфига, который сам служит дорогой (WARP, у выхода на нём есть пассажиры), карточки нет. Через дорогу
+  // ездят только серверы AmneziaWG (решение человека 10.10.2026).
+  function srvRoadOk(tpt, name){ return tpt==='awg' && !isWarp(name) && !cfgRiders(name).length; }
+  function srvRoadHtml(name, c){
+    var via=roadOf(name), cands=roadCands(name), blk=!!(c && (c.st==='blk' || c.tms!=null)), t='', seen=false;
+    t+=optTile('data-road', '', !via, 'i-globe', 'напрямую', blk ? 'через вашего провайдера — адрес заблокирован' : (via ? 'через вашего провайдера' : 'через вашего провайдера — как сейчас'));
+    cands.forEach(function(x){ var on=(via===String(x.id)); if(on) seen=true;
+      t+=optTile('data-road', String(x.id), on, 'i-route', '<span>через выход</span> «'+slotNmHtml(x)+'»', 'пакеты к серверу едут через другой выход — блокировка адреса у провайдера их не касается'); });
+    // Дорога стоит, а выход в кандидаты не годится (выключили мимо панели, сменили конфиг) — показываем её как есть: выбор на роутере.
+    if(via && !seen) t+=optTile('data-road', via, true, 'i-route', '<span>через</span> '+roadExitHtml(via), 'этот выход сейчас дорогой служить не может — выберите другой или «напрямую»');
+    if(!cands.length && !via) t+=optTile('data-road', 'warp', false, 'i-route', 'через WARP', 'выхода WARP ещё нет — откроется «WARP от Cloudflare»');
+    return '<div class="card" id="srv-road"><div class="wt">Дорога к серверу</div><div class="opt c2">'+t+'</div>'
+      + '<div class="cline">'+(via
+          ? 'Дорога упала — пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.'
+          : 'Нужна, когда провайдер заблокировал адрес сервера. Если дорога упадёт, пакеты к серверу пойдут напрямую — интернет не пропадёт, сервер станет недоступен, пока сторож её не поднимет. Через дорогу ездят только серверы AmneziaWG.')+'</div></div>';
+  }
+  // Задать дорогу (пусто — напрямую): проверки и отказ словами — у роутера (road.sh). Удалось — сервер сразу проверяется заново: число
+  // через дорогу (или напрямую) появится без второго нажатия.
+  function srvRoadSet(name, id){
+    postAction('road_set', null, id ? 'прокладываю дорогу' : 'снимаю дорогу', {name:name, id:id}, function(r){
+      if(r && r.ok) srvCheck('awg', name);
+      navIfShown('cn-server', srvScrOpen)();
+    });
+  }
+  // «Адрес заблокирован» — по ответу роутера (`blk` пробы: напрямую молчит, через туннель отвечает), не по своей догадке. У сервера
+  // на дороге карточки нет: дорога уже и есть ответ.
+  function srvBlkHtml(tpt, name, c){
+    if(!c || c.st!=='blk' || roadOf(name)) return '';
+    var can=srvRoadOk(tpt, name), wx=can ? warpExitFor(name) : null;
+    return '<div class="card w2" id="srv-blk"><div class="wt">Адрес заблокирован провайдером</div>'
+      + noteBox('<b>Сервер работает — ваш провайдер не пускает к его адресу.</b> Напрямую он молчит на всех портах, а через работающий туннель отвечает. В публичных списках блокировок такого адреса обычно нет: узнать можно только так.', 'warn')
+      + (can ? '<div class="acts"><button type="button" class="btn pri" data-sv="viawarp">'+icUse('i-route','s','',true)+'Подключать через WARP</button></div>' : '')
+      + '<div class="cline">'+(can ? (wx ? '<span>Сервер поедет через выход</span> «'+slotNmHtml(wx)+'»<span>: роутер проложит дорогу, и панель сразу проверит сервер через неё.</span> '
+                                            : '<span>Выхода WARP ещё нет — кнопка сначала откроет «WARP от Cloudflare».</span> ') : '')
+      + '<span>Другой путь — попросить у хостера новый адрес: блокируют адрес, а не сервер.</span></div></div>';
+  }
+  // Где Cloudflare принял подключение дороги-WARP — у сервера на дороге, в клетке «Дорога» (макет «WARP · HEL»).
+  function srvColoLoad(body, c){
+    var x=c && c.via && slotById(c.via); if(!x || !x.warp) return;
+    subPost({action:'warp_colo', id:String(x.id)}).then(function(r){
+      var el=screenAlive(body) && body.querySelector('#srv-colo'); if(!el || !r || !r.colo) return;
+      el.textContent=' · '+r.colo;
+    }, function(){});
+  }
+  // ВТОРОЕ МНЕНИЕ (cheburcheck.sh) — только при включённом (по умолчанию выкл; решение человека 10.10.2026: панель ставят не только в
+  // России — выключено, и следа нет). Вердикт выводит роутер по ответу сервиса; отклонение сервиса — «нет данных», а не вердикт.
+  // Адрес — IPv4 из Endpoint конфига; там имя — так и говорим. Карточка — у сервера, который не отвечает или чей адрес
+  // заблокирован, и только без дороги (макет): у отвечающего вопроса нет, у едущего по дороге ответ уже есть.
+  var _chbIp='';
+  function srvChbLoad(body, ep){
+    var s=_srvShown, c=s && CHK[chkKey(s.tpt, s.name)];
+    if(!body.querySelector('#srv-chb') || !c || (c.st!=='blk' && c.st!=='dead') || (s && roadOf(s.name))) return;
+    var host=String(ep||'').replace(/:\d+$/, '');
+    subPost({action:'chebur_state'}).then(function(st){
+      if(!screenAlive(body) || !st || st.on!==true) return;
+      if(!/^(\d{1,3}\.){3}\d{1,3}$/.test(host)){ chbPaint(body, {state:'noip'}); return; }
+      _chbIp=host; chbFetch(body, 0);
+    }, function(){});
+  }
+  function chbFetch(body, n){
+    subPost({action:'chebur_get', ip:_chbIp}).then(function(r){
+      if(!screenAlive(body) || !body.querySelector('#srv-chb')) return;
+      r=r||{}; chbPaint(body, r);
+      // Проверка идёт фоном у роутера (поток до ~80 с): спрашиваем каждые 3 с, пока экран показан, с потолком.
+      if(r.state==='running' && n<40) setTimeout(function(){ chbFetch(body, n+1); }, 3000);
+    }, function(){});
+  }
+  function srvChbCheck(body){
+    if(!_chbIp) return;
+    subPost({action:'chebur_check', ip:_chbIp}).then(function(r){
+      if(r && r.ok===false){ showToast(r.msg||'не удалось', false); return; }
+      if(screenAlive(body)){ chbPaint(body, {state:'running'}); setTimeout(function(){ chbFetch(body, 0); }, 2000); }
+    }, function(){ showToast('роутер не ответил', false); });
+  }
+  function chbPaint(body, r){
+    var el=body.querySelector('#srv-chb'); if(!el) return;
+    var tmp=document.createElement('div'); tmp.innerHTML=chbCardHtml(r); el.parentNode.replaceChild(tmp.firstChild, el);
+  }
+  function chbCardHtml(r){
+    var st=r.state||'none', h='<div class="card" id="srv-chb"><div class="wt">Второе мнение · Cheburcheck</div>';
+    if(st==='noip') h+='<div class="cline">Второе мнение спрашивают по адресу IPv4, а в конфиге сервера — имя.</div>';
+    else if(st==='done'){
+      var n=r.online|0, b=r.blocked|0, un=Math.max(0, n-(r.answered|0)), v=r.verdict;
+      var vl=(v==='blocked') ? '<span>блокируют</span> <b>'+b+'</b> <span>из</span> <b>'+n+'</b>'+(r.providers ? ' — <span translate="no">'+esc(r.providers)+'</span>' : '')
+            : (v==='clear') ? '<span>не блокирует никто из</span> <b>'+n+'</b>'
+            : '<span>не ясно: блокируют</span> <b>'+b+'</b> <span>из</span> <b>'+n+'</b>';
+      if(un) vl+=' · <b>'+un+'</b> <span>не смогли проверить</span>';
+      h+='<div class="kv"><div class="grow"><div class="k">Блокировка ТСПУ</div><div class="v">'+vl+'</div></div>'
+        + (v==='blocked' ? '<span class="chip wr">заблокирован</span>' : (v==='clear' ? '<span class="chip acc">доступен</span>' : '<span class="chip">не ясно</span>'))+'</div>'
+        + '<div class="kv"><div class="grow"><div class="k">Реестр блокировок</div><div class="v">'+(r.registry===true ? 'адрес в реестре' : 'адреса нет — блокировка ТСПУ реестра не ждёт')+'</div></div></div>';
+    }
+    else if(st==='running') h+='<div class="cline">проверяю с ~30 точек российских провайдеров — до полутора минут…</div>';
+    else if(st==='error') h+=noteBox('<span>нет данных:</span> '+esc(r.msg||'сервис не ответил'), 'warn');
+    else h+='<div class="cline">Ещё не спрашивали.</div>';
+    if(st!=='noip' && st!=='running') h+='<div class="acts"><button type="button" class="btn gh" data-sv="chb">'+icUse('i-refresh','s','',true)+(st==='none' ? 'Проверить' : 'Проверить ещё раз')+'</button></div>';
+    return h+'<div class="cline"><span>Адрес сервера уходит на cheburcheck.ru — российский сервис, проверяет с ~30 точек российских провайдеров. Ответ он хранит до 3 ч.</span>'
+      + (r.age!=null ? ' <span>Проверено</span> <span>'+esc(fmtAge(r.age|0))+'</span>.' : '')
+      + ' <span>Сервис не ответил или ответил не по форме — «нет данных», а не вердикт.</span></div>'
+      + '<div style="margin-top:11px">'+noteBox('<span>Карточка видна, потому что второе мнение включено в</span> <button type="button" class="ilink" data-cact="checks">«Проверке серверов»</button><span>. Выключено — её нет вовсе.</span>', 'info')+'</div></div>';
+  }
+  // КАРТОЧКИ ПО ЗАПИСИ ПРОВЕРКИ — «адрес заблокирован» и плитка «напрямую» дороги — следуют за ней: проверка, сменившая вердикт,
+  // перерисовывает их на месте. Только когда текст сменился: тик статуса зовёт это раз в 10 с, а пересоздание узла уносило бы фокус
+  // с кнопки (сверка — с той же строкой, что нарисовала узел, а не с innerHTML: браузер отдаёт свою сериализацию).
+  function srvRecCards(body, tpt, name){
+    var c=CHK[chkKey(tpt,name)]||null, hd=body.querySelector('#srv-head');
+    function sync(id, html, after){
+      var el=body.querySelector('#'+id);
+      if(el && el._h===html) return;
+      if(!html){ if(el) el.parentNode.removeChild(el); return; }
+      var t=document.createElement('div'); t.innerHTML=html; var n=t.firstChild; n._h=html;
+      if(el) el.parentNode.replaceChild(n, el); else if(after) after.parentNode.insertBefore(n, after.nextSibling);
+    }
+    sync('srv-blk', srvBlkHtml(tpt, name, c), hd);
+    if(body.querySelector('#srv-road')) sync('srv-road', srvRoadHtml(name, c), null);
+  }
   function srvStatsRepaint(body, tpt, name, act){
     var st=body.querySelector('#srv-stats'); if(!st) return;
     st.innerHTML=srvStatsHtml(tpt, name, act);
+    srvRecCards(body, tpt, name);
     // Кнопки прогона — заперты, пока идёт СВОЙ прогон этого сервера: `data-na` держит их запертыми и после конца чужой занятости.
     var run=!!_srvRun[chkKey(tpt,name)];
     Array.prototype.forEach.call(body.querySelectorAll('[data-sv="check"],[data-sv="speed"]'), function(b){
@@ -15489,9 +15958,9 @@
     srvRunSet(tpt, name, 'check');
     var dn=cfgDisp(tpt, name);
     logLine('→ проверка: «'+dn+'»', null);
-    checkOne(tpt, name, null, function(ok, c, r, unknown){
+    checkOne(tpt, name, null, function(ok, c, r, unknown, blocked){
       srvRunSet(tpt, name, null);
-      var m=ok ? '✓ «'+dn+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? '✗ «'+dn+'»: роутер не ответил' : '✗ «'+dn+'»: эндпоинт не отвечает');
+      var m=ok ? '✓ «'+dn+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? '✗ «'+dn+'»: роутер не ответил' : blocked ? '«'+dn+'»: адрес заблокирован провайдером — сервер отвечает через туннель' : '✗ «'+dn+'»: эндпоинт не отвечает');
       showToast(m, ok); logLine(m, ok);
     });
   }
@@ -15532,8 +16001,10 @@
       // unknown = «спросить роутер не вышло», а не «сервер мёртв»: держим ОТДЕЛЬНО от msOf
       // (в сортировке такой сервер всё равно уезжает вниз — замера нет, — но удалять его
       // как мёртвый нельзя: он мог не ответить ни разу за весь свип).
-      checkOne(it.tpt, it.name, port, function(ok, c, r, unknown){
-        if(ok){ okN++; msOf[it.name]=(c&&c.ms!=null?c.ms:9e8); } else { msOf[it.name]=null; if(unknown) unk[it.name]=1; }
+      // `blocked` — адрес заблокирован провайдером: сервер ЖИВ (ответил через туннель) — не «мёртвый» для «Удалять мёртвые»;
+      // числа нет — в сортировке он внизу, как сервер без замера (ревью с.118).
+      checkOne(it.tpt, it.name, port, function(ok, c, r, unknown, blocked){
+        if(ok){ okN++; msOf[it.name]=(c&&c.ms!=null?c.ms:9e8); } else if(blocked){ msOf[it.name]=9e8; } else { msOf[it.name]=null; if(unknown) unk[it.name]=1; }
         free.push(port); run--; dn++; if(onProgress) onProgress(dn,tot,okN); nx();
       });
     }
@@ -15573,10 +16044,11 @@
   // скорость). Для xray это пинг эндпоинта (доступность+латентность), не полный egress-вердикт.
   function bgPingOne(tpt, name, cb){
     fetchJson('/cgi-bin/ping?one='+encodeURIComponent(name)+'&tpt='+encodeURIComponent(tpt)).then(function(d){
-      var c=(d.configs||[])[0]||null, ok=!!(c && c.ms!=null);
-      chkSet(tpt, name, ok?{st:'ok',ms:c.ms,method:c.method||'',cdn:(c.cdn?1:0),kind:'ping'}
-                          :{st:'dead',ms:null,method:(c&&c.method)||'',cdn:0,kind:'ping'});
-      if(cb) cb(ok);
+      var c=(d.configs||[])[0]||null, r=pingRec(c);
+      // mbps не трогаем — merge сохранит прошлую скорость; у не ответившего её снимает сама запись (pingRec).
+      if(r.st==='ok') delete r.mbps;
+      chkSet(tpt, name, r);
+      if(cb) cb(r.st==='ok');
     }).catch(function(){ if(cb) cb(false); });
   }
   // Фоновый обход всех серверов (awg+xray+hy2) ping-only, пул 4 в ширину. Уступает ручной проверке
@@ -19905,8 +20377,8 @@
   // ОТВЕТ section=slots → общие кэши: «номер выхода → транспорт» и включённые выходы для селектора «через» в
   // группах. Один разбор на всех читателей ответа (экраны выходов, редактор групп, правила подписки).
   function slotsTake(d){
-    if(d && d.engine!==false && d.slots){ var sl=d.slots; slotTptRemember(sl); enabledSlots=sl.filter(function(s){ return s.enabled; }).map(function(s){ return {id:s.id, name:slotName(s), named:slotNamed(s), transport:s.transport, state:s.state||'', key_clash:s.key_clash||''}; }); _slotsKnown=true; }
-    else { enabledSlots=[]; slotTptAll={}; _slotsKnown=!!(d && d.engine===false); }
+    if(d && d.engine!==false && d.slots){ var sl=d.slots; slotAll=sl; slotTptRemember(sl); enabledSlots=sl.filter(function(s){ return s.enabled; }).map(function(s){ return {id:s.id, name:slotName(s), named:slotNamed(s), transport:s.transport, state:s.state||'', key_clash:s.key_clash||''}; }); _slotsKnown=true; }
+    else { enabledSlots=[]; slotAll=[]; slotTptAll={}; _slotsKnown=!!(d && d.engine===false); }
   }
   function slotName(s){ return b64toUtf8(s.name_b64)||('выход '+s.id); }
   // ИМЯ ВЫХОДА ПИШЕТ ЧЕЛОВЕК ⇒ режим стримера прячет его, как метку подписки и имена серверов (круг 3). Но
@@ -19950,8 +20422,10 @@
         var bad=slotBad(s);
         h+=lrowGo('exit:'+s.id,'открыть выход')
           + '<span class="dot'+(!s.enabled?' off':(bad?' warn':''))+'"></span>'
-          + '<div class="grow"'+(s.enabled?'':' style="opacity:.55"')+'><div class="nm">'+slotNmHtml(s)+'</div><div class="ds">'+slotDs(s)+'</div></div>'
-          + (!s.enabled ? '<span class="chip">выключен</span>' : bad ? '<span class="chip wr">'+esc(slotWhy(s).short)+'</span>' : '')
+          + '<div class="grow"'+(s.enabled?'':' style="opacity:.55"')+'><div class="nm">'+slotNmHtml(s)+'</div><div class="ds">'+slotDs(s)
+          // Выход без групп законен — он служит ДОРОГОЙ к серверу; бейдж «дорога» — единственное, что его отличает (макет).
+          + ((s.riders && s.riders.length) ? ' · <span>дорога для</span> '+ridersHtml(s.riders) : '')+'</div></div>'
+          + (!s.enabled ? '<span class="chip">выключен</span>' : bad ? '<span class="chip wr">'+esc(slotWhy(s).short)+'</span>' : ((s.riders && s.riders.length) ? '<span class="badge">дорога</span>' : ''))
           + CHEV + '</div>';
       });
       h+='<div class="cline">Отдельный выход (десинк или доп-туннель) рядом с основным VPN. Привяжите к нему группу правил — её сайты пойдут этим путём, остальное останется в основном туннеле.</div>';
@@ -20017,6 +20491,9 @@
   function openExit(s){
     var id=String(s.id), nm=slotName(s), en=!!s.enabled, bad=slotBad(s), tpt=s.transport, fbNow=(s.fallback==='direct')?'direct':'main', fsig=focusMark();
     var desync=(tpt==='zapret'||tpt==='byedpi'), rep=navIfShown('cn-exit', exitScrOpen);
+    // ВЫХОД-ДОРОГА (road.sh): по нему едут серверы — выключить, удалить и перевести его нельзя, пока они на нём (роутер откажет; панель
+    // говорит это до клика и ведёт к серверу).
+    var rd=s.riders||[];
     // Заголовок — «Выход №N · имя» (макет), номер переведён сразу: имя пишет человек, и накладной перевод откатил бы всю строку
     // с кириллическим хвостом. Метка стримера прячет заголовок во вкладке и в крошке ребёнка — но только когда имя ЧЕЛОВЕЧЬЕ
     // (разбор у slotNamed).
@@ -20025,7 +20502,7 @@
     var h='<div class="vwrap"><div class="card w2"><div class="wt">Выход</div>'
       + '<div class="lrow"><span class="dot'+(!en?' off':(bad?' warn':''))+'"></span>'
       +   '<div class="grow"><div class="nm">'+slotNmHtml(s)+'</div><div class="ds">'+slotDs(s)+'</div></div>'
-      +   '<label class="sw" title="включить/выключить выход"><input type="checkbox" class="slot-tog"'+(en?' checked':'')+'><i></i></label></div>'
+      +   '<label class="sw" title="'+(rd.length ? 'выключить нельзя, пока по нему едут серверы' : 'включить/выключить выход')+'"><input type="checkbox" class="slot-tog"'+(en?' checked':'')+(rd.length ? ' disabled' : '')+'><i></i></label></div>'
       // Почему выход не везёт — словами и с последствием (куда на самом деле идут его сайты). Молчать нельзя:
       // «включён, но не работает» — ровно тот случай, когда человек считает, что YouTube едет через десинк.
       // Занятый ключ — и у ВЫКЛЮЧЕННОГО выхода: включение откажет той же причиной, и узнать её лучше до клика.
@@ -20038,10 +20515,24 @@
       // Стратегия десинк-выхода: у byedpi — свой ciadpi и свои флаги (.byedpi-args-s<id>); у zapret демон nfqws
       // ОБЩИЙ (одна очередь на все выходы) — стратегия одна на всех, поэтому ведём в экран «Zapret».
       +   (desync ? '<button type="button" class="btn gh" data-xa="strategy">Стратегия десинка…</button>' : '')
-      +   '<span class="grow"></span><button type="button" class="btn bad" data-xa="del">Удалить выход</button></div></div>';
+      +   '<span class="grow"></span>'+(rd.length ? '' : '<button type="button" class="btn bad" data-xa="del">Удалить выход</button>')+'</div>'
+      + (rd.length ? '<div class="cline"><span>Выключить или удалить его нельзя, пока по нему едет</span> '+rd.map(function(n){ return '<button type="button" class="ilink" data-cact="srv:awg/'+esc(n)+'"><span class="sens" translate="no">'+esc(cfgDisp('awg', n))+'</span></button>'; }).join(', ')
+                   + '<span>: сервер остался бы без дороги. Сначала переключите его дорогу на «напрямую».</span></div>' : '')
+      + '</div>';
+    if(rd.length) h+='<div class="card"><div class="wt">Дорога для</div>'
+      + rd.map(function(n){ var c=CHK[chkKey('awg', n)];
+          return lrowGo('srv:awg/'+n, 'открыть сервер')+'<span class="dot'+recDot(c)+'"></span><div class="grow"><div class="nm sens" translate="no">'+esc(cfgDisp('awg', n))+'</div>'
+            + '<div class="ds">AmneziaWG'+((c && c.st==='ok' && c.ms!=null) ? ' · <span>'+esc(c.ms+' мс')+'</span>'+(c.via ? ' <span>через дорогу</span>' : ' <span>напрямую</span>') : '')+'</div></div>'+CHEV+'</div>'; }).join('')
+      + '<div class="cline">Дорогу выбирают на экране сервера, здесь — кто по ней едет.</div></div>';
+    // Точка Cloudflare — у выхода на WARP: её спрашивает трасса через интерфейс выхода (warp.sh colo). DME (Москва) — предупреждение:
+    // там Cloudflare с весны 2026 фильтрует адреса назначения.
+    if(s.warp) h+='<div class="card"><div class="wt">Где Cloudflare принял подключение</div>'
+      + '<div class="kv"><div class="grow"><div class="k">Точка</div><div class="v" id="xc-colo">'+(en ? 'спрашиваю…' : 'выход выключен')+'</div></div>'+(en ? '<button type="button" class="btn sm gh" data-xa="colo">'+icUse('i-refresh','s','',true)+'Проверить</button>' : '')+'</div>'
+      + '<div id="xc-dme"></div>'
+      + '<div class="cline">Точку выбирает Cloudflare по адресу подключения. Окажется DME (Москва) — здесь встанет предупреждение: там Cloudflare с весны 2026 фильтрует адреса назначения, и дорога может не довезти.</div></div>';
     h+='<div class="card"><div class="wt">Если выход упадёт</div><div class="opt c2">'
       + SLOT_FB.map(function(f){ return optTile('data-fb', f[0], f[0]===fbNow, f[3], f[1], f[2]); }).join('')
-      + '</div></div>';
+      + '</div>'+(s.warp ? '<div class="cline">Это о сайтах, привязанных к выходу; у дороги их нет. Привязать можно, как к любому выходу, но WARP страну не меняет: сайты видят вас в вашей стране.</div>' : '')+'</div>';
     // Быстрая привязка — у ВКЛЮЧЁННОГО выхода. «Свой пул…» — для любого транспорта: slot_pool создаёт «в VPN»-группу,
     // сразу привязанную к выходу. Чипы-пресеты (гео-категории сервисов) — только у десинк-выхода: это «душит
     // провайдер» сервисы, а десинк-выход именно для них; для второго туннеля пул задаёт человек.
@@ -20061,7 +20552,9 @@
       + '</div>';
     if(desync) h+=noteBox('<b>Через десинк-выход трафик идёт напрямую и десинкуется — это не VPN:</b> адрес не подменяется и шифрования нет, ломается только распознавание DPI.','warn');
     body.innerHTML=h+'</div>';
+    wireCacts(body);   // пассажиры дороги — к экранам своих серверов
     focusBack(body, fsig);
+    if(s.warp && en) exitColo(body, id);
     var tg=body.querySelector('.slot-tog');
     if(tg) tg.addEventListener('change', function(){
       swPost(tg, 'slot_toggle', null, (tg.checked?'включаю':'выключаю')+' выход', {id:id, enabled:tg.checked?1:0}, rep);
@@ -20082,6 +20575,7 @@
         // роутера, а `navUp` уводил бы человека, который успел уйти, и при выходе, который остался (ревью шага 3c-1).
         else if(xa==='del') postAction('slot_del', 'Удалить выход «'+nm+'»? Привязанные к нему группы вернутся на основной транспорт.', 'удаляю выход', {id:id}, rep);
         else if(xa==='pool') slotPool(id, rep);
+        else if(xa==='colo') exitColo(body, id);
         else if(xa==='groups') openGroups();
         else if(xa==='geo') openGeo();
         return;
@@ -20094,6 +20588,19 @@
       if(!fb) return;
       ev.preventDefault(); pickFb(fb);
     });
+  }
+  // Точка Cloudflare выхода-WARP: код и город (если панель его знает), DME — предупреждение. Ответ — роутера (warp.sh colo); нет
+  // ответа — «нет данных», а не догадка.
+  var COLO_CITY={DME:'Москва',SVO:'Москва',VKO:'Москва',LED:'Санкт-Петербург',HEL:'Хельсинки',ARN:'Стокгольм',WAW:'Варшава',FRA:'Франкфурт',
+                 AMS:'Амстердам',RIX:'Рига',TLL:'Таллин',VNO:'Вильнюс',KBP:'Киев',IST:'Стамбул',TBS:'Тбилиси',EVN:'Ереван',ALA:'Алматы',PRG:'Прага'};
+  function exitColo(body, id){
+    var v=body.querySelector('#xc-colo'), w=body.querySelector('#xc-dme'); if(v) v.textContent='спрашиваю…';
+    subPost({action:'warp_colo', id:id}).then(function(r){
+      if(!screenAlive(body)) return; v=body.querySelector('#xc-colo'); w=body.querySelector('#xc-dme'); if(!v) return;
+      if(!r || !r.colo){ v.innerHTML='<span>нет данных</span>'+((r && r.why) ? ': <span>'+esc(r.why)+'</span>' : ''); if(w) w.innerHTML=''; return; }
+      v.innerHTML='<b>'+esc(r.colo)+'</b>'+(COLO_CITY[r.colo] ? ' · <span>'+esc(COLO_CITY[r.colo])+'</span>' : '');
+      if(w) w.innerHTML=(r.colo==='DME') ? '<div style="margin-top:9px">'+noteBox('<b>Точка — Москва (DME).</b> Там Cloudflare с весны 2026 фильтрует адреса назначения, и дорога к серверу может не довезти.', 'warn')+'</div>' : '';
+    }, function(){ if(screenAlive(body) && v) v.textContent='роутер не ответил'; });
   }
   // «Свой пул…» — создать группу сразу с привязкой к выходу (slot_pool).
   function slotPool(id, after){
@@ -22939,6 +23446,108 @@
     });
   }
 
+  // ==== «WARP ОТ CLOUDFLARE» (warp.sh) ======================================================================================
+  // Роутер регистрируется у Cloudflare САМ: ключ создаётся на роутере и не уходит с него, аккаунт — свой у каждого роутера (конфиг из
+  // бота или от знакомого — общий ключ: сервер держит одну сессию на ключ и мечется между устройствами, связь рвётся у всех). Получение
+  // идёт фоном у владельца (регистрация, порт по пробе, конфиг, выход, дорога) — экран опрашивает `warp_status` и говорит его словами,
+  // отказ — словами роутера. Аргумент адреса — конфиг, который сразу поедет через WARP (дверь с экрана заблокированного сервера).
+  // Опрос получения принадлежит УЗЛУ своего экрана (`_wpBody`): новый показ забирает его себе, прежняя цепочка видит чужой узел и
+  // кончается сама. Глобальный флаг «опрос идёт» оставлял быстро вернувшийся экран с запертой кнопкой и без опроса (ревью с.118).
+  var _wpBody=null;
+  function openWarp(rider){
+    // Без аргумента на показанном экране — перерисовка (аргумент — из адреса); свежий заход из другого экрана — без конфига.
+    if(rider==null) rider=navShows('cn-warp') ? navSplit(_navKey).a : '';
+    rider=String(rider||'');
+    if(rider && !RE_CFG_NAME.test(rider)) rider='';
+    var fsig=focusMark();
+    openModal(null, {route:'cn-warp', arg:rider, deck:true});
+    var body=document.getElementById('modal-body'), rep=navIfShown('cn-warp', openWarp); loading(body);
+    Promise.all([fetchJson('/cgi-bin/list'), refreshEnabledSlots(), subPost({action:'warp_status'}).then(null, function(){ return null; })]).then(function(r){
+      if(!screenAlive(body)) return;
+      var d=r[0], st=r[2]||{};
+      if(!d || typeof d!=='object' || d.error || d.need_login){ oops(body, 'не удалось получить список серверов'); return; }
+      srvListTake(d);
+      var awg=(d.awg && d.awg.servers)||[], has=awg.indexOf('WARP')>=0, bin=!(d.awg && d.awg.bin===false);
+      var x=slotAll.filter(function(z){ return z.transport==='awg' && z.config==='WARP'; })[0]||null, h='<div class="vwrap">';
+      if(!has){
+        // Кого сразу везти: сперва заблокированные (ради них WARP и нужен), потом прочие AmneziaWG, которые могут ехать по дороге.
+        var opts=awg.filter(function(n){ return srvRoadOk('awg', n); }), blk=[], oth=[];
+        opts.forEach(function(n){ var c=CHK[chkKey('awg', n)]; ((c && c.st==='blk') ? blk : oth).push(n); });
+        var sel=blk.concat(oth).map(function(n){
+          var b=blk.indexOf(n)>=0;
+          return '<option value="'+esc(n)+'"'+(n===rider ? ' selected' : '')+(b ? '' : ' translate="no"')+'>'+esc(cfgDisp('awg', n))+(b ? ' — адрес заблокирован' : '')+'</option>'; }).join('')
+          + '<option value=""'+(rider ? '' : ' selected')+'>никого, только получить</option>';
+        h+='<div class="card w2"><div class="wt">Получить</div>'
+          + '<label class="dsfld" style="margin-top:0">Сразу подключить через него<select id="wp-rider" class="inp">'+sel+'</select></label>'
+          + '<div class="acts"><button type="button" class="btn pri" id="wp-get"'+((st.state==='running' || !bin) ? ' disabled' : '')+'>Получить WARP</button></div>'
+          + '<div class="cline lead" id="wp-st" aria-live="polite">'+(!bin ? 'нужен AmneziaWG — поставьте его в «Компонентах»' : (st.state==='error' ? esc(st.msg||'') : ''))+'</div>'
+          + '<div class="cline">Роутер зарегистрируется у Cloudflare, найдёт порт, который провайдер не режет, сохранит конфиг «WARP» и создаст выход без групп; выбранный сервер поедет через него. Обычно до 30 секунд.</div>'
+          + '<div class="kv"><div class="grow"><div class="k">Маскировка первого пакета</div><div class="v">роутер собирает её сам: начало соединения выглядит как QUIC, а содержимое случайное и новое при каждом подключении — шаблона, который можно выучить, нет</div></div></div>'
+          + '</div>';
+      } else {
+        // WARP уже есть: где он и кого везёт. Выхода нет (удалили) — его можно создать снова, конфиг тот же.
+        var rd=cfgRiders('WARP');
+        h+='<div class="card w2"><div class="wt">WARP этого роутера</div>'
+          + '<div class="kv"><div class="grow"><div class="k">Конфиг</div><div class="v">«WARP»'+(warpMap.WARP===0 ? ' — <span>без маскировки</span>' : '')+'</div></div><button type="button" class="act" data-cact="srv:awg/WARP">Открыть</button></div>'
+          + (x ? '<div class="kv"><div class="grow"><div class="k">Выход</div><div class="v">№'+x.id+' «'+slotNmHtml(x)+'»'+(x.enabled ? '' : ' — <span>выключен</span>')+'</div></div><button type="button" class="act" data-cact="exit:'+x.id+'">Открыть</button></div>'
+               : '<div class="kv"><div class="grow"><div class="k">Выход</div><div class="v">выхода на нём нет</div></div><button type="button" class="act" id="wp-mkexit">Создать выход</button></div>')
+          + '<div class="kv"><div class="grow"><div class="k">Дорога для</div><div class="v">'+(rd.length ? ridersHtml(rd) : 'никого')+'</div></div></div>'
+          + '<div class="cline">Дорогу выбирают на экране сервера — карточка «Дорога к серверу».</div></div>';
+      }
+      h+='<div class="card"><div class="wt">Что это</div>'
+        + '<div class="kv"><div class="grow"><div class="k">Бесплатный VPN Cloudflare</div><div class="v">на обычном WireGuard, трафик без лимита</div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Страну не меняет</div><div class="v">сайты видят вас в вашей стране — WARP не замена вашему серверу</div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Нужен как дорога</div><div class="v">к серверу, чей адрес заблокировал провайдер: пакеты к нему едут через Cloudflare</div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Скорость</div><div class="v">замер: сервер через WARP — 6–9 МБ/с, тот же сервер напрямую через туннель — 7–9 МБ/с</div></div></div></div>';
+      h+='<div class="card"><div class="wt">Уже есть свой конфиг WARP</div>'
+        + '<div class="cline" style="margin-top:0"><span>Загрузите его как обычный конфиг AmneziaWG на</span> <button type="button" class="ilink" data-cact="servers">«Серверах»</button> <span>— роутер узнает WARP по ключу сервера Cloudflare. Выход из него — в</span> <button type="button" class="ilink" data-cact="exits">«Дополнительных выходах»</button><span>.</span></div>'
+        + '<div class="cline">В конфиге нет маскировки (строки <span class="mono kw">I1</span>) — панель предупредит: многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток.</div>'
+        + '<div style="margin-top:11px">'+noteBox('<b>Один конфиг на двух устройствах — связь рвётся у обоих:</b> сервер держит одну сессию на ключ и мечется между ними. Конфиг, которым пользуется кто-то ещё (из бота, от знакомого), на роутер не ставьте.', 'warn')+'</div></div>';
+      body.innerHTML=h+'</div>';
+      wireCacts(body);
+      focusBack(body, fsig);
+      var gb=document.getElementById('wp-get');
+      if(gb) gb.addEventListener('click', function(){
+        if(gb.disabled || busy) return;
+        var rs=document.getElementById('wp-rider'), rv=rs ? rs.value : '';
+        // Кнопку запираем ДО запроса: второй щелчок до ответа завёл бы вторую цепочку опроса. Поздний ответ ушедшему экрану опрос не
+        // забирает — его взял (или возьмёт) экран, который показан сейчас (ревью с.118, круг 3).
+        gb.disabled=true;
+        subPost({action:'warp_get', rider:rv}).then(function(a){
+          if(!a || !a.ok){ showToast((a && a.msg)||'роутер отказал', false); if(screenAlive(body)) gb.disabled=false; return; }
+          logLine('→ получаю WARP', null);
+          if(!screenAlive(body)) return;
+          _wpBody=body; warpPoll(body, rv, 0);
+        }, function(){ showToast('роутер не ответил', false); if(screenAlive(body)) gb.disabled=false; });
+      });
+      var mx=document.getElementById('wp-mkexit');
+      if(mx) mx.addEventListener('click', function(){
+        postAction('slot_add', null, 'создаю выход «WARP»', {name:'WARP', transport:'awg', config:'WARP', fallback:'main'}, rep);
+      });
+      // Получение уже идёт (с другой вкладки или до перезагрузки) — экран сразу его подхватывает.
+      if(st.state==='running' && !has){ _wpBody=body; warpPoll(body, rider, 0); }
+    }, function(){ if(screenAlive(body)) oops(body, 'не удалось получить список серверов'); });
+  }
+  // Опрос получения: шаг роутера — строкой, итог — тостом и перерисовкой (WARP получен — экран показывает, где он). Потолок — 3 мин:
+  // худший случай пробы портов ~2 мин. Уход с экрана опрос не держит, но и не роняет получение: оно идёт на роутере.
+  function warpPoll(body, rider, n){
+    // Экран ушёл или его опрос забрал новый показ — цепочка кончается (получение идёт на роутере, заход на экран подхватит его).
+    if(body!==_wpBody || !screenAlive(body)) return;
+    subPost({action:'warp_status'}).then(function(st){
+      st=st||{};
+      if(body!==_wpBody || !screenAlive(body)) return;
+      var el=document.getElementById('wp-st');
+      if(st.state==='running' && n<120){ if(el) el.textContent=st.msg||'получаю…'; setTimeout(function(){ warpPoll(body, rider, n+1); }, 1500); return; }
+      _wpBody=null;
+      var ok=(st.state==='done');
+      logLine(st.msg||(ok ? 'WARP получен' : 'не удалось'), ok); showToast(st.msg||(ok ? 'WARP получен' : 'не удалось'), ok);
+      load(true); ovcInvalidate();
+      // Сервер поехал через WARP — проверить его сразу: число через дорогу появится без второго нажатия.
+      if(ok && st.rider) srvCheck('awg', st.rider);
+      navIfShown('cn-warp', openWarp)();
+    }, function(){ if(n<120) setTimeout(function(){ warpPoll(body, rider, n+1); }, 3000); });
+  }
+
   // ==== ЭКРАН «ПРОВЕРКА СЕРВЕРОВ» (шаг 3c-3 переноса) ==========================================================
   // Три пробы отвечают на РАЗНЫЕ вопросы и стоят по-разному, а жили в трёх местах: кнопки — на вкладках «Серверов», автопроверка,
   // балансер и «что делать после проверки» — группой «Настроек», а «что значат ✓ и CDN» — только во всплывающей подсказке. Здесь
@@ -22957,32 +23566,38 @@
     var h='', now=Math.floor(Date.now()/1000);
     ['awg','xray','hy2'].forEach(function(t){
       var names=(l[t]&&l[t].servers)||[]; if(!names.length) return;
-      var okN=0, dead=0, none=0, nop=0, ts=0;
+      var okN=0, dead=0, none=0, nop=0, blk=0, ts=0;
       names.forEach(function(n){
         var c=CHK[chkKey(t,n)];
-        // ✓ без пинга и без скорости — не «рабочий»: выход у Xray на UDP-сети не проверялся (разбор у recView).
-        if(c && c.st==='ok' && (c.ms!=null || c.mbps!=null)) okN++; else if(c && c.st==='ok') nop++; else if(c && c.st==='dead') dead++; else none++;
+        // ✓ без пинга и без скорости — не «рабочий»: выход у Xray на UDP-сети не проверялся (разбор у recView). Заблокированный
+        // адрес — не «не отвечает»: сервер жив, не пускает провайдер.
+        if(c && c.st==='ok' && (c.ms!=null || c.mbps!=null)) okN++; else if(c && c.st==='ok') nop++; else if(c && c.st==='blk') blk++; else if(c && c.st==='dead') dead++; else none++;
         if(c && c.ts>ts) ts=c.ts;
       });
-      h+='<div class="lrow"><span class="dot'+(okN?'':(dead?' warn':' off'))+'"></span>'
+      h+='<div class="lrow"><span class="dot'+(okN?'':((dead||blk)?' warn':' off'))+'"></span>'
         + '<div class="grow"><div class="nm">'+TPT_LABEL[t]+'</div>'
-        + '<div class="ds"><span>рабочих</span> '+okN+' · <span>не отвечают</span> '+dead+(nop?(' · <span>без пинга</span> '+nop):'')+(none?(' · <span>не проверялись</span> '+none):'')+'</div></div>'
+        + '<div class="ds"><span>рабочих</span> '+okN+(blk?(' · <span>адрес заблокирован</span> '+blk):'')+' · <span>не отвечают</span> '+dead+(nop?(' · <span>без пинга</span> '+nop):'')+(none?(' · <span>не проверялись</span> '+none):'')+'</div></div>'
         + '<span class="chip">'+(ts ? esc(fmtAge(Math.max(0, now-ts))) : 'не проверялись')+'</span></div>';
     });
     return h || '<div class="lempty">серверов пока нет — добавьте их на экране «Серверы и конфиги»</div>';
   }
   // Как ЧИТАЕТСЯ число у сервера — образцы рисует ТОТ ЖЕ `paintRec`, что и у настоящих серверов: легенда, нарисованная своей
   // разметкой, разошлась бы с живой на первой правке цвета или порога.
-  function ckLegendHtml(){
+  function ckLegendHtml(chbOn){
     function smp(rec){ var v=recView(rec); return '<span class="srv-ping" title="'+esc(v.tip)+'">'+v.html+'</span>'; }
     return [
       [smp({st:'ok', ms:57, method:'net:443'}), 'зелёное — быстрее '+REC_FAST+' мс, жёлтое — от '+REC_SLOW+'; в скобках то, чем ответил сервер: icmp или порт'],
       [smp({st:'ok', ms:null}), 'Xray на UDP или QUIC: пинга нет, а выход на такой сети не проверяется — в мёртвые не записан, но и не подтверждён'],
       [smp({st:'dead', ms:null}), 'не отвечает или не даёт интернета — пинг мог и врать'],
+      // «Не отвечает» распалось на три ответа — по тому, что роутер СМОГ сравнить; два последних — только при включённом Cheburcheck.
+      [smp({st:'blk', ms:null}), 'напрямую молчит, а через работающий туннель отвечает — сервер жив, не пускает ваш провайдер'],
+      [smp({st:'dead', ms:null, chb:'blocked:23:30'}), 'туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России', 'chb'],
+      [smp({st:'dead', ms:null, chb:'clear:0:30'}), 'второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне', 'chb'],
+      [smp({st:'ok', ms:39, via:'4', viaNm:'WARP'}), 'сервер едет по дороге — число меряно через неё'],
       [smp({mbps:480}), 'мегабиты последнего теста скорости; стоит рядом с пингом через точку'],
       [smp({st:'ok', ms:40, cdn:1}), 'ответил не ваш сервер, а сеть доставки — число к вашему VPS отношения не имеет'],
       ['<span class="lempty">пусто</span>', 'сервер не проверялся: пустое место честнее подписи']
-    ].map(function(x){ return '<div class="lrow"><div class="grow"><div class="nm">'+x[0]+'</div><div class="ds">'+x[1]+'</div></div></div>'; }).join('');   // образец — именем строки над пояснением (макет)
+    ].filter(function(x){ return x[2]!=='chb' || chbOn; }).map(function(x){ return '<div class="lrow"><div class="grow"><div class="nm">'+x[0]+'</div><div class="ds">'+x[1]+'</div></div></div>'; }).join('');   // образец — именем строки над пояснением (макет)
   }
   function ckBtns(l){
     var all=0, xr=((l.xray&&l.xray.servers)||[]).length;
@@ -23012,8 +23627,11 @@
     // КЭШ ПРОВЕРОК — С РОУТЕРА при каждом открытии (обещание «с телефона те же числа»), кроме перерисовки и времени, когда в памяти
     // есть несохранённое: идёт прогон или ждёт запись. Слияние по времени замера — у loadChecks.
     var cp=(keep!==true && !testSweepRun && !speedSweepRun && !bgSweepRun && !chkSaveT) ? loadChecks() : Promise.resolve(null);
-    Promise.all([loadPrefs(), lp, cp]).then(function(r){
+    // Второе мнение о блокировке — его переключатели (выкл по умолчанию); не ответил — карточка говорит «роутер не сообщил».
+    var chp=subPost({action:'chebur_state'}).then(function(x){ return (x && typeof x.on==='boolean') ? x : null; }, function(){ return null; });
+    Promise.all([loadPrefs(), lp, cp, chp]).then(function(r){
       if(!screenAlive(body)) return;
+      var chb=r[3];
       var fresh=(_prefsAt>=t0), l=r[1], lok=!!(l && typeof l==='object' && !l.error && !l.need_login);
       // Список не пришёл — прежний не воскрешаем: перерисовка после тумблера нарисовала бы утренний список как текущий.
       if(lok){ srvListTake(l); _ckList=l; } else if(keep!==true) _ckList=null;
@@ -23033,7 +23651,7 @@
         + (lok ? '<div class="acts" style="margin-top:0">'+ckBtns(l)+'</div>' : '<div class="cline">без списка серверов проверять нечего</div>')
         + (_ckLast ? '<div class="cline lead">'+esc(_ckLast)+'</div>' : '')
         + '<div class="cline">«Проверить все» — пинг всех серверов всех протоколов и реальный выход у Xray, по нескольку сразу. «Скорость всех» — только Xray и по одному: каждый сервер качает пробный файл через VPS, это реальный трафик. Уход с экрана прерывает прогон, уже измеренное остаётся. Число у каждого сервера — на экране «Серверы и конфиги».</div></div>';
-      h+='<div class="card" id="ck-leg"><div class="wt">Как читается результат</div>'+ckLegendHtml()+'</div>';
+      h+='<div class="card" id="ck-leg"><div class="wt">Как читается результат</div>'+ckLegendHtml(!!(chb && chb.on))+'</div>';
       h+='<div class="card"><div class="wt">Автоматически</div>';
       if(!fresh) h+='<div class="cline">роутер не сообщил настройки</div>';
       else {
@@ -23049,6 +23667,17 @@
           +   '<label class="sw"><input type="checkbox" id="ck-bal" aria-label="Сам выбирать лучший сервер"'+(bl?' checked':'')+'><i></i></label></div>'
           + '<div style="margin-top:11px">'+noteBox('Результаты проверок хранятся на роутере, а не в браузере: открыв панель с телефона, вы видите те же числа. Упавший сервер переключает сторож на роутере — балансер лишь выбирает быстрый из живых и только внутри текущего протокола.','info')+'</div>';
       }
+      h+='</div>';
+      // ВТОРОЕ МНЕНИЕ О БЛОКИРОВКЕ — сторонний российский сервис ⇒ по умолчанию ВЫКЛ (решение человека 10.10.2026: панель ставят не
+      // только в России). Выключено — ни кнопки, ни строки о нём нигде. «Спрашивать самому» — второй переключатель, не чаще раза в 3 ч
+      // на адрес (столько сервис хранит ответ; троттл — у роутера).
+      h+='<div class="card"><div class="wt">Второе мнение о блокировке</div>';
+      if(!chb) h+='<div class="cline">роутер не сообщил настройки</div>';
+      else h+='<div class="kv swrow"><div class="grow"><div class="k">Cheburcheck — проверка из России</div><div class="v">сервис проверяет адрес сервера с ~30 точек российских провайдеров. Адрес уйдёт на cheburcheck.ru</div></div>'
+        +   '<label class="sw"><input type="checkbox" id="ck-chb" aria-label="Cheburcheck — проверка из России"'+(chb.on?' checked':'')+'><i></i></label></div>'
+        + '<div class="kv swrow"><div class="grow"><div class="k">Спрашивать самому, когда сервер не отвечает</div><div class="v">не чаще раза в 3 ч на адрес</div></div>'
+        +   '<label class="sw"><input type="checkbox" id="ck-chba" aria-label="Спрашивать самому, когда сервер не отвечает"'+(chb.auto?' checked':'')+(chb.on?'':' disabled')+'><i></i></label></div>'
+        + '<div class="cline">Выключено — на экранах нет ни кнопки, ни строки о нём. Пригодится, когда сравнить не с чем: VPN выключен или сервер единственный, — и перед покупкой сервера: заблокированный адрес лучше сразу попросить заменить.</div>';
       h+='</div>';
       h+='<div class="card w2"><div class="wt">После «Проверить все»</div>';
       if(!fresh) h+='<div class="cline">роутер не сообщил настройки</div>';
@@ -23078,6 +23707,12 @@
       // Фокус — ПОСЛЕ wireSeg: `tabindex` сегментам ставит он, а на div без tabindex браузер фокус не ставит — перерисовка теряла
       // фокус на сегменте интервала (поймано ужесточённой моделью DOM стендов, ревью шага 6b).
       focusBack(body, fsig);
+      var ce=document.getElementById('ck-chb'), ca=document.getElementById('ck-chba');
+      // Выключили — ни следа: вердикты сервиса уходят и из кэша проверок этой вкладки (роутер их больше не отдаёт — cgi-bin/data).
+      if(ce) ce.addEventListener('change', function(){ swPost(ce, 'chebur_set', null, ce.checked ? 'включаю второе мнение' : 'выключаю второе мнение', {what:ce.checked ? 'on' : 'off'}, function(d){
+        if(d && d.ok && !ce.checked){ var dirty=false; for(var k in CHK){ if(CHK.hasOwnProperty(k) && CHK[k] && CHK[k].chb){ CHK[k].chb=''; dirty=true; } } if(dirty){ saveChecks(); hydrateChecks(); } }
+        rep(); }); });
+      if(ca) ca.addEventListener('change', function(){ swPost(ca, 'chebur_set', null, 'сохраняю настройку…', {what:ca.checked ? 'auto_on' : 'auto_off'}, rep); });
       [['ck-bal','balancer'],['ck-sort','sort_after_test'],['ck-dead','del_dead_after_test']].forEach(function(x){
         var el=document.getElementById(x[0]); if(!el) return;
         // Настройки перечитываются и у ушедшего: выключенный балансер иначе продолжал бы переключать серверы из памяти вкладки.
@@ -28214,6 +28849,8 @@
     'cn-zapret':   {back:'cn', t:'Zapret',      open:function(){ openZapret(); }},
     'cn-home':     {back:'cn', t:'Доступ домой',                  open:function(){ openVpnSrv(); }},
     'cn-checks':   {back:'cn', t:'Проверка серверов',             open:function(){ openChecks(); }},
+    // «WARP от Cloudflare»: открытие ничего не меняет (получение — кнопкой), адрес законен; аргумент — конфиг, который сразу поедет.
+    'cn-warp':     {back:'cn-servers', t:'WARP от Cloudflare', arg:function(a){ return a==='' || RE_CFG_NAME.test(a); }, open:function(a){ openWarp(a); }},
     'cn-peer':     {back:'cn-home', need:1, via:'openVpnSrvPeer', arg:function(a){ return /^[2-9]$/.test(a); }, open:function(a){ vsPeerOpen(a); }},
     // Экран БЕЗ АРГУМЕНТА, но и без последствий на роутере: «назад» и перезагрузка открывают пустой лист, а
     // не повторяют действие, — поэтому адрес у него свой (закладка на «завести правило» законна).
