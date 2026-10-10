@@ -15721,6 +15721,7 @@
     if(tpt==='hy2') h+=noteBox('Hysteria2 делит <b>один tun2socks и один socks</b> с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».', 'info');
     body.innerHTML=h+'</div>';
     _srvShown={tpt:tpt, name:name, act:act, body:body};
+    _chbEp=null;
     srvStatsRepaint(body, tpt, name, act);
     focusBack(body, fsig);
     // Действия — делегатом на обёртке ЭКРАНА: кнопки Xray/Hysteria2 рождаются в карточке параметров после ответа роутера, а обёртка
@@ -15798,7 +15799,7 @@
         if(box) box.innerHTML='<div class="kv"><div class="grow"><div class="k">Endpoint</div><div class="v">'+(r.endpoint ? '<span class="mono sens">'+esc(r.endpoint)+'</span>' : 'в конфиге нет')+'</div></div></div>'
           + '<div class="kv"><div class="grow"><div class="k">MTU</div><div class="v">'+esc(mtuTxt)+'</div>'+xh+'</div></div>';
         srvChbLoad(body, r.endpoint);
-        srvColoLoad(body, crec);
+        srvColoLoad(body, crec, true);
       }, function(){ if(!screenAlive(body)) return; var box=document.getElementById('srv-awg'); if(box) box.innerHTML=noteBox('роутер не ответил', 'warn'); });
     } else srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep,
       chk+(tpt==='xray' ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '')+'<span class="grow"></span>'+del);
@@ -15844,34 +15845,54 @@
       + '<span>Другой путь — попросить у хостера новый адрес: блокируют адрес, а не сервер.</span></div></div>';
   }
   // Где Cloudflare принял подключение дороги-WARP — у сервера на дороге, в клетке «Дорога» (макет «WARP · HEL»).
-  var _srvColo={};
-  function srvColoLoad(body, c){
+  // Kept by exit and asked again by whoever redraws the cell (BE7000 10.10.2026: «WARP · HEL» became «WARP» after a re-check, and a
+  // screen opened from the overview never got it — its record had no road yet when the screen asked). `fresh` — the screen was
+  // just opened: the point may have moved (DME matters), so the router is asked again while the kept one is shown.
+  var _srvColo={}, _srvColoAsk={};
+  function srvColoLoad(body, c, fresh){
     var x=c && c.via && slotById(c.via); if(!x || !x.warp) return;
-    subPost({action:'warp_colo', id:String(x.id)}).then(function(r){
+    var id=String(x.id);
+    if(_srvColoAsk[id] || (_srvColo[id] && !fresh)) return;
+    _srvColoAsk[id]=1;
+    subPost({action:'warp_colo', id:id}).then(function(r){
+      delete _srvColoAsk[id];
       if(!r || !r.colo) return;
-      // Kept by exit: a re-check redraws the stats and the cell is born empty again (BE7000 10.10.2026: «WARP · HEL» became «WARP»).
-      _srvColo[String(x.id)]=String(r.colo);
+      _srvColo[id]=String(r.colo);
       var el=screenAlive(body) && body.querySelector('#srv-colo'); if(el) el.textContent=' · '+r.colo;
-    }, function(){});
+    }, function(){ delete _srvColoAsk[id]; });
   }
   // ВТОРОЕ МНЕНИЕ (cheburcheck.sh) — только при включённом (по умолчанию выкл; решение человека 10.10.2026: панель ставят не только в
   // России — выключено, и следа нет). Вердикт выводит роутер по ответу сервиса; отклонение сервиса — «нет данных», а не вердикт.
   // Адрес — IPv4 из Endpoint конфига; там имя — так и говорим. Карточка — у сервера, который не отвечает или чей адрес
   // заблокирован, и только без дороги (макет): у отвечающего вопроса нет, у едущего по дороге ответ уже есть.
-  var _chbIp='';
+  // THE CARD FOLLOWS THE RECORD, not the moment the screen was opened (BE7000 10.10.2026: a road taken off on the screen left the
+  // blocked server without the card until the screen was reopened, a road put on left the card standing). `ep` — the config's
+  // Endpoint when the screen learns it; the redraw of the stats calls without it. The slot node remembers what it asked: «off» is
+  // asked once per opening (the stats are redrawn every poll), a question in flight is not doubled.
+  var _chbIp='', _chbEp=null;
   function srvChbLoad(body, ep){
+    if(ep!==undefined) _chbEp=String(ep||'');
+    var slot=body.querySelector('#srv-chb'); if(!slot || _chbEp===null) return;
     var s=_srvShown, c=s && CHK[chkKey(s.tpt, s.name)];
-    if(!body.querySelector('#srv-chb') || !c || (c.st!=='blk' && c.st!=='dead') || (s && roadOf(s.name))) return;
-    var host=String(ep||'').replace(/:\d+$/, '');
+    if(!c || (c.st!=='blk' && c.st!=='dead') || (s && roadOf(s.name))){
+      if(!slot.hidden){ var ph=document.createElement('div'); ph.id='srv-chb'; ph.hidden=true; slot.parentNode.replaceChild(ph, slot); }
+      else slot._ask=0;                             // a question in flight is no longer ours: its answer paints nothing
+      return;
+    }
+    if(!slot.hidden || slot._ask) return;
+    slot._ask=1;
+    var host=_chbEp.replace(/:\d+$/, '');
     subPost({action:'chebur_state'}).then(function(st){
       if(!screenAlive(body) || !st || st.on!==true) return;
       if(!/^(\d{1,3}\.){3}\d{1,3}$/.test(host)){ chbPaint(body, {state:'noip'}); return; }
       _chbIp=host; chbFetch(body, 0);
-    }, function(){});
+    }, function(){ slot._ask=0; });
   }
   function chbFetch(body, n){
     subPost({action:'chebur_get', ip:_chbIp}).then(function(r){
-      if(!screenAlive(body) || !body.querySelector('#srv-chb')) return;
+      // A slot that is hidden and asked nothing is a NEW one: the card was taken away meanwhile (a road was set) — a late answer of
+      // the old poll must not bring it back.
+      var slot=screenAlive(body) && body.querySelector('#srv-chb'); if(!slot || (slot.hidden && !slot._ask)) return;
       r=r||{}; chbPaint(body, r);
       // Проверка идёт фоном у роутера (поток до ~80 с): спрашиваем каждые 3 с, пока экран показан, с потолком.
       if(r.state==='running' && n<40) setTimeout(function(){ chbFetch(body, n+1); }, 3000);
@@ -15906,7 +15927,7 @@
     else h+='<div class="cline">Ещё не спрашивали.</div>';
     if(st!=='noip' && st!=='running') h+='<div class="acts"><button type="button" class="btn gh" data-sv="chb">'+icUse('i-refresh','s','',true)+(st==='none' ? 'Проверить' : 'Проверить ещё раз')+'</button></div>';
     return h+'<div class="cline"><span>Адрес сервера уходит на cheburcheck.ru — российский сервис, проверяет с ~30 точек российских провайдеров. Ответ он хранит до 3 ч.</span>'
-      + (r.age!=null ? ' <span>Проверено</span> <span>'+esc(fmtAge(r.age|0))+'</span>.' : '')
+      + ((r.age!=null && st==='done') ? ' <span>Проверено</span> <span>'+esc(fmtAge(r.age|0))+'</span>.' : '')   // a check in flight has no «checked … ago»
       + ' <span>Сервис не ответил или ответил не по форме — «нет данных», а не вердикт.</span></div>'
       + '<div style="margin-top:11px">'+noteBox('<span>Карточка видна, потому что второе мнение включено в</span> <button type="button" class="ilink" data-cact="checks">«Проверке серверов»</button><span>. Выключено — её нет вовсе.</span>', 'info')+'</div></div>';
   }
@@ -15928,6 +15949,8 @@
   function srvStatsRepaint(body, tpt, name, act){
     var st=body.querySelector('#srv-stats'); if(!st) return;
     st.innerHTML=srvStatsHtml(tpt, name, act);
+    srvColoLoad(body, CHK[chkKey(tpt,name)]);
+    srvChbLoad(body);
     srvRecCards(body, tpt, name);
     // Кнопки прогона — заперты, пока идёт СВОЙ прогон этого сервера: `data-na` держит их запертыми и после конца чужой занятости.
     var run=!!_srvRun[chkKey(tpt,name)];

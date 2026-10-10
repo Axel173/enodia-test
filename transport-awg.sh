@@ -92,6 +92,8 @@ command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
 command -v pid_runs >/dev/null 2>&1 || pid_runs() { [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -qE "$2"; }
 if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi
 # Смерть демона ждём по процессу с шагом 0.1 с (daemon-lib.sh). Нет библиотеки — прежний секундный шаг.
+# The short poll's step (daemon-lib.sh). No library — whole seconds.
+command -v daemon_step >/dev/null 2>&1 || { daemon_step_init() { DAEMON_STEP_Q=1; }; daemon_step() { sleep 1; }; }
 command -v daemon_wait_gone >/dev/null 2>&1 || daemon_wait_gone() { _dwg=0; while [ -d "/proc/$1" ]; do [ "$_dwg" -ge "${2:-5}" ] && return 1; sleep 1; _dwg=$((_dwg+1)); done; return 0; }
 # Поколение firewall reload (ipt-lib.sh). Нет библиотеки — «reload был всегда»: каждое чтение даёт новую строку, как раньше.
 command -v fw3_gen >/dev/null 2>&1 || fw3_gen() { cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$$-$RANDOM-$RANDOM"; }
@@ -389,12 +391,12 @@ slot_keepalive() {   # $1 = iface
 # later, with the next handshake. The return probe (cmd_slot_probe), which has always ordered it this way, carried at once: the
 # server riding that road shook hands 2 s after the road was back. The carrier did not come up — the anti-loop is removed: an exit's
 # address in the store means «its carrier is up» (road.sh derives its rules from it).
-slot_carrier_up() {   # $1 = id ; $2 = cfg
-    _id="$1"; _cfg="$2"; _if=$(slot_iface "$_id")
+slot_carrier_up() {   # $1 = id ; $2 = cfg ; SLOT_FRESH=1 — the daemon was started by this call (a warm one is 0)
+    _id="$1"; _cfg="$2"; _if=$(slot_iface "$_id"); SLOT_FRESH=0
     if ip link show "$_if" >/dev/null 2>&1; then ip link set "$_if" up 2>/dev/null; slot_keepalive "$_if"; slot_exclude_endpoint "$_id"; return 0; fi
     _am=$(slot_carrier_conf "$_id" "$_cfg") || return 1
     slot_exclude_endpoint "$_id"                # the anti-loop BEFORE the first packet (see the header)
-    slot_carrier_start "$_id" "$_am" && return 0
+    slot_carrier_start "$_id" "$_am" && { SLOT_FRESH=1; return 0; }
     [ -f "$APPLY_BYPASS" ] && sh "$APPLY_BYPASS" endpoint-slot-set "$_id" "" >/dev/null 2>&1
     return 1
 }
@@ -475,6 +477,23 @@ slot_remove_routing() {   # $1 = id
     mss_unclamp "$_if"
 }
 
+# A FRESH DAEMON SHAKES HANDS BEFORE THE FLUSH (BE7000 10.10.2026). The answer to a carrier's first handshake needs the conntrack
+# entry its own request made; `ct_flush` half a second after the start threw that entry away, the answer came as a NEW packet from
+# WAN and the firewall dropped it — so every raise cost a handshake retry. Measured three times on a WARP exit: tx=1606, rx=0 until
+# +5.6 s, and a count-only rule saw exactly one 120-byte packet from the server in state NEW. The return probe never had it: it waits
+# for the handshake before it routes and flushes. Up to SLOT_HS_WAIT seconds by the short poll's step (daemon-lib.sh); a server that
+# does not answer in time — the flush goes on as before, the retry is the daemon's.
+SLOT_HS_WAIT=3
+slot_wait_hs() {   # $1 = iface -> 0 — the handshake is there
+    daemon_step_init; _swn=0
+    while [ "$_swn" -lt $((SLOT_HS_WAIT * DAEMON_STEP_Q)) ]; do
+        _swh=$("$ENODIA_BIN/awg" show "$1" latest-handshakes 2>/dev/null | awk 'NR==1{print $2+0}')
+        [ "${_swh:-0}" -gt 0 ] && return 0
+        daemon_step; _swn=$((_swn + 1))
+    done
+    return 1
+}
+
 # Контракт слота (transport.sh _slot_dispatch): slot-up <id> <cfg> / slot-down <id>.
 cmd_slot_up() {   # $1 = id, $2 = cfg
     _id="$1"; _cfg="$2"
@@ -500,6 +519,7 @@ cmd_slot_up() {   # $1 = id, $2 = cfg
     # The road's MTU ceiling (road.sh): mtu-fix ran at the anti-loop — BEFORE the interface; an exit that itself rides a road would
     # keep its MTU above the road's ceiling. The return probe has the same line.
     [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" mtu-fix >/dev/null 2>&1
+    [ "$SLOT_FRESH" = 1 ] && slot_wait_hs "$(slot_iface "$_id")"
     ct_flush
     log "слот №$_id: awg-несущая $(slot_iface "$_id") в table $(slot_table "$_id") (конфиг $_cfg)"
     return 0
