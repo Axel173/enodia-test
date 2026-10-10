@@ -44,6 +44,8 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 # Нет ipt-lib.sh с `ipt_top` (частичное обновление) ⇒ прежнее «первым в цепочку», байт-в-байт.
 command -v ipt_top >/dev/null 2>&1 || ipt_top() { _itc=$1; shift; iptables -C "$_itc" "$@" 2>/dev/null || iptables -I "$_itc" 1 "$@"; }
+# No ipt-lib.sh with `mss_clamp` (a partial update) ⇒ the old path: no clamp.
+command -v mss_clamp >/dev/null 2>&1 || { mss_clamp() { :; }; mss_unclamp() { :; }; }
 command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null 2>&1 || true; }
 TABLE=1000
 IFACE=awg0
@@ -258,6 +260,7 @@ apply_awg_routing() {
     ipt_top FORWARD -i "$IFACE" -j ACCEPT
     # NAT для исходящего через awg0 (у tun2socks/xtun этого НЕ нужно — он терминирует)
     iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+    mss_clamp "$IFACE"                          # the router's own TCP into the carrier — by ITS MTU (ipt-lib.sh)
     # СВАП дефолта в боевой таблице на awg0 (маркировку/ip rule mark-core НЕ трогаем)
     ip route replace default dev "$IFACE" table "$TABLE"
 }
@@ -270,6 +273,7 @@ remove_awg_routing() {
     iptables -D FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
     iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
+    mss_unclamp "$IFACE"
 }
 
 # ---- awg-СЛОТ (доп-выход, мульти-транспорт Ф2) ----------------------------------
@@ -459,6 +463,7 @@ slot_apply_routing() {   # $1 = id
     ipt_top FORWARD -o "$_if" -j ACCEPT
     ipt_top FORWARD -i "$_if" -j ACCEPT
     iptables -t nat -C POSTROUTING -o "$_if" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$_if" -j MASQUERADE
+    mss_clamp "$_if"
     ip route replace default dev "$_if" table "$_tab"
 }
 slot_remove_routing() {   # $1 = id
@@ -467,6 +472,7 @@ slot_remove_routing() {   # $1 = id
     iptables -D FORWARD -o "$_if" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$_if" -j ACCEPT 2>/dev/null
     iptables -t nat -D POSTROUTING -o "$_if" -j MASQUERADE 2>/dev/null
+    mss_unclamp "$_if"
 }
 
 # Контракт слота (transport.sh _slot_dispatch): slot-up <id> <cfg> / slot-down <id>.

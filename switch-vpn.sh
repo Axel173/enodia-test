@@ -54,6 +54,8 @@ if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
+# No ipt-lib.sh with `mss_clamp` (a partial update) ⇒ the old path: no clamp.
+command -v mss_clamp >/dev/null 2>&1 || { mss_clamp() { :; }; mss_unclamp() { :; }; }
 command -v ct_flush >/dev/null 2>&1 || ct_flush()      { conntrack -F >/dev/null 2>&1 || true; }
 CONFIGS_DIR="$ENODIA_STATE/configs"
 ACTIVE_CONF="$ENODIA_STATE/awg.conf"
@@ -630,6 +632,7 @@ safety_off() {
     # geo_vpn. Без ip rule и без default марка ни на что не влияет, а вернёт её (и правильно)
     # первый же mark-core. Снимаем лишь NAT нашей несущей.
     iptables -t nat -D POSTROUTING -o awg0 -j MASQUERADE 2>/dev/null
+    mss_unclamp awg0
 
     # 2. DNS — выключаем upstream через дохлый туннель, ставим публичный.
     #    Это файл в overlay (/etc), он сбросится при ребуте — нам и надо.
