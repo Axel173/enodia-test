@@ -485,6 +485,12 @@
   // ПОДПИСЬ ШАПКИ: куски heroWords — узлами (имя — под `.sens`), иначе строкой. Узлы пересоздаём, только когда куски сменились: тик
   // раз в 10 с иначе пересобирал бы их под переводом и выделением. Строку пишут и соседи (отказ статуса) — тогда узлов нет, и сверка
   // по ключу их вернёт.
+  // The road exit's name from the status: its own (base64 in the registry) or «№N» while the exit has none. `_roadSrv` — the file of
+  // the server that rides it (the chip opens that server's screen).
+  var _roadSrv='';
+  function roadNameOf(d){
+    return b64toUtf8(d.road_name_b64) || ('№'+d.road);
+  }
   function heroSub(hw){
     var el=document.getElementById('vpn-sub'); if(!el) return;
     var sg=hw[2];
@@ -546,7 +552,11 @@
       // «?» статуса — «имени не знаю», а не имя (ревью пачки 2, круг 3).
       var cv=(d.config && d.config!=='?') ? String(d.config) : '', nm=cv ? (ownVal(subNames, d.config_file||cv) || cv) : '', tl=names[c.transport]||c.transport||'';
       // Разделители — своими узлами: перевод берёт узел ОБРЕЗАННЫМ (_i18nText), и « · весь трафик…» с точкой в начале не совпал бы ни с чем.
-      var sg=[]; if(nm) sg.push([nm, 1], [' · ']); sg.push([tl]); if(ft) sg.push([' · '], ['весь трафик через VPS']);
+      var sg=[]; if(nm) sg.push([nm, 1], [' · ']); sg.push([tl]);
+      // THE ROAD'S MARK (the user's request, 10.10.2026): the server's packets ride another exit — said right where the server is
+      // named. WARP — by the router's word (its list of WARP configs), whatever the person called the exit; another exit — by name.
+      var rd=c.road; if(rd){ sg.push([' · ']); if(rd.warp) sg.push(['через WARP']); else sg.push(['через выход'], [' «'+rd.name+'»', 1]); }
+      if(ft) sg.push([' · '], ['весь трафик через VPS']);
       return [fs==='reserve' ? (isZ?'Zapret активен · на резерве':'Защищено · на резерве') : (isZ?'Zapret активен':'Защищено'), isZ
         ? 'Десинк без VPS — весь трафик напрямую, заблок-сайты пробивает nfqws'
         : sg.map(function(x){ return x[0]; }).join(''), isZ ? null : sg];
@@ -758,6 +768,10 @@
     // Число ВКЛЮЧЁННЫХ выходов нужно ленте технического состояния — она рисуется по тому же
     // опросу, а не своим запросом: второй источник одного числа разошёлся бы с первым.
     cur.exitsOn=(d.exits_on|0);
+    // The road of the main server (road.sh, through the status): the header's mark and the ribbon's chip are drawn from it. The name
+    // is the exit's own (base64, like every exit's); a router older than the field says nothing — no mark.
+    cur.road=(d.road && /^[2-7]$/.test(String(d.road))) ? {id:String(d.road), name:roadNameOf(d), warp:(d.road_warp===true)} : null;
+    _roadSrv=cur.road ? String(d.config_file||'') : '';
     // Сколько выходов не везёт — тоже факт статуса: экран устройства по нему перерисовывает путь выхода (ревью шага 4b, круг 3).
     cur.exitsBad=(d.exits_bad|0);
     var exInd=document.getElementById('exit-ind');
@@ -1211,6 +1225,12 @@
       h+='<span class="tchip" role="button" tabindex="0" data-t="mtu" title="MTU несущей туннеля — как он сейчас стоит в ядре, а не как сохранён в настройках. Для AmneziaWG норма проекта 1376: при 1420 крупные пакеты не пролезают на путях с MTU 1450, и скорость падает в сотни раз. У Xray, Hysteria и ByeDPI несущая другая (xtun), и её 8500 — тоже норма. Нажмите, чтобы открыть «Параметры сети».">'
         +'MTU <b>'+mtu+'</b>'+(TECH.mtu_if?' · '+esc(TECH.mtu_if):'')+'</span>';
     }
+    // 2б. THE ROAD of the main server — from the same status as the header's mark. It explains the MTU next to it (a tunnel inside
+    // a road has a lower ceiling) and leads to the server's screen, where the road is chosen.
+    if(cur.road && cur.live && !cur.vpnOff){
+      h+='<span class="tchip" role="button" tabindex="0" data-t="road" title="Пакеты к серверу едут через дополнительный выход: так сервер доступен, когда его адрес заблокировал провайдер. Упадёт дорога — сторож поднимет её сам, сервер не сменит. Нажмите, чтобы открыть экран сервера — дорогу выбирают там.">'
+        +'<span>Дорога</span> <b>'+(cur.road.warp ? 'WARP' : '<span class="sens" translate="no">'+esc(cur.road.name)+'</span>')+'</b></span>';
+    }
     // 3. IPv6 — только при отклонении, и отклонений ДВА РАЗНЫХ. Аплинк есть, а клиентам не
     // закрыт — это утечка мимо сплита (он работает по IPv4), и она янтарная. Закрыт — нейтральный
     // чип: настройка не стоковая, человек её включал, и лента подтверждает, что она держится.
@@ -1259,6 +1279,8 @@
         case 'ipv6':  openAt(openNetTune,'nt-ip');  break;
         // У выходов свой экран (шаг 3c-1): прежде это был блок под вкладками «Серверов», и чип доводил до него прокруткой.
         case 'exits': openExits(); break;
+        // The road is a property of the SERVER: its screen has the card. No name in the status yet — the list of servers.
+        case 'road':  if(_roadSrv) srvScrOpen('awg/'+_roadSrv); else openServers(); break;
         // Экран режима начинается с настроек, а чип спрашивал про «где стоит сейчас» — сразу к этому блоку.
         case 'standing': openAt(openMode,'fo-now'); break;
       }
@@ -11239,8 +11261,9 @@
     "пакеты к серверу едут через другой выход — блокировка адреса у провайдера их не касается":"packets to the server ride another exit — the ISP's address block doesn't touch them",
     "этот выход сейчас дорогой служить не может — выберите другой или «напрямую»":"this exit can't serve as a road now — pick another one or «direct»",
     "через WARP":"via WARP",
+    "Пакеты к серверу едут через дополнительный выход: так сервер доступен, когда его адрес заблокировал провайдер. Упадёт дорога — сторож поднимет её сам, сервер не сменит. Нажмите, чтобы открыть экран сервера — дорогу выбирают там.":"Packets to the server ride an extra exit: that keeps the server reachable when the ISP has blocked its address. If the road falls, the watchdog brings it back by itself and does not switch servers. Click to open the server's screen — the road is chosen there.",
     "выхода WARP ещё нет — откроется «WARP от Cloudflare»":"there is no WARP exit yet — «WARP from Cloudflare» opens",
-    "Дорога упала — пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.":"If the road falls, packets to the server go directly, to the blocked address: the server becomes unreachable, while the internet without VPN stays. The watchdog repairs the road — restarts its exit — and neither switches the server nor reports it dead.",
+    "Если дорога упадёт, пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.":"If the road falls, packets to the server go directly, to the blocked address: the server becomes unreachable, while the internet without VPN stays. The watchdog repairs the road — restarts its exit — and neither switches the server nor reports it dead.",
     "Нужна, когда провайдер заблокировал адрес сервера. Если дорога упадёт, пакеты к серверу пойдут напрямую — интернет не пропадёт, сервер станет недоступен, пока сторож её не поднимет. Через дорогу ездят только серверы AmneziaWG.":"Needed when your ISP blocked the server's address. If the road falls, packets to the server go directly — the internet stays, the server is unreachable until the watchdog brings the road back. Only AmneziaWG servers ride a road.",
     "прокладываю дорогу":"laying the road",
     "снимаю дорогу":"removing the road",
@@ -15576,7 +15599,7 @@
     if(!run && c && c.via){
       return cell('<span>Пинг через</span> '+roadExitHtml(c.via), (c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : 'нет ответа', c.ms==null)
         + cell('Напрямую', (c.dms!=null) ? esc(c.dms+' мс') : 'не отвечает', c.dms==null)
-        + cell('Дорога', roadExitHtml(c.via)+'<span id="srv-colo"></span>')
+        + cell('Дорога', roadExitHtml(c.via)+'<span id="srv-colo">'+(_srvColo[c.via] ? ' · '+esc(_srvColo[c.via]) : '')+'</span>')
         + srvStatsTail(tpt, name, act, c);
     }
     if(!run && c && c.st==='blk'){
@@ -15797,7 +15820,7 @@
     if(!cands.length && !via) t+=optTile('data-road', 'warp', false, 'i-route', 'через WARP', 'выхода WARP ещё нет — откроется «WARP от Cloudflare»');
     return '<div class="card" id="srv-road"><div class="wt">Дорога к серверу</div><div class="opt c2">'+t+'</div>'
       + '<div class="cline">'+(via
-          ? 'Дорога упала — пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.'
+          ? 'Если дорога упадёт, пакеты к серверу пойдут напрямую, к заблокированному адресу: сервер станет недоступен, а интернет без VPN не пропадёт. Сторож чинит дорогу — перезапускает её выход — и не переключает сервер и не пишет, что тот умер.'
           : 'Нужна, когда провайдер заблокировал адрес сервера. Если дорога упадёт, пакеты к серверу пойдут напрямую — интернет не пропадёт, сервер станет недоступен, пока сторож её не поднимет. Через дорогу ездят только серверы AmneziaWG.')+'</div></div>';
   }
   // Задать дорогу (пусто — напрямую): проверки и отказ словами — у роутера (road.sh). Удалось — сервер сразу проверяется заново: число
@@ -15821,11 +15844,14 @@
       + '<span>Другой путь — попросить у хостера новый адрес: блокируют адрес, а не сервер.</span></div></div>';
   }
   // Где Cloudflare принял подключение дороги-WARP — у сервера на дороге, в клетке «Дорога» (макет «WARP · HEL»).
+  var _srvColo={};
   function srvColoLoad(body, c){
     var x=c && c.via && slotById(c.via); if(!x || !x.warp) return;
     subPost({action:'warp_colo', id:String(x.id)}).then(function(r){
-      var el=screenAlive(body) && body.querySelector('#srv-colo'); if(!el || !r || !r.colo) return;
-      el.textContent=' · '+r.colo;
+      if(!r || !r.colo) return;
+      // Kept by exit: a re-check redraws the stats and the cell is born empty again (BE7000 10.10.2026: «WARP · HEL» became «WARP»).
+      _srvColo[String(x.id)]=String(r.colo);
+      var el=screenAlive(body) && body.querySelector('#srv-colo'); if(el) el.textContent=' · '+r.colo;
     }, function(){});
   }
   // ВТОРОЕ МНЕНИЕ (cheburcheck.sh) — только при включённом (по умолчанию выкл; решение человека 10.10.2026: панель ставят не только в

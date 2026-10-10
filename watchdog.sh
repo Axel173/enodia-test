@@ -569,9 +569,26 @@ road_of() {   # $1 = main | <exit id> → the id of the exit it rides, or empty
     case "$1" in main) _rok=main ;; *) _rok="s$1" ;; esac
     printf '%s\n' "$ROADS" | awk -F"$TAB" -v c="$_rok" '$1==c { print $2; exit }'
 }
-road_down() {   # $1 = the road exit's id → 0 when its carrier is gone or its handshake is dead
+# A YOUNG HANDSHAKE IS NOT A ROAD THAT CARRIES. The rider and the road renew their handshakes each on its own clock (about every two
+# minutes), so when the road goes silent the rider's handshake may turn HS_DEAD up to two minutes BEFORE the road's — and a tick that
+# lands in that window read «the road is fine» and blamed the server: reup, then the reserves' ladder off a sound server (for an
+# exit: «the server does not answer» and the return backoff). With `probe` the road is also asked by the RESULT — a request through
+# its interface, two nodes (ip-lib.sh::probe_ext_ip): nothing came back — it does not carry. Only a caller whose rider is ALREADY
+# silent asks for it: a healthy rider costs no request.
+ROAD_PROBE_T=${ROAD_PROBE_T:-6}   # s per node: a live road answers in well under a second
+road_down() {   # $1 = the road exit's id ; $2 = probe → 0 when its carrier is gone, its handshake is dead or (probe) it carries nothing
     ip link show "awg$1" >/dev/null 2>&1 || return 0
-    [ "$(slot_hs_age "awg$1")" -ge "$HS_DEAD" ]
+    [ "$(slot_hs_age "awg$1")" -ge "$HS_DEAD" ] && return 0
+    [ "$2" = probe ] || return 1
+    [ -z "$(probe_ext_ip "--interface awg$1" "$ROAD_PROBE_T" "" 2)" ]
+}
+# The exit's road is down: its live carrier goes down as usual (else its groups' traffic would stand in a dead tunnel) and the reason
+# named is the road — no probe of its server, no return backoff (it would count the idle time of somebody else's exit).
+slot_road_lies() {   # $1 = id ; $2 = cfg ; $3 = fallback ; $4 = the exit's transport ; $5 = the road exit's id
+    ip link show "awg$1" >/dev/null 2>&1 || return 0
+    log "slot-health: awg-выход №$1 едет по дороге (выход №$5), а она лежит → гашу несущую → fallback=$3; сервер не сужу"
+    [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$1" >>"$LOG" 2>&1
+    slot_boot_window || slot_fail_event "$1" "$2" "$3" "road:$5" "$4"
 }
 # ОКНО БУТА: судить доп-выход ещё рано. Тик со СНЯТЫМ грейсом доходит до свипа на 60–120-й секунде
 # (раскладка `bins`: несущие слотов только что подняли — heal или мы сами), а egress-проба идёт по
@@ -884,11 +901,7 @@ slot_health_sweep() {
         # вернётся обычной пробой возврата (паузу не взводим: она отсчитывалась бы от простоя чужого выхода).
         _sroad=$(road_of "$sid")
         if [ -n "$_sroad" ] && road_down "$_sroad"; then
-            if ip link show "$sif" >/dev/null 2>&1; then
-                log "slot-health: awg-выход №$sid едет по дороге (выход №$_sroad), а она лежит → гашу несущую → fallback=$sfb; сервер не сужу"
-                [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
-                slot_boot_window || slot_fail_event "$sid" "$scfg" "$sfb" "road:$_sroad" "$st"
-            fi
+            slot_road_lies "$sid" "$scfg" "$sfb" "$st" "$_sroad"
             continue
         fi
         if ! ip link show "$sif" >/dev/null 2>&1; then
@@ -938,6 +951,12 @@ slot_health_sweep() {
                 log "slot-health: awg-выход №$sid ($scfg): рукопожатию ${_age}с, но keepalive нет (или длиннее ${SLOT_KA_MAX}с) — без трафика это норма; переподнимаю на месте (плагин поставит keepalive; если ключ занят — откажет, причина строкой ниже), вердикт — следующим тиком"
                 [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1
             fi
+            continue
+        fi
+        # THE EXIT IS SILENT WHILE ITS ROAD'S HANDSHAKE IS STILL YOUNG (the check above let it through): before blaming the server
+        # the road is asked by the result (road_down … probe) — the verdict and the words are those of a road that is down.
+        if [ -n "$_sroad" ] && road_down "$_sroad" probe; then
+            slot_road_lies "$sid" "$scfg" "$sfb" "$st" "$_sroad"
             continue
         fi
         # несущая поднята, но handshake мёртв (сервер слота лёг) → трафик группы блэкхолит в дохлый
@@ -3255,7 +3274,7 @@ if [ "$age" -ge "$HS_DEAD" ]; then
     # ждём дорогу: это выход, его чинит свип в finish (там же письмо о нём, с перечнем тех, кто по нему едет). Дорога ожила —
     # рукопожатие вернётся, и ветка «VPS жив» вернёт туннель штатно.
     _wroad=$(road_of main)
-    if [ -n "$_wroad" ] && road_down "$_wroad"; then
+    if [ -n "$_wroad" ] && road_down "$_wroad" probe; then
         if [ "$cur" != "FAILOPEN" ]; then
             log "handshake ${age}с, но сервер едет по дороге (выход №$_wroad), а она лежит → прямой режим; сервер не переключаю — сперва дорога"
             [ -f "$SWITCH_VPN" ] && sh "$SWITCH_VPN" safety-off >>"$LOG" 2>&1

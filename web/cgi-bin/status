@@ -455,5 +455,20 @@ for _tkf in "$DS/tasks"/t*.task; do
 	tk_n=$((tk_n+1)); _tki=${_tkf##*/}; _tki=${_tki%.task}
 	case "$(tail -n 1 "/tmp/enodia-tasks/$_tki.hist" 2>/dev/null | cut -f6)" in err|killed|cut|nodir) tk_bad=$((tk_bad+1)) ;; esac
 done
-printf '{"transport":"%s","proto_label":"%s","config":"%s","config_file":"%s","sub_label":"%s","live":%s,"vpn_off":%s,"backend":%s,"carrier":"%s","standing":"%s","back":"%s","back_to":"%s","back_in":%s,"fo_mode":"%s","back_why":"%s","home_why":"%s","back_on_fail":"%s","back_on_fail_at":"%s","hs_age":%s,"ready":[%s],"installed":[%s],"configured":%s,"full_tunnel":%s,"support_active":%s,"events_unread":%s,"exits_on":%s,"exits_bad":%s,"tasks_n":%s,"tasks_bad":%s,"model":"%s","fw":"%s","cpu_pct":%s,"ram_free":%s,"ram_total":%s,"disk_free":%s,"disk_total":%s,"disk_used":%s,"disk_used_pct":"%s","store_state":"%s","store_pct":%s,"store_free":%s,"store_total":%s,"ts":%s}\n' \
-	"$t" "$label" "${cfg:-?}" "$cfg_file" "$sub_label" "${live:-0}" "$voff" "${backend:-0}" "$wd_carrier" "$fo_st" "$fo_back" "$fo_to" "$fo_in" "$fo_md" "$fo_why" "$fo_hw" "$fo_of" "$fo_ofa" "${hs_age:--1}" "$rj" "$ij" "$tcfg" "$ft" "$sup" "$ev_unread" "$ex_on" "$ex_bad" "$tk_n" "$tk_bad" "$model" "$fw" "${cpu:-0}" "${ramfree:-0}" "${ramtot:-0}" "${diskfree:-0}" "${disktot:-0}" "${diskused:-null}" "${diskpct:-?}" "$stst" "${storepct:-0}" "${storefree:-0}" "${storetot:-0}" "$now"
+# THE ROAD OF THE MAIN SERVER (road.sh): its packets to the server ride another exit — the header says so («через WARP») and the facts
+# ribbon gets a chip (the user's request, BE7000 10.10.2026: nothing on the overview told the server rides a road but MTU 1188). The
+# answer is road.sh's (`carrier main`: the registry, an EFFECTIVE road only, empty under `.vpn-off`); the exit's name goes as stored
+# (base64, the panel decodes it like every exit's name), «is it WARP» — warp.sh's list by the exit's config. No store ⇒ no fork: most
+# routers have no road at all, and this file is polled every 10 s.
+road_id=""; road_nb=""; road_w=false
+if [ "$t" = awg ] && [ -s "$DS/.cfg-via" ] && [ -f "$D/road.sh" ]; then
+	road_id=$(sh "$D/road.sh" carrier main 2>/dev/null | tr -cd '2-7' | cut -c1)
+	if [ -n "$road_id" ] && [ -f "$D/slots.sh" ]; then
+		_rdl=$(sh "$D/slots.sh" show "$road_id" 2>/dev/null)
+		road_nb=$(printf '%s' "$_rdl" | cut -f2 | tr -cd 'A-Za-z0-9+/=')
+		_rdc=$(printf '%s' "$_rdl" | cut -f4)
+		if [ -n "$_rdc" ] && [ -f "$D/warp.sh" ] && sh "$D/warp.sh" list 2>/dev/null | cut -f1 | grep -qxF "$_rdc"; then road_w=true; fi
+	fi
+fi
+printf '{"transport":"%s","proto_label":"%s","config":"%s","config_file":"%s","sub_label":"%s","live":%s,"vpn_off":%s,"backend":%s,"carrier":"%s","standing":"%s","back":"%s","back_to":"%s","back_in":%s,"fo_mode":"%s","back_why":"%s","home_why":"%s","back_on_fail":"%s","back_on_fail_at":"%s","hs_age":%s,"ready":[%s],"installed":[%s],"configured":%s,"full_tunnel":%s,"support_active":%s,"events_unread":%s,"exits_on":%s,"exits_bad":%s,"road":"%s","road_name_b64":"%s","road_warp":%s,"tasks_n":%s,"tasks_bad":%s,"model":"%s","fw":"%s","cpu_pct":%s,"ram_free":%s,"ram_total":%s,"disk_free":%s,"disk_total":%s,"disk_used":%s,"disk_used_pct":"%s","store_state":"%s","store_pct":%s,"store_free":%s,"store_total":%s,"ts":%s}\n' \
+	"$t" "$label" "${cfg:-?}" "$cfg_file" "$sub_label" "${live:-0}" "$voff" "${backend:-0}" "$wd_carrier" "$fo_st" "$fo_back" "$fo_to" "$fo_in" "$fo_md" "$fo_why" "$fo_hw" "$fo_of" "$fo_ofa" "${hs_age:--1}" "$rj" "$ij" "$tcfg" "$ft" "$sup" "$ev_unread" "$ex_on" "$ex_bad" "$road_id" "$road_nb" "$road_w" "$tk_n" "$tk_bad" "$model" "$fw" "${cpu:-0}" "${ramfree:-0}" "${ramtot:-0}" "${diskfree:-0}" "${disktot:-0}" "${diskused:-null}" "${diskpct:-?}" "$stst" "${storepct:-0}" "${storefree:-0}" "${storetot:-0}" "$now"

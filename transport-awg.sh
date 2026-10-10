@@ -375,13 +375,24 @@ slot_keepalive() {   # $1 = iface
     return 0
 }
 
-# Поднять несущую awgN (id, cfg-name). Возврат 0 = awgN есть. Идемпотентно: живой iface = тёплый,
-# конфиг не пересобираем; отсутствует = генерим conf + стартуем демон + IP/MTU/up.
+# Raise the carrier awgN (id, cfg name). 0 = awgN exists AND its server's address is out of the marking. Idempotent: a live iface is
+# warm, the config is not rebuilt; absent = build the conf + anti-loop + start the daemon + IP/MTU/up.
+# THE ANTI-LOOP GOES IN BEFORE THE FIRST PACKET (BE7000 10.10.2026, an exit to WARP). It used to come AFTER the raise. An exit's
+# server may sit in iplist_set (WARP — always: Cloudflare's range), and by the time an exit is raised the main carrier's default is
+# already in table 1000 — so the exit's first handshake left with mark 0x1 into the MAIN tunnel, and only then the anti-loop moved
+# the flow to the direct path, in the middle of a session that had no handshake of its own there. Measured on a fresh WARP exit:
+# handshake present, rx=184 bytes in 20 s, the check of a server through the road just created read «нет ответа»; data came ~15 s
+# later, with the next handshake. The return probe (cmd_slot_probe), which has always ordered it this way, carried at once: the
+# server riding that road shook hands 2 s after the road was back. The carrier did not come up — the anti-loop is removed: an exit's
+# address in the store means «its carrier is up» (road.sh derives its rules from it).
 slot_carrier_up() {   # $1 = id ; $2 = cfg
     _id="$1"; _cfg="$2"; _if=$(slot_iface "$_id")
-    if ip link show "$_if" >/dev/null 2>&1; then ip link set "$_if" up 2>/dev/null; slot_keepalive "$_if"; return 0; fi
+    if ip link show "$_if" >/dev/null 2>&1; then ip link set "$_if" up 2>/dev/null; slot_keepalive "$_if"; slot_exclude_endpoint "$_id"; return 0; fi
     _am=$(slot_carrier_conf "$_id" "$_cfg") || return 1
-    slot_carrier_start "$_id" "$_am"
+    slot_exclude_endpoint "$_id"                # the anti-loop BEFORE the first packet (see the header)
+    slot_carrier_start "$_id" "$_am" && return 0
+    [ -f "$APPLY_BYPASS" ] && sh "$APPLY_BYPASS" endpoint-slot-set "$_id" "" >/dev/null 2>&1
+    return 1
 }
 # Собрать ifconf выхода из его конфига: печатает "ADDRESS<TAB>MTU" (вывод slot_gen_conf), 1 — поднимать нечего (причина
 # строкой в лог). Отдельно от старта ради ПРОБЫ возврата (cmd_slot_probe): ей анти-петлю ставить МЕЖДУ сборкой и первым пакетом,
@@ -479,8 +490,10 @@ cmd_slot_up() {   # $1 = id, $2 = cfg
         log "слот №$_id: несущая awg не поднялась → выход живёт по fallback-политике (mark-core)"
         return 1
     fi
-    slot_exclude_endpoint "$_id"                # ifconf сгенерирован → endpoint известен
     slot_apply_routing "$_id"
+    # The road's MTU ceiling (road.sh): mtu-fix ran at the anti-loop — BEFORE the interface; an exit that itself rides a road would
+    # keep its MTU above the road's ceiling. The return probe has the same line.
+    [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" mtu-fix >/dev/null 2>&1
     ct_flush
     log "слот №$_id: awg-несущая $(slot_iface "$_id") в table $(slot_table "$_id") (конфиг $_cfg)"
     return 0
@@ -555,7 +568,7 @@ cmd_slot_probe() {   # $1 = id, $2 = cfg
                 if ! slot_reg_is "$_id" "$_cfg"; then _spr=6; break; fi
                 slot_apply_routing "$_id"
                 # Потолок MTU дороги (road.sh): mtu-fix бежал при анти-петле — ДО интерфейса, и вернувшийся выход ехал бы по WARP 1280
-                # со своими 1376 (ревью с.118, круг 2). slot-up этим не страдает: несущую он поднимает раньше анти-петли.
+                # со своими 1376 (ревью с.118, круг 2). slot-up does the same: its anti-loop also goes in before the first packet.
                 [ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" mtu-fix >/dev/null 2>&1
                 ct_flush
                 log "слот №$_id: сервер ответил за ${_w}с — awg-несущая $_if снова в table $(slot_table "$_id") (конфиг $_cfg)"
