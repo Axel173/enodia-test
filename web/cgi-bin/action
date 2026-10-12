@@ -290,6 +290,19 @@ in_dir() {
 	( umask 077; mkdir "$IN_DIR" ) 2>/dev/null || fail "не удалось создать временный каталог"
 	trap 'rm -rf "$IN_DIR"' EXIT
 }
+# slot_ids_of <transport> <config> — the numbers of the exits whose registry line names that config («5», «3,5»; empty — none).
+# Names are compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and config «01» was shown the
+# exits of config «1». One answer to «which exits stand on this config» — the server screen's facts and the refusal to delete.
+slot_ids_of() {
+	awk -F'\t' -v t="$1" -v n="$2" '($3 "") == (t "") && ($4 "") == (n "") { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,'
+}
+# AN EXIT NAMES THIS CONFIG — it is not deleted: the exit goes on by its working copy, cannot come up after a restart or a reboot,
+# and its screen says nothing of it. Every «Получить WARP» makes such a pair, so the trap was one click away (hardware walk
+# 12.10.2026: «Удалить конфиг» on WARP-2 under exit №5). The first holder is named; the road guard covers only an exit somebody rides.
+held_refuse() {   # $1 = transport, $2 = config name
+	_dhx=$(slot_ids_of "$1" "$2"); _dhx=${_dhx%%,*}
+	[ -z "$_dhx" ] || fail "конфиг $2 держит выход №$_dhx — сначала удалите выход или смените его сервер"
+}
 wf_why() { _wy=$(printf '%s\n' "$1" | tail -n 1); printf '%s' "${_wy:-не удалось}" | jesc 300; }
 tok=$(field token)
 act=$(field action)
@@ -1666,6 +1679,7 @@ EOF
 			_dsv=$(sh "$ENODIA_DIR/road.sh" serves awg "$name" 2>/dev/null | tr -cd '0-9')
 			[ -n "$_dsv" ] && fail "конфиг $name служит дорогой (выход №$_dsv) — сначала переключите дорогу его пассажиров на «напрямую»"
 		fi
+		held_refuse awg "$name"
 		rm -f "$ENODIA_STATE/configs/$name.conf" || fail "не удалось удалить $name"
 		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del awg "$name" >/dev/null 2>&1   # настоящее имя — вместе с файлом
 		[ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" del awg "$name" >/dev/null 2>&1           # и дорога к серверу (road.sh)
@@ -1679,6 +1693,7 @@ EOF
 		active=$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d ' \r\n')
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = xray ]; } \
 			&& fail "это активный конфиг при включённом Xray — сначала переключитесь на другой транспорт"
+		held_refuse xray "$name"
 		rm -f "$ENODIA_STATE/xray-configs/$name.json"
 		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del xray "$name" >/dev/null 2>&1
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.xray-active"
@@ -1690,6 +1705,7 @@ EOF
 		active=$(cat "$ENODIA_STATE/.hy2-active" 2>/dev/null | tr -d ' \r\n')
 		{ [ "$name" = "$active" ] && [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = hy2 ]; } \
 			&& fail "это активный конфиг при включённой Hysteria2 — сначала переключитесь на другой транспорт"
+		held_refuse hy2 "$name"
 		rm -f "$ENODIA_STATE/hy2-configs/$name.yaml"
 		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del hy2 "$name" >/dev/null 2>&1
 		[ "$name" = "$active" ] && rm -f "$ENODIA_STATE/.hy2-active"
@@ -1835,9 +1851,7 @@ EOF
 		# «Параметры сети» действуют ТОЛЬКО на awg0 (net-tune.sh); выход (awgN) берёт строку конфига, иначе 1376 (transport-awg.sh).
 		# Конфиг, на котором стоит выход, получает и ЕГО число: иначе экран обещал бы выходу ручной MTU, которого у него нет.
 		xmtu=${mtu:-1376}; xsrc=config; [ -n "$mtu" ] || xsrc=default
-		# The name is compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and config «01» was
-		# shown the exits of config «1».
-		xs=$(awk -F'\t' -v n="$name" '$3=="awg" && ($4 "") == (n "") { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,')
+		xs=$(slot_ids_of awg "$name")
 		if [ -n "$_tm" ]; then mtu=$_tm; msrc=tun; elif [ -z "$mtu" ]; then mtu=1376; msrc=default; fi
 		[ "$_tmu" = 1 ] && msrc=unknown
 		# ДОРОГА К СЕРВЕРУ (road.sh): её номер и потолок MTU — поверх всего прочего (сервер живёт внутри туннеля дороги). Потолка нет,

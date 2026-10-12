@@ -340,16 +340,19 @@ pick() {
 # fresh WARP.conf under such a name is «held» the moment it is written — the exit's line then reads the NEW key, and `slots.sh
 # add` refused «ключ занят» AFTER the config, its record and its registration existed; every next click left one more (review
 # s.123, round 3 — the same «refusal after the config is written» get_room was made against).
+# THE READER TAKES THE WHOLE INPUT (`>/dev/null`, not `-q`): under uhttpd's CGI SIGPIPE is IGNORED, so a reader that leaves at the
+# first match does not kill the writers — they fail with EPIPE and SAY so. «tr: short write», «sh: write error: Broken pipe» stood
+# in the toast of a refusal, in front of its words (hardware walk 12.10.2026; in a stand's world the writer just dies in silence).
 name_held() {   # $1 = a config name → 0 when somebody names it
     { [ -f "$ENODIA_DIR/slots.sh" ] && sh "$ENODIA_DIR/slots.sh" configs awg 2>/dev/null
       head -n 1 "$ENODIA_STATE/.active" 2>/dev/null; echo
       head -n 1 "$ENODIA_STATE/.failover-home" 2>/dev/null; echo
-    } | tr -d '\r' | grep -Fxiq "$1"
+    } | tr -d '\r' | grep -Fxi "$1" >/dev/null
 }
 next_name() {
     for _wnn in "" 2 3 4 5 6 7 8 9; do
         _wcand="$NAME${_wnn:+-$_wnn}"
-        ls -1 "$ENODIA_STATE/configs" 2>/dev/null | grep -Fxiq "$_wcand.conf" && continue
+        ls -1 "$ENODIA_STATE/configs" 2>/dev/null | grep -Fxi "$_wcand.conf" >/dev/null && continue
         name_held "$_wcand" && continue
         printf '%s' "$_wcand"; return 0
     done

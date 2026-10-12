@@ -7470,7 +7470,7 @@
     "Открыть расписание":"Open the schedule","Убрать из расписания":"Remove from the schedule","убираю из расписания…":"removing from the schedule…","добавляю в расписание…":"adding to the schedule…",
     "Расписаний нет. Расписание закрывает устройствам интернет по времени — ночью, в учебные часы или всегда, кроме выбранных окон.":"No schedules. A schedule closes devices' internet by the time — at night, in school hours or always except chosen windows.",
     "Не действуют: время роутера ещё не сверено.":"Not acting: the router clock is not synced yet.",
-    "Так же и закрытое окно":"So does a closed window of an","расписания доступа":"access schedule",": устройство не выходит наружу никаким путём.":": the device goes out by no path at all.",
+    "Так же и закрытое окно":"So does a closed window of an","расписания доступа":"access schedule","устройство не выходит наружу никаким путём.":"the device goes out by no path at all.",
     "Ещё здесь":"Also here","открыть расписания доступа":"open access schedules","когда устройству можно в интернет — дети, приставка, камеры":"when a device may go online — kids, a console, cameras",
     "Все расписания":"All schedules",
     "Лимит в день":"Daily limit","Будни":"Weekdays","Выходные":"Weekend","не больше стольких минут в интернете":"at most this much time online",
@@ -11312,6 +11312,7 @@
     "Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.":"An exit that serves as a road doesn't ride a road itself, and a server can't ride an exit that runs on it: the router refuses in words.",
     "Конфиг служит дорогой:":"The config serves as a road for:",
     ". Удалить его можно, когда по нему никто не едет.":". It can be deleted once nobody rides it.",
+    "Конфиг держит":"The config is held by","Удалить его можно, когда выход удалён или переведён на другой сервер.":"It can be deleted once the exit is deleted or moved to another server.",
     "Второе мнение · Cheburcheck":"Second opinion · Cheburcheck",
     "Роутер спрашивает второе мнение по адресу IPv4, а в конфиге сервера — имя. Страница сервиса принимает и имя.":"The router asks the second opinion by an IPv4 address, and the server's config has a name. The service's page takes a name too.",
     "Роутер спрашивает второе мнение по адресу IPv4, а у этого сервера адрес другого вида — сервису спросить не о чем.":"The router asks the second opinion by an IPv4 address, and this server's address is of another kind — there is nothing to ask the service about.",
@@ -11335,7 +11336,7 @@
     "Сервис не ответил или ответил не по форме — «нет данных», а не вердикт.":"The service didn't answer or answered off the format — «no data», not a verdict.",
     "Карточка видна, потому что второе мнение включено в":"The card is shown because the second opinion is on in",
     "«Проверке серверов»":"«Server checks»",
-    ". Выключено — её нет вовсе.":". Off — it isn't there at all.",
+    "Выключено — её нет вовсе.":"Off — it isn't there at all.",
     "нет места для ответа":"no room for the answer",
     "сервис не вернул номер проверки":"the service returned no check number",
     "сервис ответил не потоком событий":"the service answered not with an event stream",
@@ -11568,6 +11569,7 @@
     [/^\[road\] выход №([2-7]) идёт к тому же серверу \(([^()\s]+)\) — его пакеты к серверу пошли бы сами в себя; выберите выход к другому серверу$/,"[road] exit #$1 goes to the same server ($2) — its packets to the server would go into itself; pick an exit to another server"],
     [/^\[road\] дорога к серверу — через выход №([2-7])$/,"[road] the road to the server — via exit #$1"],
     [/^\[slots\] выход №([2-7]) служит дорогой к серверу \(([^()]*)\) — сначала переключите их дорогу на «напрямую», потом (.*)$/,"[slots] exit #$1 serves as a road to a server ($2) — switch their road to «direct» first, then $3"],
+    [/^конфиг (\S+) держит выход №([2-7]) — сначала удалите выход или смените его сервер$/,"the config $1 is held by exit #$2 — delete the exit or change its server first"],
     [/^конфиг (\S+) служит дорогой \(выход №([2-7])\) — сначала переключите дорогу его пассажиров на «напрямую»$/,"the config $1 serves as a road (exit #$2) — switch its riders' road to «direct» first"],
     [/^сервис проверки не ответил \(HTTP ([^()]*)\)$/,"the check service did not answer (HTTP $1)"],
     [/^сервис не ответил \(HTTP ([^()]*)\)$/,"the service did not answer (HTTP $1)"],
@@ -15802,8 +15804,13 @@
     var hx=(tpt==='awg' && !act) ? srvHeldByExit(grp.held, name) : '';
     // Конфиг, который служит ДОРОГОЙ (на нём выход, по которому едут серверы), — тоже не удалить: пассажиры остались бы без дороги.
     var rdr=(tpt==='awg') ? cfgRiders(name) : [];
+    // …and a config an exit merely HOLDS (its registry line names it): the exit would go on by its working copy and could not come
+    // up after a restart. The router refuses that deletion (cgi-bin/action held_refuse) — the screen does not offer it and says why,
+    // with a door to the exit (hardware walk 12.10.2026: «Удалить конфиг» on a WARP config under its exit).
+    var hex=slotAll.filter(function(s){ return s.transport===tpt && s.config===name; }).map(function(s){ return s.id; });
     var canDel=!(act && (tpt==='awg' || tpt===cur.transport)) && !rdr.length;
     var meta=(tpt==='xray') ? (xrayMeta[name]||{}) : {};
+    if(hex.length) canDel=false;
     var rep=navIfShown('cn-server', srvScrOpen), fsig=focusMark();
     // Заголовок — имя как есть: у сервера подписки это имя от провайдера (с флагом и кириллицей), метка стримера прячет его.
     openModal(disp, {route:'cn-server', arg:tpt+'/'+name, deck:true, sens:true});
@@ -15833,6 +15840,7 @@
     if(via) h+=srvRoadHtml(name, crec);
     var del=canDel ? '<button type="button" class="btn bad" data-sv="del">'+icUse('i-trash','s','',true)+(tpt==='awg' ? 'Удалить конфиг' : 'Удалить')+'</button>' : '';
     var why=!canDel ? '<div class="cline">'+(rdr.length ? '<span>Конфиг служит дорогой:</span> '+ridersHtml(rdr)+'<span>. Удалить его можно, когда по нему никто не едет.</span>'
+                                   : hex.length ? '<span>Конфиг держит</span> <span class="nbr"><button type="button" class="ilink" data-cact="exit:'+hex[0]+'">выход №'+hex[0]+'</button><span>.</span></span> <span>Удалить его можно, когда выход удалён или переведён на другой сервер.</span>'
                                    : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
     if(tpt==='awg'){
@@ -16101,7 +16109,7 @@
     return h+'<div class="cline"><span>Адрес сервера уходит на cheburcheck.ru — российский сервис, проверяет с ~30 точек российских провайдеров. Ответ он хранит до 3 ч.</span>'
       + ((r.age!=null && st==='done') ? ' <span>Проверено</span> <span>'+esc(fmtAge(r.age|0))+'</span>.' : '')   // a check in flight has no «checked … ago»
       + ' <span>Сервис не ответил или ответил не по форме — «нет данных», а не вердикт.</span></div>'
-      + '<div style="margin-top:11px">'+noteBox('<span>Карточка видна, потому что второе мнение включено в</span> <button type="button" class="ilink" data-cact="checks">«Проверке серверов»</button><span>. Выключено — её нет вовсе.</span>', 'info')+'</div></div>';
+      + '<div style="margin-top:11px">'+noteBox('<span>Карточка видна, потому что второе мнение включено в</span> <span class="nbr"><button type="button" class="ilink" data-cact="checks">«Проверке серверов»</button><span>.</span></span> <span>Выключено — её нет вовсе.</span>', 'info')+'</div></div>';
   }
   // КАРТОЧКИ ПО ЗАПИСИ ПРОВЕРКИ — «адрес заблокирован» и плитка «напрямую» дороги — следуют за ней: проверка, сменившая вердикт,
   // перерисовывает их на месте. Только когда текст сменился: тик статуса зовёт это раз в 10 с, а пересоздание узла уносило бы фокус
@@ -19493,7 +19501,7 @@
       + '<div style="margin-top:11px">'+noteBox('<b>«Мимо VPN» сильнее «в VPN» из списков, групп, категорий и режима «целиком»</b> — откуда бы он ни пришёл. Широкая категория «мимо» (например, ru) уведёт напрямую даже устройство, поставленное целиком в VPN; перебить её могут только правила по портам (устройства и всего роутера) и правила самого устройства — сайт, исключение.','warn')+'</div>'
       // Two sentences, two nodes: the translation looks a key up by the whole node.
       + '<div style="margin-top:9px">'+noteBox('<span>Блокировка срабатывает раньше всей лестницы: домен не получает адреса вовсе (DNS), а подсети категорий «блок» и списков блокировки отбрасываются, куда бы их ни вели.</span> '
-      + '<span>Так же и закрытое окно</span> <button type="button" class="ilink" data-cact="sched">расписания доступа</button><span>: устройство не выходит наружу никаким путём.</span>','info')+'</div></div>'
+      + '<span>Так же и закрытое окно</span> <span class="nbr"><button type="button" class="ilink" data-cact="sched">расписания доступа</button><span>:</span></span> <span>устройство не выходит наружу никаким путём.</span>','info')+'</div></div>'
       + '<div class="card"><div class="wt">Источники правил</div>'
       + lrowGo('geo','открыть гео-категории')+'<div class="grow"><div class="nm">Гео-категории</div><div class="ds">страны и сервисы</div></div>'+CHEV+'</div>'
       + lrowGo('sources','открыть менеджер источников')+'<div class="grow"><div class="nm">Менеджер источников</div><div class="ds">свои списки доменов и подсетей</div></div>'+CHEV+'</div>'
@@ -23702,7 +23710,7 @@
     function wb(cls, act, label, off){ return '<button type="button" class="'+cls+'" data-wp="'+act+'" data-name="'+nq+'" data-wpk="'+act+':'+nq+'"'+(off||'')+'>'+label+'</button>'; }
     // `.wt-long`: the name is the person's text — a long unbroken one ran past the card's edge at 320 px (the same shape as the
     // schedule's title, measured there).
-    var h='<div class="card w2 wp-cfg" data-wpn="'+nq+'"><div class="wt"><span class="wt-long"><span>Конфиг</span>&nbsp;«<span class="sens" translate="no">'+esc(cfgDisp('awg', name))+'</span>»</span></div>'
+    var h='<div class="card wp-cfg" data-wpn="'+nq+'"><div class="wt"><span class="wt-long"><span>Конфиг</span>&nbsp;«<span class="sens" translate="no">'+esc(cfgDisp('awg', name))+'</span>»</span></div>'
       + kv('Откуда', !known ? '<span>роутер не ответил о записях — обновите экран</span>'
                    : (own ? '<span>получен этим роутером</span>'+(ago(it.at) ? ' · <span>'+ago(it.at)+'</span>' : '') : '<span>записи о получении нет: загружен вами или получен до этой версии панели</span>'),
            '<button type="button" class="act" data-cact="srv:awg/'+nq+'">Открыть</button>')
@@ -23796,7 +23804,7 @@
   var _wpHeld=null;
   function warpDevHtml(st, bin, txtOpen){
     var run=(st.state==='running');
-    var h='<div class="card w2" id="wp-dev"><div class="wt">WARP для другого устройства</div>'
+    var h='<div class="card" id="wp-dev"><div class="wt">WARP для другого устройства</div>'
       + '<div class="cline" style="margin-top:0">Телефону или ноутбуку — свой ключ: роутер зарегистрирует его у Cloudflare, подберёт порт из вашей сети и покажет конфиг один раз. На роутере от него ничего не остаётся.</div>';
     if(_wpDev){
       h+='<div class="sens" id="wp-devconf">'+vsConfHtml(_wpDev, txtOpen===true)+'</div>'
@@ -23896,7 +23904,7 @@
         + '<div class="kv"><div class="grow"><div class="k">Нужен как дорога</div><div class="v">к серверу, чей адрес заблокировал провайдер: пакеты к нему едут через Cloudflare</div></div></div>'
         + '<div class="kv"><div class="grow"><div class="k">Скорость</div><div class="v">замер: сервер через WARP — 6–9 МБ/с, тот же сервер напрямую через туннель — 7–9 МБ/с</div></div></div></div>';
       h+='<div class="card"><div class="wt">Уже есть свой конфиг WARP</div>'
-        + '<div class="cline" style="margin-top:0"><span>Загрузите его как обычный конфиг AmneziaWG на</span> <button type="button" class="ilink" data-cact="servers">«Серверах»</button> <span>— роутер узнает WARP по ключу сервера Cloudflare. Выход из него — в</span> <button type="button" class="ilink" data-cact="exits">«Дополнительных выходах»</button><span>.</span></div>'
+        + '<div class="cline" style="margin-top:0"><span>Загрузите его как обычный конфиг AmneziaWG на</span> <button type="button" class="ilink" data-cact="servers">«Серверах»</button> <span>— роутер узнает WARP по ключу сервера Cloudflare. Выход из него — в</span> <span class="nbr"><button type="button" class="ilink" data-cact="exits">«Дополнительных выходах»</button><span>.</span></span></div>'
         + '<div class="cline">В конфиге нет маскировки (строки <span class="mono kw">I1</span>) — панель предупредит, а собранную роутером добавит кнопка в его карточке здесь: многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток.</div>'
         + '<div style="margin-top:11px">'+noteBox('<b>Один конфиг на двух устройствах — связь рвётся у обоих:</b> сервер держит одну сессию на ключ и мечется между ними. Конфиг, которым пользуется кто-то ещё (из бота, от знакомого), замените своим — «Получить заново» в его карточке.', 'warn')+'</div></div>';
       body.innerHTML=h+'</div>'; body._wpG=_navGen;

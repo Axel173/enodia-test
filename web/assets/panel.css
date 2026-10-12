@@ -2024,6 +2024,10 @@
          text-decoration:underline;text-underline-offset:2px;cursor:pointer}
   @media (hover:hover){ .ilink:hover{background:none;text-decoration-thickness:2px} }
   .ilink:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
+  /* AN INLINE LINK AND THE MARK AFTER IT STAY ON ONE LINE. A <button> is an atomic inline: the browser may break the line between
+     it and the full stop that follows, and the stop went to the next line alone. A word joiner (U+2060) does not hold them
+     (measured in Chromium, 12.10.2026) — a nowrap wrapper around the button and its mark does. */
+  .nbr{white-space:nowrap}
   .note2.bad{background:var(--bad-soft);color:var(--bad)}
   .note2 b{font-weight:600}
   /* Сегмент переключателя достижим с клавиатуры (role и tabindex ему выдаёт `wireSeg`) — значит
