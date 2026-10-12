@@ -1801,9 +1801,19 @@
   function roadTake(d){ if(!d || typeof d!=='object' || d.error || d.need_login) return; roadMap=d.roads||{}; warpMap=d.warp||{}; }
   function roadOf(name){ var v=roadMap['awg/'+name]; return v ? String(v) : ''; }
   function isWarp(name){ return Object.prototype.hasOwnProperty.call(warpMap, name); }
+  // Вопрос «Удалить конфиг» — один на список серверов и экран сервера. У WARP роутер снимает вместе с файлом и регистрацию у
+  // Cloudflare (warp.sh prune give): конфиг с тем же ключом из резервной копии после этого мёртв — человек узнаёт это ДО нажатия.
+  // Получен ли WARP самим роутером, список серверов не знает (это знает запись регистрации) — поэтому «если».
+  function cfgDelAsk(tpt, name, dn){
+    return 'Удалить конфиг «'+dn+'» ('+names[tpt]+')? Файл удалится с роутера.'
+      + ((tpt==='awg' && isWarp(name)) ? ' Если этот WARP получил сам роутер, его регистрация у Cloudflare тоже снимется — конфиг с этим ключом из резервной копии работать перестанет.' : '');
+  }
   function slotById(id){ id=String(id); for(var i=0; i<slotAll.length; i++){ if(String(slotAll[i].id)===id) return slotAll[i]; } return null; }
   // Имя выхода-дороги: имя человека (под меткой стримера) или «выход №N», пока реестр не пришёл.
   function roadExitHtml(id){ var s=slotById(id); return s ? slotNmHtml(s) : '<span>'+esc('выход №'+id)+'</span>'; }
+  // Дорога ЛЕЖИТ — по состоянию её выхода от роутера (реестр выходов, `state`): то же правило, что у `road_up` статуса — везёт
+  // «up» и «idle», всё прочее (и «off» выключенного выхода) — нет. Реестр не пришёл или о состоянии молчит — ничего не утверждаем.
+  function roadDown(id){ var s=slotById(id); return !!s && !(!s.state || s.state==='up' || s.state==='idle'); }
   // Кто едет по ЭТОМУ конфигу как по дороге: пассажиры выходов на нём (ключ AmneziaWG не делят — выход на конфиге один).
   function cfgRiders(name){ var r=[]; slotAll.forEach(function(s){ if(s.transport==='awg' && s.config===name && s.riders) r=r.concat(s.riders); }); return r; }
   // Выходы, которые могут служить дорогой конфигу: включённый AmneziaWG на ДРУГОМ конфиге, сам по дороге не едущий (road.sh:
@@ -7694,7 +7704,6 @@
     "Считается по":"Counted by","интерфейсам":"interfaces",": у каждой несущей свой (awg0, xtun, свой у каждого доп-выхода), а счётчики интерфейсов ядро ведёт само — это самый дешёвый и самый точный разрез из всех.":": each carrier has its own (awg0, xtun, its own for every additional exit), and the kernel keeps interface counters by itself — the cheapest and the most accurate breakdown of all.",
     "Дни, которых выход не застал, его объёма не содержат: до появления выхода — и до того обновления, с которого роутер начал считать каждый выход отдельно, — эти байты лежат внутри «Напрямую». За длинное окно доля такого выхода занижена.":"Days the exit did not live through carry none of its volume: before the exit appeared — and before the update where the router started counting each exit separately — those bytes sit inside «Directly». Over a long window such an exit's share is understated.",
     "По конфигам":"By config","По сетям":"By network","По устройствам":"By device",
-    "одна строка в сутки — сырьё закачек и кэш на /data не пишем никогда":"one line a day — downloads and cache never go to /data",
     "/data смонтирован в режиме":"/data is mounted in","и его всего 20 МБ: история обязана быть кольцом с заранее известным размером. Та же причина, по которой закачки и кэш списков живут в оперативной памяти, а не на флеше.":
       "mode and is only 20 MB: the history has to be a ring of a known size. The same reason downloads and the list cache live in RAM, not on flash.",
     "ГБ":"GB","МБ":"MB","КБ":"KB","ТБ":"TB","Кбит/с":"Kbps","Мбит/с":"Mbps","Гбит/с":"Gbps","бит/с":"bps",
@@ -7702,7 +7711,6 @@
     "такого сервера панель открыть не может — открываю список":"the panel can't open this server — opening the list",
     "Несущая":"Carrier","общий xtun":"shared xtun",
     "идёт проверка сервера — дождитесь итога":"a server check is running — wait for the result",
-    "в имени нет ни одной буквы или цифры":"the name has no letters or digits",
     "роутер не умеет показывать сведения о конфиге — обновите Enodia":"the router can't show config details — update Enodia",
     "Hysteria2 делит":"Hysteria2 shares","один tun2socks и один socks":"one tun2socks and one socks",
     "с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».":"with Xray and ByeDPI: only one of them can be the carrier. «Make active» picks the Hysteria2 config; the transport itself is switched in «Transport».",
@@ -7722,7 +7730,7 @@
     "Дополнительные выходы (ещё пути наружу, до шести) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.":"Additional exits (more ways out, up to six) live on their own screen in «Connection»: the server list and the exit list answer different questions.",
     "Поиск сервера или группы":"Search servers or groups",
     "Активный закреплён сверху и не уезжает при поиске и сортировке. Бейдж собирается из самого конфига: протокол · защита · транспорт · flow.":"The active server is pinned on top and stays put when you search or sort. The badge is built from the config itself: protocol · security · transport · flow.",
-    "добавлены вручную":"added manually","ещё не скачивалась":"not downloaded yet","Показать или скрыть серверы группы":"Show or hide the group's servers",
+    "добавлены вручную":"added manually","ещё не скачивалась":"not downloaded yet",
     "Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»), флаг страны — её кодом (🇳🇱 → NL): роутер хранит имена латиницей. В ссылке нет":"The config name comes from the link's remark, or without one from the server address; Cyrillic is transliterated (a Russian «Netherlands» becomes «Niderlandy») and a country flag becomes its code (🇳🇱 → NL): the router keeps names in Latin. If the link has no",
     "(Reality publicKey) — панель предупредит: без него сервер не поднимется.":"(Reality publicKey), the panel warns you: without it the server won't come up.",
     "В ссылке нет":"The link has no",
@@ -7755,7 +7763,6 @@
     "загрузка…":"loading…",
     "Все выходы":"All exits","Все устройства":"All devices","Все события":"All events","Все процессы":"All processes",
     "Выходов нет — весь трафик идёт основным путём. Дополнительный выход — это второй путь наружу (свой сервер или десинк) для выбранных сайтов и устройств.":"There are no exits — all traffic goes the main way. An additional exit is a second way out (its own server or a desync) for the sites and devices you pick.",
-    "открыть дополнительные выходы":"open the additional exits",
     // Подсказки строк-переходов колоды (второй аргумент lrowGo): атрибут, а не текст — сверяет C71.
     "открыть список устройств":"open the device list","открыть полную разбивку памяти":"open the full memory breakdown",
     "Сейчас онлайн никого — список появится, когда устройства подключатся.":"Nobody is online right now — the list appears once devices connect.",
@@ -7766,7 +7773,7 @@
     // Строка подписки склеена из чисел (остаток, дни, возраст закачки) ⇒ она живёт ПРАВИЛАМИ.
     // «без счётчика» здесь НЕТ: он уже объявлен у карточки «Куда идёт трафик» — тот же вопрос
     // («роутеру нечем это посчитать»), и второе объявление молча переопределило бы чужой перевод.
-    "Подписки":"Subscriptions","Все подписки":"All subscriptions","открыть подписки":"open subscriptions",
+    "Подписки":"Subscriptions","Все подписки":"All subscriptions",
     "без лимита":"unlimited","провайдер сообщил, что предела по трафику у этой подписки нет":"the provider reported that this subscription has no traffic cap",
     "Подписок нет. Подписка — это ссылка провайдера: роутер сам забирает по ней серверы и обновляет их, когда провайдер меняет адреса и ключи.":"There are no subscriptions. A subscription is a provider link: the router pulls the servers from it and refreshes them whenever the provider rotates addresses and keys.",
     // — КАРТОЧКА «КУДА ИДЁТ ТРАФИК» (шаг 2f переноса) —
@@ -7862,7 +7869,6 @@
     "Провайдерский IPv6 обнаружен и закрыт клиентам — весь трафик идёт по IPv4 через сплит.":"Provider IPv6 detected and closed for clients — all traffic goes over IPv4 through the split.",
     "Провайдерского IPv6 не обнаружено — на этом роутере настройка ни на что не влияет.":"No provider IPv6 detected — this setting has no effect on this router.",
     // — шапка / статус —
-    "Веб-панель управления VPN на роутере Xiaomi: живой статус подключения, протокол, серверы и разделы настроек.":"VPN control panel for the Xiaomi router: live connection status, protocol, servers and settings sections.",
     "Внешний IP":"External IP",
     "Режим стримера — скрыть адреса и имена":"Streamer mode — hide addresses and names","Режим стримера включён — данные скрыты":"Streamer mode is on — data is hidden","Мимо туннеля":"Past the tunnel","Весь трафик роутера за сегодня":"All of the router's traffic today",
     "Защищено":"Protected","Защищено · на резерве":"Protected · on a reserve",
@@ -7896,11 +7902,9 @@
     "Роутер работает не на домашнем протоколе или сервере. Возврат сторож обещал, но прямо сейчас его не пробует — подробности на экране «Режим и резервирование».":"The router is not running on its home protocol or server. The watchdog has promised a return but is not trying it right now — details are on the «Mode & failover» screen.",
     "Роутер работает не на домашнем протоколе или сервере, и сторож вернёт дом сам, когда тот ответит на его проверку. Подробности и срок попытки — на экране «Режим и резервирование».":"The router is not running on its home protocol or server, and the watchdog will bring home back on its own once it answers the check. Details and the time of the attempt are on the «Mode & failover» screen.",
     "Роутер работает не на домашнем протоколе или сервере, и планово домой сторож его не вернёт — подробности на экране «Режим и резервирование».":"The router is not running on its home protocol or server, and the watchdog will not bring it home on schedule — details are on the «Mode & failover» screen.",
-    "Заблокированные сайты идут через VPS, остальное — напрямую":"Blocked sites go through the VPS, everything else — directly",
     // Подпись шапки у активного Zapret жила без пары с самого появления (найдено стендом подшага 3: слова
     // шапки до него не исполнял никто, а на русской панели строка права всегда).
     "Десинк без VPS — весь трафик напрямую, заблок-сайты пробивает nfqws":"Desync without a VPS — all traffic goes direct, nfqws gets blocked sites through",
-    "Весь трафик идёт через VPS":"All traffic goes through the VPS",
     "поддержка активна":"support active",
     "Протокол":"Protocol","Конфиг":"Config","Рукопожатие":"Handshake","Пинг":"Ping","Трафик":"Traffic",
     "обновление…":"refreshing…","сессия активна":"session active","нет сессии":"no session","нет":"none",
@@ -7931,7 +7935,7 @@
     "весь трафик в VPN":"all traffic via VPN",
     "заблокированные сайты через VPS":"blocked sites via VPS",
     "Устройства":"Devices","мимо / через VPN":"bypass / via VPN",
-    "Сайты, домены, IP":"Sites, domains, IP","что идёт через VPN":"what goes via VPN",
+    "Сайты, домены, IP":"Sites, domains, IP",
     "Wi-Fi и подсети":"Wi-Fi & subnets",
     "Уведомления":"Notifications","на почту":"by email",
     // NB: ключей карточки «Протоколы и обновления» здесь больше нет — она давно разделена на
@@ -7968,7 +7972,7 @@
       "The router works as usual, none of our rules are in it. Open «Components», install a protocol — and select it with «Change protocol».",
     "Бэкап настроек":"Settings backup",
     "Режим поддержки":"Support mode",
-    "Настройки":"Settings","проверка серверов · параметры панели":"server checks · panel options",
+    "Настройки":"Settings",
     // — ЗАГОЛОВКИ МОДАЛОК (openModal(title) → шапка модалки → MutationObserver). Литерал openModal
     //   ОТЛИЧАЕТСЯ от подписи карточки выше («…и IP» vs «…, IP», «Устройства — мимо / через VPN» vs
     //   «Устройства»), поэтому нужен ОТДЕЛЬНЫЙ ключ — иначе шапка модалки остаётся русской над
@@ -7977,11 +7981,9 @@
     "События":"Events","О роутере":"About the router","Консоль":"Console",
     "Устройства — мимо / через VPN":"Devices — bypass / via VPN",
     "Сайты, домены и IP":"Sites, domains and IP",
-    "Уведомления на почту":"Email notifications",
     // — Удаление (секция внизу «Настроек» + свой экран). Фразу подтверждения НЕ переводим
     //   словарём: её печатает unPhrase() сразу на нужном языке, а роутер принимает обе формы.
     "Удаление":"Removal","Удаление…":"Removal…",
-    "Отключить VPN совсем или полностью убрать всё с роутера — в разделе «Роутер»":"Turn the VPN off entirely, or wipe everything from the router — in the «Router» section",
     // Раздел «Роутер» (шаг 6a): двери, карточка железа, ряд действий, экран «Диагностика».
     "какие движки стоят · установка и снятие":"which engines are installed · install and remove",
     "версия и обновление скриптов":"version and script updates","выгрузить и восстановить":"export and restore",
@@ -8025,22 +8027,16 @@
     "Дополнительных выходов:":"Additional exits:","Заданий в расписании:":"Scheduled jobs:",
     "· списков в памяти:":"· lists in memory:","Занято на флеше:":"Flash used:",
     "На внешнем накопителе:":"On the external drive:",
-    "Включён «доступ домой» — телефон больше не зайдёт в домашнюю сеть":"«Home access» is on — your phone will no longer reach the home network",
-    "Включён второй фактор входа":"Two-factor login is on",
     "Сначала бэкап":"Back up first",
     "Что сделать":"What to do","Отключить VPN":"Turn the VPN off","Удалить всё":"Delete everything","Отключить":"Turn off",
-    "Снимет правила, демоны, расписание и подмену DNS — интернет пойдёт напрямую через провайдера. Файлы, настройки и панель останутся: включить обратно можно отсюда же.":"Removes the rules, daemons, schedule and DNS override — traffic goes straight through your ISP. Files, settings and the panel stay: you can turn it all back on from here.",
-    "Снимет всё то же самое, закроет панель и сотрёт каталог с настройками и ключами. От нашей установки на роутере не останется ничего; вернуть настройки можно будет только из бэкапа.":"Removes all of the above, shuts the panel down and wipes the directory with settings and keys. Nothing of our install stays on the router; settings can then be restored only from a backup.",
     "Панель закроется прямо во время удаления — это нормально, а не сбой. Отчёт останется на роутере: /data/usr/enodia-uninstall.log":"The panel will close during the removal — that is expected, not a failure. The report stays on the router: /data/usr/enodia-uninstall.log",
     "Для подтверждения введите":"To confirm, type",
-    "Удаление идёт. Панель вот-вот закроется — так и должно быть.":"Removal in progress. The panel is about to close — that is expected.",
     "Удаление идёт. Панель закроется сама, как только каталог будет снят.":"Removal in progress. The panel will close itself once the directory is gone.",
     "Удаление затянулось: панель всё ещё отвечает.":"Removal is taking too long: the panel is still responding.",
     "Панель удалена":"The panel is removed",
     "Убрали всё наше — правила, файлы и панель. Трафик идёт напрямую через провайдера, как до установки. Это окно можно закрыть.":"Everything of ours is removed — rules, files and the panel. Traffic goes straight through your ISP, as before the install. You can close this window.",
     "Отчёт остался на роутере — панели уже нет, прочитать его можно по SSH:":"The report stays on the router — the panel is gone, so read it over SSH:",
     "Отчёт останется на роутере: /data/usr/enodia-uninstall.log":"The report stays on the router: /data/usr/enodia-uninstall.log",
-    "не удалось получить данные об установке":"failed to load installation details",
     "удаляю всё…":"deleting everything…","отключаю VPN…":"turning the VPN off…",
     "Деактивация запущена. VPN снимется, панель останется работать.":"Deactivation started. The VPN will be removed, the panel keeps running.",
     "Полное удаление запущено. Панель сейчас закроется — это нормально. Отчёт останется в /data/usr/enodia-uninstall.log":"Full removal started. The panel will close now — that is expected. The report stays in /data/usr/enodia-uninstall.log",
@@ -8053,10 +8049,7 @@
     // о нём узнает. «Не всё снялось» ОБЯЗАНО читаться как отказ, а не как мягкое замечание.
     "Снимаю VPN…":"Removing the VPN…","Обычно это несколько секунд.":"This usually takes a few seconds.",
     "VPN снят — интернет идёт напрямую через провайдера.":"The VPN is off — traffic now goes straight through your ISP.",
-    "Файлы, настройки и панель на месте: включить обратно можно отсюда же.":"Files, settings and the panel are intact: you can turn it back on from here.",
     "Снялось НЕ ВСЁ: часть правил или демонов пережила отключение.":"NOT everything was removed: some rules or daemons survived the shutdown.",
-    "Роутер не сообщил, чем кончилось отключение.":"The router did not report how the shutdown ended.",
-    "Роутер не ответил. Отчёт остался на роутере: /data/usr/enodia-uninstall.log":"The router did not answer. The report stays on the router: /data/usr/enodia-uninstall.log",
     // — Гео-списки (geo.sh), экран `rt-geo` колодой (шаг 4c) — карточки, сегменты источника и отбора, строки каталога.
     //   Составные подсказки РАЗОРВАНЫ тегами <b> на отдельные текст-узлы ⇒ переводим КАЖДЫЙ фрагмент
     //   (частичный перевод дал бы ru/en-мешанину в одном абзаце — хуже, чем цельный русский).
@@ -8084,7 +8077,6 @@
     "— отдельный домен. Нашли домен — правило на него ставится прямо из выдачи.":"— a single domain. Found one — its rule is set right from the results.",
     "Обновить списки":"Update lists","ничего не выбрано":"nothing selected","обновляю списки…":"updating lists…",
     "ничего не найдено":"nothing found","не удалось получить гео-категории":"failed to load geo categories",
-    "в этом отборе категорий нет — загляните во «Все»":"no categories in this filter — look under «All»",
     "обновляю гео-списки":"updating geo lists","применяю гео-правила":"applying geo rules",
     "Гео-категории недоступны — обновите систему на роутере («Роутер → Обновление»).":"Geo categories are unavailable — update the system on the router («Router → Update»).",
     "← назад":"← back","вперёд →":"forward →","стр.":"page","найдено":"found","дата неизвестна":"date unknown",
@@ -8097,8 +8089,6 @@
       "Zapret is up but does not get through — the desync does not help, the category addresses go direct.",
     "Zapret выбран, но не работает — десинка нет, адреса категории идут напрямую.":
       "Zapret is selected but not working — there is no desync, the category addresses go direct.",
-    "Zapret выключен тумблером — десинка нет, адреса категории идут напрямую.":
-      "Zapret is switched off — there is no desync, the category addresses go direct.",
     "VPN выключен тумблером — десинка нет, адреса категории идут напрямую.":
       "The VPN is switched off — there is no desync, the category addresses go direct.",
     "Протокол не выбран — десинка нет, адреса категории идут напрямую.":
@@ -8169,7 +8159,6 @@
     // Подпись кнопки на время сборки архива (её ставит downloadDiag; обратно вернётся «Скачать логи»).
     "Собираю архив…":"Building the archive…",
     // режим стримера: текст кнопки во ВКЛ-состоянии + строки журнала (logLine ⇒ i18nStr режет таймстамп)
-    "Режим стримера: ВКЛ":"Streamer mode: ON",
     "Режим стримера: включён — чувствительные данные скрыты":"Streamer mode: on — sensitive data hidden",
     "Режим стримера: выключен":"Streamer mode: off",
     "Новости проекта":"Project news","Поддержать проект":"Support the project",
@@ -8234,19 +8223,14 @@
     "Выключенная карточка не просто прячется.":"A card that is off does not merely hide.",
     "Панель перестаёт спрашивать у роутера данные для неё — это меньше работы для роутера, а не просто пустое место на экране.":"The panel stops asking the router for its data — that is less work for the router, not just empty space on the screen.",
     "Переместить выше":"Move up","Переместить ниже":"Move down",
-    "Свернуть / развернуть":"Collapse / expand","Свернуть или развернуть блок":"Collapse or expand block",
-    "Совпадает с более коротким периодом — за это окно ещё нет отдельных данных (статистика копится).":"Matches a shorter period — no separate data for this window yet (statistics accumulating).",
     "График трафика по дням":"Daily traffic chart",
-    "Скрыть чувствительные данные (IP, серверы, SSID, почта) для записи видео":"Hide sensitive data (IP, servers, SSID, email) for video recording",
     "Скачать архив: состояние роутера и все логи, включая системный (ключи не попадают, маскировка частичная — просмотрите перед отправкой)":"Download an archive: the router state and all logs, including the system one (keys never get in; the masking is partial — look it over before sending)",
     // — «Настройки» (ядро) —
     "Вид":"Appearance","Тема":"Theme","Авто":"Auto","Светлая":"Light","Тёмная":"Dark",
     "Проверка серверов":"Server checks",
     // — шаг 3c-3: экран «Проверка серверов» —
     "автопроверка, тест скорости, балансер":"auto check, speed test, balancer",
-    "вид, доступ к панели, DNS и сеть":"appearance, panel access, DNS and network",
     "Проверка серверов…":"Server checks…",
-    "Автопроверка, балансер, что делать после проверки и адрес пробы внешнего IP — на экране «Проверка серверов»":"Auto check, balancer, what to do after a check and the external IP probe address are on the «Server checks» screen",
     "Чем отличаются три пробы":"How the three probes differ",
     "Проба":"Probe",
     "Что отвечает":"What it answers",
@@ -8302,8 +8286,6 @@
     "5 мин":"5 min","10 мин":"10 min","15 мин":"15 min",
     "Автопроверка серверов":"Auto server check","Сам выбирать лучший сервер":"Auto-pick the best server",
     "«Авто» — как в системе устройства; выбор хранится на роутере":"“Auto” follows the device system theme; the choice is stored on the router",
-    "нужна включённая автопроверка выше":"requires the auto server check above to be enabled",
-    "выигрыш от 60 мс, не чаще раза в 30 мин; упавший сервер чинит сторож":"gain from 60 ms, at most once per 30 min; a fallen server is fixed by the watchdog",
 "Применить":"Apply",
     "IPv6-интернет клиентам":"IPv6 internet to clients",
     // — Потолок памяти туннеля (.go-memlimit). «Авто» уже выше (тема), второй копии не заводим;
@@ -8314,13 +8296,11 @@
     "6ч":"6h","12ч":"12h","Сутки":"Daily",
     // — Автообновление подписок (headless, cron на роутере) —
     "Автообновление подписок":"Subscription auto-update",
-    "Обновлять серверы подписок по расписанию":"Update subscription servers on a schedule",
     "на роутере ещё не запускалось":"hasn't run on the router yet",
     "Роутер сам скачает подписки и переложит серверы — панель для этого открывать не нужно. Активный сервер роутер не удаляет никогда: если он пропал из подписки, придёт уведомление. По умолчанию выключено.":"The router downloads subscriptions and lays out the servers itself — no need to open the panel. The router never deletes the active server: if it disappears from the subscription, you get a notification. Off by default.",
     "· запускается кнопкой «Обновить все» в списке":"· started by the «Update all» button in the list",
     "Провайдер тасует пул на каждой закачке, поэтому выбор сервера":"The provider shuffles the pool on every download, so the server choice is","липкий":"sticky",": файл переписывается, только если изменилась суть, а не порядок строк.":": the file is rewritten only when the substance changes, not the order of lines.",
     "Пулы серверов по ссылке":"Server pools from a link",
-    "Фрагментация TLS появится здесь позже.":"TLS fragmentation will appear here later.",
     // — Шаг 5a: раздел «Сеть» — двери, «DNS сейчас», экраны «Шифрованный DNS», «Параметры сети», «Свои имена» —
     // — Шаг 5a, круг 1 ревью: раздельный резолв в «что видит провайдер», прокси без программы, ход установки, черновики —
     "Если сервер VPN умрёт, а прямой режим не включится, перестанет резолвиться всё — российские сайты тоже, если не включён их раздельный резолв. Поэтому сторож умеет снимать туннель и возвращать прямой DNS сам.":"If the VPN server dies and direct mode does not kick in, nothing resolves any more — Russian sites too, unless their split resolving is on. That is why the watchdog can drop the tunnel and bring direct DNS back on its own.",
@@ -8414,7 +8394,6 @@
     "При включённом шифровании имена в этих зонах всё равно уходят открытыми — к российскому резолверу, мимо прокси: правило зоны сильнее общего.":"With encryption on, names in these zones still go out in the clear — to the Russian resolver, bypassing the proxy: the zone rule is stronger than the general one.",
     "Быстрее и точнее: сайт отдаёт ближний узел своей сети доставки, а не тот, что виден из-за границы. Остальные домены идут прежним путём. По умолчанию выключено.":"Faster and more accurate: the site serves the nearest node of its delivery network, not the one seen from abroad. Other domains go the same way as before. Off by default.",
     "DNS и сеть":"DNS and network","Сеть…":"Network…",
-    "Шифрованный DNS, свои имена, раздельный резолв рунета, IPv6, MTU и память туннеля — в разделе «Сеть»":"Encrypted DNS, custom names, split RuNet resolving, IPv6, MTU and tunnel memory — in the «Network» section",
     "не удалось получить параметры сети":"failed to get the network settings",
     "Сплит-туннель работает по IPv4: IPv6-трафик клиентов шёл бы мимо него напрямую. Локальный IPv6 внутри домашней сети не трогается.":"The split tunnel works over IPv4: clients' IPv6 traffic would go around it directly. Local IPv6 inside the home network is not touched.",
     "Несущая туннеля":"Tunnel carrier","Значение для AmneziaWG":"Value for AmneziaWG","· по умолчанию 1376":"· default 1376",
@@ -8475,11 +8454,6 @@
     "Сменить пароль":"Change password","новый пароль":"new password","ещё раз":"repeat",
     "8–64 символа, латиница/цифры/знаки, без пробелов":"8–64 characters, letters/digits/symbols, no spaces",
     "пароли не совпадают":"passwords do not match",
-    "шифрованный вход в панель на отдельном порту":"encrypted access to the panel on a separate port",
-    "Шифрует связь с панелью. Роутер поднимает отдельный терминатор на своём порту (по умолчанию 8443) и передаёт запросы обычной панели. Сертификат самоподписанный — браузер один раз предупредит, это ожидаемо: удостоверяющий центр для локального адреса выписать нечего. Обязателен, если открываете вход снаружи: пароль панели иначе идёт по сети открытым текстом.":"Encrypts the connection to the panel. The router runs a separate terminator on its own port (8443 by default) and forwards requests to the regular panel. The certificate is self-signed — the browser warns once, which is expected: no certificate authority can issue one for a local address. Required if you open access from outside: otherwise the panel password travels the network in cleartext.",
-    "Компонент HTTPS ещё не установлен на роутер.":"The HTTPS component isn't installed on the router yet.",
-    "HTTPS включён, но терминатор сейчас не работает — роутер поднимет его в течение пары минут.":"HTTPS is enabled, but the terminator isn't running right now — the router will bring it up within a couple of minutes.",
-    "Браузер предупредит про самоподписанный сертификат — это ожидаемо. Адрес:":"The browser will warn about the self-signed certificate — that is expected. Address:",
     "Сменить порт":"Change port",
     "Перевыпустить сертификат":"Reissue certificate",
     "включаю HTTPS…":"enabling HTTPS…","выключаю HTTPS…":"disabling HTTPS…",
@@ -8489,7 +8463,6 @@
     "HTTPS выключен":"HTTPS turned off",
     "HTTPS выключен, вход снаружи закрыт вместе с ним":"HTTPS turned off, and access from outside was closed with it",
     "HTTPS не выключился":"HTTPS did not turn off",
-    "HTTPS выключен (доступ снаружи снят вместе с ним)":"HTTPS disabled (external access was removed along with it)",
     "Сертификат перевыпущен":"Certificate reissued",
     "Бинарь HTTPS уже установлен":"The HTTPS binary is already installed",
     "Скачиваю компонент HTTPS…":"Downloading the HTTPS component…",
@@ -8497,23 +8470,7 @@
     "порт вне диапазона 1..65535":"port out of range 1..65535",
     "Вход снаружи":"Access from outside",
     "заходить в панель из любой сети по внешнему адресу":"reach the panel from any network via the external address",
-    "сначала включите HTTPS выше":"enable HTTPS above first",
-    "сначала включите второй фактор ниже":"enable the second factor below first",
-    "Панель открыта в интернет, а второй фактор выключен — вход держит один только пароль. Включите 2FA ниже или закройте доступ снаружи.":"The panel is exposed to the internet while the second factor is off — a password alone is all that guards it. Enable 2FA below, or close access from outside.",
-    "Открывает порт HTTPS-панели на внешнем интерфейсе, чтобы заходить в неё из любой сети, а не только из дома. Требует белого (публичного) IP от провайдера: за CGNAT внешние подключения до роутера не доходят. Открывается ТОЛЬКО зашифрованный порт, обычный HTTP наружу не выставляется никогда. Стоит ограничение частоты подключений с одного адреса — от переборщиков паролей и сканеров. Вход остаётся под паролем панели, поэтому пароль должен быть длинным, и открыть порт можно только при включённом втором факторе (2FA).":"Opens the HTTPS panel port on the external interface so you can reach it from any network, not just from home. Requires a public (white) IP from your ISP: behind CGNAT, inbound connections never reach the router. ONLY the encrypted port is opened — plain HTTP is never exposed. A per-source connection rate limit is in place, against password guessers and scanners. Access is still protected by the panel password, so that password must be long, and the port can only be opened with the second factor (2FA) enabled.",
-    "Провайдер выдаёт роутеру внешний адрес через общий NAT (CGNAT). Правило поставлено, но снаружи панель не откроется, пока провайдер не выдаст белый (публичный) IP. Адрес роутера:":"Your ISP assigns the router an external address through a shared NAT (CGNAT). The rule is in place, but the panel won't open from outside until the ISP provides a public (white) IP. Router address:",
-    "Адрес выдаётся провайдером и может смениться после переподключения. Снаружи:":"The address is assigned by the ISP and may change after a reconnect. From outside:",
-    "Правило сейчас не стоит — его смывает перезагрузка настроек роутера. Роутер вернёт его в течение пары минут.":"The rule isn't in place right now — reloading the router's settings wipes it. The router will restore it within a couple of minutes.",
-    "Порт открыт, но ограничитель частоты подключений на этой прошивке не встал — защиты от перебора пароля нет. Пароль панели должен быть длинным, а лучше закрыть доступ снаружи.":"The port is open, but the connection rate limiter did not install on this firmware — there is no protection against password guessing. The panel password must be long, or better, close access from outside.",
     // — Второй фактор входа (TOTP): блок в «Доступе к панели» + экраны привязки/кодов —
-    "Двухфакторная авторизация (2FA)":"Two-factor authentication (2FA)",
-    "Двухфакторная авторизация":"Two-factor authentication",
-    "код из приложения вдобавок к паролю панели":"a code from an app in addition to the panel password",
-    "панель выставлена наружу — одного пароля мало":"the panel is exposed to the internet — a password alone isn't enough",
-    "Одноразовый код из приложения-аутентификатора (Google Authenticator, Aegis, Bitwarden, 1Password) вдобавок к паролю панели. Одного пароля мало, если панель выставлена наружу: его подбирают и переиспользуют, а код меняется каждые 30 секунд — перехват прошлого ничего не даёт. Спрашивается один раз на устройство, дальше держится сессия. Работает для ЛЮБОГО входа, и снаружи и из дома — откуда пришёл запрос, панель не различает. Потеряли телефон — есть 8 одноразовых кодов восстановления.":"A one-time code from an authenticator app (Google Authenticator, Aegis, Bitwarden, 1Password) in addition to the panel password. The password alone isn't enough once the panel is exposed: passwords get guessed and reused, while the code changes every 30 seconds, so intercepting an old one gains nothing. Asked once per device, then a session keeps you signed in. It applies to EVERY sign-in, from outside and from home alike — the panel cannot tell where a request came from. Lost your phone: there are 8 one-time recovery codes.",
-    "Компонент 2FA на роутере не установлен — обновите скрипты роутера в разделе обновлений.":"The 2FA component isn't installed on the router — update the router scripts in the updates section.",
-    "Часы роутера ещё не синхронизированы, и код из приложения не сойдётся, пока это не произойдёт. Обычно занимает пару минут после включения роутера. Коды восстановления от часов не зависят и работают всегда.":"The router's clock isn't synchronised yet, and the app's code will not match until it is. This usually takes a couple of minutes after the router powers on. Recovery codes do not depend on the clock and always work.",
-    "Коды восстановления кончились. Перевыпустите их: потеряете телефон — войти будет нечем.":"You are out of recovery codes. Reissue them: if you lose your phone, there will be no way back in.",
     // NB: «Осталось кодов…» и «Устройств…» склеены с ЧИСЛОМ ⇒ exact-ключом не берутся вовсе;
     // обе переведены ПРАВИЛАМИ ниже (ключи висели мёртвыми, строки оставались русскими).
     "Новые коды восстановления":"New recovery codes",
@@ -8529,17 +8486,13 @@
     "адрес не записан":"address not recorded",
     "вход по HTTPS — адрес устройства не виден":"signed in over HTTPS — the device address isn't visible",
     "Отвязать":"Revoke",
-    "не удалось получить список устройств":"failed to fetch the device list",
     "остальные устройства разлогинены":"the other devices are signed out",
     "устройство отвязано":"the device is revoked",
     "вы вышли на этом устройстве":"you are signed out on this device",
     "такого устройства уже нет в списке":"that device is no longer on the list",
     "текущая сессия не найдена — попробуйте войти заново":"the current session wasn't found — try signing in again",
     "не указано устройство":"no device specified",
-    "Привязка приложения начата, но не подтверждена кодом — 2FA пока не работает. Нажмите «Вкл» и пройдите привязку заново.":"App pairing was started but never confirmed with a code — 2FA is not active yet. Press “On” and go through the pairing again.",
     "Выключить 2FA":"Turn off 2FA",
-    "Введите код из приложения или код восстановления — иначе 2FA не снять. После выключения вход в панель снова защищён только паролем.":"Enter a code from the app or a recovery code — 2FA cannot be removed otherwise. Once off, the panel is protected by the password alone again.",
-    "Введите код из приложения. Старые коды перестанут работать сразу — сохраните новые.":"Enter a code from the app. The old codes stop working immediately — save the new ones.",
     "2FA включена":"2FA enabled","2FA выключена":"2FA disabled",
     "коды перевыпущены":"codes reissued","все устройства разлогинены":"all devices signed out",
     "Откройте приложение-аутентификатор (Google Authenticator, Aegis, Bitwarden, 1Password) и отсканируйте код. Затем введите шесть цифр, которые оно покажет.":"Open an authenticator app (Google Authenticator, Aegis, Bitwarden, 1Password) and scan the code. Then enter the six digits it shows.",
@@ -8655,7 +8608,7 @@
     "Загрузка…":"Loading…",
     // — «Сайты, домены и IP» —
     "Общий список IP (CIDR через VPN)":"Shared IP list (CIDR via VPN)","не удалось получить источники":"failed to fetch sources",
-    "убрать":"remove","＋ Новая группа":"＋ New group","Создать":"Create","Добавить правило":"Add rule",
+    "убрать":"remove","Создать":"Create","Добавить правило":"Add rule",
     // — переиспользуемый менеджер источников sourceMgr() + секции «Сайты/Группы» (был пропущен в
     //   первом заходе i18n; sourceMgr общий на tunnel-cidr/adblock/ipblock ⇒ покрывает 3 модалки).
     //   Числовые хвосты (счётчики+единицы «подсетей/правил/записей/источников») — правилами ниже.
@@ -8664,8 +8617,8 @@
     "домены — не IP":"domains — not IP","просмотр и правка":"view and edit","⏳ не скачано":"⏳ not downloaded",
     "Готовые списки":"Ready-made lists","Рекомендуемые":"Recommended","Агрессивнее":"More aggressive",
     "больше ложных срабатываний":"more false positives","✓ Добавлено":"✓ Added",
-    "Бюджет списка":"List budget","тяжело для роутера — уберите часть списков":"heavy for the router — remove some lists",
-    "заметная нагрузка на CPU/dnsmasq":"noticeable load on CPU/dnsmasq","комфортно для роутера":"comfortable for the router",
+    "тяжело для роутера — уберите часть списков":"heavy for the router — remove some lists",
+    "комфортно для роутера":"comfortable for the router",
     "списки пусты":"lists are empty","Файл":"File","Текст":"Text","Перетащите файл со списком":"Drop a file with the list",
     // — хаб «Источники списков» (пачка 4): категории, заголовок источников, бюджет полосой, дверь пула Zapret.
     "Источники списков":"List sources","Категории":"Categories","Пресет стратегии":"Strategy preset","Добавить источник":"Add a source",
@@ -8685,47 +8638,36 @@
     "Скачать":"Download","Обновить":"Refresh","✓ актуально":"✓ up to date",
     "→ перенести в домены":"→ move to domains",
     "Это домены, а здесь работают только IP-адреса и подсети — перенесите их в правила «в VPN».":"These are domains, and only IP addresses and subnets work here — move them into the “via VPN” rules.",
-    "Домен или IP/подсеть — распознаём сами. Правило перебивает общий список: адрес из «мимо VPN» пойдёт напрямую, даже если он в общем списке.":"Domain or IP/subnet — we detect it automatically. A rule overrides the shared list: an address set to “bypass VPN” goes direct even if it is in the shared list.",
-    "Именованный набор доменов и IP, который целиком идёт в VPN или мимо. Выключенная группа не удаляется — просто перестаёт действовать.":"A named set of domains and IPs that goes entirely via VPN or bypass. A disabled group is not deleted — it just stops taking effect.",
-    "＋ домены пачкой: файл / текст / ссылка":"＋ domains in bulk: file / text / link",
-    "＋ адреса «мимо VPN» пачкой: файл / текст / ссылка":"＋ addresses “bypass VPN” in bulk: file / text / link",
     "выбрать все":"select all","снять выделение":"deselect","Убрать выбранные":"Remove selected","пусто":"empty",
-    "Идут напрямую, даже если попадают в общий список.":"Go directly, even if they fall into the shared list.",
-    "включить/выключить группу":"enable/disable group","изменить состав":"edit members",
+    "включить/выключить группу":"enable/disable group",
     "имя группы, например «bybit»":"group name, e.g. “bybit”","Раздельно":"Split","раздельно":"split",
     // — «Серверы и конфиги» —
-    "Клик по серверу — активировать. Действия — в меню ⋮.":"Click a server to activate. Actions are in the ⋮ menu.",
     "Скорость всех":"Speed of all","Сортировать":"Sort","Проверить все":"Check all",
-    "установлен":"installed","не установлен":"not installed","＋ Добавить":"＋ Add","Импорт":"Import",
+    "установлен":"installed","не установлен":"not installed","Импорт":"Import",
     "выбрать →":"choose →","активен":"active","Активный сервер":"Active server",
     "Обновить все":"Update all","Перезабрать все подписки":"Re-fetch all subscriptions","Свои":"Own",
     "сервер не отвечает или не даёт интернета (пинг мог врать)":"server not responding or no internet (ping may have lied)",
     "URL подписки":"Subscription URL","метка":"label","Поиск сервера или группы…":"Search server or group…",
     "Действия":"Actions","Действия с сервером":"Server actions","Действия с подпиской":"Subscription actions",
-    "Меню подписки":"Subscription menu","Меню группы":"Group menu",
-    "Удалить конфиг":"Delete config","Изменить конфиг":"Edit config","vpn://… (ссылка Amnezia)":"vpn://… (Amnezia link)",
+    "Меню подписки":"Subscription menu",
+    "Удалить конфиг":"Delete config","Изменить конфиг":"Edit config",
     // — «Режим и failover» —
-    "Весь трафик через VPN":"All traffic via VPN","сейчас: раздельно (только заблокированное)":"now: split (blocked only)",
-    "Включить":"Enable","Выключить":"Disable","Авто-failover при падении сервера":"Auto-failover on server failure",
+    "Весь трафик через VPN":"All traffic via VPN",
+    "Включить":"Enable","Выключить":"Disable",
     "Резерв":"Failover","Резерв+возврат":"Failover + failback","Когда серверы протокола закончились":"When the protocol's servers run out",
     "Другой протокол":"Another protocol","Сразу прямой":"Go direct immediately",
     // «Разобрать» и «Отмена» здесь НЕ повторяем: оба ключа уже есть в словаре (кнопки импорта
     // маршрутизации и общий набор действий). Дубль в объекте молча берёт ПОСЛЕДНИЙ и однажды
     // переопределит чужой перевод — проверка на дубликаты ключей ловит это грепом.
-    "Вставить конфиг с десктопа…":"Paste a desktop config…",
     "сюда — содержимое .bat/.cmd от winws (Flowseal и подобные)":"paste the contents of a winws .bat/.cmd here (Flowseal and similar)",
     "вставьте текст конфига":"paste the config text","разбираю…":"parsing…",
     "не удалось разобрать конфиг":"could not parse the config",
     "импорт конфига zapret: строка подставлена в поле, не сохранена":"zapret config import: the line was placed in the field, not saved",
-    "Действие «в десинк» сейчас недоступно: его правила ставит только Zapret в роли активного транспорта. Если десинк у вас работает дополнительным выходом — выберите категории «в VPN» и укажите этот выход: трафик пойдёт напрямую и рукопожатия сломает тот же nfqws.":"The «desync» action is unavailable right now: its rules are installed only by Zapret acting as the active transport. If your desync runs as an additional exit, pick «via VPN» for the categories and choose that exit: the traffic goes direct and the same nfqws breaks the handshakes.",
     "Десинк сейчас несёт дополнительный выход — стратегия у nfqws одна на всех потребителей, и смена применится сразу.":"The desync is currently carried by an additional exit — nfqws has a single strategy for all consumers, so a change applies immediately.",
-    "Доступно только когда десинк работает — включите Zapret тумблером выше либо включите zapret-выход; иначе трафик пойдёт мимо nfqws.":"Available only while the desync is running — turn Zapret on with the toggle above or enable a zapret exit; otherwise the traffic goes past nfqws.",
     "браузер-свип возможен только при живом десинке — включите Zapret вверху карточки или включите zapret-выход":"the browser sweep needs a running desync — turn Zapret on at the top of the card or enable a zapret exit",
     "десинк выключен — свип прерван":"the desync is off — sweep aborted",
     "Куда вернётся":"Where it returns to","Домашний протокол:":"Home protocol:","Домашний сервер:":"Home server:","Домашний сервер":"Home server",
     "VPN сейчас выключен тумблером — пока он выключен, сторож не проверяет серверы и возврата не будет.":"The VPN is off by the toggle right now — while it is off the watchdog does not probe servers and no failback happens.",
-    "Домашний протокол не задан: тот, на который увёл сторож, так и останется.":"No home protocol is set: the one the watchdog moved to will stay.",
-    "Дом назначается, когда протокол выбираете ВЫ — в шапке панели. Автомат домом ничего не помечает намеренно: иначе аварийный резерв стал бы «домом» и возврат не случился бы никогда.":"Home is set when YOU pick the protocol — in the panel header. Automation never marks a home on purpose: otherwise an emergency reserve would become «home» and the return would never happen.",
     // Блок «Сейчас» экрана резервирования (foNowHtml): положение и причины — по вердикту сторожа.
     "Где роутер стоит сейчас, узнать не удалось: роутер не ответил на запрос состояния.":"Where the router stands right now is unknown: the router did not answer the status request.",
     "Где роутер стоит сейчас, узнать не удалось: ответ роутера не удалось прочитать.":"Where the router stands right now is unknown: the router's answer could not be read.",
@@ -8768,7 +8710,7 @@
     "Гостевая сеть":"Guest network",
     // — «Уведомления» —
     "включены":"enabled",
-    "Порт":"Port","Шифрование":"Encryption","Авто (по порту: 465→SSL, 587→STARTTLS)":"Auto (by port: 465→SSL, 587→STARTTLS)",
+    "Порт":"Port","Шифрование":"Encryption",
     "SSL/TLS (обычно порт 465)":"SSL/TLS (usually port 465)","STARTTLS (обычно порт 587)":"STARTTLS (usually port 587)",
     "Тест-письмо":"Test email",
     // — «Блокировка рекламы и IP» —
@@ -8845,12 +8787,11 @@
     "Удаления идут первыми, потом установка из загруженных файлов — GitHub не нужен. Активную несущую и дополнительные выходы операция не переключает.":"Removals go first, then the installation from the uploaded files — GitHub is not needed. The operation does not switch the active carrier or the extra exits.",
     // «Что занимает место» (clean.sh json/clean). Подписи групп чистки намеренно длинные:
     // цена у трёх групп разная, и без пояснения «снимки» читаются как такой же мусор.
-    "Что занимает место":"What takes up space","показать":"show","свернуть":"collapse","считаю…":"calculating…",
+    "Что занимает место":"What takes up space","показать":"show","считаю…":"calculating…",
     // — экраны «Место и накопитель» и «Память и процессы» (шаг 6b): двери, карточки, отказы ответов, согласие на раскладку «всё».
     "Место и накопитель":"Space and drive","Память и процессы":"Memory and processes",
     "что занимает флеш · вынос на накопитель · чистка":"what fills the flash · offloading to a drive · cleanup",
     "кто ест оперативную память · наше и прошивка":"what eats the RAM · ours and the firmware's",
-    "что занимает место, где лежит каждый движок, чистка":"what takes up space, where each engine lives, cleanup",
     "наши процессы, файлы в /tmp и наборы ipset — и отдельно прошивка":"our processes, files in /tmp and ipset sets — and the firmware separately",
     "наше и стоковое по категориям, накопитель, чистка":"ours and stock by category, the drive, cleanup",
     "Что лежало на накопителе, роутер сейчас не видит — здесь только то, что на флеше роутера. Воткните накопитель, и его движки вернутся в список.":"The router cannot see what lived on the drive right now — only what is on the router flash is listed here. Plug the drive back in and its engines return to the list.",
@@ -8869,7 +8810,6 @@
     "Сумма RSS с системным «занято» не сходится в обе стороны: общие страницы засчитаны каждому процессу, а память ядра и драйверов не принадлежит ни одному.":"The RSS sum does not match the system's «used» in either direction: shared pages are counted for every process, while kernel and driver memory belongs to none.",
     "Разбивка занятого не пришла: роутер не ответил. Откройте экран ещё раз.":"The breakdown of used space did not arrive: the router did not answer. Open the screen again.",
     "Считать разбивку занятого роутер не умеет — обновите скрипты роутера.":"The router cannot compute the breakdown of used space — update the router scripts.",
-    "Роутер не ответил про накопитель — не знаю, где лежит код проекта, на флеше или на накопителе, и разбивку не показываю: её подписи соврали бы. Откройте экран ещё раз.":"The router did not answer about the drive — I do not know whether the project code lives on the flash or on the drive, so the breakdown is not shown: its labels would lie. Open the screen again.",
     "Роутер не ответил про накопитель. Это не значит, что накопителя нет: откройте экран ещё раз.":"The router did not answer about the drive. That does not mean there is no drive: open the screen again.",
     "Работать с накопителем роутер не умеет — обновите скрипты роутера.":"The router cannot work with a drive — update the router scripts.",
     "Сменить накопитель, не вернув всё на роутер, нельзя: сперва «Только тяжёлые протоколы» ниже, потом «Вернуть на роутер».":"You cannot swap the drive without moving everything back to the router: first «Heavy protocols only» below, then «Move back to the router».",
@@ -8887,7 +8827,6 @@
     "лежат на накопителе: флеш роутера не освободят":"they are on the drive: this frees no router flash",
     "Роутер не ответил — что чистить, неизвестно. Откройте экран ещё раз.":"The router did not answer — what to clean is unknown. Open the screen again.",
     "Чистить роутер не умеет — обновите скрипты роутера.":"The router cannot clean up — update the router scripts.",
-    "Сколько освободилось на самом деле, роутер скажет после чистки: данные на флеше сжаты, и заранее известен только их вес.":"How much was actually freed, the router tells after the cleanup: data on the flash is compressed, and only its weight is known beforehand.",
     "Сейчас на накопителе вся система — держать отдельные протоколы на роутере нельзя. Верните код и настройки на роутер, чтобы выбирать поимённо.":"The whole system is on the drive right now — individual protocols cannot be kept on the router. Move code and settings back to the router to choose one by one.",
     "Вернуть бинари протоколов на флеш роутера? Места на нём должно хватить.":"Move the protocol binaries back to the router flash? There must be enough room on it.",
     "Перенести тяжёлые бинари на накопитель? Каждый переезжает с проверкой копии и пробным запуском.":"Move the heavy binaries to the drive? Each one moves with a copy check and a trial run.",
@@ -8980,8 +8919,7 @@
     "clean.sh не установлен (обновите скрипты с GitHub)":"clean.sh is not installed (update the scripts from GitHub)",
     "чистка не отработала":"the cleanup did not run","не выбрано, что чистить":"nothing selected to clean",
     "неизвестная группа чистки":"unknown cleanup group",
-    "не удалось получить список компонентов":"failed to get the list of components",
-    "идёт изменение компонентов…":"changing components…","меняю компоненты…":"changing components…",
+    "меняю компоненты…":"changing components…",
     "изменение компонентов запущено…":"component change started…",
     // — «Обновление» (апдейтер GitHub) —
     "Обновление":"Update","Проверить обновления":"Check for updates","Откат":"Rollback",
@@ -9050,17 +8988,12 @@
     "Обновление запущено: пакет скачивается и проверяется подписью, потом ставится. Когда кончится — обновите страницу и примените правила: «Починить правила» или перезагрузка.":"The update has started: the package is being downloaded and its signature checked, then it is installed. When it finishes, reload the page and apply the rules: «Repair rules» or a reboot.",
     "Откат к последнему снимку запущен. Когда кончится — обновите страницу и примените правила: «Починить правила» или перезагрузка.":"The rollback to the latest snapshot has started. When it finishes, reload the page and apply the rules: «Repair rules» or a reboot.",
     // — «Zapret (десинк напрямую)» —
-    "Десинк напрямую":"Direct desync","(без VPS): выбранные категории идут":"(no VPS): the selected categories go",
+    "Десинк напрямую":"Direct desync",
     "мимо туннеля, а nfqws обходит DPI на лету. Покрытие":"bypassing the tunnel, while nfqws bypasses DPI on the fly. Coverage is",
     "частичное":"partial",
-    "и зависит от провайдера (YouTube/Google/Meta обычно да; Cloudflare-сайты и часть QUIC — нет) — это":"and depends on the ISP (YouTube/Google/Meta usually yes; Cloudflare sites and some QUIC — no) — this is",
-    "дополнение к VPS, не замена":"a supplement to the VPS, not a replacement",
     "на устройстве":"on the device",
     "Транспорт Zapret:":"Zapret transport:","не активен":"not active","Включить (без VPS)":"Enable (no VPS)",
     "При включении туннель гаснет —":"Enabling shuts the tunnel down —","весь":"all",
-    "трафик идёт напрямую, заблок-категории пробивает nfqws. Переключать можно и в селекторе «Транспорт VPN» вверху панели.":"traffic goes directly, and nfqws punches through the blocked categories. You can also switch it in the “VPN transport” selector at the top of the panel.",
-    "Что десинкать (пойдёт напрямую + десинк)":"What to desync (goes directly + desync)",
-    "Выбрать категории (поиск по гео)…":"Pick categories (geo search)…",
     "убрать из десинка":"remove from desync","Десинк":"Desync","в десинк":"to desync",
     // — свой пул десинка ПО ДОМЕНАМ (категория zapret-dom): подзаголовок со счётчиком — ПРАВИЛОМ
     //   (в узле «… · в пуле: N доменов»).
@@ -9068,18 +9001,14 @@
     "включаю свой пул доменов…":"enabling your own domain pool…","выключаю свой пул доменов…":"disabling your own domain pool…",
     "Свой пул десинка по доменам включён — идёт загрузка списков":"Your own domain desync pool enabled — downloading the lists",
     "Свой пул десинка по доменам выключен":"Your own domain desync pool disabled",
-    "Пул по IP (не зависит от DNS устройства)":"IP pool (independent of the device’s DNS)",
-    "Категории выше наполняют пул":"The categories above fill the pool","по доменам":"by domain",
-    "— через DNS роутера, поэтому работают только для устройств, которые им пользуются.":"— through the router’s DNS, so they only work for devices that actually use it.",
+    "по доменам":"by domain",
     "Телевизор, приставка или телефон со своим DNS":"A TV, set-top box or phone with its own DNS",
     "(кэш, DoH, зашитый резолвер) в доменный пул не попадают вообще. Этот список задаёт те же сервисы":"(cache, DoH, a hard-coded resolver) never make it into the domain pool at all. This list defines the same services",
     "подсетями":"as subnets",
-    ", и десинк начинает их видеть у любого устройства. Приватные и слишком широкие диапазоны вырезаются автоматически — локальная сеть не уйдёт мимо VPN.":", and the desync starts seeing them on any device. Private and overly broad ranges are stripped automatically — the local network will not leak past the VPN.",
     "включаю свои адреса в десинк…":"enabling your own addresses into the desync…","выключаю свои адреса в десинк…":"disabling your own addresses into the desync…",
     "Пул десинка по IP включён — идёт загрузка списков":"IP desync pool enabled — downloading the lists",
     "Пул десинка по IP выключен":"IP desync pool disabled",
     "Стратегия десинка nfqws":"nfqws desync strategy","Стратегия сейчас:":"Strategy now:","по умолчанию":"default",
-    "= встроенные фейк-пакеты.":"= built-in fake packets.",
     "— выбрать пресет (заполнит поле) —":"— pick a preset (fills the field) —",
     "Авто — multidisorder + QUIC (по умолчанию)":"Auto — multidisorder + QUIC (default)",
     "Только QUIC fake (YouTube QUIC)":"QUIC fake only (YouTube QUIC)",
@@ -9090,7 +9019,7 @@
     "Multisplit seqovl=336 pos=1 (лёгкий seqovl)":"Multisplit seqovl=336 pos=1 (light seqovl)",
     "Только QUIC fake repeats=6 (лёгкий)":"QUIC fake repeats=6 only (light)",
     "Аргументы nfqws":"nfqws arguments","(пусто = дефолт)":"(empty = default)","Дефолт:":"Default:",
-    "Сбросить на дефолт":"Reset to default","Проверка в браузере (реальный путь)":"Browser check (real path)",
+    "Сбросить на дефолт":"Reset to default",
     "Применяет каждую стратегию":"Applies each strategy","вживую":"live",
     "Тот же свип, что у ByeDPI: применяет каждую стратегию вживую к nfqws и грузит ассеты заблок-сайтов прямо в этом браузере через настоящий форвард (TCP + QUIC).":"The same sweep as ByeDPI's: it applies every strategy live to nfqws and loads assets of blocked sites right in this browser through the real forward path (TCP + QUIC).",
     "прямо в этом браузере":"right in this browser",
@@ -9098,7 +9027,6 @@
     // i18n-split: «включён» — здесь это ХВОСТ разрезанной фразы-статуса («the desync is on»),
     // а внутри других фраз то же слово переводит правило («enabled»). Сверяет C89.
     "Доступно только когда десинк":"Available only when the desync is","включён":"on",
-    "(тумблер выше) — иначе трафик пойдёт мимо nfqws.":"(toggle above) — otherwise traffic will bypass nfqws.",
     // Установка/удаление десинк-бинарей живёт ТОЛЬКО в «Компонентах» — здесь ссылка туда.
     "Открыть «Компоненты»":"Open “Components”",
     "установка и удаление nfqws — там же, где остальные протоколы":"installing and removing nfqws happens where the other protocols do",
@@ -9115,16 +9043,11 @@
     ", без VPS. Какая стратегия сработает — зависит от провайдера. Можно выбрать готовый пресет, задать свои флаги":", without a VPS. Which strategy works depends on the ISP. You can pick a ready preset, set your own flags for",
     "перебрать их в браузере":"try them all in the browser","(проверка ниже).":"(check below).",
     "авто (по умолчанию)":"auto (default)","свои аргументы":"custom arguments",
-    "✓ ByeDPI сейчас несёт трафик — изменения стратегии применяются на лету.":"✓ ByeDPI is carrying traffic now — strategy changes apply on the fly.",
     "другой протокол":"another protocol",
-    ", а не ByeDPI. Выбор пресета здесь только":", not ByeDPI. Picking a preset here only",
     // Ветка «протокол выбран, но не поднят» (импорт бэкапа без бинарей) — два своих текст-узла,
     // хвост фразы общий с веткой выше.
-    "Основной трафик идёт напрямую: выбран":"The main traffic goes directly: selected",
-    ", но он не поднят. Выбор пресета здесь только":", but it is not up. Picking a preset here only",
     "сохраняет":"saves",
-    "стратегию — она вступит в силу, когда ByeDPI станет активным (переключатель транспорта вверху панели).":"the strategy — it takes effect once ByeDPI becomes active (the transport switcher at the top of the panel).",
-    "Готовые пресеты":"Ready presets","Аргументы ciadpi":"ciadpi arguments","(пусто = авто-набор)":"(empty = auto set)",
+    "Аргументы ciadpi":"ciadpi arguments","(пусто = авто-набор)":"(empty = auto set)",
     "Авто-набор:":"Auto set:","Сбросить на авто":"Reset to auto",
     // Стратегия десинка ДОП-ВЫХОДА (та же карточка в режиме слота: свой ciadpi, свои флаги).
     "Стратегия десинка…":"Desync strategy…",
@@ -9133,14 +9056,9 @@
     "Стратегия десинка":"Desync strategy for","этого выхода":"this exit",
     "— действует только на сайты его пула (у выхода свой процесс":"— applies only to the sites in its pool (the exit runs its own",
     "). Основная несущая ByeDPI и другие выходы настраиваются отдельно.":"). The main ByeDPI carrier and other exits are configured separately.",
-    "✓ Выход включён — смена стратегии применяется на лету (перезапускается только его ciadpi, маршрут не рвётся).":"✓ The exit is on — strategy changes apply on the fly (only its ciadpi restarts, the route is not dropped).",
-    "Выход сейчас выключен — стратегия":"The exit is off right now — the strategy will be",
     "сохранится":"saved",
-    "и вступит в силу при его включении («Соединение» → «Дополнительные выходы»).":"and takes effect once you turn it on (“Connection” → “Additional exits”).",
     // Тот же баннер, но когда транспорта нет ВООБЩЕ (свежая установка): ключи опять по фрагментам,
     // «сохранится» переиспользуем из строки выше — цельной строки в узле не бывает из-за <b>.
-    "Протокол ещё не выбран — основной трафик идёт напрямую. Стратегия здесь":"No protocol is selected yet — the main traffic goes directly. The strategy here will be",
-    "и вступит в силу, когда включите ByeDPI (переключатель транспорта вверху панели).":"and takes effect once you enable ByeDPI (the transport switcher at the top of the panel).",
     // Баннер свипа в СЛОТ-режиме: узлы разрезаны <b>…</b>, поэтому ключи — по фрагментам
     // (цельная строка не совпадает ни с одним текстовым узлом и молча оставалась ru).
     "вживую к этому выходу":"live to this exit","и грузит реальные ассеты":"and loads real assets",
@@ -9183,23 +9101,20 @@
     // Хвост баннера свипа ByeDPI после С3: curl-тестера в панели больше нет, поэтому ушла
     // и оговорка «где curl-тест ошибается» вместе с отсылкой к его настройкам.
     "через активный ByeDPI — тот же путь, что у сайтов (hev, QUIC). Меряет домены":"through the active ByeDPI — the same path the sites use (hev, QUIC). It measures the domains of the",
-    "🌐 Проверить в браузере":"🌐 Check in the browser",
     "несёт трафик":"is carrying traffic",
     "не удалось получить настройки ByeDPI":"failed to fetch ByeDPI settings",
     "лидер прогона":"run leader",
     "недопустимые символы — только флаги ciadpi":"invalid characters — ciadpi flags only",
     // — «Бэкап настроек» —
-    "Экспорт":"Export","Настройки (без ключей)":"Settings (no keys)","Полный бэкап (с ключами)":"Full backup (with keys)",
+    "Настройки (без ключей)":"Settings (no keys)","Полный бэкап (с ключами)":"Full backup (with keys)",
     // — «Режим поддержки» —
-    "Открывает разработчику":"Gives the developer","временный":"temporary",
-    "удалённый доступ к роутеру для диагностики, когда баг не выходит найти самому. Соединение шифруется от начала до конца и авто-выключится по истечении выбранного времени.":"remote access to the router for diagnostics when you cannot find a bug yourself. The connection is encrypted end to end and turns off automatically when the chosen time runs out.",
+    "временный":"temporary",
     "Включайте только по просьбе разработчика и закройте, когда закончите.":"Turn it on only at the developer's request and close it when you are done.",
     "Вставьте":"Paste the","код поддержки":"support code",
-    "Через сколько доступ":"How soon the access","сам закроется":"closes itself",
-    "Открыть доступ":"Open access","код поддержки (длинная base64-строка)":"support code (a long base64 string)",
+    "Через сколько доступ":"How soon the access",
+    "Открыть доступ":"Open access",
     // — попап «О роутере» —
-    "обновляю…":"refreshing…","⧉ Отчёт":"⧉ Report","⟳ Обновить":"⟳ Refresh",
-    "Скопировать или скачать текстовый отчёт":"Copy or download a text report",
+    "обновляю…":"refreshing…",
     "Система":"System","Модель":"Model","Платформа (SoC)":"Platform (SoC)","Серийный номер":"Serial number",
     "Прошивка":"Firmware","Ядро Linux":"Linux kernel","Время работы":"Uptime",
     "Процессор":"Processor","Модель ЦП":"CPU model","Ядер · частота":"Cores · frequency",
@@ -9212,7 +9127,6 @@
     // поэтому «показать»/«свернуть»/«считаю…» уже переведены выше — здесь только своё.
     "Что занимает память":"What takes up memory",
     "Роутер не умеет считать разбивку памяти — обновите скрипты роутера.":"This router can't break memory down yet — update the router scripts.",
-    "не удалось посчитать разбивку памяти":"failed to break memory down",
     "Проект":"This project","всё, что проект держит в памяти":"everything the project keeps in memory",
     "Остальное на роутере":"Everything else on the router","прошивка, не трогаем":"the firmware, we don't touch it",
     "Сумма по строкам выше":"Sum of the rows above",
@@ -9230,12 +9144,8 @@
     "Версия ядра и архитектура процессора. От ядра зависят доступные механизмы: напр. NFQUEUE для zapret есть на 5.4, а поведение ipset/busybox отличается на 4.4.":"The kernel version and the CPU architecture. The available mechanisms depend on the kernel: e.g. NFQUEUE for zapret exists on 5.4, while ipset/busybox behave differently on 4.4.",
     "Сколько роутер работает с последней загрузки. Часов реального времени в роутере нет — время подтягивается по сети уже после старта.":"How long the router has been running since the last boot. The router has no real-time clock — the time is pulled over the network after start-up.",
     "Модель процессорного ядра (определена по коду CPU part) и разрядность.":"The CPU core model (detected from the CPU part code) and the word size.",
-    "Число ядер и тактовая частота (текущая / максимум). Частота плавает под нагрузкой ради энергосбережения (минимум 936 МГц), поэтому текущая обычно ниже максимума.":"The number of cores and the clock frequency (current / maximum). The frequency floats under load to save power (minimum 936 MHz), so the current one is usually below the maximum.",
     "Архитектура и аппаратные ускорители, которые понимает процессор: NEON (векторные операции), AES/SHA (шифрование), CRC32. Именно они дают быстрый VPN и Wi-Fi-шифрование без просадки.":"The architecture and the hardware accelerators the CPU understands: NEON (vector operations), AES/SHA (encryption), CRC32. They are exactly what gives fast VPN and Wi-Fi encryption without a slowdown.",
     "Политика управления частотой ЦП (governor): «performance» держит максимум всегда, «ondemand»/«schedutil» поднимают частоту под нагрузкой и снижают в простое ради нагрева и энергии.":"The CPU frequency policy (governor): “performance” always holds the maximum, “ondemand”/“schedutil” raise the frequency under load and lower it when idle to save heat and power.",
-    "РЕАЛЬНАЯ загрузка ЦП — доля занятого процессорного времени, как в top. Считается по /proc/stat за 1 секунду. Это НЕ «средняя нагрузка» ниже: та почти всегда выглядит больше и в проценты не переводится.":"The REAL CPU load — the share of busy CPU time, as in top. Computed from /proc/stat over 1 second. This is NOT the “load average” below: that one almost always looks bigger and cannot be converted to percent.",
-    "Load average за 1 / 5 / 15 минут — средняя длина очереди задач (включая ждущих диск и сеть), а НЕ проценты. На этих роутерах фоновый служебный процесс держит её около 1.0 даже в простое, поэтому переводить её в проценты нельзя — раньше панель так и завышала «нагрузку ЦП».":"The load average over 1 / 5 / 15 minutes — the mean task queue length (including tasks waiting on disk and network), NOT a percentage. On these routers a background service process holds it near 1.0 even when idle, so it cannot be converted to percent — the panel used to overstate “CPU load” exactly that way.",
-    "Максимум по 13 датчикам кристалла (процессор и Wi-Fi на одном чипе). Норма для этих роутеров — примерно 50–70 °C.":"The maximum across the 13 die sensors (the CPU and Wi-Fi are on one chip). Normal for these routers is roughly 50–70 °C.",
     "Выше этой температуры процессор сам снижает частоту, чтобы не перегреться (троттлинг = падение производительности ради охлаждения). На шкале выше отмечен риской.":"Above this temperature the CPU lowers its own frequency to avoid overheating (throttling = losing performance for the sake of cooling). It is marked with a tick on the scale above.",
     "Аппаратный потолок: при достижении роутер аварийно перезагружается или выключается, чтобы не повредить чип. В штатной работе недостижим.":"The hardware ceiling: on reaching it the router reboots or shuts down in an emergency to avoid damaging the chip. Unreachable in normal operation.",
     "Сколько датчиков температуры на кристалле опрошено и разброс между самым холодным и самым горячим из них. В строке «Кристалл» показан максимум — он ближе к реальной «горячей точке».":"How many die temperature sensors were polled and the spread between the coldest and the hottest of them. The “Die” row shows the maximum — it is closer to the real hot spot.",
@@ -9246,7 +9156,6 @@
     "Внешнее подключение к интернету (кабель провайдера). Справа — согласованная скорость Ethernet-линка, адрес — со стороны провайдера.":"The external internet connection (the ISP cable). On the right is the negotiated Ethernet link speed; the address is on the ISP side.",
     "Внутренняя сеть, к которой подключены ваши устройства (мост клиентов — его имя показано рядом). Этот адрес вы вводите в браузере, чтобы открыть эту панель.":"The internal network your devices are connected to (the client bridge — its name is shown next to it). This is the address you type in the browser to open this panel.",
     "Виртуальный интерфейс активного VPN-транспорта (awg0 для AmneziaWG, xtun для xray/hy2). Через него уходит трафик, выбранный «в VPN».":"The virtual interface of the active VPN transport (awg0 for AmneziaWG, xtun for xray/hy2). The traffic selected “via VPN” leaves through it.",
-    "Диапазон Wi-Fi роутера. «Мощность передатчика» (dBm / мВт) — это ИЗЛУЧАЕМАЯ радиомощность антенн, а не потребление роутера из розетки: измерить реальные ватты потребления нечем — на этих роутерах нет датчика тока. 30 dBm = 1000 мВт = 1 Вт эфирной мощности.":"The router's Wi-Fi band. “Transmit power” (dBm / mW) is the RADIATED RF power of the antennas, not the router's draw from the socket: there is nothing to measure real power consumption with — these routers have no current sensor. 30 dBm = 1000 mW = 1 W of over-the-air power.",
     "Активные сетевые соединения в таблице conntrack (счётчик / лимит). Растёт с числом устройств и вкладок; приблизиться к лимиту трудно.":"Active network connections in the conntrack table (counter / limit). It grows with the number of devices and tabs; reaching the limit is hard.",
     // — шаг 6d: «О роутере», «Консоль», «Режим поддержки», «Удаление», «Бэкап настроек» колодой —
     "Роутер его не видит.":"The router can't see it.",
@@ -9356,7 +9265,6 @@
     "Наружу панель открывается только под вторым фактором: за паролем стоит консоль роутера с полными правами, а пароль подбирают и переиспользуют — код из приложения не подберёте.":"The panel is exposed to the outside only behind the second factor: the password guards the router console with full rights, and passwords get guessed and reused — an app code can't be guessed.",
     "Второй фактор":"Second factor",
     "Панель открыта в интернет, а второй фактор выключен — вход держит один только пароль. Включите второй фактор или закройте доступ снаружи.":"The panel is open to the internet while the second factor is off — the password alone guards sign-in. Turn on the second factor or close access from outside.",
-    "Провайдер выдаёт роутеру внешний адрес через общий NAT (CGNAT). Правило поставлено, но снаружи панель не откроется, пока провайдер не выдаст белый (публичный) IP.":"The provider gives the router its external address through a shared NAT (CGNAT). The rule is in place, but the panel won't open from outside until the provider assigns a public IP.",
     "Адрес роутера:":"Router address:",
     "Адрес выдаёт провайдер, и он может смениться после переподключения — о смене роутер сообщит в «Событиях» и письмом, если почта настроена.":"The provider assigns the address, and it may change after a reconnect — the router will report a change in «Events» and by email, if mail is set up.",
     "Правило сейчас не стоит — его смывает перезагрузка настроек роутера (например, из заводской веб-морды). Роутер вернёт его сам в течение пяти минут.":"The rule isn't in place right now — a reload of the router settings (from the stock web interface, for instance) wipes it. The router will put it back by itself within five minutes.",
@@ -9364,7 +9272,6 @@
     "Наружу открывается только защищённый порт и только при живом HTTPS: логин с паролем по открытому каналу — это отдать роутер. Обычный HTTP наружу не выставляется никогда.":"Only the protected port is exposed, and only while HTTPS is alive: a login and password over an open channel means giving the router away. Plain HTTP is never exposed to the outside.",
     "спрашивается формой входа · латиница, цифры и знаки, 8–64 символа":"asked by the sign-in form · Latin letters, digits and symbols, 8–64 characters",
     "Сменить":"Change",
-    "Этот браузер":"This browser",
     "Выйти":"Sign out",
     "Включён":"On",
     "Привязка начата, но не подтверждена":"Pairing started but not confirmed",
@@ -9375,7 +9282,6 @@
     "роутер не сообщил, включён ли второй фактор":"the router didn't say whether the second factor is on",
     "Требовать":"Require",
     "при каждом входе по паролю — и снаружи, и из дома; дальше держится сессия этого входа":"on every password sign-in — both from outside and from home; the session of that sign-in holds after that",
-    "Часы роутера ещё не синхронизированы — код из приложения не сойдётся, пока это не произойдёт (обычно пара минут после включения). Коды восстановления от часов не зависят.":"The router clock isn't synced yet — an app code won't match until it is (usually a couple of minutes after power-on). Recovery codes don't depend on the clock.",
     "«Только снаружи» не будет: за HTTPS-входом адрес выглядит домашним, и такое правило было бы обманом.":"There won't be «outside only»: behind HTTPS sign-in the address looks like a home one, and such a rule would be a lie.",
     "Устройства с активным входом":"Signed-in devices",
     "Показать устройства":"Show devices",
@@ -9401,7 +9307,6 @@
     "Каждый код работает вместо кода из приложения и только один раз. Потеряли телефон — войдёте по нему.":"Each code works in place of an app code, and only once. Lost your phone — sign in with one.",
     "Выключение":"Turning off",
     "Снять второй фактор можно только кодом — из приложения или кодом восстановления. Иначе тот, кто добрался до открытой вкладки, снял бы защиту одним кликом.":"The second factor can only be removed with a code — from the app or a recovery code. Otherwise whoever got to an open tab would remove the protection with one click.",
-    "Панель открыта снаружи: после выключения вход туда будет держать один только пароль. Сначала закройте доступ снаружи.":"The panel is open from outside: after turning off, the password alone will guard sign-in there. Close access from outside first.",
     "000000 или код восстановления":"000000 or a recovery code",
     "Код для выключения":"Code to turn off",
     "Код из приложения":"Code from the app",
@@ -9511,7 +9416,6 @@
     "Не входят никогда:":"Never included:",
     "пароль панели и второй фактор, вход в панель снаружи, режим поддержки и журнал событий. Перенос настроек не должен переносить доступ к роутеру, а в журнале — ваш внешний адрес.":"the panel password and second factor, sign-in from outside, support mode and the event log. Moving settings mustn't move access to the router, and the log carries your external address.",
     "Последний импорт":"Last import",
-    "Роутер не ответил — неизвестно, дошёл ли файл. Откройте экран позже или повторите импорт.":"The router didn't answer — it's unknown whether the file got through. Open the screen later or repeat the import.",
     "Не восстановлено:":"Not restored:",
     "Восстановлено объектов:":"Items restored:",
     "файлы настроек уже на роутере; сервер и протокол импорт не переключает":"the settings files are already on the router; import doesn't switch the server or protocol",
@@ -9551,7 +9455,6 @@
     "сбой импорта — роутер ответил не то":"import failed — the router answered something unexpected",
     "туннель ещё не снят; закрыть его можно и сейчас":"the tunnel isn't down yet; you can close it now too",
     "(роутер ответил не то — команда, возможно, выполнилась; прежде чем повторять, проверьте результат)":"(the router answered something unexpected — the command may have run; check the result before repeating it)",
-    "Файлы, настройки и панель на месте. Протокол не выбран — включать нечего: выберите его на экране «Транспорт».":"Files, settings and the panel are in place. No protocol is selected — there's nothing to turn on: pick one on the “Transport” screen.",
     "VPN снят — интернет идёт напрямую через провайдера":"The VPN is off — traffic now goes straight through your ISP",
     "Снялось не всё — подробности на экране «Удаление»":"Not everything came off — details on the “Removal” screen",
     "Снятие оборвалось — подробности на экране «Удаление»":"Taking down broke off — details on the “Removal” screen",
@@ -9611,12 +9514,11 @@
     "обновляю подписки на роутере — результат появится через минуту":"updating subscriptions on the router — the result will appear in a minute",
     "подписок нет — добавьте подписку в списке серверов":"no subscriptions — add one in the server list",
     "subs-update.sh не установлен (обновите скрипты роутера)":"subs-update.sh isn't installed (update the router scripts)",
-    "обновляю скрипты…":"updating scripts…",
     "откатываю…":"rolling back…","отправляю тест-письмо…":"sending a test email…",
     "очищаю журнал…":"clearing the log…","перезагружаю роутер…":"rebooting the router…",
     "применяю MTU…":"applying MTU…","применяю стратегию…":"applying the strategy…",
-    "проверяю обновления…":"checking for updates…","сбрасываю на авто…":"resetting to auto…",
-    "сбрасываю на дефолт…":"resetting to default…","сохраняю категории…":"saving categories…",
+    "сбрасываю на авто…":"resetting to auto…",
+    "сбрасываю на дефолт…":"resetting to default…",
     "сохраняю настройки ByeDPI…":"saving ByeDPI settings…",
     "сохраняю почту…":"saving email…","сохраняю стратегию…":"saving the strategy…",
     "чиню правила…":"repairing rules…",
@@ -9633,7 +9535,6 @@
     "Роутер перезагружается… панель вернётся через ~40-60 с (обновите страницу).":"The router is rebooting… the panel will be back in ~40-60 s (refresh the page).",
     "Текст обновлён — применяю":"Text updated — applying",
     "Уведомления включены":"Notifications enabled","Уведомления выключены":"Notifications disabled",
-    "Удаление nfqws запущено.":"nfqws removal started.",
     "имена сохранены":"names saved","конфиги подписки сняты":"subscription configs removed",
     "подписка переименована":"subscription renamed","подписка сохранена":"subscription saved",
     "подписка удалена":"subscription deleted",
@@ -9698,14 +9599,12 @@
     "недопустимые символы — разрешены только флаги ciadpi (буквы, цифры, пробел, + , . : / = _ -)":"invalid characters — only ciadpi flags allowed (letters, digits, space, + , . : / = _ -)",
     "недопустимые символы — разрешены флаги nfqws (буквы, цифры, пробел, + , . : / = _ @ -)":"invalid characters — nfqws flags allowed (letters, digits, space, + , . : / = _ @ -)",
     "не удалось сохранить стратегию":"failed to save the strategy","не удалось сохранить аргументы":"failed to save the arguments",
-    "не удалось сохранить настройки теста":"failed to save the test settings","не удалось начать свип":"failed to start the sweep",
+    "не удалось начать свип":"failed to start the sweep",
     "ByeDPI не активен — свип прерван":"ByeDPI is not active — sweep aborted",
     "VPN выключен — свип прерван":"the VPN is off — sweep aborted",
-    "Zapret выключен — свип прерван":"Zapret is off — sweep aborted",
     "браузер-свип возможен только когда ByeDPI несёт трафик — включите ByeDPI вверху панели":"browser sweep is possible only when ByeDPI is carrying traffic — enable ByeDPI at the top of the panel",
     "браузер-свип возможен только когда ByeDPI несёт трафик — VPN сейчас выключен тумблером":"browser sweep is possible only when ByeDPI is carrying traffic — the VPN is switched off right now",
     // — общий браузер-свип десинка (один движок на ByeDPI и Zapret, dev53): контракт честной пробы
-    "Своей стратегии у выхода нет — наследует общую:":"The exit has no strategy of its own — it inherits the common one:",
     "общая (унаследована)":"common (inherited)",
     // — пул проб свипа (свой список + калибровка кнопкой)
     "Пул проверки:":"Check pool:","не задан":"not set","изменить…":"change…",
@@ -9730,7 +9629,6 @@
     "Сначала соберите пул проверки: «изменить…» → «Собрать из того, что едет через десинк». Без него свип грузил бы домены ВНЕ пула выхода, то есть мерил бы чужой маршрут.":"Build the check pool first: «change…» → «Collect from what goes through the desync». Without it the sweep would load domains OUTSIDE the exit's pool, i.e. measure a different route.",
     "Сначала соберите пул проверки: «изменить…» → «Собрать из того, что едет через десинк». Мерить домены, про которые неизвестно, идут ли они через ByeDPI, — значит получить красивую таблицу ни о чём.":"Build the check pool first: «change…» → «Collect from what goes through the desync». Measuring domains that may not even go through ByeDPI just yields a pretty table about nothing.",
     "Сначала соберите пул проверки: «изменить…» → «Собрать из того, что едет через десинк». Отмеченные категории задают, ЧТО десинкать, — а мерить надо ровно те домены, что в них попали.":"Build the check pool first: «change…» → «Collect from what goes through the desync». The ticked categories define WHAT to desync — what has to be measured is exactly the domains that ended up in them.",
-    "Доступно только когда выход несёт трафик — иначе его несущей нет и мерить нечего.":"Available only while the exit is on — otherwise it has no carrier and there is nothing to measure.",
     "Доступно только когда выход":"Available only while the exit is",
     "— иначе его несущей нет и мерить нечего.":"— otherwise it has no carrier and there is nothing to measure.",
     "Доступно только когда выход включён — иначе его несущей нет и мерить нечего.":"Available only while the exit is on — otherwise it has no carrier and there is nothing to measure.",
@@ -9755,27 +9653,21 @@
     "браузер-свип завершён — исходная стратегия восстановлена":"browser sweep finished — the original strategy has been restored",
     // протоколы/обновления
     // списки/блокировка
-    "категория: adblock|ipblock":"category: adblock|ipblock","категории: только ключи через пробел/запятую":"categories: keys separated by space/comma only",
-    "не выбрана ни одна категория":"no category selected","неизвестная категория":"unknown category",
+    "категория: adblock|ipblock":"category: adblock|ipblock",
+    "неизвестная категория":"unknown category",
     "тип: file|text":"type: file|text",
     "режим: off|sticky|home":"mode: off|sticky|home","неизвестный интервал":"unknown interval",
     "не удалось скачать список":"failed to download the list","не удалось добавить источник":"failed to add source",
     "не удалось сохранить (URL-источник не редактируется здесь)":"failed to save (a URL source is not edited here)",
     "не URL (нужен http(s)://…)":"not a URL (http(s)://… required)","URL: http(s):// и безопасные символы":"URL: http(s):// and safe characters",
-    "URL ведёт на приватный адрес — запрещено":"the URL points to a private address — forbidden",
     "URL ведёт на приватный/локальный адрес — так нельзя (SSRF)":"the URL points to a private/local address — not allowed (SSRF)",
     "URL должен быть https://хост[/путь] (буквы, цифры, . _ ~ - /)":"URL must be https://host[/path] (letters, digits, . _ ~ - /)",
     // режим поддержки
     "пустой код поддержки":"empty support code","пустая команда":"empty command","пустое имя":"empty name",
     // ===== доперевод описаний/подсказок модалок (dev12) — EN-оверлей, ru не трогаем =====
     // Режим VPN и failover
-    "Локальная сеть и явные «мимо VPN» остаются прямыми. Безопасно: при падении VPS трафик идёт напрямую.":"The LAN and explicit «bypass VPN» carve-outs stay direct. Safe: if the VPS goes down, traffic goes direct.",
     // Wi-Fi / Устройства — легенды сегментов
-    "Раздельно — по спискам (заблокированное через VPN). Мимо VPN — весь трафик сети напрямую. В VPN — весь трафик сети в туннель.":"Split — by lists (blocked goes via VPN). Bypass VPN — all the network's traffic goes direct. Via VPN — all the network's traffic into the tunnel.",
-    "Раздельно — по спискам (заблокированное идёт через VPN). Мимо VPN — всегда напрямую. В VPN — весь трафик устройства в туннель.":"Split — by lists (blocked goes via VPN). Bypass VPN — always direct. Via VPN — all the device's traffic into the tunnel.",
-    "Не то устройство? Сверяйте по":"Wrong device? Verify by",
     "MAC-адресу":"the MAC address",
-    "с родной мордой роутера — имя может быть от старой аренды (устройство сменило сеть/IP).":"against the router's native UI — the name may be from an old lease (the device changed network/IP).",
     "Только онлайн":"Only online",
     "онлайн":"online","офлайн":"offline","не в сети":"offline","· не в сети":"· offline",
     // Устройства — «Как подключено по Wi-Fi» (движок wifi-stats.sh)
@@ -9855,22 +9747,13 @@
     "Тест скорости ВСЕХ xray-серверов (реальный трафик через VPS, по одному)":"Speed test of ALL xray servers (real traffic via the VPS, one by one)",
     "Пере-упорядочить по УЖЕ измеренным пингу/скорости — без повторной проверки":"Reorder by the ALREADY measured ping/speed — without re-checking",
     "Пинг серверов текущей вкладки: xray — пинг+реальный выход, awg/hy2 — пинг эндпоинта":"Ping the current tab's servers: xray — ping+real exit, awg/hy2 — endpoint ping",
-    "Пинг — задержка до сервера, замеряется НАПРЯМУЮ (мимо VPN), чтобы число было честным. Сначала TCP-рукопожатие к порту сервера (надёжнее ICMP — его часто режут), иначе ICMP или соседний порт 443/80/22. Для Xray вдобавок проверяется реальный выход в интернет через сервер — не просто «пингуется». Метка CDN = сервер за Cloudflare, тогда пинг до ближнего узла CDN, а не до самого VPS.":"Ping — latency to the server, measured DIRECTLY (bypassing the VPN) so the number is honest. First a TCP handshake to the server's port (more reliable than ICMP, which is often filtered), otherwise ICMP or a neighbouring port 443/80/22. For Xray it also checks the real exit to the internet through the server — not just «is it pingable». A CDN mark = the server is behind Cloudflare, so the ping is to the nearest CDN node, not to the VPS itself.",
-    "Скорость — многопоточная загрузка (4 потока, ~12 с) через сервер, как speedtest.net: роутер сам качает пробный файл с Cloudflare ЧЕРЕЗ VPS и суммирует байты. Это пропускная способность канала роутер↔VPS (пробный узел стоит рядом с VPS → это ПОТОЛОК, а не скорость до далёкого сайта). Качает роутер, поэтому число обычно ВЫШЕ, чем покажет телефон или ПК (там ещё Wi-Fi и LAN). Ограничено и мощностью самого роутера.":"Speed — a multi-threaded download (4 threads, ~12 s) through the server, like speedtest.net: the router itself downloads a probe file from Cloudflare VIA the VPS and sums the bytes. This is the router↔VPS channel throughput (the probe node sits next to the VPS → it's the CEILING, not the speed to a distant site). The router downloads, so the number is usually HIGHER than a phone or PC would show (those add Wi-Fi and LAN too). It's also limited by the router's own power.",
     // Настройки — тултипы
-    "Оформление панели. «Авто» следует за системной темой устройства (тёмная ночью, если так настроен телефон/ноут). «Светлая»/«Тёмная» — фиксируют выбор независимо от системы. Настройка хранится на роутере и действует на всех ваших устройствах.":"Panel appearance. «Auto» follows the device's system theme (dark at night if the phone/laptop is set that way). «Light»/«Dark» pin the choice regardless of the system. The setting is stored on the router and applies to all your devices.",
-    "Куда бить пробу «зарубежного IP» через VPN (строка IP в шапке). По умолчанию 1.1.1.1/cdn-cgi/trace — IP-литерал Cloudflare, работает без DNS (на старых ядрах hostname-проба вроде api.ipify.org молча пустеет). Понимает и trace-ответ (строка ip=…), и сервис, отдающий голый IP.":"Where to probe the «foreign IP» through the VPN (the IP line in the header). Default 1.1.1.1/cdn-cgi/trace — a Cloudflare IP literal that works without DNS (on old kernels a hostname probe like api.ipify.org silently comes back empty). It understands both a trace response (an ip=… line) and a service that returns a bare IP.",
-    "После проверки всех серверов предложить удалить те, что не дали реального выхода в интернет. Спросит подтверждение и покажет список. Активный сервер не трогается. По умолчанию выкл.":"After checking all servers, offer to delete the ones that gave no real exit to the internet. It asks for confirmation and shows a list. The active server is left alone. Off by default.",
-    "Периодически в фоне пингует все серверы (задержка и доступность) и обновляет кэш, чтобы при заходе в панель пинги уже были свежими — вручную «Проверить все» жать не нужно. Работает, пока открыта вкладка панели в браузере, даже если окно «Серверы» закрыто. Полную проверку реального выхода (для Xray, ловит CDN-фронт и битые ключи) по-прежнему делает кнопка «Проверить все».":"Periodically pings all servers in the background (latency and reachability) and refreshes the cache, so the pings are already fresh when you open the panel — no need to press «Check all» manually. Works while the panel tab is open in the browser, even if the «Servers» window is closed. A full real-exit check (for Xray, catches CDN fronting and broken keys) is still done by the «Check all» button.",
-    "Если активный сервер заметно медленнее лучшего из живых (выигрыш от 60 мс, подтверждённый двумя проверками подряд), панель сама переключится на быстрый. Не чаще раза в 30 минут — переключение перезапускает несущую, и у всех устройств на секунду мигает интернет. Работает только вместе с автопроверкой и только внутри текущего транспорта. Упавший сервер чинит не это, а сторож на роутере — он работает всегда, даже когда панель закрыта. По умолчанию выкл.":"If the active server is noticeably slower than the best live one (a gain of 60 ms or more, confirmed by two checks in a row), the panel switches to the fast one itself. No more than once every 30 minutes — a switch restarts the carrier and every device's internet blinks for a second. Works only together with auto-checking and only within the current transport. A crashed server is fixed not by this but by the watchdog on the router — it always works, even when the panel is closed. Off by default.",
 
-    "Импорт восстановит файлы из архива и сам применит правила: сайты и домены, группы, гео-категории, вырезы. Это занимает до минуты — обновите страницу. Гео-категории заработают после ближайшего обновления списков. Активную несущую и протокол импорт не меняет.":"The import restores files from the archive and applies the rules itself: sites and domains, groups, geo categories, exclusions. It takes up to a minute — refresh the page. Geo categories will start working after the next list update. The import does not change the active carrier or protocol.",
     // Ad & IP blocking — описания пресетов каталога (бэкенд, EN-оверлей)
     "мягкий, почти без ложных срабатываний":"soft, almost no false positives",
     "реклама, трекеры, фишинг — сбалансированно":"ads, trackers, phishing — balanced",
     "только рекламные серверы, очень лёгкий":"ad servers only, very light",
     "базовый фильтр AdGuard DNS":"basic AdGuard DNS filter",
-    "⚠ больше ложных срабатываний":"⚠ more false positives",
     "сбалансированный, шире охват":"balanced, wider coverage",
     "жёсткий, максимум охвата":"strict, maximum coverage",
     "расширенный список OISD":"extended OISD list",
@@ -9900,13 +9783,12 @@
     "+ атакующие сети и ботнеты за сутки":"+ attacking networks and botnets over the last day",
     "более широкий охват угроз":"broader threat coverage",
     // ByeDPI — недостающие первые фрагменты баннеров (остальные уже в словаре)
-    "Трафик сейчас несёт":"Traffic is currently carried by",
     "Доступно только когда ByeDPI":"Available only when ByeDPI",
     "страница проекта":"project page",
     // ByeDPI-тестер (byedpi-test.sh): метки категорий (cat_label) + метка кандидата «свои args».
     // Приезжают в шапках таблицы теста / чекбоксах «Настройки теста» / STATE «сейчас проверяю: X».
     // Пресет-метки стратегий уже в словаре (dev13) — здесь лишь НЕ-пресетные строки. [[panel-i18n-theme-install-roadmap]]
-    "Соцсети":"Social","Трекеры/прочее":"Trackers/other",
+    "Соцсети":"Social",
     // — Дополнительные выходы (слоты мульти-транспорта, dev33) + селектор «через выход» в группах.
     //   Составные строки выхода («<транспорт> · N групп · сбой → …» одним узлом) и busy с динамическим
     //   именем — в I18N_RULES. «Переименовать» — общий ключ (подписки/группы/выходы), раньше пробел.
@@ -9919,7 +9801,6 @@
     "Транспорт выхода":"Exit transport","Сервер / конфиг":"Server / config","десинк напрямую":"direct desync","десинк через socks":"desync via socks","свой сервер":"own server","Серверы подписки":"Subscription servers",
     "Проверить":"Check","Тест скорости":"Speed test","Подписки…":"Subscriptions…",
     "Остаток и срок — учёт провайдера: они приходят вместе с подпиской при её обновлении. Нет чисел — провайдер их не сообщает, это не ошибка.":"Remaining traffic and expiry are the provider's accounting: they arrive with the subscription when it updates. No numbers means the provider does not report them — that is not an error.",
-    "Вставьте ссылку провайдера — роутер сам заберёт по ней серверы и будет их обновлять; подписка видна со всех устройств.":"Paste the provider's link — the router fetches the servers from it and keeps them updated; the subscription is visible from every device.",
     "пул серверов по ссылке провайдера — роутер сам его обновляет":"a server pool from the provider's link — the router keeps it updated",
     "не удалось получить список подписок":"could not get the subscription list",
     "Роутер не сообщает о подписках: его скрипты старее этого экрана. Обновите систему («Роутер → Обновление»).":"The router does not report subscriptions: its scripts are older than this screen. Update the system («Router → Update»).",
@@ -9927,7 +9808,6 @@
     "не удалось обновить экран подписки":"could not refresh the subscription screen",
     "роутер не ответил — открываю список подписок":"the router did not answer — opening the subscription list",
     "пусто — обновите подписку («Обновить серверы»)":"empty — update the subscription («Update servers»)",
-    "Расписание и обновление вручную — на экране «Подписки»":"The schedule and manual update are on the «Subscriptions» screen",
     "не удалось получить список выходов":"could not get the exit list",
     "Роутер не умеет дополнительные выходы: его скрипты старее этой возможности. Обновите систему («Роутер → Обновление»).":"The router cannot do additional exits: its scripts are older than this feature. Update the system («Router → Update»).",
     "Выходов может быть":"Exits allowed","занято":"in use",
@@ -9957,7 +9837,6 @@
     "Чтобы сменить сервер, правьте выход: удаление и создание заново теряет номер, а вместе с ним все привязки устройств и правил.":"To change the server, edit the exit: deleting and recreating it loses the number, and with it every binding of devices and rules.","Транспорт выхода не меняется":"An exit's transport does not change","после создания — по той же причине.":"after creation — for the same reason.",
     "выходов пока нет — все правила идут основным транспортом":"no exits yet — all rules go via the main transport",
     "нет транспорта, готового нести выход — поставьте ByeDPI или Zapret в «Компонентах» (на ядре 4.4 Zapret невозможен, см. карточку «Zapret»).":"no transport is ready to carry an exit — install ByeDPI or Zapret in «Components» (Zapret is impossible on kernel 4.4, see the «Zapret» card).",
-    "＋ Добавить выход":"＋ Add exit",
     "Zapret (десинк)":"Zapret (desync)",
     "включить/выключить выход":"enable/disable the exit",
     "Удалить выход":"Delete exit",
@@ -9971,7 +9850,6 @@
     "сервер / конфиг":"server / config",
     "— загрузка… —":"— loading… —",
     "выберите сервер/конфиг для выхода":"select a server/config for the exit",
-    "если выход упадёт":"if the exit goes down",
     "через основной":"via the main one",
     "Создать выход":"Create exit",
     "через выход":"via exit",
@@ -9999,11 +9877,9 @@
     "десинк-выход":"desync exit",
     "Через выход":"Through exit",
     "трафик идёт НАПРЯМУЮ и десинкуется — это не VPN: адрес не подменяется, шифрования нет, ломается только рукопожатие DPI. В счётчике «в VPN» такое не считается.":"the traffic goes DIRECT and is desynced — this is not a VPN: the address is not replaced and there is no encryption, only the DPI handshake gets broken. Such categories are not counted in «via VPN».",
-    "Действие «в VPN», но через выход на десинке: трафик идёт напрямую, рукопожатие ломает nfqws. VPN здесь ни при чём, поэтому в «в VPN» такие категории не считаются.":"The action is «via VPN», but through an exit that runs desync: the traffic goes direct and nfqws breaks the handshake. A VPN has nothing to do with it, so such categories are not counted in «via VPN».",
     "Zapret уже включён основным транспортом — отдельный выход на нём ничего не добавит: демон и стратегия те же, путь тот же прямой. Разные списки сайтов задаются действиями в «Гео-списках», выход для этого не нужен.":"Zapret is already enabled as the main transport — a separate exit on it adds nothing: same daemon, same strategy, same direct path. Different site lists are set by actions in «Geo lists», an exit is not needed for that.",
     // Старые пробелы grpEditor/ga-форм, найдены при браузер-прогоне dev33:
     "Сохранить состав":"Save members",
-    "Домены попадают в VPN динамически (адреса подхватываются при резолве) — снимок IP не устаревает, если сайт на CDN.":"Domains enter the VPN dynamically (addresses are picked up on resolve) — the IP snapshot doesn't go stale if the site is on a CDN.",
     "имя группы, например «Умный дом»":"group name, e.g. «Smart home»",
     // Ф1b-остаток — чипы-пресеты десинк-выхода + «Свой пул…» + тест по пулу.
     "Быстрая привязка:":"Quick bind:",
@@ -10023,7 +9899,6 @@
     "Показать исходные правила":"Show the original rules",
     "Секцию правил выделить не удалось — показан конфиг целиком.":
       "Could not isolate the rules section — showing the whole config.",
-    "＋ Импорт правил из конфига…":"＋ Import rules from a config…",
     "не удалось прочитать файл":"failed to read the file",
     "xray JSON / sing-box JSON / Clash YAML":"xray JSON / sing-box JSON / Clash YAML",
     // Подсказка к примерам ручной вставки (RT_EX). Имена форматов НЕ переводим — это имена
@@ -10037,7 +9912,6 @@
     "не удалось создать группу":"failed to create the group",
     // причины пропуска записей
     "пустая категория":"empty category",
-    "страны geoip в панели не заведены":"geoip countries aren't available in the panel",
     "такой geoip-категории в каталоге нет":"no such geoip category in the catalogue",
     "нет выхода":"no outbound",
     "внешний файл":"external file",
@@ -10083,7 +9957,6 @@
     "Статус не получен":"Status not received",
     "Ответ /cgi-bin/status не удалось прочитать":"Could not read the /cgi-bin/status response",
     "пока нет данных — копится с этого момента":"no data yet — collecting from now on",
-    "Статистика копится — недельные/месячные цифры разойдутся с «Сегодня» в следующие дни.":"Statistics are still accumulating — the weekly/monthly figures will diverge from «Today» over the coming days.",
     // — меню транспорта и конфига в шапке —
     "(текущий)":"(current)","🔍 Открыть список серверов…":"🔍 Open the server list…",
     "нет конфигов — добавьте в «Серверы»…":"no configs — add one in «Servers»…",
@@ -10131,7 +10004,6 @@
     "Обновить серверы":"Refresh servers","Изменить ссылку":"Change link","Удалить подписку":"Delete subscription",
     "Новое имя подписки:":"New subscription name:","переименовываю…":"renaming…","переименовано":"renamed",
     "нужен URL http(s)://":"an http(s):// URL is required",
-    "AmneziaWG (страны)":"AmneziaWG (countries)",
     // — редактор конфига сервера (форма + сырой JSON/YAML) —
     "Протокол:":"Protocol:","Адрес (сервер)":"Address (server)","id пользователя":"user id","(нет)":"(none)",
     "Метод":"Method","Защита (TLS)":"Security (TLS)","Host-заголовок":"Host header",
@@ -10143,7 +10015,6 @@
     "невалидный JSON — исправьте скобки/запятые":"invalid JSON — fix the brackets/commas",
     "в YAML нет строки server:":"the YAML has no server: line",
     "заполните адрес и порт":"fill in the address and port","заполните сервер, порт и auth":"fill in the server, port and auth",
-    "редактор доступен для xray/hy2":"the editor is available for xray/hy2",
     "не удалось прочитать конфиг":"failed to read the config",
     "Полный конфиг — меняется любое поле, сохранение проверит валидность. Ошибки называются словами: «невалидный JSON — исправьте скобки/запятые», «не нашёл outbound vless/vmess/trojan/ss», «в сыром JSON ошибка — исправьте перед переходом в форму».":
       "The full config — any field can be changed, saving validates it. Errors are named in words: «invalid JSON — fix the brackets/commas», «no vless/vmess/trojan/ss outbound found», «the raw JSON has an error — fix it before switching to the form».",
@@ -10155,7 +10026,7 @@
     "Это активный конфиг — при сохранении несущая перезапустится.":"This is the active config — saving restarts the carrier.",
     "(Форма пересобирает конфиг по стандартным полям.)":"(The form rebuilds the config from the standard fields.)",
     // — устройства и «что запрашивает устройство» —
-    "🔍 что запрашивает":"🔍 what it requests","роутер не видит ни одного устройства":"the router sees no devices at all",
+    "роутер не видит ни одного устройства":"the router sees no devices at all",
     "нет онлайн-устройств":"no online devices",
     // — ШАГ 4b: экран устройства колодой (шапка, вкладки, лестница одного устройства, «Что запрашивает») —
     "Маршрут":"Route","Что запрашивает":"What it requests","Исключения":"Exceptions",
@@ -10258,7 +10129,6 @@
     "по строке: домен (bybit.com)":"one per line: domain (bybit.com)",
     "выключена":"disabled",
     // — экран ОДНОГО устройства (все его правила в одном месте) —
-    "Выберите устройство — на его экране собраны все правила: куда идёт трафик, исключения, доп-выход и порты.":"Pick a device — its screen gathers all of its rules: where the traffic goes, exceptions, the extra exit and ports.",
     "открыть правила устройства":"open the device's rules","Устройство":"Device","● онлайн":"● online",
     "не удалось получить правила устройства":"failed to fetch the device's rules",
     "Куда идёт трафик":"Where the traffic goes",
@@ -10289,10 +10159,7 @@
     "в VPN — через":"via VPN — through","напрямую, без VPN":"directly, no VPN",
     "Сильнее общего режима: перечисленные порты пойдут туда, куда сказано здесь. Нужны, когда адрес назначения заранее не известен — p2p-игры, голос, торренты.":"They outrank the overall mode: the ports listed here go where this screen says. Needed when the destination address is not known in advance — p2p games, voice, torrents.",
     // — блок «Сайты и адреса этого устройства» (цепочка VPN_DEV) —
-    "Сайты и адреса этого устройства":"This device's own sites and addresses",
-    "Действуют только для него и сильнее общих списков, групп и гео. Так одному устройству дают свой маршрут, не трогая остальную сеть.":"They apply to this device only and outrank the shared lists, groups and geo. This is how one device gets its own route without touching the rest of the network.",
     "своих правил нет — устройство идёт по общим спискам и своему режиму":"no own rules — the device follows the shared lists and its own mode",
-    "сильнее режима и общих списков":"outrank the mode and the shared lists",
     "есть и в других списках":"also in other lists",
     "Домен назначен ещё одним правилом — гео-категорией, одиночным доменом или пулом десинка. Работают оба: адреса домена попадут в наборы обоих правил, а кто сильнее — решает порядок, описанный внизу экрана.":"The domain is claimed by one more rule — a geo category, a single domain or the desync pool. Both apply: the domain's addresses land in both rule sets, and which one wins is decided by the order described at the bottom of this screen.",
     "youtube.com или 5.6.7.8/24":"youtube.com or 5.6.7.8/24",
@@ -10301,15 +10168,10 @@
     "укажите домен или адрес":"enter a domain or an address",
     "заблокировано":"blocked",
     // лестница приоритетов: заголовок, подписи строк и пояснения (каждое в своём узле)
-    "Что сильнее чего":"What outranks what","перебивают всё остальное":"they outrank everything else",
-    "не заданы":"not set","Исключения «мои правила действуют»":"The «my rules still apply» exceptions",
-    "домены, адреса и группы, добавленные вручную, идут в VPN":"domains, addresses and groups added by hand go via the VPN",
+    "Что сильнее чего":"What outranks what",
+    "не заданы":"not set",
     "выключены":"off","Режим устройства":"Device mode","мои правила действуют":"my rules still apply",
-    "Общие списки, группы и гео":"Shared lists, groups and geo",
     "решают, что уйдёт в туннель":"they decide what goes into the tunnel",
-    "работают только добавленные вручную, общие пулы — нет":"only what was added by hand applies — the shared pools do not",
-    "для этого устройства не работают":"do not apply to this device",
-    "не нужны — в туннеле весь трафик":"not needed — all traffic is in the tunnel",
     "● Наблюдаю…":"● Watching…",
     "📋 копировать все":"📋 copy all","📋 копировать IP":"📋 copy IPs","IP скопировано":"IPs copied",
     "нажмите «Наблюдать», чтобы увидеть запросы":"press «Watch» to see the requests",
@@ -10339,15 +10201,9 @@
     // — режим «целиком в десинк» (напрямую + nfqws по источнику) —
     // «в десинк» уже переведено выше (гео-действия), здесь — остальные узлы режима.
     "напрямую + десинк":"directly + desync",
-    "напрямую, рукопожатия через nfqws":"directly, handshakes via nfqws",
     "Устройство идёт напрямую, а его подключения к сайтам пробиваются десинком. Работает даже у приставок со своим DNS — списки доменов тут не нужны. Без VPN и без VPS.":"The device goes directly, while its connections to sites are punched through with the desync. It works even for set-top boxes with their own DNS — no domain lists needed here. No VPN and no VPS.",
-    "Десинк рукопожатий":"Handshake desync",
-    "пробивает блокировки на прямом пути; списки доменов не нужны":"punches through blocks on the direct path; no domain lists needed",
-    "для этого устройства не работают — оно целиком напрямую":"do not apply to this device — it goes entirely directly",
     // — правила/группы «Сайты, домены, IP» —
     "Группа":"Group","➕ создать новую…":"➕ create a new one…","убираю":"removing",
-    "пусто — работает только общий список":"empty — only the shared list applies",
-    "Не открываются ни на одном устройстве (dnsmasq 0.0.0.0/::). Блокируются в «Гео-списки» поиском домена.":"They don't open on any device (dnsmasq 0.0.0.0/::). They are blocked in «Geo lists» by searching for the domain.",
     "Выбрано:":"Selected:","снять все":"clear all","убрано":"removed","снято:":"removed:",
     "не удалось получить списки":"failed to fetch the lists",
     // — доп-выходы —
@@ -10356,7 +10212,7 @@
     // — менеджер источников списков —
     "вставленный текст":"pasted text","Свой список":"Own list",
     "загружаю…":"loading…","сохраняю…":"saving…","читаю список…":"reading the list…",
-    "нужен http(s):// URL":"an http(s):// URL is required","нужен URL":"a URL is required",
+    "нужен URL":"a URL is required",
     "Ссылка":"Link","Скачать и добавить":"Download and add","добавляю пачкой…":"adding in bulk…",
     "скачиваю список":"downloading the list",
     // — карточка «Блокировка» —
@@ -10364,21 +10220,14 @@
     // — гео-списки —
     "апстрим":"upstream",
     // — Wi-Fi и режим —
-    "не удалось получить список Wi-Fi сетей":"failed to fetch the Wi-Fi network list",
-    "не удалось получить Wi-Fi":"failed to fetch Wi-Fi","ВЕСЬ трафик в туннель":"ALL traffic into the tunnel",
     "не удалось получить настройки режима":"failed to fetch the mode settings",
     // — уведомления —
-    "логин: нужен email":"login: an email is required","«кому»: нужен email":"«to»: an email is required",
-    "не удалось получить статус уведомлений":"failed to fetch the notification status",
     // — режим поддержки —
     "Доступ открыт":"Access is open","Порт релея":"Relay port","Осталось":"Remaining",
-    "Разработчик может подключиться к роутеру для диагностики. Индикатор «поддержка активна» держится в шапке, пока доступ открыт. Доступ сам закроется по истечении времени.":"The developer can connect to the router for diagnostics. The «support active» indicator stays in the header while access is open. Access closes by itself when the time runs out.",
-    "Закрыть доступ":"Close access","нужен код поддержки":"a support code is required",
+    "Закрыть доступ":"Close access",
     "вставьте код поддержки":"paste the support code",
-    "не удалось получить статус поддержки":"failed to fetch the support status",
     // — настройки, DNS-hosts, обновления, бэкап —
     "введите URL":"enter a URL","введите MTU":"enter the MTU",
-    "не удалось получить данные об обновлениях":"failed to fetch the update data",
     "импортирую настройки…":"importing the settings…",
     // — ByeDPI/Zapret: стратегия, свип, установка —
     "ByeDPI — стратегия выхода":"ByeDPI — exit strategy",
@@ -10389,12 +10238,8 @@
     "не удалось получить настройки Zapret":"failed to fetch the Zapret settings",
     "недопустимые символы — только флаги nfqws":"invalid characters — nfqws flags only",
     "АКТИВЕН":"ACTIVE",
-    "не удалось — см. журнал":"failed — see the log",
     // — консоль поддержки: предупреждение разорвано <b>root</b>/<code> ⇒ узлов несколько —
-    "⚠ Команды выполняются с правами":"⚠ Commands run with",
     // …а между <b> и первым <code> — ОДИН текстовый узел из двух кусков строки: ключами по кускам он не совпадал никогда.
-    ". Используйте, только если понимаете, что делаете — ошибочная команда может нарушить работу роутера, VPN или интернета. Консоль неинтерактивная (один запрос → ответ):":" privileges. Use it only if you know what you are doing — a wrong command can break the router, the VPN or the internet. The console is non-interactive (one request → one answer):",
-    "и подобные не подойдут.":"and the like will not work.",
     // — «что запрашивает устройство» и группы правил —
     "загрузка групп…":"loading the groups…","Домены в группу":"Domains into a group",
     "Группы недоступны на этой версии роутера — обновите скрипты.":"Groups are not available on this router version — update the scripts.",
@@ -10415,11 +10260,9 @@
     "Мои правила «в VPN» действуют":"My “to VPN” rules still apply",
     "домены, адреса и группы основного туннеля, добавленные вручную, всё равно пойдут через VPN; группы через выходы, общие списки и гео — нет":
       "domains, addresses and main-tunnel groups you added by hand still go through the VPN; groups via exits, the bulk lists and geo do not",
-    "IP не в списке «мимо VPN» — исключать не из чего":"the IP is not in the “bypass VPN” list — there is nothing to exclude from",
     // — выбор доп-выхода для устройства «целиком в VPN» —
     "через:":"via:","основной":"the main one","основной туннель":"the main tunnel",
     // — добор долга i18n (аудит 2026-08-05): фрагменты, не покрытые ни ключом, ни правилом —
-    "скопировать все IP — для массовой вставки в списки исключений":"copy all IPs — for mass paste into exception lists",
     "слишком много подписок с похожей меткой — задайте другую":"too many subscriptions with similar label — set another one",
     "»: метка занята другой подпиской — беру тег":"»: label is occupied by another subscription — taking tag",
     "по входу":"by input",
@@ -10428,7 +10271,6 @@
     "Формат:":"Format:",
     "(гео)":"(geo)",
     "Показать все:":"Show all:",
-    "— но пересборку гео запустить не удалось, нажмите «Обновить» на экране «Гео-списки»":"— but failed to rebuild geo, press «Update» on the «Geo lists» screen",
     "не создан":"not created",
     "Удалить конфиг «":"Delete config «",
     "» (Xray)? Файл удалится с роутера.":"» (Xray)? File will be deleted from router.",
@@ -10458,10 +10300,8 @@
     "блок:":"blocked:",
     "в десинк:":"in desync:",
     "· частично":"· partially",
-    "Гостевая →":"Guest →",
     "Режим «возврат»: основным станет текущий активный сервер (если ещё не задан). Продолжить?":"«Return» mode: main server will be current active one (if not yet set). Continue?",
     "эскалация:":"escalation:",
-    "· почта НЕ настроена":"· mail is not configured",
     "Закрыть удалённый доступ разработчику?":"Close remote access for developer?",
     "Открыть удалённый доступ разработчику к роутеру на":"Open remote access for developer to router on",
     "порт UDP":"UDP port",
@@ -10474,9 +10314,6 @@
     "Русский":"Русский",
     "последний прогон:":"last run:",
     "не получилось":"failed",
-    "Скачать и обновить скрипты с GitHub? Настройки и ключи не трогаются, панель обновится вместе со скриптами.":"Download and update scripts from GitHub? Settings and keys are untouched; the panel updates along with the scripts.",
-    "Откатить скрипты к прошлой версии из бэкапа?":"Rollback scripts to previous version from backup?",
-    "· штриховка справа — неснижаемый резерв":"· hatched area on the right — reserve that can't be freed",
     "· из них наше":"· of them ours",
     "· это ваши файлы, мы их не трогаем":"· these are your files, we don't touch them",
     "при резерве":"on reserve",
@@ -10523,19 +10360,16 @@
     "Новое имя выхода:":"New exit name:",
     "Удалить источник?":"Delete this source?",
     "Гнать ВЕСЬ трафик роутера через VPN?":"Send ALL router traffic through the VPN?",
-    "Выйти на этом устройстве":"Sign out on this device","Выйти из панели на этом устройстве?":"Sign out of the panel on this device?",
+    "Выйти из панели на этом устройстве?":"Sign out of the panel on this device?",
     "Выйти на всех устройствах?\n\nВсем, включая это, придётся войти заново.":"Sign out on all devices?\n\nEveryone, including this one, will have to sign in again.",
     "Выйти на остальных устройствах?\n\nЭто устройство останется в системе, всем прочим придётся войти заново.":"Sign out on the other devices?\n\nThis device stays signed in; all the others will have to sign in again.",
     "Перевыпустить сертификат? Браузер снова спросит про самоподписанный сертификат.":"Reissue the certificate? The browser will ask about the self-signed certificate again.",
     "Открыть панель наружу?\n\nПорт HTTPS станет доступен из интернета. Вход будет под паролем панели и кодом из приложения — убедитесь, что пароль длинный и не совпадает с другими вашими паролями. Вход с галочкой «Запомнить меня» держится год — отозвать можно в списке устройств ниже.":"Expose the panel to the internet?\n\nThe HTTPS port becomes reachable from outside. Sign-in needs the panel password plus the code from the app — make sure the password is long and not reused anywhere else. A sign-in with «Remember me» lasts a year — revoke it in the device list below.",
     "Отвязать это устройство?\n\nПри следующем заходе с него панель попросит войти заново.":"Revoke this device?\n\nNext sign-in from it will ask for the password again.",
     "Отвязать ЭТО устройство?\n\nПри следующем запросе панель попросит войти заново.":"Revoke THIS device?\n\nThe panel will ask to sign in again on the next request.",
-    "форма входа при открытии панели; ниже — устройства, на которых вход выполнен":"the sign-in form when the panel opens; the devices that are signed in are listed below",
-    "Пароль формы входа в панель. Меняется здесь же: текущий вводить не нужно — вы уже вошли, а перезапуск панели не требуется. Латиница, цифры и знаки, 8–64 символа, без кириллицы. После пяти неудачных попыток вход с ЭТОГО устройства ставится на паузу — от минуты до пятнадцати; остальные устройства это не задевает. Вход снаружи (через HTTPS) считается одним источником: там пауза общая.":"The password of the panel's sign-in form. Change it right here: no need to type the current one — you are already in, and the panel does not restart. Latin letters, digits and symbols, 8–64 characters, no Cyrillic. After five failed attempts the sign-in from THIS device is put on hold — from one minute up to fifteen; other devices are unaffected. Sign-ins from outside (over HTTPS) count as one source and share a single hold.",
     "Пароль изменён. При следующем входе панель спросит новый.":"Password changed. The panel will ask for the new one at the next sign-in.",
     "Пароль изменён. Остальные устройства вышли из панели — на них панель спросит новый.":"Password changed. The other devices have been signed out — the panel will ask them for the new one.",
     "не удалось сохранить файл":"failed to save file",
-    "скопировать не вышло — выделите вручную":"copy failed — select manually",
     // ─── Шаг 3c-2: «Режим и резервирование», «ByeDPI», «Zapret» колодой.
     "Что идёт в туннель":"What goes into the tunnel","заблокированное — через VPN, остальное напрямую":"blocked sites via VPN, the rest directly",
     "Весь трафик в VPN":"All traffic via VPN","полный туннель":"full tunnel","Полный туннель не абсолютен:":"The full tunnel is not absolute:",
@@ -10611,7 +10445,6 @@
     "Свой пул доменов":"Own domain pool","Подсети сервисов в тот же десинк":"Service subnets into the same desync",
     "в пуле:":"in the pool:",
     "Категории выше — готовые наборы из каталога гео. Состав этого пула задаёте вы: вставьте домены текстом, залейте файлом или подключите готовый список по ссылке. Работает так же по доменам — через DNS роутера, поэтому для телевизора или приставки со своим DNS дополняйте своими адресами в десинк.":"The categories above are ready sets from the geo catalog. You define this pool: paste domains as text, upload a file or connect a ready list by link. It works by domains too — through the router DNS, so for a TV or set-top box with its own DNS add your own addresses into the desync.",
-    "Пул по IP":"IP pool",
     "Телевизор, приставка или телефон со своим DNS (кэш, DoH, зашитый резолвер) в доменный пул не попадают вообще. Этот список задаёт те же сервисы подсетями, и десинк видит их у любого устройства. Приватные и слишком широкие диапазоны вырезаются автоматически — локальная сеть мимо VPN не уйдёт.":"A TV, set-top box or phone with its own DNS (cache, DoH, a hardwired resolver) never gets into the domain pool. This list defines the same services as subnets, and the desync sees them on any device. Private and overly wide ranges are cut out automatically — the local network will not leave around the VPN.",
     "Выберите пресет или задайте флаги nfqws вручную; @tls и @quic — встроенные фейк-пакеты.":"Choose a preset or set nfqws flags manually; @tls and @quic are built-in fake packets.",
     "Стратегия одна на всех потребителей: демон nfqws один и очередь одна. У отдельного zapret-выхода своей стратегии нет — «Стратегия десинка…» на его экране ведёт сюда же.":"The strategy is shared by all consumers: there is one nfqws daemon and one queue. A separate zapret exit has no strategy of its own — «Desync strategy…» on its screen leads here too.",
@@ -10659,7 +10492,6 @@
     "Весь остальной трафик":"All other traffic",
     "Всё, что не попало ни в одно правило ниже.":"Everything that matches no rule below.",
     "Категории и списки":"Categories and lists",
-    "открыть источники общего списка":"open the common list sources",
     "Общий список":"Common list",
     "по адресам":"by address",
     "подсети, которые всегда идут в VPN":"subnets that always go via VPN",
@@ -10729,7 +10561,6 @@
     "Блокировка срабатывает раньше всей лестницы: домен не получает адреса вовсе (DNS), а подсети категорий «блок» и списков блокировки отбрасываются, куда бы их ни вели.":"Blocking works before the whole ladder: a domain gets no address at all (DNS), and subnets of «block» categories and block lists are dropped wherever they would be sent.",
     "Источники правил":"Rule sources",
     "страны, сервисы, заблокированное в РФ":"countries, services, blocked in Russia",
-    "подсети, которые всегда идут в VPN — ссылки, файлы, свой текст":"subnets that always go via VPN — links, files, your own text",
     "открыть группы правил":"open rule groups",
     "именованные наборы доменов и адресов":"named sets of domains and addresses",
     "Категории пересекаются:":"Categories overlap:",
@@ -10772,13 +10603,9 @@
     "Домены и адреса — вперемешку, по одному в строке: роутер разложит их сам. Домены попадают в набор при резолве — снимок адресов не устаревает, даже если сайт на CDN.":"Domains and addresses — mixed, one per line: the router sorts them itself. Domains get into the set on resolution — the address snapshot never goes stale, even if the site is on a CDN.",
     "Общий список — всегда в VPN":"Common list — always via VPN",
     "Подсети, которые идут в туннель на всех устройствах. Это правило по адресам, без DNS: оно работает и у устройств со своим резолвером. Источники смешиваются: ссылка, файл, свой текст.":"Subnets that go into the tunnel on every device. It is a rule by address, without DNS: it works even for devices with their own resolver. Sources can be mixed: link, file, your own text.",
-    "Другие списки":"Other lists",
     "открыть блокировку":"open blocking",
     "Блокировка":"Blocking",
     "реклама и трекеры · вредоносные адреса":"ads and trackers · malicious addresses",
-    "открыть Zapret":"open Zapret",
-    "Пулы десинка Zapret":"Zapret desync pools",
-    "свои домены и подсети в десинк":"own domains and subnets to desync",
     "Всё тяжёлое — закачки, кэш, дедупликация — идёт в оперативной памяти, на флеш ложится только результат. Приватные адреса вырезаются из любого списка: иначе чужой пул однажды отрезал бы домашнюю сеть от роутера.":"All heavy work — downloads, cache, deduplication — happens in RAM; only the result goes to flash. Private addresses are cut from any list: otherwise a foreign pool would one day cut the home network off the router.",
     "Роутер не умеет группы правил: его скрипты старее этой возможности. Обновите систему («Роутер → Обновление»).":"The router cannot do rule groups: its scripts are older than this feature. Update the system («Router → Update»).",
     "введите домен или адрес":"enter a domain or address",
@@ -10807,7 +10634,6 @@
     "подсеть проверить нельзя — назовите один адрес":"a subnet cannot be checked — name a single address",
     "не похоже ни на домен, ни на адрес":"looks like neither a domain nor an address",
     "порт — число от 1 до 65535":"the port is a number from 1 to 65535",
-    "выберите устройство":"select a device",
     "заблокирован на DNS: роутер отдаёт этому имени 0.0.0.0 — адреса оно не получает вовсе":"blocked at DNS: the router answers this name with 0.0.0.0 — it gets no address at all",
     "роутер не получил для имени ни одного адреса: нет A-записи, имя не существует или отвечает только по IPv6":"the router got no address for this name: no A record, the name does not exist, or it answers only over IPv6",
     "DNS роутера не ответил — маршрут по адресу проверить нечем":"the router's DNS did not answer — there is nothing to check the route by address with",
@@ -10852,7 +10678,6 @@
     "2 · Что попадает под правило":"2 · What the rule covers",
     "3 · Куда направить":"3 · Where to send it",
     "Что получится":"What you will get",
-    "＋ Правило":"＋ Rule",
     "все устройства сети":"every device on the network",
     "все устройства одной сети Wi-Fi":"every device on one Wi-Fi network",
     "только одно устройство":"one device only",
@@ -10923,11 +10748,8 @@
     "Правило «все порты → заблокировать» на весь роутер рубит TCP и UDP у ВСЕХ устройств сети, включая гостевую; ICMP (пинг) остаётся.":"An «all ports → block» rule for the whole router cuts TCP and UDP for ALL devices on the network, the guest one included; ICMP (ping) stays.",
     "Чтобы правило подействовало сразу, роутер сбросит уже открытые соединения всей сети — загрузки и звонки могут оборваться.":"For the rule to take effect at once, the router will reset open connections of the whole network — downloads and calls may drop.",
     "Правило встанет именованной группой: её видно в «Группах правил», там же меняются состав, выход и направление.":"The rule will be created as a named group: it is visible under «Rule groups», and that is where its members, exit and direction are changed.",
-    "выключен — правило пойдёт основным туннелем, пока его не включат.":"is off — the rule will go through the main tunnel until it is turned on.",
-    "больше нет — правило пойдёт основным туннелем.":"no longer exists — the rule will go through the main tunnel.",
     "Включён «весь трафик в VPN» — выходы общих правил в этом режиме не работают, правило пойдёт основным туннелем.":"«All traffic via VPN» is on — exits of shared rules do not work in this mode, so the rule will go through the main tunnel.",
     "VPN выключен тумблером — выход погашен вместе с ним, правило пойдёт напрямую и без десинка.":"The VPN is off by the switch — the exit went down with it, so the rule will go directly and without desync.",
-    "— Zapret: он десинкует по адресам назначения и устройство целиком не ведёт, устройство пойдёт основным туннелем.":"— Zapret: it desyncs by destination addresses and does not carry a whole device, so the device will go through the main tunnel.",
     "упал на основной туннель, а тот поднят, но не везёт — правило не доедет никуда.":"fell back to the main tunnel, and that one is up but not carrying — the rule will not get anywhere.",
     "упал на основной туннель, а тот сейчас не везёт — правило пойдёт напрямую.":"fell back to the main tunnel, and that one is not carrying right now — the rule will go directly.",
     "Выберите сеть Wi-Fi.":"Pick a Wi-Fi network.",
@@ -11186,7 +11008,6 @@
     "Блокировка по адресам выключена":"Blocking by address disabled",
     "включаю блокировку":"enabling blocking",
     "выключаю блокировку":"disabling blocking",
-    "Как часто роутер обновляет списки — на экранах «Общий список» и «Блокировка»":"How often the router updates the lists — on the «Common list» and «Blocking» screens",
     "Общий список…":"Common list…",
     // Шаг 7b: «Уведомления» (почта, «О чём писать»), «События» колодой, «Журнал действий».
     "Почта":"Email",
@@ -11421,11 +11242,8 @@
     "неверные данные маскировки":"invalid masking data",
     "Маскировка первого пакета":"First-packet masking",
     "роутер собирает её сам: начало соединения выглядит как QUIC, а содержимое случайное и новое при каждом подключении — шаблона, который можно выучить, нет":"the router builds it itself: the start of the connection looks like QUIC, and the content is random and new on every connection — there is no template to learn",
-    "WARP этого роутера":"This router's WARP",
-    "без маскировки":"without masking",
     "выхода на нём нет":"no exit on it",
     "никого":"nobody",
-    "Дорогу выбирают на экране сервера — карточка «Дорога к серверу».":"The road is chosen on the server's screen — the «Road to the server» card.",
     "Что это":"What it is",
     "Бесплатный VPN Cloudflare":"Cloudflare's free VPN",
     "на обычном WireGuard, трафик без лимита":"on plain WireGuard, traffic unlimited",
@@ -11444,7 +11262,6 @@
     "Один конфиг на двух устройствах — связь рвётся у обоих:":"One config on two devices — both lose the connection:",
     "сервер держит одну сессию на ключ и мечется между ними. Конфиг, которым пользуется кто-то ещё (из бота, от знакомого), замените своим — «Получить заново» в его карточке.":"the server keeps one session per key and roams between them. Replace a config somebody else uses (from a bot, from a friend) with your own — «Get anew» in its card.",
     "роутер отказал":"the router refused",
-    "получаю…":"getting…",
     "получаю WARP":"getting WARP",
     "Открыть":"Open",
     "заблокирован":"blocked",
@@ -11664,6 +11481,7 @@
     [/^не удалось прочитать конфиг: ошибка$/,"could not read the config: error"],
     [/^не удалось прочитать конфиг: /,"could not read the config: "],
     [/^Удалить конфиг «([^»]*)» \((AmneziaWG|Xray|Hysteria2)\)\? Файл удалится с роутера\.$/,"Delete config «$1» ($2)? The file will be removed from the router."],
+    [/^Удалить конфиг «([^»]*)» \(AmneziaWG\)\? Файл удалится с роутера\. Если этот WARP получил сам роутер, его регистрация у Cloudflare тоже снимется — конфиг с этим ключом из резервной копии работать перестанет\.$/,"Delete config «$1» (AmneziaWG)? The file will be removed from the router. If the router obtained this WARP itself, its Cloudflare registration is removed too — a config with this key from a backup will stop working."],
     [/^Сделать «([^»]*)» активным для (AmneziaWG|Xray|Hysteria2)(?=\?)/,"Make «$1» active for $2"],
     [/^Сохранить «([^»]*)» активным конфигом (AmneziaWG|Xray|Hysteria2)\? Применится при переключении на (AmneziaWG|Xray|Hysteria2)\.$/,"Save «$1» as the active $2 config? It applies when you switch to $3."],
     [/^Сохранить конфиг «([^»]*)»\?/,"Save config «$1»?"],
@@ -15118,7 +14936,7 @@
         if(busy) return;
         var tpt=el.getAttribute('data-tpt'), name=el.getAttribute('data-name');
         var act = tpt==='awg'?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server'), dn=cfgDisp(tpt, name, d.subs);
-        postAction(act, 'Удалить конфиг «'+dn+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop(tpt,name); repaint(); });
+        postAction(act, cfgDelAsk(tpt, name, dn), 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop(tpt,name); repaint(); });
       });
     });
     // «✎» строки — экран сервера (у всех трёх транспортов: у AmneziaWG там имя, проверка и несекретное из конфига).
@@ -15726,9 +15544,13 @@
     // Сервер на дороге: число — через неё, прямое — рядом, и чья дорога (макет). Адрес заблокирован: напрямую молчит, через туннель
     // отвечает. Остальное — как у любого сервера.
     if(!run && c && c.via){
-      return cell('<span>Пинг через</span> '+roadExitHtml(c.via), (c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : 'нет ответа', c.ms==null)
+      // ДОРОГА ЛЕЖИТ СЕЙЧАС — а числа ниже остались от ПРОВЕРКИ, когда она везла: «Пинг через WARP 39 мс» и точка Cloudflare
+      // у дороги, которой нет, читались фактом, и о простое говорила одна шапка (обход на железе 12.10.2026). Клетки говорят
+      // то же, что шапка; прямой пинг — замер мимо дороги, он остаётся.
+      var rdn=roadDown(c.via);
+      return cell('<span>Пинг через</span> '+roadExitHtml(c.via), rdn ? 'дорога не поднята' : ((c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : 'нет ответа'), rdn || c.ms==null)
         + cell('Напрямую', (c.dms!=null) ? esc(c.dms+' мс') : 'не отвечает', c.dms==null)
-        + cell('Дорога', roadExitHtml(c.via)+'<span id="srv-colo">'+(_srvColo[srvColoKey(c)] ? ' · '+esc(_srvColo[srvColoKey(c)]) : '')+'</span>')
+        + cell('Дорога', roadExitHtml(c.via)+(rdn ? ' <span>· не поднята</span>' : '<span id="srv-colo">'+(_srvColo[srvColoKey(c)] ? ' · '+esc(_srvColo[srvColoKey(c)]) : '')+'</span>'), rdn)
         + srvStatsTail(tpt, name, act, c);
     }
     if(!run && c && c.st==='blk'){
@@ -15888,7 +15710,7 @@
         if(_srvRun[chkKey(tpt,name)]){ showToast('«'+disp+'» сейчас проверяется — дождитесь итога', false); return; }
         var da=(tpt==='awg')?'del_server':(tpt==='xray'?'del_xray_server':'del_hy2_server'), dn=disp;
         // Кэш сбрасывается при любом успехе, а уводит «наверх» только экран ЭТОГО сервера: человек мог уйти, пока роутер думал.
-        postAction(da, 'Удалить конфиг «'+dn+'» ('+names[tpt]+')? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name},
+        postAction(da, cfgDelAsk(tpt, name, dn), 'удаляю «'+dn+'»', {name:name},
           function(r){ if(r && r.ok){ chkDrop(tpt, name); if(srvHere(tpt, name)) navUp(); } });
       }
       else if(v==='ren') srvRename(tpt, name);
@@ -16009,6 +15831,7 @@
   function srvColoKey(c){ var x=c && c.via && slotById(c.via); return (x && x.warp) ? String(x.id)+'|'+String(x.config||'') : ''; }
   function srvColoLoad(body, c, fresh){
     var k=srvColoKey(c); if(!k) return;
+    if(roadDown(c.via)) return;   // через лежащую дорогу точку Cloudflare не спросить — клетка говорит «не поднята»
     var id=k.split('|')[0];
     if(fresh) delete _srvColoMiss[k];
     if(_srvColoAsk[k] || (_srvColo[k] && !fresh) || (_srvColoMiss[k]||0)>=COLO_TRIES) return;

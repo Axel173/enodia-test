@@ -1352,6 +1352,11 @@
   /* Командная строка консоли — поле до потолка 560, «Выполнить» у правого края; на узкой карточке кнопка встаёт под поле (макет). */
   .lnkrow.con{justify-content:space-between;flex-wrap:wrap}
   .lnkrow.con>input{flex:1 1 280px}
+  /* Экран сервера, карточка «Имя» (`.lnkrow.nm`): в узкой карточке поле имени рядом с «Переименовать» сжималось до 116 px и
+     резало имя из 12 знаков (320 px, замер 12.10.2026: карточка 294, кнопка 136). Кнопка уходит под поле, к правому краю.
+     Порог — по ширине КАРТОЧКИ (как у .zp-tr): до 340 px окна строка в два этажа, с 360 — прежняя (поле 156 px и шире).
+     Остальных `.lnkrow` правило не касается. */
+  @container card (max-width:280px){ .lnkrow.nm{flex-wrap:wrap} .lnkrow.nm>input{flex-basis:100%} .lnkrow.nm>.btn{margin-left:auto} }
   .codes>span{background:var(--soft);border-radius:var(--r-sm);padding:7px 10px;text-align:center;font-size:14px;letter-spacing:.5px}
   .vs-txt{margin-top:10px;min-width:0}
   .vs-txt summary{font-size:12.5px;color:var(--ink3);cursor:pointer}

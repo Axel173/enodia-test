@@ -35,7 +35,8 @@
 #   warp.sh status               — that JSON (`dev` first — a device config waits; state none|running|done|error, op, name, msg,
 #                                  exit, rider, port, colo; `job` last — the id of whoever started the work)
 #   warp.sh info                 — {"now":…,"items":[…]}: every WARP config and what the record knows about it
-#   warp.sh prune                — drop the records of configs that are gone (the config's delete calls it)
+#   warp.sh prune [give]         — drop the records of configs that are gone; `give` (the config's delete calls it so) — and
+#                                  give their registrations back to Cloudflare, in the background
 #   warp.sh import <file>        — a backup's records: merged by key (the archive's line wins), then pruned
 #   warp.sh run … | run-repick … | run-reget … | run-mask … | run-device — the work itself, in the foreground
 #   warp.sh i1                   — print a generated I1 (what the config gets)
@@ -208,17 +209,50 @@ warp_keys() {
 # another tab or by a backup's import (review s.123, round 3). A writer waits for the lock while the keys are read.
 # The lines are sifted by the shell itself, in memory: no key list in a file (unchecked, it kept NOTHING when it came out empty),
 # no awk between the record and its new text.
-cmd_prune() {
+cmd_prune() {   # $1 = give — the registrations of the OWN records dropped here go back to Cloudflare (give_bg)
     [ -s "$REG" ] || return 0
     reg_lock
+    _wpgv=""
     if _wkeep=$(warp_keys); then
         _wprn=""
         while IFS= read -r _wprl || [ -n "$_wprl" ]; do
-            case "$NL$_wkeep$NL" in *"$NL${_wprl%%"$TAB"*}$NL"*) _wprn="${_wprn:+$_wprn$NL}$_wprl" ;; esac
+            case "$NL$_wkeep$NL" in
+                *"$NL${_wprl%%"$TAB"*}$NL"*) _wprn="${_wprn:+$_wprn$NL}$_wprl" ;;
+                *) _wpgv="${_wpgv:+$_wpgv$NL}$_wprl" ;;
+            esac
         done < "$REG"
-        reg_commit "$_wprn"
+        reg_commit "$_wprn" || _wpgv=""   # not rewritten — the lines (and their tokens) are still in the record: nothing goes back
     fi
     reg_unlock
+    if [ "$1" = give ] && [ -n "$_wpgv" ]; then give_bg "$_wpgv"; fi
+    return 0
+}
+# THE REGISTRATIONS OF THE RECORDS `prune give` DROPPED GO BACK TO CLOUDFLARE. The config was deleted in the panel, and with the
+# record its token was lost for good: the registration stayed at Cloudflare, used by nobody, and nothing could remove it any
+# more (hardware walk 12.10.2026 — the pair of a deleted config still answered 200). Only OWN records with both halves, and only
+# on `give`: an import's prune drops an archive's records of configs that are not here, and those registrations may be in use
+# where the archive came from.
+# IN THE BACKGROUND: a DELETE lasts up to 15 s, and the caller is the panel's «Удалить конфиг». The pairs travel in a private
+# file (600), never in argv (see reg_del); the job removes it. BEST EFFORT, as every give-back: no answer — the registration
+# simply stays. `-p` names a pidfile of this very job: without one start-stop-daemon looks for a running /bin/sh and starts
+# nothing.
+give_bg() {   # $1 = the dropped lines of the record
+    _wgl=$(printf '%s\n' "$1" | awk -F"$TAB" '$2 == "1" && $3 != "" && $3 != "-" && $4 != "" && $4 != "-" { print $3 "\t" $4 }')
+    [ -n "$_wgl" ] || return 0
+    _wgf=$(umask 077; mktemp /tmp/enodia-warp-give.XXXXXX 2>/dev/null) || return 0
+    printf '%s\n' "$_wgl" > "$_wgf" || { rm -f "$_wgf"; return 0; }
+    if [ -x /sbin/start-stop-daemon ]; then
+        start-stop-daemon -S -b -m -p "$_wgf.pid" -x /bin/sh -- "$ENODIA_DIR/warp.sh" run-give "$_wgf" >/dev/null 2>&1
+    else ( sh "$ENODIA_DIR/warp.sh" run-give "$_wgf" </dev/null >/dev/null 2>&1 & ); fi
+    return 0
+}
+cmd_run_give() {   # $1 = the file of `id⇥token` pairs — ours by its name, and nothing else
+    case "$1" in /tmp/enodia-warp-give.*) ;; *) return 1 ;; esac
+    [ -f "$1" ] || return 0
+    _wgvf=$1
+    trap 'rm -f "$_wgvf" "$_wgvf.pid"' EXIT
+    trap 'exit 1' INT TERM HUP PIPE
+    while IFS="$TAB" read -r _wgi _wgt || [ -n "$_wgi" ]; do reg_del "$_wgi" "$_wgt"; done < "$_wgvf"
     return 0
 }
 # A backup's records (cgi-bin/backup, after the configs are in): a line is taken only in the record's own shape, the archive's
@@ -751,7 +785,8 @@ case "$1" in
     device-take) cmd_device_take ;;
     status)      cmd_status ;;
     info)        cmd_info ;;
-    prune)       cmd_prune ;;
+    prune)       cmd_prune "$2" ;;
+    run-give)    cmd_run_give "$2" ;;
     import)      cmd_import "$2" ;;
     run)         cmd_run "$2" ;;
     run-repick)  cmd_run_repick "$2" ;;

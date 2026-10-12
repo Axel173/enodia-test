@@ -58,6 +58,8 @@ if [ -f "$ENODIA_DIR/router-lib.sh" ]; then . "$ENODIA_DIR/router-lib.sh"; fi
 # загрузки, а скачок часов вперёд делает СВЕЖИЙ лок «протухшим» — и в журнал полезли бы два
 # писателя разом. Возраст записи в самом журнале считается иначе, там отметка переживает ребут
 # (см. `# clock-raw:` ниже). Шим = прежнее поведение для установки без библиотеки.
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: the journal replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 command -v age_since >/dev/null 2>&1 || age_since() {
 	case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
@@ -222,8 +224,7 @@ cmd_add() {
 			# схлопнул бы его с сегодняшним. Судим голой разностью сознательно.
 			if [ "$old_ts" -gt 0 ] && [ "$((now - old_ts))" -lt "$dedup" ]; then
 				cnt=$((old_cnt + 1))
-				awk -F'\t' -v k="$key" -v t="$old_ts" '!($2==k && $1==t)' "$EV" > "$EV.new" 2>/dev/null
-				mv "$EV.new" "$EV" 2>/dev/null
+				lbl_commit_out "$EV" awk -F'\t' -v k="$key" -v t="$old_ts" '!($2==k && $1==t)' "$EV" 2>/dev/null
 			fi
 		fi
 	fi

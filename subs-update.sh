@@ -53,6 +53,8 @@ MAXSRV=${MAXSRV:-200}
 # DNS и туннель (грабля «всё тяжёлое — в ОЗУ»), а подписка того не стоит.
 MINFREE_KB=${MINFREE_KB:-2048}
 
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: a file replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 # Возраст отметок (clock-lib.sh) — нужен ровно одному месту, локу в take_lock; шим = прежнее.
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
 command -v age_since >/dev/null 2>&1 || age_since() {
@@ -857,26 +859,27 @@ prune_stale() {
 # write_names <tag> — заменить блок этой подписки в .sub-names (имя-файла⇥настоящее имя).
 # Чужие блоки снимает sub_names_keep_other (владелец = ДЛИННЕЙШИЙ тег), а не префикс: голый
 # `^sub-<tag>-` уносил имена соседней подписки с тегом-надмножеством.
+# Текст хранилища $2 после прогона подписки $1: чужие блоки, строки исчезнувшего активного, строки этого прогона ($3).
+names_text() {
+	sub_names_keep_other "$1" "$2"
+	# Активный конфиг, ИСЧЕЗНУВШИЙ из подписки, prune_stale намеренно оставляет на диске —
+	# значит и строку имени надо оставить: иначе файл теряет идентичность (панель показывает
+	# его именем файла), а вернувшийся сервер заведёт себе ВТОРОЙ файл вместо этого.
+	if [ -n "$ACT_GONE" ] && [ -f "$2" ]; then
+		for _ag in $ACT_GONE; do grep "^$_ag$TAB" "$2" 2>/dev/null | head -1; done
+	fi
+	if [ -s "$3" ]; then cat "$3"; fi
+	return 0
+}
+# Целиком либо никак — label-lib.sh::lbl_commit_out: «записалось ли» говорит приёмник, а не код писателя (grep при полном
+# разделе выходит с кодом 0, и обрубок карты идентичности заводил бы серверам вторые файлы).
 write_names() {
 	_t="$1"
-	{ sub_names_keep_other "$_t"
-	  # Активный конфиг, ИСЧЕЗНУВШИЙ из подписки, prune_stale намеренно оставляет на диске —
-	  # значит и строку имени надо оставить: иначе файл теряет идентичность (панель показывает
-	  # его именем файла), а вернувшийся сервер заведёт себе ВТОРОЙ файл вместо этого.
-	  if [ -n "$ACT_GONE" ] && [ -f "$NAMES" ]; then
-		for _ag in $ACT_GONE; do grep "^$_ag$TAB" "$NAMES" 2>/dev/null | head -1; done
-	  fi
-	  [ -s "$TMPD/names" ] && cat "$TMPD/names"; } > "$NAMES.new" 2>/dev/null
-	mv "$NAMES.new" "$NAMES" 2>/dev/null && chmod 600 "$NAMES" 2>/dev/null
+	lbl_commit_out "$NAMES" names_text "$_t" "$NAMES" "$TMPD/names" 2>/dev/null && chmod 600 "$NAMES" 2>/dev/null
 	# .sub-picks — тем же порядком и тем же владельцем (см. константу PICKS наверху). Строку
 	# исчезнувшего активного тоже сохраняем: конфиг остаётся на диске, и когда сервер вернётся,
 	# он обязан вернуться на СВОЙ выход, а не в лотерею «минимальный тег».
-	{ sub_names_keep_other "$_t" "$PICKS"
-	  if [ -n "$ACT_GONE" ] && [ -f "$PICKS" ]; then
-		for _ag in $ACT_GONE; do grep "^$_ag$TAB" "$PICKS" 2>/dev/null | head -1; done
-	  fi
-	  [ -s "$TMPD/picks" ] && cat "$TMPD/picks"; } > "$PICKS.new" 2>/dev/null
-	mv "$PICKS.new" "$PICKS" 2>/dev/null && chmod 600 "$PICKS" 2>/dev/null
+	lbl_commit_out "$PICKS" names_text "$_t" "$PICKS" "$TMPD/picks" 2>/dev/null && chmod 600 "$PICKS" 2>/dev/null
 }
 
 # --- активный сервер --------------------------------------------------------
@@ -955,7 +958,7 @@ update_one() {
 		parse_json "$TMPD/body" "$_t" || _ok=0
 	else
 		if ! grep -q '://' "$TMPD/body" 2>/dev/null; then
-			tr -d ' \r\n' < "$TMPD/body" | base64 -d > "$TMPD/body.d" 2>/dev/null
+			tr -d ' \r\n' < "$TMPD/body" | base64 -d 2>/dev/null | cat > "$TMPD/body.d" 2>/dev/null || rm -f "$TMPD/body.d" 2>/dev/null   # через cat: base64 о неудачной записи молчит
 			if [ -s "$TMPD/body.d" ] && grep -q '://' "$TMPD/body.d" 2>/dev/null; then
 				mv "$TMPD/body.d" "$TMPD/body"
 			else

@@ -51,6 +51,8 @@ ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # утилиты conntrack в прошивке НЕТ ВООБЩЕ, и прежний `conntrack -F || true` был тихим no-op —
 # правило стояло, а поток шёл по-старому через NSS/ECM. Шим = прежнее поведение (частичный
 # apply-scripts не должен падать), полноценный сброс живёт в самой библиотеке.
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: a file replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 if [ -f "$ENODIA_DIR/ct-lib.sh" ]; then . "$ENODIA_DIR/ct-lib.sh"; fi
 # Ожидание xtables-лока: ipt-lib.sh подменяет команду `iptables` и добавляет `-w`. Лок занят
 # чужим кроном ⇒ без ожидания правило МОЛЧА не встаёт. Нет файла — прежний путь байт-в-байт.
@@ -432,10 +434,10 @@ step_sweep() {       # $1 = keep → цепочки панели оставля�
 #      прибивает домен к нашему СТАРОМУ адресу для всего роутера — и снять её, кроме нас, некому.
 step_hosts() {
     grep -qF "$HOSTS_TAG" /etc/hosts 2>/dev/null || return 0
-    grep -vF "$HOSTS_TAG" /etc/hosts > /etc/hosts.enodiatmp 2>/dev/null
-    [ -f /etc/hosts.enodiatmp ] && mv -f /etc/hosts.enodiatmp /etc/hosts
-    rm -f /etc/hosts.enodiatmp 2>/dev/null
-    log "/etc/hosts: строки сида server-host сняты."
+    # Whole or not at all (label-lib.sh): grep exits 0 when its write fails, and a stump would replace the router's hosts.
+    if lbl_commit_out_as /etc/hosts.enodiatmp /etc/hosts lbl_grep -vF "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
+        log "/etc/hosts: строки сида server-host сняты."
+    else log "/etc/hosts: строки сида server-host снять не удалось (файл не переписался)."; fi
 }
 
 # 4b. RAM-СЛЕД. `/tmp` гибнет на ребуте, но «снёс и работаю дальше» — законный сценарий, а
@@ -538,6 +540,7 @@ step_daemons() {      # $1 = дополнительные демоны (толь
 # 3. Cron. Наши строки узнаются по ПУТИ (`cron_ours`: бутстрап или каталог кода) — перечислять скрипты
 #    поимённо нельзя (список менялся при каждой новой фиче: heal, watchdog, traffic-acct, web-ui,
 #    iplist-update, subs-update…, и старый uninstall уже отставал на три штуки).
+cron_saved_text() { cron_ours "$1" 2>/dev/null | grep -vF "$CRON_PANEL"; }   # our lines but the panel's — what `keep` remembers
 step_cron() {        # $1 = keep → строку панели оставляем, снятое помним (deactivate)
     _ct=/etc/crontabs/root
     _kept=""
@@ -549,7 +552,11 @@ step_cron() {        # $1 = keep → строку панели оставляе�
     # цел, отчёт рапортовал «снято строк N», и через минуту heal.sh переигрывал ВСЁ, что мы
     # только что сняли, — то есть деактивация не работала совсем. Судим по ФАКТУ: черновик
     # создан ⇒ выкладываем (пустой файл — законный результат).
-    cron_ours -v "$_ct" > "$_ct.new" 2>/dev/null
+    # ЧЕРНОВИК ПИШЕТ `cat`: grep и awk при неудачной записи (раздел полон — /etc на AX3600 это флеш) выходят с кодом 0, и
+    # обрубок лёг бы поверх crontab — вместе с нашими строками ушли бы чужие (замер BE7000 12.10.2026, dev/blind-write-scan.py).
+    # Код трубы — код `cat`: он о неудаче говорит. Не записалось — crontab не трогаем вовсе (_cdr).
+    _cdr=1
+    cron_ours -v "$_ct" 2>/dev/null | cat > "$_ct.new" 2>/dev/null || _cdr=0
     if [ "$1" = keep ]; then
         # Сперва ПОМНИМ, потом снимаем: `$_ct` ещё цел, и снятое можно будет вернуть.
         # Сколько снимаем — считаем по ЖИВОМУ крону, а не по снимку: снимок может и не записаться
@@ -558,15 +565,20 @@ step_cron() {        # $1 = keep → строку панели оставляе�
         case "$_was" in ''|*[!0-9]*) _was=0 ;; esac
         # Пустым снимком прежний НЕ затираем — повторная деактивация (в кроне осталась одна
         # строка панели) иначе стёрла бы память о расписании, и возвращать было бы нечего.
-        cron_ours "$_ct" 2>/dev/null | grep -vF "$CRON_PANEL" > "$CRON_SAVE.new" 2>/dev/null
-        if [ -s "$CRON_SAVE.new" ]; then mv "$CRON_SAVE.new" "$CRON_SAVE"; else rm -f "$CRON_SAVE.new"; fi
+        # (grep, не выбрав ни строки, выходит с кодом 1 — владелец тогда ничего не пишет: это и есть «пустым не затираем».)
+        lbl_commit_out "$CRON_SAVE" cron_saved_text "$_ct"
         # Запомнить не вышло (нет места на 20-МБ /data, ФС в ro) — молчать нельзя: «включить»
         # вернёт правила и настройки подсистем, а расписание придётся возвращать переустановкой.
         if [ "$_was" != 0 ] && [ ! -s "$CRON_SAVE" ]; then
             log "ВНИМАНИЕ: расписание снято, но запомнить его не вышло ($CRON_SAVE) — после «включить» проверьте cron."
         fi
-        cron_ours "$_ct" 2>/dev/null | grep -F "$CRON_PANEL" >> "$_ct.new" 2>/dev/null
+        cron_ours "$_ct" 2>/dev/null | grep -F "$CRON_PANEL" | cat >> "$_ct.new" 2>/dev/null || _cdr=0
         _kept=" (строка панели оставлена — ею панель поднимается после ребута)"
+    fi
+    if [ "$_cdr" != 1 ]; then
+        rm -f "$_ct.new" 2>/dev/null
+        log "ВНИМАНИЕ: новый crontab записать не удалось (нет места?) — расписание НЕ снято, файл оставлен как был."
+        return 0
     fi
     # Adopted lines. A task line is ours, the line it replaced was not — the firmware's SSH-access patch among them: removed with
     # ours, SSH closed after the next reboot (review s.106). The crontab without our lines goes to `tasks.sh apply`, and it writes
@@ -737,7 +749,8 @@ EOF
         # стоковом конфиге остаётся подпись установщика — замерено на AX3600.
         _dnstmp="${DNSMASQ_CONF%/*}/.dnsmasq.conf.uninst.$$"
         _dn0=$(wc -l < "$DNSMASQ_CONF" 2>/dev/null)
-        grep -vxF "$DNSMASQ_LINE" "$DNSMASQ_CONF" | grep -vF -e "$DNSMASQ_MARK" -e "$DNSMASQ_MARK_OLD" > "$_dnstmp" 2>/dev/null
+        # Through `cat`: grep exits 0 when its write fails, and a stump has fewer lines too — the count below would let it through.
+        grep -vxF "$DNSMASQ_LINE" "$DNSMASQ_CONF" | grep -vF -e "$DNSMASQ_MARK" -e "$DNSMASQ_MARK_OLD" | cat > "$_dnstmp" 2>/dev/null || rm -f "$_dnstmp" 2>/dev/null
         _dn1=$(wc -l < "$_dnstmp" 2>/dev/null)
         case "$_dn0" in ''|*[!0-9]*) _dn0=0 ;; esac
         case "$_dn1" in ''|*[!0-9]*) _dn1=0 ;; esac

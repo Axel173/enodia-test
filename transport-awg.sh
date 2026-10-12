@@ -85,6 +85,7 @@ command -v age_since >/dev/null 2>&1 || age_since() {
 # «VPN выключен вручную — несущую не берёт никто» (daemon-lib.sh: carrier_barred/carrier_run, разбор там). Нет библиотеки —
 # шимы дают прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v go_quiet >/dev/null 2>&1 || go_quiet() { "$@"; }   # the shim of a missing library: the launch as it was, with the banner
 command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
 command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
 # The config probe's lock (cmd_try) — label-lib.sh's shared lock directory (the holder is judged by daemon-lib.sh's pid_runs). No
@@ -432,7 +433,7 @@ awg_if_start() {   # $1 = iface ; $2 = ifconf ; $3 = "ADDRESS<TAB>MTU" ; $4 = к
     # же демон, как awg0: без потолка его куча растёт по трафику, а на тесной модели их несколько.
     # grep по ФОРМЕ — гард на рассинхрон версий: старый net-tune.sh печатает на этот верб `usage: …`
     # в stdout, и оно стало бы первым аргументом env (демон не стартует). См. шапку net-tune.sh.
-    env $(sh "$ENODIA_DIR/net-tune.sh" memlimit-env 2>/dev/null | grep -E '^GOMEMLIMIT=[0-9]+MiB$') "$ENODIA_BIN/amneziawg-go" "$_if" || { log "$_wh: amneziawg-go $_if не стартовал"; return 1; }
+    go_quiet env $(sh "$ENODIA_DIR/net-tune.sh" memlimit-env 2>/dev/null | grep -E '^GOMEMLIMIT=[0-9]+MiB$') "$ENODIA_BIN/amneziawg-go" "$_if" || { log "$_wh: amneziawg-go $_if не стартовал"; return 1; }
     _i=0; while ! ip link show "$_if" >/dev/null 2>&1 && [ "$_i" -lt 10 ]; do sleep 1; _i=$((_i+1)); done
     ip link show "$_if" >/dev/null 2>&1 || { log "$_wh: $_if не появился"; awg_kill_daemon "$_if"; return 1; }
     # setconf rejects a config WHOLE (wg-quick lines, a name in Endpoint, empty I1..I5) — the interface would stay without a peer: an

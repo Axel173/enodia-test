@@ -95,6 +95,8 @@
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 # «Какая сеть на каком wlN» — только отсюда (см. шапку про .bypass-ifaces).
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: a file replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 if [ -f "$ENODIA_DIR/wifi-lib.sh" ]; then . "$ENODIA_DIR/wifi-lib.sh"; fi
 # Шим на случай частичного apply-scripts: правила по сетям продолжают работать, но как до
 # 04.08.2026 — строка хранилища трактуется как ИМЯ ИНТЕРФЕЙСА (осознанная деградация, не мёртвый код).
@@ -371,8 +373,7 @@ store_add() {   # $1 файл, $2 значение
 }
 store_del() {   # $1 файл, $2 значение
     [ -f "$1" ] || return 0
-    grep -vxF -- "$2" "$1" > "$1.tmp" 2>/dev/null
-    mv "$1.tmp" "$1"
+    lbl_commit_out "$1" lbl_grep -vxF -- "$2" "$1" 2>/dev/null   # whole or not at all (label-lib.sh): a grep that failed leaves the store as it was
 }
 
 # --- применение/снятие ОДНОГО правила (идемпотентно) ---
@@ -762,15 +763,15 @@ rebuild_force() {
 # обе формы строки (`IP` и `IP<TAB>sN`) снимаются одинаково.
 force_store_set() {   # $1 = IP, $2 = пусто (основной) | sN
     touch "$STORE_FORCE_IPS"
-    awk -F"$TAB" -v ip="$1" '$1!=ip' "$STORE_FORCE_IPS" > "$STORE_FORCE_IPS.tmp" 2>/dev/null
-    mv "$STORE_FORCE_IPS.tmp" "$STORE_FORCE_IPS"
-    if [ -n "$2" ]; then printf '%s\t%s\n' "$1" "$2" >> "$STORE_FORCE_IPS"
-    else printf '%s\n' "$1" >> "$STORE_FORCE_IPS"; fi
+    lbl_commit_out "$STORE_FORCE_IPS" force_store_text "$1" "$2" 2>/dev/null   # the old line out and the new one in — one write
+}
+force_store_text() {   # the store without the address's line, then its new line ($2 empty — the main tunnel)
+    awk -F"$TAB" -v ip="$1" '$1!=ip' "$STORE_FORCE_IPS" || return 1
+    if [ -n "$2" ]; then printf '%s\t%s\n' "$1" "$2"; else printf '%s\n' "$1"; fi
 }
 force_store_del() {   # $1 = IP (обе формы строки)
     [ -f "$STORE_FORCE_IPS" ] || return 0
-    awk -F"$TAB" -v ip="$1" '$1!=ip' "$STORE_FORCE_IPS" > "$STORE_FORCE_IPS.tmp" 2>/dev/null
-    mv "$STORE_FORCE_IPS.tmp" "$STORE_FORCE_IPS"
+    lbl_commit_out "$STORE_FORCE_IPS" awk -F"$TAB" -v ip="$1" '$1!=ip' "$STORE_FORCE_IPS" 2>/dev/null
 }
 
 # Сбросить conntrack, чтобы смена режима применилась к УЖЕ установленным

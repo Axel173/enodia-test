@@ -76,6 +76,8 @@ command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"
 # исполняемого кода в ней нет, поэтому source безопасен и вне плагинов.
 if [ -f "$ENODIA_DIR/slot-tun-lib.sh" ]; then . "$ENODIA_DIR/slot-tun-lib.sh"; fi
 command -v slot_socks_port >/dev/null 2>&1 || slot_socks_port() { echo $((10830 + $1)); }
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: a file replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 
 b64e() { printf '%s' "$1" | base64 | tr -d '\n'; }
 b64d() { printf '%s' "$1" | base64 -d 2>/dev/null; }
@@ -120,12 +122,15 @@ slots_lock_take() {   # $1 = сколько секунд ждать (деф. 10)
 }
 slots_lock_drop() { rm -rf "$SLOTS_LOCK" 2>/dev/null; }
 # Переписать (или УДАЛИТЬ, если полей нет) строку слота. Звать ТОЛЬКО под локом.
+# Whole or not at all (label-lib.sh): every line but the exit's own, then the exit's. A registry that could not be read is a
+# failure, not «no other exits» — the file then stays as it is. The last exit gone — the file goes too.
+# Code 1 — NOTHING was written (no room, an unreadable registry): the caller must say so and stop — an exit raised, announced
+# «создан» and absent from the registry is what the code used to answer a full partition with (review s.127).
+SLOTS_NOWRITE="[slots] реестр выходов не записался (нет места на разделе настроек?) — изменение не сохранено"
 _slots_write() {   # $1 = id ; [$2..$6 = name_b64 transport config fallback en]
-    _wid="$1"; _wtmp="$SLOTS_FILE.$$"
-    grep -v "^$_wid$TAB" "$SLOTS_FILE" > "$_wtmp" 2>/dev/null || true
-    [ "$#" -gt 1 ] && printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_wid" "$2" "$3" "$4" "$5" "$6" >> "$_wtmp"
-    if [ -s "$_wtmp" ]; then mv "$_wtmp" "$SLOTS_FILE"
-    else rm -f "$_wtmp" "$SLOTS_FILE"; fi
+    _wln=""; [ "$#" -le 1 ] || _wln="$1$TAB$2$TAB$3$TAB$4$TAB$5$TAB$6"
+    lbl_commit_out "$SLOTS_FILE" lbl_without "$SLOTS_FILE" "^$1$TAB" "$_wln" || return 1
+    [ -s "$SLOTS_FILE" ] || rm -f "$SLOTS_FILE"
 }
 
 # carriers — какие ТРАНСПОРТЫ несут доп-выходы (уникальные значения 3-й колонки, по слову в строке).
@@ -676,7 +681,7 @@ cmd_add() {
     slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
     slot_key_guard "$t" "$cfg" new || { slots_lock_drop; return 1; }
     id=$(slot_free_id) || { slots_lock_drop; echo "$SLOTS_FULL"; return 1; }
-    _slots_write "$id" "$(b64e "$name")" "$t" "$cfg" "$fb" on
+    _slots_write "$id" "$(b64e "$name")" "$t" "$cfg" "$fb" on || { slots_lock_drop; echo "$SLOTS_NOWRITE"; return 1; }
     slots_lock_drop
     # Строка пишется сразу en=on ⇒ выход ОБЯЗАН начать работать здесь же, а не через тик
     # watchdog: поднимаем несущую и переигрываем владельцев (ровно как enable) — см. slot_activate.
@@ -704,17 +709,28 @@ cmd_rename_config() {
     # to «01» was refused while an exit named config «1».
     _rdup=$(awk -F"$TAB" -v t="$t" -v n="$new" '$3==t && ($4 "") == (n "") { print $1; exit }' "$SLOTS_FILE" 2>/dev/null)
     if [ -n "$_rdup" ]; then slots_lock_drop; echo "[slots] имя «$new» уже указано у выхода №$_rdup — выберите другое"; return 1; fi
-    _rn=0; _rtmp="$SLOTS_FILE.$$"
-    : > "$_rtmp"
-    # `|| [ -n ]` — последняя строка без перевода строки не теряется (busybox read).
-    while IFS="$TAB" read -r _i _nb _t _c _f _e || [ -n "$_i" ]; do
-        [ -n "$_i" ] || continue
-        if [ "$_t" = "$t" ] && [ "$_c" = "$old" ]; then _c="$new"; _rn=$((_rn+1)); fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_i" "$_nb" "$_t" "$_c" "$_f" "$_e" >> "$_rtmp"
-    done < "$SLOTS_FILE"
-    if [ "$_rn" -gt 0 ]; then mv "$_rtmp" "$SLOTS_FILE"; else rm -f "$_rtmp"; fi
+    # How many exits name the old config — asked FIRST: the rewrite itself runs as lbl_commit_out's producer, in a subshell.
+    _rn=$(_slots_renamed "$t" "$old" "$new" count) \
+        || { slots_lock_drop; echo "[slots] реестр выходов не читается — переименование не выполнено"; return 1; }
+    case "$_rn" in ''|*[!0-9]*) _rn=0 ;; esac
+    # Whole or not at all (label-lib.sh). The registry was built by `printf >> temp` in a loop with nobody asking the codes, then
+    # `mv` — on a full partition a stump replaced it (review s.127, round 2; the last registry writer outside _slots_write).
+    if [ "$_rn" -gt 0 ] && ! lbl_commit_out "$SLOTS_FILE" _slots_renamed "$t" "$old" "$new"; then
+        slots_lock_drop; echo "$SLOTS_NOWRITE"; return 1
+    fi
     slots_lock_drop
     echo "$_rn"
+}
+# The registry with config $2 of transport $1 renamed to $3 — to stdout; $4 = count — only the number of lines that changes.
+# `|| [ -n ]` — последняя строка без перевода строки не теряется (busybox read).
+_slots_renamed() {
+    _rnn=0
+    while IFS="$TAB" read -r _i _nb _t _c _f _e || [ -n "$_i" ]; do
+        [ -n "$_i" ] || continue
+        if [ "$_t" = "$1" ] && [ "$_c" = "$2" ]; then _c="$3"; _rnn=$((_rnn+1)); fi
+        [ "${4:-}" = count ] || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_i" "$_nb" "$_t" "$_c" "$_f" "$_e"
+    done < "$SLOTS_FILE" || return 1
+    [ "${4:-}" != count ] || echo "$_rnn"
 }
 
 # Переписать одно поле строки id. Правка через временный файл + mv (атомарно на /data,
@@ -756,9 +772,17 @@ cmd_set() {
     reup=0
     case "$field" in transport|config) [ "$old_en" = on ] && reup=1 ;; esac
     [ "$reup" = 1 ] && [ -f "$ENODIA_DIR/transport.sh" ] && sh "$ENODIA_DIR/transport.sh" slot-down "$id" >/dev/null 2>&1
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
-    _slots_write "$id" "$old_nb" "$old_t" "$old_cfg" "$old_fb" "$old_en"
-    slots_lock_drop
+    # Not saved — the registry is busy for longer than the wait, or the write did not land: the registry kept the OLD line and
+    # its carrier was taken down above — bring that one back, whichever of the two it was.
+    _swhy=""
+    if ! slots_lock_take; then _swhy="[slots] реестр занят другой операцией — повторите"
+    elif ! _slots_write "$id" "$old_nb" "$old_t" "$old_cfg" "$old_fb" "$old_en"; then slots_lock_drop; _swhy=$SLOTS_NOWRITE
+    else slots_lock_drop; fi
+    if [ -n "$_swhy" ]; then
+        echo "$_swhy"
+        [ "$reup" = 1 ] && [ -f "$ENODIA_DIR/transport.sh" ] && sh "$ENODIA_DIR/transport.sh" slot-up "$id" >/dev/null 2>&1
+        return 1
+    fi
     # VPN выключен вручную — несущая выхода не поднимется (плагин при флаге отказывает, daemon-lib.sh::carrier_run), и «идёт по
     # запасному пути» было бы неправдой: при выключенном VPN выход не ведёт никуда. Поднимет «Включить VPN».
     if [ "$reup" = 1 ] && [ -f "$ENODIA_STATE/.vpn-off" ]; then
@@ -787,7 +811,8 @@ write_en() {
     line=$(slot_line "$1")
     [ -n "$line" ] || { slots_lock_drop; return 1; }
     _slots_write "$1" "$(printf '%s' "$line" | cut -f2)" "$(printf '%s' "$line" | cut -f3)" \
-                 "$(printf '%s' "$line" | cut -f4)" "$(printf '%s' "$line" | cut -f5)" "$2"
+                 "$(printf '%s' "$line" | cut -f4)" "$(printf '%s' "$line" | cut -f5)" "$2" \
+        || { slots_lock_drop; echo "$SLOTS_NOWRITE"; return 1; }
     slots_lock_drop
 }
 # Переиграть ВЛАДЕЛЬЦЕВ слот-сетов после смены состояния слота (enable/disable/del).
@@ -868,7 +893,10 @@ cmd_toggle() {
         # Порядок: slot-down ПОКА слот ещё on (диспетч требует on: плагин снимает свою несущую/
         # десинк), ПОТОМ пишем off и снимаем ядро-следы (mark/ip rule) — cmd_unwire.
         [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$id" >/dev/null 2>&1
-        write_en "$id" off || return 1
+        if ! write_en "$id" off; then   # still `on` in the registry, and its carrier is down already — bring it back
+            [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-up "$id" >/dev/null 2>&1
+            return 1
+        fi
         cmd_unwire "$id"
         rebind_owners "$id"   # иначе пул выхода останется в осиротевшем сете = НАПРЯМУЮ мимо VPN
         echo "[slots] слот №$id выключен"
@@ -906,9 +934,18 @@ cmd_del() {
         sh "$ENODIA_DIR/transport.sh" slot-down "$id" >/dev/null 2>&1
     fi
     cmd_unwire "$id"
-    slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
-    _slots_write "$id"          # без полей = удалить строку (последняя ⇒ файл убираем целиком)
-    slots_lock_drop
+    # без полей = удалить строку (последняя ⇒ файл убираем целиком). Not removed — the registry is busy for longer than the wait,
+    # or the write did not land: the exit is still in the registry, «удалён» would be a lie; an enabled one gets back the carrier
+    # and the rules taken off above.
+    _dwhy=""
+    if ! slots_lock_take; then _dwhy="[slots] реестр занят другой операцией — повторите"
+    elif ! _slots_write "$id"; then slots_lock_drop; _dwhy=$SLOTS_NOWRITE
+    else slots_lock_drop; fi
+    if [ -n "$_dwhy" ]; then
+        echo "$_dwhy"
+        [ "$(printf '%s' "$line" | cut -f6)" = on ] && slot_activate "$id" >/dev/null 2>&1
+        return 1
+    fi
     # Реестра слота больше нет — привязки (groups.slot/geo.slot) осиротели: переигрываем
     # владельцев ПОСЛЕ удаления строки, чтобы гейт увидел «слота нет» и вернул пул на основной.
     rebind_owners "$id"

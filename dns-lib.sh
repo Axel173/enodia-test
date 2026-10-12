@@ -300,6 +300,8 @@ is_ipv4() { echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
 # СОСТОЯНИЕ — в $ENODIA_STATE, не в каталоге кода: тот заменяется обновлением ЦЕЛИКОМ (C46). Вложенная
 # форма `${ENODIA_DIR:-…}/файл` при переезде 30.08.2026 ускользнула от проверки — файл жил в коде до
 # 05.09.2026; старую копию подбираем один раз (кэш последнего рабочего адреса дорог ровно на буте).
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # lbl_commit_out: a file replaced whole or not at all
+command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
 SEED_CACHE="${SEED_CACHE:-$ENODIA_STATE/.dns-seed-cache}"
 if [ ! -f "$SEED_CACHE" ] && [ -f "${ENODIA_DIR:-/data/usr/app/enodia}/.dns-seed-cache" ] && [ -d "$ENODIA_STATE" ]; then   # migrate: см. mv ниже
@@ -315,18 +317,15 @@ seed_cache_get() {
     awk -v h="$1" '$1==h{print $2; exit}' "$SEED_CACHE" 2>/dev/null
 }
 
-# seed_cache_put <host> <ip> — переписать строку хоста (атомарно через .tmp + mv).
+# seed_cache_put <host> <ip> — переписать строку хоста (целиком либо никак — label-lib.sh::lbl_commit_out).
+_seed_cache_text() {   # the cache's new text: the other hosts' lines, then this host's
+    if [ -f "$SEED_CACHE" ]; then awk -v h="$1" '$1!=h' "$SEED_CACHE" || return 1; fi
+    printf '%s\t%s\t%s\n' "$1" "$2" "$(date +%s)"   # clock-raw: отметка для дампа, возраст по ней не считаем
+}
 seed_cache_put() {
     _scp_h="$1"; _scp_i="$2"
     [ -n "$_scp_h" ] && [ -n "$_scp_i" ] || return 0
-    _scp_t="$SEED_CACHE.tmp"
-    if [ -f "$SEED_CACHE" ]; then
-        awk -v h="$_scp_h" '$1!=h' "$SEED_CACHE" > "$_scp_t" 2>/dev/null
-    else
-        : > "$_scp_t" 2>/dev/null
-    fi
-    printf '%s\t%s\t%s\n' "$_scp_h" "$_scp_i" "$(date +%s)" >> "$_scp_t" 2>/dev/null   # clock-raw: отметка для дампа, возраст по ней не считаем
-    mv -f "$_scp_t" "$SEED_CACHE" 2>/dev/null
+    lbl_commit_out "$SEED_CACHE" _seed_cache_text "$_scp_h" "$_scp_i" 2>/dev/null
     return 0
 }
 
@@ -380,26 +379,24 @@ seed_hosts_put() {
     [ -f "$SEED_HOSTS" ] || : > "$SEED_HOSTS" 2>/dev/null
     # Уже стоят РОВНО эти строки (и ничего сверх) — файл не трогаем: на AX3600 /etc — флеш, а зовут нас на каждый подъём.
     [ "$(grep -F "$_shp_t" "$SEED_HOSTS" 2>/dev/null)" = "$_shp_w" ] && return 0
-    _shp_p="$SEED_HOSTS.enodiatmp"
-    grep -vF "$_shp_t" "$SEED_HOSTS" > "$_shp_p" 2>/dev/null      # busybox: код 1 при пустом выводе — не судим по нему
-    printf '%s\n' "$_shp_w" >> "$_shp_p" 2>/dev/null
-    [ -s "$_shp_p" ] && mv -f "$_shp_p" "$SEED_HOSTS" 2>/dev/null
-    rm -f "$_shp_p" 2>/dev/null
+    # Целиком либо никак (lbl_commit_out_as: имя времянки в /etc — с нашим словом, по нему её узнают снятие и чистка).
+    lbl_commit_out_as "$SEED_HOSTS.enodiatmp" "$SEED_HOSTS" _seed_hosts_text "$_shp_t" "$_shp_w" 2>/dev/null
     return 0
+}
+_seed_hosts_text() {   # /etc/hosts без строк с меткой $1, затем свои строки $2 (lbl_grep: «ничего не осталось» — не отказ)
+    lbl_grep -vF "$1" "$SEED_HOSTS" || return 1
+    printf '%s\n' "$2"
 }
 
 # seed_hosts_clear <seed-файл> — снять свою строку. Код 0 = что-то удалили.
 seed_hosts_clear() {
     _shc_t=$(_seed_tag "$1")
     grep -qF "$_shc_t" "$SEED_HOSTS" 2>/dev/null || return 1
-    _shc_p="$SEED_HOSTS.enodiatmp"
-    grep -vF "$_shc_t" "$SEED_HOSTS" > "$_shc_p" 2>/dev/null
-    # Гарда `-s` тут быть НЕ ДОЛЖНО (в отличие от seed_hosts_put, где своя строка в остатке всегда
+    # Гарда «остаток не пуст» тут быть НЕ ДОЛЖНО (в отличие от seed_hosts_put, где своя строка в остатке всегда
     # есть): пустой остаток — законный случай «наша строка была в файле единственной», и гард
     # оставил бы файл С НЕЙ, вернув при этом «удалили» — вызывающий зря рестартнул бы dnsmasq, а
     # имя осталось прибитым к старому адресу. Читаемость исходника уже доказана grep -qF выше.
-    if [ -f "$_shc_p" ]; then mv -f "$_shc_p" "$SEED_HOSTS" 2>/dev/null; fi
-    rm -f "$_shc_p" 2>/dev/null
+    lbl_commit_out_as "$SEED_HOSTS.enodiatmp" "$SEED_HOSTS" lbl_grep -vF "$_shc_t" "$SEED_HOSTS" 2>/dev/null
     return 0
 }
 
