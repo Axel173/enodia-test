@@ -265,6 +265,13 @@ wui_run() { cap_run web-ui.sh "$@"; _wur=$?; WUI_OUT=$CAP_OUT; return "$_wur"; }
 # answer, this CGI only carries). Through cap_run: uhttpd's SIGKILL of a lost client must not cut a registry write halfway on
 # SIGPIPE. cap_run merges stderr into the same file, so a stray warning (`mv: …`) before the answer must not turn it into
 # «error: {…}» — the last line that is a JSON object is the answer (review s.106); anything else is a refusal with its last line.
+# warp_job — the `job` field of a WARP start → the owner's environment (see warp_get below).
+warp_job() {
+	ENODIA_WARP_JOB=$(field job)
+	case "$ENODIA_WARP_JOB" in ''|*[!a-f0-9]*) ENODIA_WARP_JOB="" ;; esac
+	[ "${#ENODIA_WARP_JOB}" -le 32 ] || ENODIA_WARP_JOB=""
+	export ENODIA_WARP_JOB
+}
 owner_relay() {
 	cap_run "$@"
 	_orj=$(printf '%s\n' "$CAP_OUT" | grep '^{' | tail -n 1)
@@ -1662,6 +1669,7 @@ EOF
 		rm -f "$ENODIA_STATE/configs/$name.conf" || fail "не удалось удалить $name"
 		[ -f "$ENODIA_DIR/cfg-names.sh" ] && sh "$ENODIA_DIR/cfg-names.sh" del awg "$name" >/dev/null 2>&1   # настоящее имя — вместе с файлом
 		[ -f "$ENODIA_DIR/road.sh" ] && sh "$ENODIA_DIR/road.sh" del awg "$name" >/dev/null 2>&1           # и дорога к серверу (road.sh)
+		[ -f "$ENODIA_DIR/warp.sh" ] && sh "$ENODIA_DIR/warp.sh" prune >/dev/null 2>&1                     # a WARP config takes its registration's record with it
 		printf '{"ok":true,"code":0,"msg":"awg-конфиг %s удалён"}\n' "$name"
 		exit 0 ;;
 	del_xray_server)
@@ -1827,7 +1835,9 @@ EOF
 		# «Параметры сети» действуют ТОЛЬКО на awg0 (net-tune.sh); выход (awgN) берёт строку конфига, иначе 1376 (transport-awg.sh).
 		# Конфиг, на котором стоит выход, получает и ЕГО число: иначе экран обещал бы выходу ручной MTU, которого у него нет.
 		xmtu=${mtu:-1376}; xsrc=config; [ -n "$mtu" ] || xsrc=default
-		xs=$(awk -F'\t' -v n="$name" '$3=="awg" && $4==n { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,')
+		# The name is compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and config «01» was
+		# shown the exits of config «1».
+		xs=$(awk -F'\t' -v n="$name" '$3=="awg" && ($4 "") == (n "") { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,')
 		if [ -n "$_tm" ]; then mtu=$_tm; msrc=tun; elif [ -z "$mtu" ]; then mtu=1376; msrc=default; fi
 		[ "$_tmu" = 1 ] && msrc=unknown
 		# ДОРОГА К СЕРВЕРУ (road.sh): её номер и потолок MTU — поверх всего прочего (сервер живёт внутри туннеля дороги). Потолка нет,
@@ -1996,7 +2006,7 @@ EOF
 						_usame=0
 						[ "$_ud" = "$_ubase" ] && [ -z "$(sh "$ENODIA_DIR/cfg-names.sh" get "$kind" "$_ubase" 2>/dev/null)" ] && _usame=1
 						sh "$ENODIA_DIR/cfg-names.sh" list 2>/dev/null | awk -F'\t' -v k="$kind/$_ubase" -v p="$kind/$_ub-" -v d="$_ud" \
-							'($1 == k || substr($1, 1, length(p)) == p) && $2 == d { f = 1 } END { exit f ? 0 : 1 }' && _usame=1
+							'($1 == k || substr($1, 1, length(p)) == p) && ($2 "") == (d "") { f = 1 } END { exit f ? 0 : 1 }' && _usame=1   # the name — as TEXT («01» is not «1»)
 						# Не за потолок владельца (240 байт): длинный показ без различителя лучше, чем отказ записать имя вовсе.
 						[ "$_usame" = 1 ] && [ "$(printf '%s' "$_ud ($_un)" | wc -c)" -le 240 ] && _ud="$_ud ($_un)"
 					fi
@@ -2163,7 +2173,7 @@ EOF
 		mv "$NM.new" "$NM" 2>/dev/null
 		printf '{"ok":true,"code":0,"msg":"имена сохранены"}\n'; exit 0 ;;
 	# save_checks: кэш проверок серверов (пинг/скорость). Панель шлёт ВЕСЬ кэш (data=b64 TSV
-	# key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb]). Полная замена — это хинты производительности, не критич-
+	# key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb[⇥ncmp]]). Полная замена — это хинты производительности, не критич-
 	# ные данные (last-writer-wins). Валидируем построчно (ключ + ≥8 полей), кап 2000 строк; значения проверяет читатель (data).
 	save_checks)
 		raw=$(urldecode "$(field data)" | base64 -d 2>/dev/null)
@@ -2461,12 +2471,41 @@ EOF
 		owner_relay cheburcheck.sh get "$ip" ;;
 	# warp_*: «ПОЛУЧИТЬ WARP» (warp.sh) — регистрация у Cloudflare, конфиг, выход и (по выбору) дорога для сервера. Фоном у
 	# владельца, панель опрашивает warp_status.
+	# `job` — the id the TAB gave the work it starts (hex): exported for the owner, which writes it into every status line of that
+	# work — the tab then knows its own job from one it merely sees running (warp.sh `JOB`). Not the form — no id, the work is nobody's.
 	warp_get)
 		rider=$(urldecode "$(field rider)")
 		[ -z "$rider" ] || echo "$rider" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя конфига"
-		run warp.sh get "$rider" ;;
+		warp_job; run warp.sh get "$rider" ;;
 	warp_status)
 		owner_relay warp.sh status ;;
+	# What is known about every WARP config (the record of its registration — warp.sh info); the token stays on the router.
+	warp_info)
+		owner_relay warp.sh info ;;
+	# An existing WARP config: pick the port again · a new registration into it · its masking. The owner refuses in words (not WARP,
+	# the main channel's server, another WARP job runs); the work goes in the background, the panel polls warp_status.
+	warp_repick|warp_reget|warp_mask)
+		name=$(urldecode "$(field name)")
+		echo "$name" | grep -qE '^[A-Za-z0-9_.-]+$' || fail "недопустимое имя конфига"
+		warp_job
+		case "$act" in
+			warp_repick) run warp.sh repick "$name" ;;
+			warp_reget)  run warp.sh reget "$name" ;;
+			warp_mask)
+				# `text` — the person's own masking, base64 (tags with `<` and `>`); absent or empty — the router's own. The form is
+				# judged by the owner; here only the alphabet of the envelope and a private file for it (in_dir).
+				_wmt=$(urldecode "$(field text)")
+				case "$_wmt" in '') run warp.sh mask "$name" gen ;; *[!A-Za-z0-9+/=]*) fail "неверные данные маскировки" ;; esac
+				in_dir
+				printf '%s' "$_wmt" | base64 -d > "$IN_DIR/mask" 2>/dev/null || fail "неверные данные маскировки"
+				run warp.sh mask "$name" "$IN_DIR/mask" ;;
+		esac ;;
+	# A WARP for ANOTHER device: registered and probed by the router, kept in RAM until taken ONCE. The config carries a private
+	# key — one base64 field, like «доступ домой» (vpnsrv_peer_conf).
+	warp_device)
+		warp_job; run warp.sh device ;;
+	warp_dev_take)
+		owner_relay warp.sh device-take ;;
 	# Где Cloudflare принял подключение выхода (экран выхода-WARP): трасса через его интерфейс — у владельца.
 	warp_colo)
 		sid=$(field id); case "$sid" in [2-7]) ;; *) fail "битый номер выхода" ;; esac

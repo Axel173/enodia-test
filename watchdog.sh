@@ -558,16 +558,20 @@ slot_hs_age() {   # $1 = iface (awgN) -> возраст handshake в сек (999
 # road is an exit like any other and this sweep heals it, the rider follows. The map is read ONCE per tick (forks) and comes from
 # the REGISTRY (`road.sh carriers`), not from the rules: an exit this sweep took down loses its endpoint store, and `want` would
 # forget its road — the next tick probed it as a dead server with a backoff up to 30 min (review s.118).
+# ONCE — so the answer comes in a VARIABLE (`_rof`), not on stdout: asked as `$(road_of …)` the map was loaded inside the
+# subshell, the mark «loaded» died with it, and `road.sh carriers` was forked again for every exit of the sweep (review s.123, r.4).
 ROADS_LOADED=0; ROADS=""
 ROAD_FO=/tmp/enodia-road-failopen   # прямой режим поставлен из-за ЛЕЖАЩЕЙ ДОРОГИ (не сервера): ожила — переподъём, а не перебор
-road_of() {   # $1 = main | <exit id> → the id of the exit it rides, or empty
+road_of() {   # $1 = main | <exit id> → _rof: the id of the exit it rides, or empty
+    _rof=""
     if [ "$ROADS_LOADED" = 0 ]; then
         ROADS_LOADED=1
         [ -f "$ENODIA_DIR/road.sh" ] && [ -s "$ENODIA_STATE/.cfg-via" ] && ROADS=$(sh "$ENODIA_DIR/road.sh" carriers 2>/dev/null)
     fi
     [ -n "$ROADS" ] || return 0
     case "$1" in main) _rok=main ;; *) _rok="s$1" ;; esac
-    printf '%s\n' "$ROADS" | awk -F"$TAB" -v c="$_rok" '$1==c { print $2; exit }'
+    _rof=$(printf '%s\n' "$ROADS" | awk -F"$TAB" -v c="$_rok" '$1==c { print $2; exit }')
+    return 0
 }
 # A YOUNG HANDSHAKE IS NOT A ROAD THAT CARRIES. The rider and the road renew their handshakes each on its own clock (about every two
 # minutes), so when the road goes silent the rider's handshake may turn HS_DEAD up to two minutes BEFORE the road's — and a tick that
@@ -576,11 +580,40 @@ road_of() {   # $1 = main | <exit id> → the id of the exit it rides, or empty
 # its interface, two nodes (ip-lib.sh::probe_ext_ip): nothing came back — it does not carry. Only a caller whose rider is ALREADY
 # silent asks for it: a healthy rider costs no request.
 ROAD_PROBE_T=${ROAD_PROBE_T:-6}   # s per node: a live road answers in well under a second
+# …AND THOSE TWO NODES ARE ONE OPERATOR. A road whose far network does not reach Cloudflare's addresses (or Cloudflare itself is
+# down) read «carries nothing» while it carried: the rider's dead server was then never judged — direct mode for good, no
+# reserves' ladder, the road's exit restarted every tick (review s.123, round 3). Before the verdict two OTHER operators are asked
+# by address, and ANY HTTP answer through the road is a road that carries. Measured on BE7000 11.10.2026 through a VPS exit and a
+# WARP exit: 8.8.8.8 → 302, 9.9.9.9 → 404, 0.2–0.5 s. Asked only after Cloudflare kept silent: a live road costs one request.
+ROAD_PROBE_ALT="https://8.8.8.8/ https://9.9.9.9/"
+road_carries_alt() {   # $1 = interface → 0 when another operator answered through it
+    for _rau in $ROAD_PROBE_ALT; do
+        _rac=$(curl -s -k --interface "$1" --max-time "$ROAD_PROBE_T" -o /dev/null -w '%{http_code}' "$_rau" 2>/dev/null)
+        case "$_rac" in ''|000) ;; *) return 0 ;; esac
+    done
+    return 1
+}
+# The requests themselves → 0 when NOTHING came back through the road.
+road_silent() {   # $1 = the road exit's id
+    [ -n "$(probe_ext_ip "--interface awg$1" "$ROAD_PROBE_T" "" 2)" ] && return 1
+    road_carries_alt "awg$1" && return 1
+    return 0
+}
+# ONE ASKING PER ROAD PER TICK (`ROAD_PV`: « <id>:c » carries, « <id>:s » silent): a silent road costs four requests of
+# ROAD_PROBE_T each, and five riders of one road asked it twenty times in one tick (review s.123, round 4).
+# …and a road found SILENT is marked for its own line of the sweep (`ROAD_SILENT.<id>`): by its handshake that exit is healthy,
+# so nothing ever said a word about it — the riders' mails promised «the router brings the road back up» about an exit the
+# sweep had no reason to touch.
+ROAD_PV=" "
+ROAD_SILENT=/tmp/enodia-road-silent
 road_down() {   # $1 = the road exit's id ; $2 = probe → 0 when its carrier is gone, its handshake is dead or (probe) it carries nothing
     ip link show "awg$1" >/dev/null 2>&1 || return 0
     [ "$(slot_hs_age "awg$1")" -ge "$HS_DEAD" ] && return 0
     [ "$2" = probe ] || return 1
-    [ -z "$(probe_ext_ip "--interface awg$1" "$ROAD_PROBE_T" "" 2)" ]
+    case "$ROAD_PV" in *" $1:c "*) return 1 ;; *" $1:s "*) return 0 ;; esac
+    if road_silent "$1"; then ROAD_PV="$ROAD_PV$1:s "; : > "$ROAD_SILENT.$1"; return 0; fi
+    ROAD_PV="$ROAD_PV$1:c "
+    return 1
 }
 # The exit's road is down: its live carrier goes down as usual (else its groups' traffic would stand in a dead tunnel) and the reason
 # named is the road — no probe of its server, no return backoff (it would count the idle time of somebody else's exit).
@@ -624,6 +657,7 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
                   _sfe="the server answers, but the clients' path through the hev layer does not work and restarting it did not help" ;;
         hs:*)     _sfr="рукопожатие ${4#hs:} с назад"; _sfe="last handshake ${4#hs:} s ago" ;;
         road:*)   _sfr="не отвечает дорога к его серверу — выход №${4#road:}"; _sfe="the road to its server — exit #${4#road:} — does not answer" ;;
+        silent)   _sfr="рукопожатие с сервером есть, а данные через него не идут"; _sfe="the handshake with the server is there, but no data passes through it" ;;
         *)        _sfr=$4; _sfe=$4 ;;
     esac
     # ЧТО БУДЕТ ДАЛЬШЕ — по ФАКТУ поведения свипа, а не одной фразой на всех: несущие xray/hy2/byedpi он поднимает заново каждый
@@ -644,10 +678,23 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
         _sfn="Роутер поднимает выход заново с растущей паузой — сперва через 2 минуты, потом всё реже, до раза в полчаса; когда путь заработает, выход вернётся сам, и придёт письмо «снова работает»."
         _sfne="The router brings the exit up again with a growing pause — first in 2 minutes, then less and less often, down to once every half hour; once the path works, the exit comes back by itself and a \"works again\" email follows."
     fi
+    # «The router brings the road back up» was promised here — true of a road that is DOWN, false of one that shakes hands and
+    # carries nothing (the sweep does not restart that one): the words fit both, and the road has a mail of its own.
     case "$4" in road:*)
-        _sfn="Сам сервер при этом не проверялся: лежит дорога к нему. Роутер поднимает дорогу заново; когда она ответит, этот выход вернётся следом, и придёт письмо «снова работает»."
-        _sfne="The server itself was not checked: the road to it is down. The router brings the road back up; once it answers, this exit follows, and a \"works again\" email arrives." ;;
+        _sfn="Сам сервер при этом не проверялся: не работает дорога к нему. Роутер следит за дорогой — о ней приходит своё письмо; когда она заработает, этот выход вернётся следом, и придёт письмо «снова работает»."
+        _sfne="The server itself was not checked: the road to it does not work. The router watches the road — it has an email of its own; once the road works, this exit follows, and a \"works again\" email arrives." ;;
     esac
+    # WHAT THE ROUTER DID WITH THE EXIT — the mail's second line: taken down (its traffic rides the fallback), or, for `silent`,
+    # LEFT UP: a restart gives the same handshake and the same cut, and the return probe (it judges by the handshake) would bring
+    # it back every other tick — a pair of mails each time.
+    if [ "$3" = direct ]; then _sfl="Его трафик переключён на запасной путь: напрямую."; _sfle="Its traffic is switched to the fallback path: direct."
+    else _sfl="Его трафик переключён на запасной путь: через основной туннель."; _sfle="Its traffic is switched to the fallback path: through the main tunnel."; fi
+    if [ "$4" = silent ]; then
+        _sfl="Роутер оставил его поднятым: перезапуск даст то же рукопожатие и тот же обрыв."
+        _sfle="The router left it up: a restart gives the same handshake and the same cut."
+        _sfn="Так провайдеры обрывают WARP на отдельных портах. Если это WARP — откройте в панели «WARP от Cloudflare» и нажмите у его конфига «Подобрать порт заново». Роутер спрашивает выход каждые 2 минуты; когда данные пойдут, придёт письмо «снова работает»."
+        _sfne="This is how ISPs cut WARP on particular ports. If this is WARP, open «WARP from Cloudflare» in the panel and press «Pick the port again» at its config. The router asks the exit every 2 minutes; once data passes, a \"works again\" email follows."
+    fi
     # THIS exit is a ROAD (road.sh): whoever rides it is cut off with it — say so in the same mail, and that the watchdog does not
     # fail them over nor call their servers dead (their own lines in the log say «сервер не трогаю»).
     _sfrd=""
@@ -659,18 +706,16 @@ slot_fail_event() {   # $1=id $2=cfg $3=fallback $4=причина: desync|noans
 These ride this exit to their servers: $_sfrd. While it is down they are unreachable; the router does not switch them and does not call them dead — the servers themselves are most likely fine."
     fi
     if [ "$NF_LANG" = en ]; then
-        _fbl=$([ "$3" = direct ] && echo "direct" || echo "through the main tunnel")
         sh "$NOTIFY_EVENT" "slot-fail-$1" 0 \
             "BE7000: extra exit #$1 is down" \
 "Extra exit #$1 (server $2) does not respond ($_sfe).
-Its traffic is switched to the fallback path: $_fbl.
+$_sfle
 $_sfne" >/dev/null 2>&1
     else
-        _fbl=$([ "$3" = direct ] && echo "напрямую" || echo "через основной туннель")
         sh "$NOTIFY_EVENT" "slot-fail-$1" 0 \
             "BE7000: доп-выход №$1 недоступен" \
 "Дополнительный выход №$1 (сервер $2) не отвечает ($_sfr).
-Его трафик переключён на запасной путь: $_fbl.
+$_sfl
 $_sfn" >/dev/null 2>&1
     fi
 }
@@ -899,7 +944,7 @@ slot_health_sweep() {
         # (провалится заведомо и раскрутит паузу), живую несущую гасим как обычно — иначе трафик его групп стоял бы в мёртвом
         # туннеле, — а причиной называем дорогу. Дорога — тоже выход этого свипа, её поднимает своя строка; ожила — этот выход
         # вернётся обычной пробой возврата (паузу не взводим: она отсчитывалась бы от простоя чужого выхода).
-        _sroad=$(road_of "$sid")
+        road_of "$sid"; _sroad=$_rof
         if [ -n "$_sroad" ] && road_down "$_sroad"; then
             slot_road_lies "$sid" "$scfg" "$sfb" "$st" "$_sroad"
             continue
@@ -918,6 +963,19 @@ slot_health_sweep() {
                 restore_marking
                 _sgone=1
             fi
+            # THE EXIT RIDES A ROAD THAT SHAKES HANDS AND CARRIES NOTHING (the cheap check above let it through). The return probe
+            # goes THROUGH that road: it failed, armed the server's backoff (up to 30 min) and recorded «the server does not
+            # answer» — from the SECOND tick of a silent road on, so the exit was protected for one tick only and then waited out
+            # a backoff after the road came back (review s.123, round 4; «handshake passes, data is cut» is the measured WARP
+            # failure on a filtering ISP — a steady state there, not a two-minute window). The road is asked by the result first
+            # — only when the probe would really run now (no boot window, no backoff in flight): otherwise it costs nothing.
+            if [ -n "$_sroad" ] && ! slot_boot_window && ! slot_retry_wait "$sid" "$st" && road_down "$_sroad" probe; then
+                # A line in the log and the mail — once per episode (the log lives in RAM and nobody rotates it): an exit taken
+                # down a tick ago is declared already, one that fell by itself is not.
+                [ -f "$SLOT_DOWN.$sid" ] || log "slot-health: awg-выход №$sid снят, а его дорога (выход №$_sroad) рукопожатие держит, но ничего не везёт → возврат не пробую, сервер не сужу"
+                slot_fail_event "$sid" "$scfg" "$sfb" "road:$_sroad" "$st"
+                continue
+            fi
             slot_awg_return "$sid" "$scfg" "$sfb" "$st"
             [ "$_sgone" = 1 ] && ! ip link show "$sif" >/dev/null 2>&1 && slot_fail_event "$sid" "$scfg" "$sfb" gone "$st"
             continue
@@ -931,6 +989,17 @@ slot_health_sweep() {
             if ! ip route show table "100$sid" 2>/dev/null | grep -q '^default'; then   # not-wan: несущая СЛОТА (table 100N)
                 log "slot-health: awg-выход №$sid жив, но маршрута в table 100$sid нет — достраиваю (slot-up)"
                 sh "$TRANSPORT_SH" slot-up "$sid" >>"$LOG" 2>&1
+            fi
+            # THIS EXIT WAS FOUND SILENT AS A ROAD (road_down's mark, left when a silent rider had it asked): alive by its
+            # handshake, it is asked by the result while the mark stands — nothing came back: its own episode is declared (once),
+            # and it is NOT taken down (see slot_fail_event `silent`); it carries again — the mark goes, the episode is closed.
+            if [ -f "$ROAD_SILENT.$sid" ]; then
+                if road_down "$sid" probe; then
+                    [ -f "$SLOT_DOWN.$sid" ] || log "slot-health: awg-выход №$sid ($scfg): рукопожатие свежее (${_age}с), а запросы через него остаются без ответа — не снимаю и не перезапускаю"
+                    slot_boot_window || slot_fail_event "$sid" "$scfg" "$sfb" silent "$st"
+                    continue
+                fi
+                rm -f "$ROAD_SILENT.$sid"
             fi
             slot_back_event "$sid" "$scfg"
             continue
@@ -3273,7 +3342,7 @@ if [ "$age" -ge "$HS_DEAD" ]; then
     # же дороге не поедет тоже). Делаем только fail-open — прямой режим, иначе сайты из списков стояли бы в мёртвом туннеле, — и
     # ждём дорогу: это выход, его чинит свип в finish (там же письмо о нём, с перечнем тех, кто по нему едет). Дорога ожила —
     # рукопожатие вернётся, и ветка «VPS жив» вернёт туннель штатно.
-    _wroad=$(road_of main)
+    road_of main; _wroad=$_rof
     if [ -n "$_wroad" ] && road_down "$_wroad" probe; then
         if [ "$cur" != "FAILOPEN" ]; then
             log "handshake ${age}с, но сервер едет по дороге (выход №$_wroad), а она лежит → прямой режим; сервер не переключаю — сперва дорога"

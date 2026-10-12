@@ -1265,10 +1265,11 @@ emit_tech() {
 		"$dsrc" "$dadr" "$dvia" "$dpro" "$dres" "$dprx" "$dbin" "$dspl" "$mtu" "$mif"
 }
 
-# --- Кэш проверок серверов (.srv-checks, TSV key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb]) → JSON-объект
-# key→{st,ms,method,cdn,mbps,kind,ts,tms,via,dms,chb}. Пишет панель (action save_checks); тут только читаем. Хвост — «дорога к
+# --- Кэш проверок серверов (.srv-checks, TSV key⇥st⇥ms⇥method⇥cdn⇥mbps⇥kind⇥ts[⇥tms⇥via⇥dms⇥chb[⇥ncmp]]) → JSON-объект
+# key→{st,ms,method,cdn,mbps,kind,ts,tms,via,dms,chb,ncmp}. Пишет панель (action save_checks); тут только читаем. Хвост — «дорога к
 # серверу» (10.10.2026): st=blk — напрямую молчит, через туннель отвечает (tms); via — номер выхода-дороги, число ms — через неё,
-# dms — напрямую; chb — второе мнение «вердикт:блоков:ответили». Строка прежней формы (8 полей) — без хвоста. -----
+# dms — напрямую; chb — второе мнение «вердикт:блоков:ответили»; ncmp=1 — the silent server had nothing to be compared through
+# (cgi-bin/ping). Строка прежней формы (8 или 12 полей) — без хвоста. -----
 emit_checks() {
 	F="$DS/.srv-checks"
 	printf '{'
@@ -1276,7 +1277,7 @@ emit_checks() {
 	if [ -f "$F" ]; then
 		TAB=$(printf '\t')
 		chb_on=0; [ -f "$DS/.chebur" ] && chb_on=1
-		while IFS="$TAB" read -r key st ms method cdn mbps kind ts tms via dms chb; do
+		while IFS="$TAB" read -r key st ms method cdn mbps kind ts tms via dms chb ncmp; do
 			case "$key" in 'awg|'*|'xray|'*|'hy2|'*) : ;; *) continue ;; esac
 			msj=$ms;   case "$msj" in ''|*[!0-9]*) msj=null ;; esac
 			mbj=$mbps; case "$mbj" in ''|*[!0-9.]*) mbj=null ;; esac
@@ -1290,9 +1291,10 @@ emit_checks() {
 			case "$kind" in speed) kj=speed ;; *) kj=ping ;; esac
 			case "$ts" in ''|*[!0-9]*) ts=0 ;; esac
 			case "$method" in *[!A-Za-z0-9:._-]*|'') method="-" ;; esac
+			case "$ncmp" in 1) ncj=true ;; *) ncj=false ;; esac
 			[ "$first" = 1 ] || printf ','; first=0
-			printf '"%s":{"st":"%s","ms":%s,"method":"%s","cdn":%s,"mbps":%s,"kind":"%s","ts":%s,"tms":%s,"via":"%s","dms":%s,"chb":"%s"}' \
-				"$key" "$stj" "$msj" "$method" "$cdj" "$mbj" "$kj" "$ts" "$tmj" "$via" "$dmj" "$chb"
+			printf '"%s":{"st":"%s","ms":%s,"method":"%s","cdn":%s,"mbps":%s,"kind":"%s","ts":%s,"tms":%s,"via":"%s","dms":%s,"chb":"%s","ncmp":%s}' \
+				"$key" "$stj" "$msj" "$method" "$cdj" "$mbj" "$kj" "$ts" "$tmj" "$via" "$dmj" "$chb" "$ncj"
 		done < "$F"
 	fi
 	printf '}\n'

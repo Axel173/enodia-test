@@ -143,6 +143,14 @@ cmd_list() {
     done < "$SLOTS_FILE"
 }
 
+# configs <transport> — the config NAMES the registry holds for that transport, a line each, from EVERY row: a switched-off exit
+# and an exit whose config file was deleted still name theirs, and a new file under that name becomes that exit's the moment it
+# is written. The answer to «is this name free for a NEW config» (warp.sh next_name); names compared by whoever asks.
+cmd_configs() {
+    [ -s "$SLOTS_FILE" ] || return 0
+    awk -F"$TAB" -v t="$1" '($3 "") == (t "") && $4 != "" && $4 != "-" { print $4 }' "$SLOTS_FILE" 2>/dev/null
+}
+
 cmd_list_enabled() {
     [ -s "$SLOTS_FILE" ] || return 0
     while IFS="$TAB" read -r id nb t cfg fb en; do
@@ -643,6 +651,18 @@ slot_road_guard() {   # $1 = id, $2 = what the person tried (words)
     return 1
 }
 
+# The first free exit id → stdout; none — code 1 (the words — SLOTS_FULL). ONE owner of «is there room»: `add` under its lock,
+# and verb `free` for whoever must know BEFORE the work an exit would end (warp.sh get registers at Cloudflare first).
+slot_free_id() {
+    _sfi=$MIN_ID
+    while [ "$_sfi" -le "$MAX_ID" ]; do
+        [ -z "$(slot_line "$_sfi")" ] && { echo "$_sfi"; return 0; }
+        _sfi=$((_sfi+1))
+    done
+    return 1
+}
+SLOTS_FULL="[slots] мест нет: заняты все $((MAX_ID-MIN_ID+1)) доп-выходов"
+
 cmd_add() {
     name="$1"; t="$2"; cfg="${3:--}"; fb="${4:-main}"
     [ -n "$name" ] || { echo "[slots] имя обязательно"; return 1; }
@@ -655,13 +675,7 @@ cmd_add() {
     # выхода (live): из двух выходов на одном ключе встаёт первый.
     slots_lock_take || { echo "[slots] реестр занят другой операцией — повторите"; return 1; }
     slot_key_guard "$t" "$cfg" new || { slots_lock_drop; return 1; }
-    id=""
-    i=$MIN_ID
-    while [ "$i" -le "$MAX_ID" ]; do
-        [ -z "$(slot_line "$i")" ] && { id=$i; break; }
-        i=$((i+1))
-    done
-    [ -n "$id" ] || { slots_lock_drop; echo "[slots] мест нет: заняты все $((MAX_ID-MIN_ID+1)) доп-выходов"; return 1; }
+    id=$(slot_free_id) || { slots_lock_drop; echo "$SLOTS_FULL"; return 1; }
     _slots_write "$id" "$(b64e "$name")" "$t" "$cfg" "$fb" on
     slots_lock_drop
     # Строка пишется сразу en=on ⇒ выход ОБЯЗАН начать работать здесь же, а не через тик
@@ -686,7 +700,9 @@ cmd_rename_config() {
     # Новое имя уже указано у выхода (его сервер удалили, а ссылка осталась) — переименование ТИХО привязало бы этот выход к
     # переименованному серверу. Отказ словами. Откат (обратное переименование, когда `mv` файла не удался) проходит ту же проверку,
     # но старого имени у выходов после прямого прохода уже нет — отказа не будет.
-    _rdup=$(awk -F"$TAB" -v t="$t" -v n="$new" '$3==t && $4==n { print $1; exit }' "$SLOTS_FILE" 2>/dev/null)
+    # The name is compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and «01» was «1» — a rename
+    # to «01» was refused while an exit named config «1».
+    _rdup=$(awk -F"$TAB" -v t="$t" -v n="$new" '$3==t && ($4 "") == (n "") { print $1; exit }' "$SLOTS_FILE" 2>/dev/null)
     if [ -n "$_rdup" ]; then slots_lock_drop; echo "[slots] имя «$new» уже указано у выхода №$_rdup — выберите другое"; return 1; fi
     _rn=0; _rtmp="$SLOTS_FILE.$$"
     : > "$_rtmp"
@@ -905,10 +921,12 @@ case "$1" in
     list-json)    cmd_list_json ;;
     state)        cmd_state ;;
     carriers)     cmd_carriers ;;
+    configs)      cmd_configs "$2" ;;
     show)         slot_line "$2" ;;
     domains)      cmd_domains "$2" "$3" ;;
     route)        cmd_route "$2" "$3" ;;
     add)          cmd_add "$2" "$3" "$4" "$5" ;;
+    free)         slot_free_id || { echo "$SLOTS_FULL"; exit 1; } ;;
     set)          cmd_set "$2" "$3" "$4" ;;
     enable)       cmd_toggle "$2" on ;;
     disable)      cmd_toggle "$2" off ;;
@@ -917,5 +935,5 @@ case "$1" in
     rename-config) cmd_rename_config "$2" "$3" "$4" ;;
     key-holder)   cmd_key_holder "$2" "$3" "$4" ;;
     key-map)      cmd_key_map ;;
-    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>|rename-config <транспорт> <старое> <новое>|key-holder <конфиг> <main|2..7> [live]|key-map"; exit 2 ;;
+    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|configs <транспорт>|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>|rename-config <транспорт> <старое> <новое>|key-holder <конфиг> <main|2..7> [live]|key-map"; exit 2 ;;
 esac

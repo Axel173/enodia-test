@@ -335,7 +335,12 @@ slot_gen_conf() {   # $1 = src_conf, $2 = dst iface-conf
     # демона с тем же портом (основной awg0, другой выход, «доступ домой») порт уже занят — рукопожатия не будет НИКОГДА.
     # Имя ключа — БЕЗ учёта регистра: парсер wg читает `listenport=` так же, как `ListenPort=`, и строчная запись проходила фильтр
     # мимо (ревью 28.09.2026, круг 2). Зеркало — awg_setup.sh (генератор основного).
-    awk '{ t = tolower($0) } !(t ~ /^[[:space:]]*(address|dns|mtu|table|preup|postup|predown|postdown|saveconfig|listenport)[[:space:]]*=/)' "$_src" > "$_dst"
+    # THE FILE CARRIES THE PRIVATE KEY, and it lives next to the binaries (slot_ifconf), not in the closed state directory. It is
+    # born HERE, closed, whoever calls: the old one is removed first (a file that exists keeps its mode through `>`), the new one is
+    # made under umask 077. Measured on BE7000 11.10.2026: every exit's config stood at 755 — the caller's umask, then
+    # store-lib.sh::harden_perms «everything here is a binary»; only the probe's call had a umask of its own (review s.118 closed
+    # that one call, its twin slot_carrier_conf stayed open). One owner now — the callers set nothing.
+    ( umask 077; rm -f "$_dst"; awk '{ t = tolower($0) } !(t ~ /^[[:space:]]*(address|dns|mtu|table|preup|postup|predown|postdown|saveconfig|listenport)[[:space:]]*=/)' "$_src" > "$_dst" )
     sed -i '/^[[:space:]]*I[1-5][[:space:]]*=[[:space:]]*$/d' "$_dst" 2>/dev/null   # пустые I1..I5 валят setconf
     _epsrc=$(grep -E '^[[:space:]]*Endpoint[[:space:]]*=' "$_src" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
     _ephost=$(echo "$_epsrc" | sed 's/:[0-9]*$//')
@@ -666,7 +671,7 @@ cmd_try() {   # $1 = путь конфига ; $2 = URL ; $3 = потолок з
     rm -rf "$TRY_DIR" 2>/dev/null
     ( umask 077; mkdir "$TRY_DIR" ) 2>/dev/null || { log >&2 "проба: не создать свой каталог $TRY_DIR"; return 4; }
     _tdir=1
-    _tam=$(umask 077; slot_gen_conf "$1" "$TRY_CONF")
+    _tam=$(slot_gen_conf "$1" "$TRY_CONF")   # the key's copy is closed by its maker (slot_gen_conf)
     [ -n "$(printf '%s' "$_tam" | cut -f1)" ] || { log >&2 "проба: в конфиге нет Address"; return 4; }
     _tep=$(ifconf_ep_host "$TRY_CONF")
     printf '%s' "$_tep" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { _tep=""; log >&2 "проба: Endpoint не IPv4"; return 4; }

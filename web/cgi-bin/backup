@@ -173,7 +173,7 @@ SETTINGS="$SETTINGS .traffic-dev .traffic-dev-hosts"                            
 # panel-cert.pem/panel-key.pem = самоподписанный сертификат HTTPS панели (решение 30.09.2026): без него
 # переезд выписывал новый, и каждый браузер и телефон заново спрашивал о доверии. Едет ТОЛЬКО ПАРОЙ, которая
 # сходится (разбор у импорта), и ничего не открывает: флаги HTTPS и входа снаружи остаются в EXCLUDE.
-SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .cfg-names .cfg-via .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem"
+SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .cfg-names .cfg-via .warp-reg .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
 	echo "Content-Type: application/json; charset=utf-8"
@@ -350,6 +350,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 			continue   # имена конфигов — ПОСЛЕ цикла, когда каталоги конфигов уже влиты (владелец сверяет с ними)
 		elif [ "$f" = .cfg-via ] && [ -f "$ENODIA_DIR/road.sh" ]; then
 			continue   # дороги конфигов — так же, ПОСЛЕ цикла (road.sh import сверяет с привезённым)
+		elif [ "$f" = .warp-reg ] && [ -f "$ENODIA_DIR/warp.sh" ]; then
+			continue   # the records of WARP registrations — AFTER the loop too (warp.sh import merges by key and prunes)
 		else
 			# Имя может быть ВЛОЖЕННЫМ (geo/actions.tsv — берём реестр гео, но не снимки рядом
 			# с ним): на свежей установке каталога ещё нет, и cp молча ушёл бы в никуда.
@@ -366,6 +368,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 	# ДОРОГИ КОНФИГОВ (road.sh import) — то же правило, только AmneziaWG (дорога есть лишь у него).
 	if [ -f "$ENODIA_DIR/road.sh" ] && { [ -f "$tmp/.cfg-via" ] || [ -d "$tmp/configs" ]; }; then
 		sh "$ENODIA_DIR/road.sh" import "$tmp/.cfg-via" "$tmp" >/dev/null 2>&1 && [ -f "$tmp/.cfg-via" ] && restored=$((restored+1))
+	fi
+	# WARP REGISTRATIONS (warp.sh import) — keyed by the config's key: the archive's records join the router's, and a record whose
+	# config is not here (neither brought nor kept) is dropped. An archive without configs and without records touches nothing.
+	if [ -f "$ENODIA_DIR/warp.sh" ] && { [ -f "$tmp/.warp-reg" ] || [ -d "$tmp/configs" ]; }; then
+		sh "$ENODIA_DIR/warp.sh" import "$tmp/.warp-reg" >/dev/null 2>&1 && [ -f "$tmp/.warp-reg" ] && restored=$((restored+1))
+		chmod 600 "$ENODIA_STATE/.warp-reg" 2>/dev/null
 	fi
 	rm -rf "$tmp"
 	if [ "$restored" -eq 0 ]; then

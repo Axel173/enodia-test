@@ -476,7 +476,10 @@
   .popmenu{position:fixed;z-index:60;background:var(--bg-primary);border:.5px solid var(--border-s);border-radius:var(--r-md);
            box-shadow:0 6px 24px rgba(0,0,0,.35);padding:4px;min-width:184px;max-width:280px}
   .popmenu-item{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text-primary);
-                font:inherit;font-size:13px;padding:9px 11px;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap}
+                font:inherit;font-size:13px;padding:9px 11px;border-radius:var(--r-sm);cursor:pointer;
+                /* A long server name (the person's own) plus our note «— занят: выход №N →» is wider than the menu's ceiling: the item
+                   wraps instead of running past the menu's edge. Short items are as wide as before — the menu shrinks to its content. */
+                white-space:normal;overflow-wrap:anywhere}
   .popmenu-item:focus-visible{background:var(--bg-secondary)} @media (hover:hover){ .popmenu-item:hover{background:var(--bg-secondary)} }
   .popmenu-item:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
   .popmenu-item.danger{color:var(--text-warning)}
@@ -1015,7 +1018,9 @@
   .arc .sub2{font-size:11px;color:var(--ink2);text-align:center;overflow-wrap:anywhere}
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:2px;margin-top:12px}
   .stats .s{padding:8px 10px;min-width:0}
-  .stats .l{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink3);font-weight:600}
+  /* overflow-wrap: the label of «Пинг через <имя выхода>» carries the person's text — an unbroken name of 17+ letters ran past
+     the 129-px cell at 320 px (measured, review s.123). */
+  .stats .l{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink3);font-weight:600;overflow-wrap:anywhere}
   .stats .v{font-size:15px;font-weight:500;margin-top:2px;color:var(--ink);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
   .stats .v.wr{color:var(--warn)}
   .rr-acts{display:flex;gap:9px;flex-wrap:wrap;align-items:center}

@@ -70,6 +70,10 @@ cmd_riders() { cmd_list | awk -F"$TAB" -v i="$1" '$2==i { print $1 }'; }
 
 # The exits registry — read ONCE per call (each `slots.sh` is a fork). Enabled exits: id⇥transport⇥config⇥fallback.
 slots_enabled() { [ -f "$ENODIA_DIR/slots.sh" ] && sh "$ENODIA_DIR/slots.sh" list-enabled 2>/dev/null; }
+# The ENABLED AmneziaWG exits that run config $1, one id per line. The name is compared AS TEXT (`x ""`): awk takes a `-v` value
+# that looks like a number for one, and config «01» was config «1» — it «served as a road» for the other's riders, and clearing
+# its road re-raised the other's exit.
+exits_on() { slots_enabled | awk -F"$TAB" -v c="$1" '$2=="awg" && ($3 "") == (c "") { print $1 }'; }
 # Does this config SERVE as a road: it runs an enabled AmneziaWG exit somebody rides → that exit's id (empty — it doesn't). The ONLY
 # answer: a config can't ride a road while it is one (`set`), and it can't be deleted from under its riders (cgi-bin/action del_server).
 # Would exit $1 on config $2 go to the server of one of ITS riders: then `to <address> lookup 100N` would send the exit's own packets
@@ -82,7 +86,7 @@ cmd_clash() {   # $1 = exit id, $2 = the config it is about to run
     return 0
 }
 cmd_serves() {   # $1 = file
-    for _rvm in $(slots_enabled | awk -F"$TAB" -v c="$1" '$2=="awg" && $3==c { print $1 }'); do
+    for _rvm in $(exits_on "$1"); do
         [ -n "$(cmd_riders "$_rvm")" ] && { echo "$_rvm"; return 0; }
     done
     return 0
@@ -262,7 +266,7 @@ runners() {   # $1 = file
         if [ "$(active_transport)" = awg ]; then echo main
         elif [ -e /sys/class/net/awg0 ]; then echo warm; fi
     fi
-    slots_enabled | awk -F"$TAB" -v c="$1" '$2=="awg" && $3==c { print $1 }'
+    exits_on "$1"
 }
 
 cmd_set() {   # $1 = kind, $2 = file, $3 = id | ""

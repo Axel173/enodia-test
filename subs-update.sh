@@ -478,7 +478,9 @@ name_for() {
 		# Кандидатов с одним и тем же настоящим именем бывает НЕСКОЛЬКО: у провайдеров
 		# «🇩🇪⚡Германия» встречается по два-три раза. Берём того, чей конфиг несёт ТОТ ЖЕ
 		# адрес, — иначе одинаковые имена перетасовывают серверы между файлами каждый прогон.
-		awk -F"$TAB" -v r="$_raw" -v p="sub-$_t-" '$1 ~ "^"p && $2==r {print $1}' "$NAMES" 2>/dev/null > "$TMPD/cand"
+		# The name is compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and server «01» was
+		# server «1» — on an address change it took the other's file (and that file may be the active config).
+		awk -F"$TAB" -v r="$_raw" -v p="sub-$_t-" '$1 ~ "^"p && ($2 "") == (r "") {print $1}' "$NAMES" 2>/dev/null > "$TMPD/cand"
 		while IFS= read -r _c; do
 			[ -n "$_c" ] || continue
 			grep -qxF "$_c" "$TMPD/used" 2>/dev/null && continue
@@ -666,7 +668,7 @@ pick_outbound() {
 	# провайдеров «🇩🇪⚡Германия» встречается по два-три раза); занятые в этом прогоне пропускаем
 	: > "$TMPD/want"
 	if [ -f "$NAMES" ] && [ -n "$_pr_rem" ]; then
-		awk -F"$TAB" -v r="$_pr_rem" -v p="sub-$_pt-" '$1 ~ "^"p && $2==r {print $1}' "$NAMES" 2>/dev/null > "$TMPD/cand0"
+		awk -F"$TAB" -v r="$_pr_rem" -v p="sub-$_pt-" '$1 ~ "^"p && ($2 "") == (r "") {print $1}' "$NAMES" 2>/dev/null > "$TMPD/cand0"   # text, as in name_for
 		while IFS= read -r _c0; do
 			[ -n "$_c0" ] || continue
 			grep -qxF "$_c0" "$TMPD/used" 2>/dev/null && continue
@@ -734,10 +736,13 @@ parse_json() {
 	[ -n "$JF" ] || { say "  подписка-JSON, но jsonfilter не найден — пропускаю"; return 1; }
 	# массив или одиночный объект: у массива есть элемент [0]
 	if [ -n "$(jf "$_f" '@[0]')" ]; then _arr=1; else _arr=0; fi
-	_i=0; _n=0
+	# THE ELEMENT'S INDEX HAS ITS OWN NAME (`_pji`): put_server keeps its ordinal in `_i`, and busybox sh has no `local` — with the
+	# index in `_i` every server written set it to the COUNT of servers: element [1] of every array was skipped, and after an
+	# element that gave no server the next one was read twice (a second file of the same server). Found by the stand 11.10.2026.
+	_pji=0; _n=0
 	while :; do
 		[ "$_n" -ge "$MAXSRV" ] && { N_CUT=1; break; }
-		if [ "$_arr" = 1 ]; then _sel="@[$_i]"; else _sel="@"; fi
+		if [ "$_arr" = 1 ]; then _sel="@[$_pji]"; else _sel="@"; fi
 		jf "$_f" "$_sel" > "$TMPD/el.json" 2>/dev/null
 		[ -s "$TMPD/el.json" ] || break
 		_rem=$(jf "$TMPD/el.json" '@.remarks')
@@ -753,7 +758,7 @@ parse_json() {
 			N_SKIP=$((N_SKIP+1))
 		fi
 		[ "$_arr" = 1 ] || break
-		_i=$((_i+1))
+		_pji=$((_pji+1))
 	done
 	[ "$_n" -gt 0 ]
 }

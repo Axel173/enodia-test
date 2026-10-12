@@ -118,6 +118,10 @@ harden_perms() {    # $1 = каталог кода, $2 = каталог сост
     # результат, полученный из семантики `cp` и umask, — не правило, а совпадение; для
     # файла, который root запускает как демона, «не world-writable» надо ЗАЯВЛЯТЬ.
     harden_tree "$3" 755 755
+    # …except the EXITS' generated configs (`awg<N>.conf`, transport-awg.sh::slot_ifconf): they live here, next to the binaries,
+    # and carry a private key — «everything here is a binary» made them 755 on every install and every move (measured on BE7000
+    # 11.10.2026). The same closed mode the state directory has.
+    find "$3" -type f -name 'awg[0-9]*.conf' -exec chmod 600 {} ';' 2>/dev/null
     return 0
 }
 
