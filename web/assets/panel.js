@@ -23710,7 +23710,11 @@
     function wb(cls, act, label, off){ return '<button type="button" class="'+cls+'" data-wp="'+act+'" data-name="'+nq+'" data-wpk="'+act+':'+nq+'"'+(off||'')+'>'+label+'</button>'; }
     // `.wt-long`: the name is the person's text — a long unbroken one ran past the card's edge at 320 px (the same shape as the
     // schedule's title, measured there).
-    var h='<div class="card wp-cfg" data-wpn="'+nq+'"><div class="wt"><span class="wt-long"><span>Конфиг</span>&nbsp;«<span class="sens" translate="no">'+esc(cfgDisp('awg', name))+'</span>»</span></div>'
+    // ON A DESKTOP THE CARD IS ONE COLUMN WIDE AND TWO ROWS TALL (`r2`): at double width the third column stood blank under the
+    // two info cards (~1100 px with two configs), and at plain single width every short card of its row hung over a hole (up to
+    // 700 px) — a grid row is as tall as its tallest card. Spanning two rows, the short cards stack beside it: gaps of 60 px with
+    // two configs, the page a third shorter (measured on BE7000's screen at 1905 px, 12.10.2026).
+    var h='<div class="card r2 wp-cfg" data-wpn="'+nq+'"><div class="wt"><span class="wt-long"><span>Конфиг</span>&nbsp;«<span class="sens" translate="no">'+esc(cfgDisp('awg', name))+'</span>»</span></div>'
       + kv('Откуда', !known ? '<span>роутер не ответил о записях — обновите экран</span>'
                    : (own ? '<span>получен этим роутером</span>'+(ago(it.at) ? ' · <span>'+ago(it.at)+'</span>' : '') : '<span>записи о получении нет: загружен вами или получен до этой версии панели</span>'),
            '<button type="button" class="act" data-cact="srv:awg/'+nq+'">Открыть</button>')
@@ -23804,7 +23808,7 @@
   var _wpHeld=null;
   function warpDevHtml(st, bin, txtOpen){
     var run=(st.state==='running');
-    var h='<div class="card" id="wp-dev"><div class="wt">WARP для другого устройства</div>'
+    var h='<div class="card'+(_wpDev ? ' r2' : '')+'" id="wp-dev"><div class="wt">WARP для другого устройства</div>'
       + '<div class="cline" style="margin-top:0">Телефону или ноутбуку — свой ключ: роутер зарегистрирует его у Cloudflare, подберёт порт из вашей сети и покажет конфиг один раз. На роутере от него ничего не остаётся.</div>';
     if(_wpDev){
       h+='<div class="sens" id="wp-devconf">'+vsConfHtml(_wpDev, txtOpen===true)+'</div>'
