@@ -784,11 +784,16 @@ cmd_run_device() {
     put "{\"state\":\"done\",\"op\":\"device\",\"name\":\"\",\"port\":\"$_wport\",\"colo\":\"$_wcolo\",\"msg\":\"WARP для устройства получен: порт $_wport\"}"
     exit 0
 }
+# `ep` — the address of Cloudflare's server in the config handed out, the router's own reading of it (`cfg_ep`): at home such a
+# device's tunnel is marked into the router's tunnel like any packet to that address (every WARP address tried sits in the shared
+# «в VPN» pool — dev notes §27.16), and the panel offers an ordinary «мимо VPN» rule for THIS address. An address only (a rule
+# takes nothing else); a config whose server is not an IPv4 literal gives none, and the panel then offers nothing.
 cmd_device_take() {
     [ -f "$DEVF" ] || { echo '{"ok":false,"msg":"конфиг уже забран или не получен — получите новый"}'; return 0; }
-    _wdt=$(base64 < "$DEVF" 2>/dev/null | tr -d '\n'); rm -f "$DEVF"
+    _wdt=$(base64 < "$DEVF" 2>/dev/null | tr -d '\n'); _wde=$(cfg_ep "$DEVF"); rm -f "$DEVF"
     [ -n "$_wdt" ] || { echo '{"ok":false,"msg":"не удалось прочитать конфиг"}'; return 0; }
-    printf '{"ok":true,"conf_b64":"%s"}\n' "$_wdt"
+    printf '%s' "$_wde" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || _wde=""
+    printf '{"ok":true,"conf_b64":"%s","ep":"%s"}\n' "$_wdt" "$_wde"
 }
 # The status AS THE PANEL READS IT — the stored line plus two facts only the owner knows:
 #   * «running» with no live job is NOT running. A work that died without its last word (killed, out of memory, a signal — the

@@ -11208,6 +11208,16 @@
     "работа прервалась — запустите её снова":"the job was interrupted — start it again",
     "WARP для другого устройства":"WARP for another device",
     "Телефону или ноутбуку — свой ключ: роутер зарегистрирует его у Cloudflare, подберёт порт из вашей сети и покажет конфиг один раз. На роутере от него ничего не остаётся.":"A phone or a laptop gets its own key: the router registers it at Cloudflare, picks a port from your network and shows the config once. Nothing of it stays on the router.",
+    "Дома, в сети этого роутера, такой WARP обычно попадает в туннель самого роутера — адреса Cloudflare есть в общем списке «в VPN» — и работает медленнее, чем вне дома. Когда конфиг получен, его можно пустить из дома напрямую: кнопка появится под ним.":"At home, in this router's network, such a WARP usually ends up inside the router's own tunnel — Cloudflare's addresses are in the shared «via VPN» list — and works slower than away from home. Once the config is received, you can send it straight out from home: the button appears under it.",
+    "Правила «мимо VPN» для адреса его сервера":"There is no «bypass VPN» rule for its server's address",
+    "нет: дома этот WARP пойдёт так, как решают списки роутера, — обычно через его туннель. Кнопка создаст правило: оно появится в «Маршрутизации», снять его можно там же. Когда правило создаётся, все соединения в сети один раз переподключаются.":"yet: at home this WARP goes the way the router's lists decide — usually through its tunnel. The button makes the rule: it will appear in «Routing» and can be removed there. When the rule is made, every connection in the network reconnects once.",
+    "Правило «мимо VPN» для адреса его сервера":"There is a «bypass VPN» rule for its server's address",
+    "есть — из дома этот WARP идёт напрямую; сильнее этого правила только правила по портам и правила устройств. Снять его можно в":"— from home this WARP goes straight out; only port rules and device rules are stronger than this rule. It can be removed in",
+    "роутер не ответил — правило не создано":"the router did not answer — the rule was not made",
+    "«Маршрутизации»":"«Routing»",
+    "Роутер не ответил, есть ли правило «мимо VPN» для адреса":"The router did not answer whether there is a «bypass VPN» rule for the address",
+    "Пускать из дома напрямую":"Send straight out from home",
+    "пускаю WARP устройства из дома напрямую":"sending the device's WARP straight out from home",
     "Конфиг показан один раз.":"The config is shown once.",
     "Сохраните его сейчас: уйдёте с экрана или скроете — понадобится получить новый. Один конфиг — одно устройство: на двух связь рвётся у обоих.":"Save it now: leave the screen or hide it, and you will need a new one. One config — one device: on two, both lose the connection.",
     "На устройстве — приложение AmneziaWG или AmneziaVPN: «+» → «Сканировать QR-код» или импорт файла. Обычный WireGuard строк маскировки не понимает.":"On the device — the AmneziaWG or AmneziaVPN app: «+» → «Scan QR code», or import the file. Plain WireGuard does not understand the masking lines.",
@@ -23578,11 +23588,16 @@
   // leaving the screen (a door, a link, Back/Forward, a section) does not — the card says «уйдёте с экрана — понадобится получить
   // новый». The router has forgotten it by then (`warp_dev_take` hands it out once).
   var _wpDev=null;
+  // …and the address of Cloudflare's server in that config AS THE ROUTER READ IT (`ep` of warp_dev_take; '' — it named none): at
+  // home such a device's tunnel is marked into the router's own tunnel like any packet to that address (the phone's live flow,
+  // 13.10.2026: its WARP left through awg0 — WARP inside the main channel, MTU too small for it), so the card offers the ordinary
+  // «мимо VPN» rule for THIS address. The panel reads nothing out of the config's text itself. Lives and dies with `_wpDev`.
+  var _wpDevEp='';
   // THE VISIT'S END FORGETS IT AT ONCE (`screenStop` — nav's own «the screen is left»): the tab's copy and what the left screen
   // still holds. It used to wait for the next opening of this screen: a move to a section only hid `#modal-body`, with the QR and
   // the text of the private key still in it (review s.122).
   function wpDevForget(){
-    _wpDev=null;
+    _wpDev=null; _wpDevEp='';
     var dc=document.getElementById('wp-devconf'); if(dc && dc.parentNode) dc.parentNode.removeChild(dc);
   }
   // …and WHOSE the job is that this tab polls — by the job's IDENTITY: the tab makes an id, sends it with the start, and the router
@@ -23632,15 +23647,33 @@
   var _wpOwnG=-1;
   // The focus as read by a redraw that ended in a replayed end — for the redraw that follows it (openWarp).
   var _wpHeld=null;
-  function warpDevHtml(st, bin, txtOpen){
+  // `home` — what the router said about the «мимо VPN» rule for the shown config's server (openWarp asks at every show):
+  // 'tun' — no rule, 'direct' — the rule is there, 'unk' — the router did not answer, '' — no address to ask about.
+  function warpDevHtml(st, bin, txtOpen, home){
     var run=(st.state==='running');
     var h='<div class="card'+(_wpDev ? ' r2' : '')+'" id="wp-dev"><div class="wt">WARP для другого устройства</div>'
-      + '<div class="cline" style="margin-top:0">Телефону или ноутбуку — свой ключ: роутер зарегистрирует его у Cloudflare, подберёт порт из вашей сети и покажет конфиг один раз. На роутере от него ничего не остаётся.</div>';
+      + '<div class="cline" style="margin-top:0">Телефону или ноутбуку — свой ключ: роутер зарегистрирует его у Cloudflare, подберёт порт из вашей сети и покажет конфиг один раз. На роутере от него ничего не остаётся.</div>'
+      // THE TRUTH ABOUT HOME, before the click: the port is picked «из вашей сети», but in this network the tunnel of such a
+      // device does not go out by that path at all unless a rule sends it there.
+      + '<div class="cline">Дома, в сети этого роутера, такой WARP обычно попадает в туннель самого роутера — адреса Cloudflare есть в общем списке «в VPN» — и работает медленнее, чем вне дома. Когда конфиг получен, его можно пустить из дома напрямую: кнопка появится под ним.</div>';
     if(_wpDev){
+      var epH='<span class="mono sens" translate="no">'+esc(_wpDevEp)+'</span>';
       h+='<div class="sens" id="wp-devconf">'+vsConfHtml(_wpDev, txtOpen===true)+'</div>'
         + '<div style="margin-top:11px">'+noteBox('<b>Конфиг показан один раз.</b> Сохраните его сейчас: уйдёте с экрана или скроете — понадобится получить новый. Один конфиг — одно устройство: на двух связь рвётся у обоих.', 'warn')+'</div>'
         + '<div class="cline">На устройстве — приложение AmneziaWG или AmneziaVPN: «+» → «Сканировать QR-код» или импорт файла. Обычный WireGuard строк маскировки не понимает.</div>'
-        + '<div class="acts"><button type="button" class="btn gh" data-wp="devhide" data-wpk="devhide:">Скрыть</button></div>';
+        // HOME: an ordinary rule, made by the same action as on «Маршрутизация», seen and removed there. Locked while a WARP
+        // work runs: the rule flushes every established connection, and a pick's probe would read its lost handshake as «cut».
+        // THE LINE LEADS WITH WHAT THE ROUTER SAID — the store has a line for this address or has none. Where the packets go
+        // without one is the lists' to decide («обычно» — the router's own exit on the same address, a wider subnet of the
+        // person's, the VPN switched off already send it straight; review s.130): told as what usually follows, not as a fact.
+        + (home==='tun' ? '<div class="cline" id="wp-devhome"><span>Правила «мимо VPN» для адреса его сервера</span> '+epH+' <span>нет: дома этот WARP пойдёт так, как решают списки роутера, — обычно через его туннель. Кнопка создаст правило: оно появится в «Маршрутизации», снять его можно там же. Когда правило создаётся, все соединения в сети один раз переподключаются.</span></div>'
+          : home==='direct' ? '<div class="cline" id="wp-devhome"><span>Правило «мимо VPN» для адреса его сервера</span> '+epH+' <span>есть — из дома этот WARP идёт напрямую; сильнее этого правила только правила по портам и правила устройств. Снять его можно в</span> <span class="nbr"><button type="button" class="ilink" data-cact="routes">«Маршрутизации»</button><span>.</span></span></div>'
+          // The router's silence gets a question asked again FROM THIS SCREEN: «обновите экран» was an advice to end the visit
+          // — a reload or a walk away and back forgets the one-time config, and the button could never appear for it (review s.130).
+          : home==='unk' ? '<div class="cline" id="wp-devhome"><span>Роутер не ответил, есть ли правило «мимо VPN» для адреса</span> '+epH+'<span>.</span></div>' : '')
+        + '<div class="acts">'+(home==='tun' ? '<button type="button" class="btn" data-wp="devdirect" data-wpk="devdirect:"'+(run ? ' disabled' : '')+'>Пускать из дома напрямую</button>'
+                              : home==='unk' ? '<button type="button" class="btn" data-wp="devask" data-wpk="devask:">Проверить ещё раз</button>' : '')
+        + '<button type="button" class="btn gh" data-wp="devhide" data-wpk="devhide:">Скрыть</button></div>';
     }
     // A config WAITS at the router (the job ended while this screen was closed, or another tab started it): the router keeps it
     // ten minutes, shows it once — a button, not an automatic take: two tabs would race for the one copy.
@@ -23685,11 +23718,40 @@
     if(_wpOpnG!==_navGen){ _wpOpn={}; _wpOpnG=_navGen; nwDraftDrop(['wp-rider']); }
     var opn=_wpOpn;
     var body=document.getElementById('modal-body'), rep=navIfShown('cn-warp', openWarp); loading(body);
+    // THE SCREEN'S DATA DID NOT ARRIVE. With no device config held — the error line, as on every screen. WITH ONE HELD the bare
+    // line would end it: nothing on that line draws the visit again, and leaving the screen forgets the one-time config.
+    // «Проверить ещё раз» and the rule button's failed requests end in a redraw, and a router silent altogether fails that
+    // redraw's own list too — the config vanished behind the line for good (review s.130, round 3; the class is older: any
+    // redraw with a config held). So the config's card is drawn alone under the error's words with the same «Проверить ещё
+    // раз»: nothing else of the screen is known, and nothing else is offered.
+    function failed(){
+      if(!_wpDev){ oops(body, 'не удалось получить список серверов'); return; }
+      body.innerHTML='<div class="vwrap"><div class="card w2"><div class="wt">Получить</div>'
+        + '<div class="cline lead" id="wp-fail" aria-live="polite" style="margin-top:0">не удалось получить список серверов</div>'
+        + '<div class="acts"><button type="button" class="btn" data-wp="devask" data-wpk="devask:">Проверить ещё раз</button></div></div>'
+        + warpDevHtml({}, true, !!opn['@devtxt'], '')+'</div>';
+      body._wpG=_navGen;
+      body.addEventListener('click', function(ev){
+        var b=ev.target; while(b && b!==body && !(b.getAttribute && b.getAttribute('data-wp'))) b=b.parentNode;
+        if(!b || b===body) return;
+        var v=b.getAttribute('data-wp');
+        if(v==='devhide'){ _wpDev=null; _wpDevEp=''; rep(); }
+        else if(v==='devask') rep();
+      });
+      wpDevConfWire();
+      // The mark of the click that led here is handed over as after a work (the button it names may be gone — its list goes on).
+      var fm=_wpFoc; _wpFoc=null;
+      if(fm && fm.g===_navGen && (!fown || fsig===fm.s[0])) _nwFocus={s:fm.s, g:_navGen};
+      nwFocusBack(body, fsig);
+    }
     Promise.all([fetchJson('/cgi-bin/list'), refreshEnabledSlots(), subPost({action:'warp_status'}).then(null, function(){ return null; }),
-                 subPost({action:'warp_info'}).then(null, function(){ return null; })]).then(function(r){
+                 subPost({action:'warp_info'}).then(null, function(){ return null; }),
+                 // The shown device config's server: is its «мимо VPN» rule there — the router's stores, asked at EVERY show
+                 // (the rule is made by this card and removed on «Маршрутизация»). No config or no address — nothing is asked.
+                 (_wpDev && _wpDevEp) ? fetchJson('/cgi-bin/data?section=sites').then(null, function(){ return null; }) : Promise.resolve(null)]).then(function(r){
       if(!screenAlive(body)) return;
       var d=r[0], st=r[2]||{}, inf=r[3]||{}, known=!!(r[3] && typeof r[3]==='object' && r[3].items), slk=(r[1]!==false);
-      if(!d || typeof d!=='object' || d.error || d.need_login){ oops(body, 'не удалось получить список серверов'); return; }
+      if(!d || typeof d!=='object' || d.error || d.need_login){ failed(); return; }
       srvListTake(d);
       var awg=(d.awg && d.awg.servers)||[], bin=!(d.awg && d.awg.bin===false), run=(st.state==='running');
       // This tab's own job ended and nobody has handled its end yet (the poll's body was replaced by a redraw at that moment).
@@ -23727,7 +23789,11 @@
         var x=slotAll.filter(function(z){ return z.transport==='awg' && z.config===n; })[0]||null;
         h+=warpCardHtml(n, byName[n]||null, x, st, n===mainNow, now, known, bin, slk);
       });
-      h+=warpDevHtml(st, bin, !!opn['@devtxt']);
+      // The rule is the store's LINE for this address (as typed: bare or with /32) — a wider subnet a person wrote is theirs to
+      // read; an answer that is not the stores' (a refusal, a login page) is «не ответил», not «правила нет».
+      var dr=r[4], home='';
+      if(_wpDev && _wpDevEp) home=(rpBadResp(dr) || !Array.isArray(dr.dst)) ? 'unk' : ((dr.dst.indexOf(_wpDevEp)>=0 || dr.dst.indexOf(_wpDevEp+'/32')>=0) ? 'direct' : 'tun');
+      h+=warpDevHtml(st, bin, !!opn['@devtxt'], home);
       h+='<div class="card"><div class="wt">Что это</div>'
         + '<div class="kv"><div class="grow"><div class="k">Бесплатный VPN Cloudflare</div><div class="v">на обычном WireGuard, трафик без лимита</div></div></div>'
         + '<div class="kv"><div class="grow"><div class="k">Страну не меняет</div><div class="v">сайты видят вас в вашей стране — WARP не замена вашему серверу</div></div></div>'
@@ -23792,7 +23858,9 @@
         // Where the focus goes when this button is gone after its work: the card's first work, the device card's next button.
         // The mark itself is taken by whoever really starts something (job, or the branch that locks or redraws) — a click that
         // ends in «Нет» or in a refusal of the form leaves none behind.
-        fBtn=b; fAlts=n ? ['[data-wpk="repick:'+selVal(n)+'"]'] : ['[data-wpk="devhide:"]', '[data-wpk="devtake:"]', '[data-wpk="device:"]'];
+        // A config that has just appeared takes the focus onto «Скопировать конфиг», not «Скрыть»: the next Space of a keyboard
+        // threw the one-time config away (review s.130).
+        fBtn=b; fAlts=n ? ['[data-wpk="repick:'+selVal(n)+'"]'] : ['#wp-devconf [data-pa="copy"]', '[data-wpk="devhide:"]', '[data-wpk="devtake:"]', '[data-wpk="device:"]'];
         if(v==='mkexit'){
           // The panel's common action: a start that did not happen leaves no mark behind (the previous one comes back), and a
           // request that did not reach the router draws the screen again as an answer does — an unspent mark sent the focus of
@@ -23840,19 +23908,50 @@
           });
         }
         else if(v==='devtake'){ wpFocKeep(b, fAlts); b.disabled=true; wpDevTake(); }
-        else if(v==='devhide'){ wpFocKeep(b, fAlts); _wpDev=null; rep(); }
-      });
-      var dc=document.getElementById('wp-devconf');
-      if(dc) dc.addEventListener('click', function(ev){
-        for(var el=ev.target; el && el!==dc; el=el.parentNode){
-          var a=el.getAttribute && el.getAttribute('data-pa');
-          if(a==='copy'){ copyToClip(_wpDev||'', 'конфиг скопирован'); return; }
-          if(a==='dl'){ downloadText('warp-device.conf', _wpDev||''); return; }
+        else if(v==='devhide'){ wpFocKeep(b, fAlts); _wpDev=null; _wpDevEp=''; rep(); }
+        else if(v==='devdirect'){
+          // The rule «Маршрутизация» itself makes for an address (the panel's common action) — for the one the ROUTER named. Its
+          // answer redraws the screen, and the redraw asks the stores again: the line under the config says what is there now.
+          // THE ROUTER IS ASKED FIRST WHETHER A WARP WORK RUNS NOW (as «для устройства» asks whether a config waits): the
+          // screen polls only a work it was drawn under, and the watchdog starts picks of its own — the rule's flush of every
+          // connection lands on a pick's probe, and the probe reads its lost handshake as «the port is cut». Every work button
+          // is locked FROM THE CLICK TO THE REDRAW: the action's answer comes before its redraw, and a second click in that
+          // window flushed the whole network a second time (review s.130). Whatever does not start draws the screen again —
+          // unlocked, the mark taken here spent by that redraw.
+          if(busyNo() || !_wpDevEp) return;
+          var de=_wpDevEp;
+          wpFocKeep(b, fAlts);
+          wpLock(body);
+          subPost({action:'warp_status'}).then(null, function(){ return null; }).then(function(s){
+            if(!screenAlive(body)) return;
+            if(!s){ showToast('роутер не ответил — правило не создано', false); rep(); return; }
+            if(s.state==='running'){ rep(); return; }      // a work started meanwhile — the redraw shows it, the button locked
+            // The panel turned busy while the router was asked — said, as every other start of this screen says it.
+            if(busyNo()){ rep(); return; }
+            if(!postAction('dst_bypass', null, 'пускаю WARP устройства из дома напрямую', {cidr:de}, rep, rep)) rep();
+          });
         }
+        // «Проверить ещё раз» of the line «роутер не ответил»: the same visit's redraw — the config stays, the stores are asked again.
+        // Its own button gone with the answer, the focus goes to «Скопировать конфиг», not onto the rule button that has just
+        // appeared: a held Enter repeats the click on whatever takes the focus, and that one reconnects the whole network.
+        else if(v==='devask'){ wpFocKeep(b, fAlts); rep(); }
       });
+      wpDevConfWire();
       // Работа уже идёт (с другой вкладки или до перезагрузки) — экран сразу её подхватывает.
       if(run){ _wpBody=body; warpPoll(body, 0); }
-    }, function(){ if(screenAlive(body)) oops(body, 'не удалось получить список серверов'); });
+    }, function(){ if(screenAlive(body)) failed(); });
+  }
+  // «Скопировать конфиг» and «Скачать файлом» of the shown device config — wired by both layouts of the screen (the whole one and
+  // the one drawn when the screen's data did not arrive, `failed` of openWarp).
+  function wpDevConfWire(){
+    var dc=document.getElementById('wp-devconf');
+    if(dc) dc.addEventListener('click', function(ev){
+      for(var el=ev.target; el && el!==dc; el=el.parentNode){
+        var a=el.getAttribute && el.getAttribute('data-pa');
+        if(a==='copy'){ copyToClip(_wpDev||'', 'конфиг скопирован'); return; }
+        if(a==='dl'){ downloadText('warp-device.conf', _wpDev||''); return; }
+      }
+    });
   }
   // Take the other device's config from the router (once) and show it in THIS visit of the screen. The router hands its one copy
   // out with the answer: to a visit that is over it is not shown (the card's own promise) — and that is SAID; it used to be taken
@@ -23861,7 +23960,7 @@
     var g=_navGen;
     subPost({action:'warp_dev_take'}).then(function(r){
       var got=!!(r && r.ok && r.conf_b64);
-      if(got && g===_navGen && navShows('cn-warp')) _wpDev=b64toUtf8(r.conf_b64);
+      if(got && g===_navGen && navShows('cn-warp')){ _wpDev=b64toUtf8(r.conf_b64); _wpDevEp=WP_EP4.test(String(r.ep||'')) ? String(r.ep) : ''; }
       else if(got) showToast('конфиг устройства забран с роутера, но вы ушли с экрана — он не показан: получите новый', false);
       else showToast((r && r.msg)||'конфиг устройства не получен', false);
       navIfShown('cn-warp', openWarp)();
@@ -23874,6 +23973,9 @@
   // and the redraw adopted it again. The ceiling is on answers that did NOT ARRIVE in a row (`miss`, WP_NET_TRIES ≈ a minute): the
   // chain then ends with words and a redraw — it used to end in silence, every button locked (review s.122).
   var WP_NET_TRIES=20;
+  // The form of the address the router names with a device config (`ep` of warp_dev_take): an IPv4 literal, nothing else goes
+  // into a rule's request.
+  var WP_EP4=/^([0-9]{1,3}[.]){3}[0-9]{1,3}$/;
   // The end of a work (`st` — its last status): the words, fresh data, what the tab's OWN job leaves behind, and the redraw.
   function wpJobEnd(st){
     // This tab's own job — by the id it sent with the start (a job started elsewhere, or by hand on the router, carries another or none).
