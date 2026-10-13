@@ -949,8 +949,8 @@ emit_subs_run() {
 # --- КАРТОЧКА «ПОДПИСКИ»: сколько ещё работает каждая. Три источника в одном ответе: реестр
 # (метка), конфиги (сколько серверов) и `.sub-info` (что подписка сообщила о себе заголовком
 # `subscription-userinfo` — владелец разбора subs-lib.sh).
-# СПИСОК СПРАШИВАЕМ У РОУТЕРА (`subs-update.sh list` — «tag⇥метка⇥серверов»), а не считаем сами:
-# счёт по ВЛАДЕЛЬЦУ (длиннейший подходящий тег, ОБА семейства конфигов) уже написан там, и вторая
+# СПИСОК СПРАШИВАЕМ У РОУТЕРА (`subs-update.sh list` — «tag⇥метка⇥серверов⇥xray⇥hy2⇥awg»), а не считаем сами:
+# счёт по ВЛАДЕЛЬЦУ (длиннейший подходящий тег, ВСЕ семейства конфигов) уже написан там, и вторая
 # копия разошлась бы с первой на первом же теге-префиксе («liberty» ⊂ «liberty-vpn») — ровно та
 # грабля, за которую в этом проекте уже платили картой имён.
 # ВОЗРАСТ СЧИТАЕТ РОУТЕР — точнее, панель считает его от НАШЕГО `now`: у роутера нет RTC, и от
@@ -968,10 +968,18 @@ emit_subs() {
 	# подоболочкой (накопленный `out` умер бы вместе с ней), а СВОЙ временный файл пришлось бы
 	# снимать и на обрыве — панель закрывает соединение, CGI получает сигнал, и EXIT-ловушка на
 	# busybox не срабатывает. Временный файл heredoc'а ведёт сам шелл, и сирот он не оставляет.
-	while IFS="$TAB" read -r tag label n || [ -n "$tag" ]; do
+	# After the total the owner prints the count of each family (xray, hy2, awg) — the list line of a mixed subscription names
+	# them. A copy of the script older than that prints three fields: the counts are then absent, not zero (`fam` is left out).
+	while IFS="$TAB" read -r tag label n snx snh sna srest || [ -n "$tag" ]; do
 		# «подписок нет» — человеческая строка того же верба (у неё нет ни TAB, ни числа):
 		# машинному читателю она не адресована, и счётчик её отсеивает.
 		case "$n" in ''|*[!0-9]*) continue ;; esac
+		# Each count — a number as shell arithmetic prints it (no leading zero: in JSON that is not a number), four digits at most.
+		sfam=""; sfok=1
+		for sfv in "$snx" "$snh" "$sna"; do
+			case "$sfv" in 0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) : ;; *) sfok=0 ;; esac
+		done
+		[ "$sfok" = 1 ] && sfam=",\"fam\":{\"xray\":$snx,\"hy2\":$snh,\"awg\":$sna}"
 		tag=$(printf '%s' "$tag" | tr -cd 'a-z0-9-')
 		[ -n "$tag" ] || continue
 		# `jtxt`, а не `jesc`: метка — ДАННЫЕ человека, и `jesc` вырезал бы из «Speed [50m]» «код цвета» (ревью приёмки, круг 3; тот же
@@ -999,7 +1007,7 @@ emit_subs() {
 		case "$ex" in ''|*[!0-9]*) ex=0 ;; *) z=${ex%%[!0]*}; ex=${ex#$z}; [ -n "$ex" ] || ex=0 ;; esac
 		z=${n%%[!0]*}; n=${n#$z}; [ -n "$n" ] || n=0
 		case "$hv" in 1) hv=true ;; *) hv=false ;; esac
-		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\",\"srv\":$n,\"ok\":$ok,\"err\":$er,\"have\":$hv,\"up\":$up,\"down\":$dn,\"total\":$tt,\"expire\":$ex}"
+		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\",\"srv\":$n$sfam,\"ok\":$ok,\"err\":$er,\"have\":$hv,\"up\":$up,\"down\":$dn,\"total\":$tt,\"expire\":$ex}"
 	done <<EOF
 $(sh "$D/subs-update.sh" list 2>/dev/null)
 EOF

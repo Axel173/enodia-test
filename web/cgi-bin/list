@@ -198,12 +198,25 @@ awg_gen() {
 	sh "$D/transport-awg.sh" conf-gen "$@" 2>/dev/null | awk -F"$(printf '\t')" '$1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^(wg|[0-9]\.[0-9])$/ { printf "%s\"%s\":\"%s\"", (c++ ? "," : ""), $1, $2 }'
 }
 
+# ENDPOINT каждого конфига AmneziaWG — {"конфиг":"адрес:порт"}: строка сервера на экране ПОДПИСКИ (как host у Hysteria2 — там
+# человек смотрит, что подписка принесла, и адрес — первое, по чему он узнаёт сервер). Ключей не отдаём. Один grep по всем файлам и
+# один awk (правило файла: ни процесса на конфиг); путь режем ЖАДНО до «.conf:» перед словом Endpoint — двоеточие бывает и в пути
+# хранилища. Первая строка Endpoint файла; управляющие байты, кавычка и косая — вон (диапазон ПЕРВЫМ, C111).
+awg_ep() {
+	set --; for f in "$DS"/configs/*.conf; do [ -f "$f" ] && set -- "$@" "$f"; done
+	[ $# -gt 0 ] || return 0
+	grep -H -E '^[[:space:]]*Endpoint[[:space:]]*=' "$@" 2>/dev/null \
+		| sed "s#^\(.*\)\.conf:[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*#\1$TAB#" | tr -d '\000-\010\013-\037"\\' \
+		| awk -F"$TAB" '{ n = $1; sub(/^.*\//, "", n); if (n in s) next; s[n] = 1; v = $2; gsub(/[ \r]/, "", v)
+			if (n ~ /^[A-Za-z0-9._-]+$/ && v != "") printf "%s\"%s\":\"%s\"", (c++ ? "," : ""), n, v }'
+}
+
 aw_active=$(cat "$DS/.active"      2>/dev/null | tr -d ' \r\n"\\')
 xr_active=$(cat "$DS/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')
 hy_active=$(cat "$DS/.hy2-active"  2>/dev/null | tr -d ' \r\n"\\')
 
 printf '{"transport":"%s",' "$t"
-printf '"awg":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"held":{%s},"gen":{%s}},'  "${aw_active:-?}" "$(is_ready awg)"  "$(bin_present awg)"  "$(list_dir "$DS/configs" conf)" "$(awg_held)" "$(awg_gen)"
+printf '"awg":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"held":{%s},"gen":{%s},"ep":{%s}},'  "${aw_active:-?}" "$(is_ready awg)"  "$(bin_present awg)"  "$(list_dir "$DS/configs" conf)" "$(awg_held)" "$(awg_gen)" "$(awg_ep)"
 printf '"xray":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},' "${xr_active:-?}" "$(is_ready xray)" "$(bin_present xray)" "$(list_dir "$DS/xray-configs" json)" "$(meta_xray)"
 printf '"hy2":{"active":"%s","ready":%s,"bin":%s,"servers":[%s],"meta":{%s}},'  "${hy_active:-?}" "$(is_ready hy2)"  "$(bin_present hy2)"  "$(list_dir "$DS/hy2-configs" yaml)" "$(meta_hy2)"
 printf '"subs":[%s],' "$(subs_list)"

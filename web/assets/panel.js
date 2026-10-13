@@ -2133,7 +2133,12 @@
     // «0 серверов» — не ответ, а обмолвка: у подписки, которую роутер ещё не скачивал, их и не
     // может быть, и строка «0 серверов · роутер её ещё не скачивал» дважды говорит одно и то же
     // (поймано глазами на живом BE7000).
-    var srvTxt=srv>0 ? (srv+' '+unitF(srv,'серверов')) : 'серверов пока нет';
+    // СЕМЕЙСТВА — когда подписка принесла серверы РАЗНЫХ транспортов («7 серверов: Xray 4, AmneziaWG 2, Hysteria2 1»): иначе «7
+    // серверов» на вкладке Xray окажутся четырьмя, и человек пойдёт искать пропавшие. Числа считает роутер (`fam` секции subs —
+    // он их и раскладывает), панель их не складывает; одно семейство или роутер старше поля — строка прежняя.
+    var fam=(s.fam && typeof s.fam==='object') ? s.fam : {}, fams=[];
+    [['xray','Xray'],['awg','AmneziaWG'],['hy2','Hysteria2']].forEach(function(f){ var fn=ownVal(fam, f[0])|0; if(fn>0) fams.push(f[1]+' '+fn); });
+    var srvTxt=srv>0 ? (srv+' '+unitF(srv,'серверов')+(fams.length>1 ? ': '+fams.join(', ') : '')) : 'серверов пока нет';
     var ds=[], chip='', dotK='', warn=false, bad=false;
     if(!ok){
       // УСПЕШНОЙ ЗАКАЧКИ НЕ БЫЛО НИ РАЗУ — и чипа тут не будет НИКАКОГО. «Без счётчика» значит
@@ -2147,6 +2152,9 @@
       dotK=' off';
     } else if(usedPct>=0){
       ds.push('осталось '+humanBytes(left)+' из '+humanBytes(tot));
+      // …и сколько серверов (с семействами смешанной подписки): у строки с квотой числа не было вовсе, хотя макет его несёт, —
+      // а квота есть как раз у платных подписок, чьи серверы человек и ищет по вкладкам.
+      ds.push(srvTxt);
       chip='<span class="chip'+meterChipK(usedPct)+'">'+leftPct+' %</span>';
       if(meterLevel(usedPct)==='bad') bad=true; else if(meterLevel(usedPct)==='warn') warn=true;
     } else if(s.have){
@@ -7039,8 +7047,9 @@
     L.push('socks5:'); L.push('  listen: 127.0.0.1:10808');
     return L.join('\n')+'\n';
   }
-  // ---- Amnezia vpn:// → native AmneziaWG .conf. Второй копии в проекте нет: ПК-сторона
-  //      конфигов не разбирает вовсе. Приложение Amnezia отдаёт конфиг не только native-файлом
+  // ---- Amnezia vpn:// → native AmneziaWG .conf. The router has its own copy (subs-update.sh::parse_vpn — subscriptions carry
+  //      such links), and the two are held together by the differential stand dev/awg-link-parity-test.js; the PC side reads
+  //      no configs at all. Приложение Amnezia отдаёт конфиг не только native-файлом
   //      ([Interface]/[Peer]), но и СВОИМ контейнером: строкой vpn://… или файлом .vpn.
   //      КАНОН: vpn:// + base64url( Qt-qCompress( JSON ) ), qCompress = [4 байта BE длина]
   //      [zlib-поток], нужный native-конфиг — в last_config.config.
@@ -7188,6 +7197,57 @@
       return null;
     });
   }
+  // wireguard://<private key>@host:port?publickey=…&address=…&dns=…&mtu=…&presharedkey=…&keepalive=…#remark — plain WireGuard in
+  // one line, as 3x-ui writes it. → {conf, name} | null. The query is Go's url.Values: a space is `+` and the `+` of a key is
+  // `%2B` — so in LIST fields `+` is a space, and in a KEY a space (a `+` someone left bare) is put back: a key has no spaces.
+  // The text is laid out like 3x-ui's own AmneziaWG config (the remark — a comment above [Peer]). A key that is there but is
+  // not a key refuses the whole link: a config without its preshared key would come up «fine» and never shake hands.
+  // The router's copy is subs-update.sh::parse_wg; the two are held together by the differential stand
+  // dev/awg-link-parity-test.js, not by this comment.
+  function wgKey(s){
+    s=String(s==null?'':s).replace(/ /g,'+').replace(/[\r\n\t]/g,'');
+    if(s.slice(-1)!=='=' && s.length===43) s+='=';
+    return /^[A-Za-z0-9+\/]{43}=$/.test(s) ? s : '';
+  }
+  function wgDec(v){ try{ return decodeURIComponent(v); }catch(e){ return v; } }
+  function wgList(raw, bad){
+    return wgDec(String(raw||'').replace(/\+/g,' ')).split(/[, \t\r\n]+/).filter(function(x){ return x && !bad.test(x); }).join(', ');
+  }
+  function wgNum(raw){ return wgDec(String(raw||'')).replace(/\D/g,'').replace(/^0+/,''); }
+  function wgLinkConf(link){
+    var s=String(link||'').replace(/\r/g,'');
+    if(s.indexOf('wireguard://')!==0) return null;
+    s=s.substring(12);
+    var remark='', h=s.indexOf('#');
+    if(h>=0){ remark=wgDec(s.substring(h+1)).replace(/[\r\n\t]/g,''); s=s.substring(0,h); }
+    var q='', qi=s.indexOf('?'); if(qi>=0){ q=s.substring(qi+1); s=s.substring(0,qi); }
+    var at=s.lastIndexOf('@'); if(at<0) return null;
+    var hp=hostPort(s.substring(at+1));
+    if(!hp || !/^[A-Za-z0-9._:-]{1,253}$/.test(hp.host) || !(+hp.port>=1 && +hp.port<=65535)) return null;
+    var key=wgKey(wgDec(s.substring(0,at))); if(!key) return null;
+    var pub='', psk='', addr='', dns='', mtu='', ka='', bad=false;
+    q.split('&').forEach(function(kv){ if(!kv)return; var eq=kv.indexOf('='); if(eq<0)return;
+      var k=kv.substring(0,eq), raw=kv.substring(eq+1);
+      if(k==='publickey'){ pub=wgKey(wgDec(raw)); if(!pub) bad=true; }
+      else if(k==='presharedkey'){ psk=wgKey(wgDec(raw)); if(!psk) bad=true; }
+      else if(k==='address') addr=wgList(raw, /[^0-9A-Fa-f:.\/]/);
+      else if(k==='dns') dns=wgList(raw, /[^0-9A-Za-z:.\-]/);
+      else if(k==='mtu') mtu=wgNum(raw);
+      else if(k==='keepalive') ka=wgNum(raw);
+    });
+    if(bad || !pub || !addr) return null;
+    var L=['[Interface]', 'PrivateKey = '+key, 'Address = '+addr];
+    if(dns) L.push('DNS = '+dns);
+    if(mtu && mtu.length<=4 && +mtu>=1280 && +mtu<=1500) L.push('MTU = '+mtu);
+    L.push('');
+    if(remark) L.push('# '+remark);
+    L.push('[Peer]', 'PublicKey = '+pub);
+    if(psk) L.push('PresharedKey = '+psk);
+    L.push('AllowedIPs = 0.0.0.0/0, ::/0');
+    L.push('Endpoint = '+((String(hp.host).indexOf(':')>=0)?('['+hp.host+']'):hp.host)+':'+hp.port);
+    if(ka && ka.length<=5 && +ka<=65535) L.push('PersistentKeepalive = '+ka);
+    return {conf:L.join('\n')+'\n', name:remark};
+  }
   // Имя awg-конфига из результата decodeAmneziaVpn. Кандидаты по убыванию осмысленности:
   // description контейнера → ПЕРВЫЙ комментарий самого конфига → хост Endpoint → 'amnezia'.
   // Комментарий добавлен по живому конфигу тестера (25.08.2026): у ссылки без контейнера имени
@@ -7268,6 +7328,13 @@
         uploadOne('awg', amneziaName({conf:praw}), b64utf8(praw), function(){ setTimeout(navIfShown('cn-servers', openServers),400); }, '', 1);
         return;
       }
+      // wireguard:// — plain WireGuard in one line (3x-ui): it becomes the same native .conf and lands in the same list.
+      if(link.indexOf('wireguard://')===0){
+        var wg=wgLinkConf(link);
+        if(!wg){ logLine('не разобрал wireguard://-ссылку (нужны оба ключа, адрес и сервер)', false); showToast('не разобрал wireguard://-ссылку', false); return; }
+        uploadOne('awg', amneziaName(wg), b64utf8(wg.conf), function(){ setTimeout(navIfShown('cn-servers', openServers),400); }, flagDisp(wg.name, awgHost(wg.conf)), 1);
+        return;
+      }
       // AmneziaWG: ждём vpn://-контейнер Amnezia (не «серверную ссылку») → декод → .conf.
       logLine('декодирую Amnezia vpn://…', true);
       decodeAmneziaVpn(link).then(function(res){
@@ -7312,7 +7379,7 @@
   function subToggle(tag){ var o={}; try{o=JSON.parse(localStorage.getItem('enodia_sub_open')||'{}');}catch(e){} o[tag]=o[tag]?0:1; try{localStorage.setItem('enodia_sub_open',JSON.stringify(o));}catch(e){} return !!o[tag]; }
   // Настоящие имена серверов (эмодзи/флаги/юникод) из /cgi-bin/list (карта файл→remark);
   // заполняется в openServers, читается serverRow. Порядок групп — localStorage per-browser.
-  var subNames={}, cfgNames={}, xrayMeta={}, hy2Meta={}, awgGen={}, srvBin={};
+  var subNames={}, cfgNames={}, xrayMeta={}, hy2Meta={}, awgGen={}, awgEp={}, srvBin={};
   // Плавающее текстовое меню (⋮). Вне модалки (position:fixed) → не режется
   // overflow'ом; закрывается кликом вне/по пункту. items=[{label,onClick,danger}|{sep:true}].
   var _menuEl=null, _menuAnchor=null, _menuBack=null;
@@ -7723,8 +7790,25 @@
     "Файл .conf или .vpn можно перетащить сюда — или нажать и выбрать сразу несколько.":"Drop a .conf or .vpn file here — or click to pick several at once.",
     "Файл .json можно перетащить сюда — или нажать и выбрать сразу несколько.":"Drop a .json file here — or click to pick several at once.",
     "Файл .yaml можно перетащить сюда — или нажать и выбрать сразу несколько.":"Drop a .yaml file here — or click to pick several at once.",
+    // — AmneziaWG и WireGuard в подписках (13.10.2026): строка «Подписка» карточки добавления, состав подписки, экран сервера подписки —
+    "пул серверов по ссылке провайдера или своей панели 3x-ui — роутер сам его обновляет":"a server pool from the provider's link or from your own 3x-ui panel — the router keeps it updated",
+    "Одна ссылка может нести серверы разных транспортов — роутер разложит их по вкладкам «Серверов»: Xray (":"One link may carry servers of different transports — the router lays them out on the tabs of «Servers»: Xray (",
+    ") и AmneziaWG с обычным WireGuard (":") and AmneziaWG with plain WireGuard (",
+    "— так их отдаёт 3x-ui с версии 3.7). Серверы транспорта, который на роутере не установлен, тоже встанут в список — выбрать их можно после установки в «Компонентах».":"— that is how 3x-ui emits them since 3.7). Servers of a transport that is not installed on the router land in the list too — they can be picked once it is installed in «Components».",
+    "AmneziaWG из подписки.":"AmneziaWG from a subscription.",
+    "Редактора у этих серверов нет, как у любого AmneziaWG: меняет их только подписка. Активный сервер изменился — роутер сменит конфиг сам и вернёт прежний, если новый не поднялся. Два сервера с одной учётной записью и разными адресами — это один ключ: основным и выходом одновременно они не встанут, второй адрес — запасной.":"These servers have no editor, like any AmneziaWG: only the subscription changes them. The active server changed — the router switches the config by itself and brings the previous one back if the new one does not come up. Two servers of one account with different addresses are one key: they will not stand as the main channel and an exit at once, the second address is a spare.",
+    "Этим конфигом владеет подписка":"The subscription owns this config",
+    "— имя задаёт подписка: по нему она находит этот сервер при каждом обновлении":"— the name is set by the subscription: by it the subscription finds this server on every update",
+    "Сервер изменился в подписке":"The server changed in the subscription",
+    "файл перепишется. Если сервер активный, роутер сменит конфиг сам: поднимет новый, а не поднялся — вернёт прежний. О том и о другом придёт уведомление":"the file is rewritten. If the server is the active one, the router switches the config by itself: it brings the new one up, and if that does not come up — the previous one back. Either way a notification comes",
+    "Сервер пропал из подписки":"The server is gone from the subscription",
+    "конфиг удалится. Активный, занятый выходом или служащий дорогой останется — оборвать связь по расписанию хуже, чем оставить устаревший сервер; придёт уведомление":"the config is deleted. The active one, one held by an exit or one that serves as a road stays — cutting the link on a schedule is worse than keeping an outdated server; a notification comes",
+    "Вы удалили его здесь":"You deleted it here",
+    "подписка вернёт его при следующем обновлении. Чтобы убрать насовсем — уберите сервер там, где подписку выпускают":"the subscription brings it back on the next update. To remove it for good — remove the server where the subscription is issued",
+    "Поправить этот сервер — у провайдера или в своей панели 3x-ui: загруженную сюда правку перепишет следующее обновление. Нужен свой вариант — добавьте конфиг файлом или ссылкой на «Серверах», он встанет отдельной строкой, и подписка его не тронет.":"To change this server — at the provider or in your own 3x-ui panel: an edit uploaded here is overwritten by the next update. Need your own variant — add a config by file or link on «Servers»: it lands as a separate row, and the subscription leaves it alone.",
+    "Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.":"The endpoint ping is checked — as for any AmneziaWG server.",
     "-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный":" links come in four forms that compression can't tell apart: the panel tries to unpack one and, failing that, reads it as is. A native",
-    ", вставленный вместо ссылки, тоже принимается.":" pasted instead of a link is accepted too.",
+    ", вставленный вместо ссылки, тоже принимается.":" pasted instead of a link is accepted too.","— обычный WireGuard одной строкой: встанет в этот же список с бейджем «WireGuard».":"— plain WireGuard in one line: it lands in this same list with the «WireGuard» badge.",
     "Редактора конфига у AmneziaWG нет":"AmneziaWG has no config editor",
     "принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — панель спросит, заменить ли им прежний. Endpoint и MTU — на экране сервера.":"accepts a config only as a whole, and a partial edit would leave the interface without a handshake. Upload the fixed config again — the panel will ask whether to replace the old one. Endpoint and MTU are on the server screen.",
     "Дополнительные выходы (ещё пути наружу, до шести) живут своим экраном раздела «Соединение»: список серверов и список выходов отвечают на разные вопросы.":"Additional exits (more ways out, up to six) live on their own screen in «Connection»: the server list and the exit list answer different questions.",
@@ -9535,9 +9619,11 @@
     "Роутер перезагружается… панель вернётся через ~40-60 с (обновите страницу).":"The router is rebooting… the panel will be back in ~40-60 s (refresh the page).",
     "Текст обновлён — применяю":"Text updated — applying",
     "Уведомления включены":"Notifications enabled","Уведомления выключены":"Notifications disabled",
-    "имена сохранены":"names saved","конфиги подписки сняты":"subscription configs removed",
+    "имена сохранены":"names saved",
     "подписка переименована":"subscription renamed","подписка сохранена":"subscription saved",
     "подписка удалена":"subscription deleted",
+    "сейчас идёт обновление подписок — удалите подписку через минуту":"subscriptions are being updated right now — delete the subscription in a minute",
+    "не удалось удалить подписку":"could not delete the subscription",
     "раздельный резолв рунета включён":"split Runet resolving enabled",
     "раздельный резолв рунета выключен":"split Runet resolving disabled",
     "свип завершён, исходная стратегия восстановлена":"sweep finished, original strategy restored",
@@ -9983,6 +10069,8 @@
     "пустая ссылка":"empty link","декодирую Amnezia vpn://…":"decoding Amnezia vpn://…",
     "это native-конфиг, а не ссылка — заливаю как есть":"this is a native config, not a link — uploading as is",
     "не разобрал vpn://-ссылку":"couldn’t parse the vpn:// link",
+    "не разобрал wireguard://-ссылку":"couldn’t parse the wireguard:// link",
+    "не разобрал wireguard://-ссылку (нужны оба ключа, адрес и сервер)":"couldn’t parse the wireguard:// link (both keys, an address and a server are required)",
     "браузер не поддерживает vpn://":"the browser doesn’t support vpn://",
     "не разобрал ссылку (нужна vless:// / vmess:// / trojan:// / ss://)":"couldn’t parse the link (vless:// / vmess:// / trojan:// / ss:// required)",
     "в ссылке нет pbk (Reality publicKey) — проверьте":"the link has no pbk (Reality publicKey) — check it",
@@ -11397,6 +11485,7 @@
     [/^\[road\] выход №([2-7]) идёт к тому же серверу \(([^()\s]+)\) — его пакеты к серверу пошли бы сами в себя; выберите выход к другому серверу$/,"[road] exit #$1 goes to the same server ($2) — its packets to the server would go into itself; pick an exit to another server"],
     [/^\[road\] дорога к серверу — через выход №([2-7])$/,"[road] the road to the server — via exit #$1"],
     [/^\[slots\] выход №([2-7]) служит дорогой к серверу \(([^()]*)\) — сначала переключите их дорогу на «напрямую», потом (.*)$/,"[slots] exit #$1 serves as a road to a server ($2) — switch their road to «direct» first, then $3"],
+    [/^подписка удалена\. Оставлены как свои конфиги — они заняты \(активный сервер или выход\): (.+)$/,"subscription deleted. Kept as your own configs — they are in use (the active server or an exit): $1"],
     [/^конфиг (\S+) держит выход №([2-7]) — сначала удалите выход или смените его сервер$/,"the config $1 is held by exit #$2 — delete the exit or change its server first"],
     [/^конфиг (\S+) служит дорогой \(выход №([2-7])\) — сначала переключите дорогу его пассажиров на «напрямую»$/,"the config $1 serves as a road (exit #$2) — switch its riders' road to «direct» first"],
     [/^сервис проверки не ответил \(HTTP ([^()]*)\)$/,"the check service did not answer (HTTP $1)"],
@@ -11509,7 +11598,7 @@
     [/ · весь трафик через VPS$/," · all traffic via VPS"],
     [/^за 7 дней · через туннель /,"over 7 days · through the tunnel "],[/ · пик /," · peak "],[/ · статистика копится$/," · statistics are accumulating"],
     [/^Весь трафик роутера за сегодня · через туннель /,"All of the router's traffic today · through the tunnel "],
-    [/^обновлялась /,"updated "],[/^сбой обновления /,"update failed "],
+    [/^обновлялась /,"updated "],[/^обновлён /,"updated "],[/^сбой обновления /,"update failed "],
     [/^Открыть сервер «([^»]*)»$/,"Open server «$1»"],[/^Изменить конфиг «([^»]*)»$/,"Edit config «$1»"],[/^Удалить конфиг «([^»]*)»$/,"Delete config «$1»"],
     [/^Действия с сервером «([^»]*)»$/,"Server actions «$1»"],
     [/^сервера «([^»]*)» на роутере нет — удалён или переименован$/,"server «$1» is not on the router — deleted or renamed"],
@@ -13506,11 +13595,16 @@
   function refreshSub(tag, label){ if(!busy) syncSubServers(tag, label); }
   function delSub(tag, label){
     if(busy) return;
-    if(!askConfirm('Удалить подписку «'+(label||tag)+'» и её серверы с роутера?')) return;
+    // Занятый сервер роутер не уносит (subs-update.sh drop) — вопрос говорит это ДО нажатия, а ответ потом назовёт такие по именам.
+    if(!askConfirm('Удалить подписку «'+(label||tag)+'» и её серверы с роутера? Сервер, который сейчас активен или стоит под выходом, останется — своим конфигом.')) return;
     chkDropTag(tag);   // сбросить запомненные пинг/скорость серверов удаляемой подписки
     setBusy(true,'удаляю подписку…');
     subPost({action:'remove_sub', tag:tag}).then(function(d){   // снимает конфиги + строку .subs
-      logLine('подписка «'+(label||tag)+'» удалена', !!(d&&d.ok)); showToast('подписка удалена', true);
+      // THE ROUTER'S ANSWER IS THE WORD: it may refuse (a subscription update is running — it would lay the configs out again) and
+      // it may keep configs that are in use (the active server, one under an exit) — they stay as the person's own, and the answer
+      // names them. «удалена» in green over a refusal was said here whatever came back.
+      var ok=!!(d&&d.ok), m=(d&&d.msg)||(ok?'подписка удалена':'не удалось удалить подписку');
+      logLine((ok && m==='подписка удалена') ? ('подписка «'+(label||tag)+'» удалена') : m, ok); showToast(m, ok);
       setBusy(false); setTimeout(subsRepaint, 400);
     }).catch(function(){ logLine('подписка: сбой удаления', false); setBusy(false); });
   }
@@ -14673,7 +14767,11 @@
   // AmneziaWG и Hysteria2: метка справа — «активен» либо кнопка «выбрать →» (у транспорта без бинаря — причина, клик её объяснит);
   // под именем у Hysteria2 адрес и обфускация (из /cgi-bin/list), у обоих — последний пинг. «✎» — редактор (у AmneziaWG его нет).
   // Несущий конфиг удалить нельзя — крестика у него нет.
-  function serverRow(key, name, grp, disp){
+  // СЕРВЕР ПОДПИСКИ в этих строках (`o`): AmneziaWG с обычным WireGuard и Hysteria2 приезжают в подписке вместе с Xray. На
+  // «Серверах» — хвост «↳ подписка «…»» (`o.sub`): откуда сервер взялся и кто его меняет, тот же, что у закреплённого активного
+  // Xray. На экране самой подписки (`o.ep`) хвост повторял бы заголовок — там под именем адрес сервера: по нему его и узнают.
+  function serverRow(key, name, grp, disp, o){
+    o=o||{};
     var act = name===grp.active, canAct = canActivate(grp);
     var rd = (key==='awg') ? cfgRiders(name) : [], rv = (key==='awg') ? roadOf(name) : '';
     var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length;
@@ -14682,6 +14780,7 @@
     // WARP узнаёт роутер (по ключу сервера Cloudflare): под именем — «Cloudflare», у дороги — кого она везёт (макет).
     var wp = (key==='awg') && isWarp(name);
     if(wp) ds='<span>Cloudflare</span>';
+    else if(key==='awg' && o.ep && ownVal(awgEp, name)) ds='<span class="mono">'+esc(ownVal(awgEp, name))+'</span>';
     // Конфиг выхода — не «выбрать →», а причина чипом: клик по строке всё равно дойдёт до роутера, и отказ скажет всё словами.
     var hx = (key==='awg' && !act) ? srvHeldByExit(grp.held, name) : '';
     var gl = wp ? 'WARP' : ((key==='awg') ? awgGenLbl(name) : '');
@@ -14691,6 +14790,7 @@
     return srvRowOpen('srv', key, name, act, canAct)
       + '<div class="grow">'+srvNm(disp||name)+'<div class="ds">'+ds
       + '<span class="srv-ping" data-tpt="'+key+'" data-name="'+esc(name)+'"></span>'
+      + (o.sub ? '<span class="srv-tail">↳ <span>подписка</span> «<span class="sens" translate="no">'+esc(o.sub)+'</span>»</span>' : '')
       // Дорога — свойство конфига: хвост виден и до первой проверки (разделитель ставит CSS, только после непустого соседа).
       + (rv ? '<span class="srv-tail">↳ <span>через выход</span> «'+roadExitHtml(rv)+'»</span>' : '')
       + (rd.length ? '<span class="srv-tail"><span>дорога для</span> '+ridersHtml(rd)+'</span>' : '')+'</div></div>'
@@ -14853,16 +14953,19 @@
               hy2:'Файл .yaml можно перетащить сюда — или нажать и выбрать сразу несколько.'};
   function srvAddHtml(key){
     var acc = key==='awg'?'.conf,.vpn':(key==='xray'?'.json':'.yaml,.yml');
-    var ph = key==='awg'?'vpn://…':(key==='xray'?'vless:// vmess:// trojan:// ss://':'hy2:// или hysteria2://…');
+    var ph = key==='awg'?'vpn:// или wireguard://…':(key==='xray'?'vless:// vmess:// trojan:// ss://':'hy2:// или hysteria2://…');
     var h='<div class="f"><label for="lnk-in-'+key+'">Вставьте ссылку</label><div class="inrow">'
       + '<input id="lnk-in-'+key+'" class="lnk-in" data-kind="'+key+'" type="text" placeholder="'+ph+'" spellcheck="false" autocomplete="off">'
       + '<button type="button" class="btn lnk-add" data-kind="'+key+'">Добавить</button></div></div>'
       + '<div class="dz dz-line" data-kind="'+key+'">'+SRV_DZ[key]
       + '<input class="file-in" data-kind="'+key+'" type="file" accept="'+acc+'" multiple></div>';
     if(key==='xray') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">Подписка</div><div class="v">пул серверов по ссылке провайдера — роутер сам его обновляет</div></div><button type="button" class="act srv-to-subs">Подписки</button></div>';
+    // AmneziaWG и обычный WireGuard тоже приезжают подпиской (3x-ui отдаёт их с версии 3.7) — та же строка, что у Xray, и тот же
+    // экран: подписка одна на все транспорты, второй формы добавления нет.
+    if(key==='awg') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">Подписка</div><div class="v">пул серверов по ссылке провайдера или своей панели 3x-ui — роутер сам его обновляет</div></div><button type="button" class="act srv-to-subs">Подписки</button></div>';
     // Второй путь получить конфиг AmneziaWG — у роутера самого (как «Подписка» у Xray — строкой): свой WARP от Cloudflare.
     if(key==='awg') h+='<div class="kv" style="margin-top:6px"><div class="grow"><div class="k">WARP от Cloudflare</div><div class="v">бесплатная дорога к серверу, чей адрес заблокировал провайдер — роутер получит свой конфиг сам</div></div><button type="button" class="act srv-to-warp">Получить WARP</button></div>';
-    if(key==='awg') h+='<div style="margin-top:11px">'+noteBox('<span class="mono kw">vpn://</span>-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный <span class="mono kw">.conf</span>, вставленный вместо ссылки, тоже принимается.','info')+'</div>';
+    if(key==='awg') h+='<div style="margin-top:11px">'+noteBox('<span class="mono kw">vpn://</span>-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный <span class="mono kw">.conf</span>, вставленный вместо ссылки, тоже принимается. <span class="mono kw">wireguard://</span> — обычный WireGuard одной строкой: встанет в этот же список с бейджем «WireGuard».','info')+'</div>';
     if(key==='xray') h+='<div style="margin-top:11px">'+noteBox('Имя конфига берётся из ремарки ссылки, а без неё — из адреса сервера; кириллица — транслитом («Нидерланды» → «Niderlandy»), флаг страны — её кодом (🇳🇱 → NL): роутер хранит имена латиницей. В ссылке нет <span class="mono kw">pbk</span> (Reality publicKey) — панель предупредит: без него сервер не поднимется.','info')+'</div>';
     if(key==='hy2') h+='<div style="margin-top:11px">'+noteBox('В ссылке нет <span class="mono kw">obfs</span> (Salamander) — панель скажет об этом: для российских провайдеров обфускация на сервере желательна, без неё поток узнаётся.','info')+'</div>';
     return h;
@@ -14874,7 +14977,8 @@
     else h='<div class="card w2"><div class="ct">Конфиги '+names[key]+' <span class="sub dotb">'+srvStatus(grp)+'</span></div>'
       + (list.length ? list.map(function(name){
           // Настоящее имя (эмодзи/флаги) — и у Hysteria2: её конфиг может приехать из подписки (иначе «sub-de-nidjerlandy»).
-          return serverRow(key, name, grp, cfgDisp(key, name, subs)); }).join('') : '<div class="lempty">нет конфигов</div>')
+          // Сервер подписки стоит в этом же плоском списке (их единицы, а не десятки, как у Xray) — хвостом сказано, чей он.
+          return serverRow(key, name, grp, cfgDisp(key, name, subs), {sub:subLabelOf(name, subs)}); }).join('') : '<div class="lempty">нет конфигов</div>')
       + '<div class="tiny" style="margin-top:10px">'+(key==='awg'
           ? 'У активного конфига крестика нет — удалить то, на чём стоит несущая, нельзя. У конфига, который служит дорогой другому серверу, — тоже.'
           : 'Имена могут прийти из подписки вместе с флагами. «✎» — редактор конфига: форма и сырой YAML; у AmneziaWG его нет.')+'</div></div>';
@@ -14898,6 +15002,7 @@
     xrayMeta = (d.xray && d.xray.meta) || {};   // host/sni/fp по конфигу (host — под именем)
     hy2Meta = (d.hy2 && d.hy2.meta) || {};      // host (сервер:порт) и obfs — строка Hysteria2 под именем
     awgGen = (d.awg && d.awg.gen) || {};        // поколение протокола конфига AmneziaWG (transport-awg.sh conf-gen) — бейдж строки
+    awgEp = (d.awg && d.awg.ep) || {};          // Endpoint конфига AmneziaWG — строка сервера на экране подписки (как host у Hysteria2)
     roadTake(d);                                // дороги к серверам и какие конфиги — WARP (road.sh, warp.sh)
     // Установлен ли БИНАРЬ транспорта (bin_present). Тест выхода/скорости xray без бинаря падал бы
     // в бэкенде и рисовал ложное «недоступен» — по этому флагу гейтим кнопки заранее (engineMissing).
@@ -15180,7 +15285,10 @@
       // карточки — своим узлом: смена расписания перечитывает только настройки (prefsCardReload), а экран целиком стирал
       // набранную ссылку «Добавить подписку» (ревью шага 5c, круг 3).
       if(subs.length) h+='<div class="card"><div class="wt">Автообновление</div><div id="subs-sched-b"></div></div>';
-      h+='<div class="card wfull"><div class="wt">Добавить подписку</div>'+subAddInputs()+'</div>';
+      // ЧТО подписка может принести: форма одна — ссылка, а транспорт роутер узнаёт по каждой строке сам; человеку надо знать,
+      // что приедет и где это потом искать. Строки, которых роутер не понял, он называет числом в итоге прогона.
+      h+='<div class="card wfull"><div class="wt">Добавить подписку</div>'+subAddInputs()
+        + '<div class="cline">Одна ссылка может нести серверы разных транспортов — роутер разложит их по вкладкам «Серверов»: Xray (<span class="mono">vless · vmess · trojan · ss</span>), Hysteria2 (<span class="mono">hy2</span>) и AmneziaWG с обычным WireGuard (<span class="mono">vpn:// · wireguard://</span> — так их отдаёт 3x-ui с версии 3.7). Серверы транспорта, который на роутере не установлен, тоже встанут в список — выбрать их можно после установки в «Компонентах».</div></div>';
       body.innerHTML=h+'</div>';
       wireCacts(body);
       subsSchedFill(t0);
@@ -15245,10 +15353,11 @@
     srvListTake(l);
     // Владелец — длиннейший тег из ВСЕГО известного набора (разбор у ownerTag): оба ответа и сама метка. Набор из одного
     // /cgi-bin/list, где соседней «liberty-vpn» нет, отдал бы её серверы «liberty» (поймал стенд шага 3c-1).
-    var tags=[tag], gx=l.xray||{}, gh=l.hy2||{};
+    var tags=[tag], gx=l.xray||{}, gh=l.hy2||{}, ga=l.awg||{};
     (l.subs||[]).concat(all||[]).forEach(function(x){ if(x && x.tag && tags.indexOf(x.tag)<0) tags.push(x.tag); });
     var mine=function(n){ return ownerTag(n, tags)===tag; };
-    var xs=(gx.servers||[]).filter(mine), hs=(gh.servers||[]).filter(mine), n=xs.length+hs.length;
+    // Три семейства: роутер считает серверы подписки по всем, и список из части разошёлся бы с его числом в строке выше.
+    var xs=(gx.servers||[]).filter(mine), hs=(gh.servers||[]).filter(mine), aw=(ga.servers||[]).filter(mine), n=xs.length+hs.length+aw.length;
     var h='<div class="vwrap">'
       + '<div class="card wfull"><div class="wt">Подписка</div>'+subRow(s, now, null)
       + '<div class="acts">'
@@ -15268,7 +15377,13 @@
       + '</div>'
       + (n ? '' : '<div class="lempty">пусто — обновите подписку («Обновить серверы»)</div>')
       + '<div class="sub-body">'+xs.map(function(nm){ return serverCard(nm, gx, subDisp(nm,[s])); }).join('')+'</div>'
+      // AmneziaWG (и обычный WireGuard) той же подписки — строками под своим заголовком, как Hysteria2: строка та же, что на вкладке
+      // AmneziaWG «Серверов» (точка последней проверки, бейдж поколения, «выбрать →», крестик), под именем — адрес сервера.
+      + (aw.length ? '<div class="wt" style="margin-top:14px">AmneziaWG</div>'+aw.map(function(nm){ return serverRow('awg', nm, ga, subDisp(nm,[s]), {ep:true}); }).join('') : '')
       + (hs.length ? '<div class="wt" style="margin-top:14px">Hysteria2</div>'+hs.map(function(nm){ return serverRow('hy2', nm, gh, subDisp(nm,[s])); }).join('') : '')
+      // Две правды AmneziaWG, которых у Xray нет, — рядом со списком: меняет эти серверы только подписка, и что её обновление
+      // делает с активным; а два адреса одной учётной записи (3x-ui отдаёт строку на каждый внешний адрес) — это ОДИН ключ.
+      + (aw.length ? '<div style="margin-top:12px">'+noteBox('<b>AmneziaWG из подписки.</b> Редактора у этих серверов нет, как у любого AmneziaWG: меняет их только подписка. Активный сервер изменился — роутер сменит конфиг сам и вернёт прежний, если новый не поднялся. Два сервера с одной учётной записью и разными адресами — это один ключ: основным и выходом одновременно они не встанут, второй адрес — запасной.','info')+'</div>' : '')
       + '</div>';
     body.innerHTML=h+'</div>';
     wireSrvCards(body, l, navIfShown('cn-sub', subScrOpen));
@@ -15657,6 +15772,10 @@
     if(tpt==='hy2'){ var hm=hy2Meta[name]||{}; ml+=' · <span>QUIC</span>'+(hm.host ? ' · <span class="sens">'+esc(hm.host)+'</span>' : '')+(hm.obfs ? ' · <span>'+esc(hm.obfs)+'</span>' : ''); }
     if(tpt==='awg') ml+=(isWarp(name) ? ' · <span>WARP</span>' : '')+' · <span>нативный .conf</span>'+(carrier ? ' · <span>интерфейс awg0</span>' : '');
     if(subLbl) ml+=' · <span>подписка</span> «<span class="sens" translate="no">'+esc(subLbl)+'</span>»';
+    // Сервер AmneziaWG из подписки: его конфиг меняет только она, и «когда» — часть ответа «что это за сервер». Возраст закачки
+    // знает секция subs (её отметки пишет роутер) — дочитываем после показа; не ответила — хвоста нет.
+    var subAwg=isSub && tpt==='awg';
+    if(subAwg) ml+='<span id="srv-subsep" hidden> · </span><span id="srv-subage"></span>';
     var h='<div class="vwrap"><div class="card wfull dv-hd" id="srv-head"><div class="dv-top">'
       + '<span class="av"'+(fl.flag ? ' style="font-size:22px"' : '')+'>'+(fl.flag ? fl.flag : icUse('i-globe','','',true))+'</span>'
       + '<div class="grow"><div class="nm sens" translate="no" style="font-size:16px;font-weight:600">'+esc(fl.rest)+'</div><div class="tiny mono">'+ml+'</div></div>'
@@ -15679,16 +15798,28 @@
                                    : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
     if(tpt==='awg'){
+      // СЕРВЕР AmneziaWG ИЗ ПОДПИСКИ. От своего конфига его отличает одно — кто хозяин файла, и из этого три правды экрана: имя
+      // задаёт подписка; «поправленный конфиг загрузите заново» здесь неправда (загруженное перепишет следующее обновление); удалённый
+      // сервер подписка вернёт. Что обновление делает с АКТИВНЫМ — главный страх человека («роутер сам что-то переключит ночью»),
+      // поэтому сказано строками, а не в подсказке. Слова — то, что делает роутер (subs-update.sh: refresh_awg, prune_stale).
+      if(subAwg) h+='<div class="card wfull"><div class="wt">Этим конфигом владеет подписка</div>'
+        + '<div class="kv"><div class="grow"><div class="k">Имя файла</div><div class="v"><span class="mono sens">'+esc(name)+'</span> <span>— имя задаёт подписка: по нему она находит этот сервер при каждом обновлении</span></div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Сервер изменился в подписке</div><div class="v">файл перепишется. Если сервер активный, роутер сменит конфиг сам: поднимет новый, а не поднялся — вернёт прежний. О том и о другом придёт уведомление</div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Сервер пропал из подписки</div><div class="v">конфиг удалится. Активный, занятый выходом или служащий дорогой останется — оборвать связь по расписанию хуже, чем оставить устаревший сервер; придёт уведомление</div></div></div>'
+        + '<div class="kv"><div class="grow"><div class="k">Вы удалили его здесь</div><div class="v">подписка вернёт его при следующем обновлении. Чтобы убрать насовсем — уберите сервер там, где подписку выпускают</div></div></div>'
+        + '<div style="margin-top:11px">'+noteBox('Поправить этот сервер — у провайдера или в своей панели 3x-ui: загруженную сюда правку перепишет следующее обновление. Нужен свой вариант — добавьте конфиг файлом или ссылкой на «Серверах», он встанет отдельной строкой, и подписка его не тронет.', 'info')+'</div></div>';
       h+='<div class="card"><div class="wt">Что панель о нём показывает</div><div id="srv-awg"><div class="cline">читаю конфиг…</div></div>'
-        + '<div style="margin-top:9px">'+noteBox('Ключи и конфиг целиком AmneziaWG панель не показывает и не правит: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — файлом или ссылкой на «Серверах»: панель спросит, заменить ли им этот.', 'info')+'</div></div>'
+        + (subAwg ? '' : '<div style="margin-top:9px">'+noteBox('Ключи и конфиг целиком AmneziaWG панель не показывает и не правит: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — файлом или ссылкой на «Серверах»: панель спросит, заменить ли им этот.', 'info')+'</div>')+'</div>'
         + '<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why
-        + '<div style="margin-top:11px">'+noteBox('У AmneziaWG проверяется пинг эндпоинта, а не выход: демон один на интерфейс, поднять его временно на другом порту нельзя. Поэтому «сервер отвечает» здесь значит меньше, чем у Xray, — и панель не выдаёт одно за другое.', 'info')+'</div></div>';
+        + (subAwg ? '<div class="cline">Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.</div>'
+                  : '<div style="margin-top:11px">'+noteBox('У AmneziaWG проверяется пинг эндпоинта, а не выход: демон один на интерфейс, поднять его временно на другом порту нельзя. Поэтому «сервер отвечает» здесь значит меньше, чем у Xray, — и панель не выдаёт одно за другое.', 'info')+'</div>')+'</div>';
       if(roadOk && !via) h+=srvRoadHtml(name, crec);
       // WARP без маскировки (I1): провайдер пропускает рукопожатие чистого WireGuard и обрывает поток после него (замер 10.10.2026).
       if(isWarp(name) && warpMap[name]===0) h+=noteBox('<b>В конфиге WARP нет маскировки</b> (строки <span class="mono kw">I1</span>): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».', 'warn');
       if(via) h+=noteBox('<b>Дорога — в один шаг.</b> Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.', 'info');
     } else h+='<div id="srv-ed" class="wfull"></div>';
-    h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
+    // У сервера AmneziaWG из подписки имя файла стоит в карточке владельца — отдельной карточки «Имя» с одним файлом не нужно.
+    if(!subAwg) h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
     if(tpt==='hy2') h+=noteBox('Hysteria2 делит <b>один tun2socks и один socks</b> с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».', 'info');
     body.innerHTML=h+'</div>';
     _srvShown={tpt:tpt, name:name, act:act, body:body};
@@ -15696,6 +15827,14 @@
     srvStatsRepaint(body, tpt, name, act);
     // Second opinion: Xray and Hysteria2 know the server's address already (the list's meta); AmneziaWG learns its Endpoint below.
     if(tpt!=='awg') srvChbLoad(body, ((tpt==='xray' ? xrayMeta[name] : hy2Meta[name])||{}).host||'');
+    // «обновлён N назад» у сервера AmneziaWG из подписки — возраст последней УСПЕШНОЙ закачки его подписки (часы — роутера).
+    if(subAwg) fetchJson('/cgi-bin/data?section=subs').then(function(sd){
+      if(!screenAlive(body) || !sd || !sd.subs) return;
+      var si=sd.subs.filter(function(x){ return x && x.tag===tag; })[0], okAt=si ? (Number(si.ok)||0) : 0, sn=sd.now|0;
+      var ag=document.getElementById('srv-subage'), sp=document.getElementById('srv-subsep');
+      if(!ag || !sp || !okAt || !sn) return;
+      ag.textContent='обновлён '+fmtAge(Math.max(0, sn-okAt)); sp.hidden=false;
+    }, function(){});
     focusBack(body, fsig);
     // Действия — делегатом на обёртке ЭКРАНА: кнопки Xray/Hysteria2 рождаются в карточке параметров после ответа роутера, а обёртка
     // пересоздаётся с каждым показом — провод не копится между экранами.

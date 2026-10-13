@@ -268,7 +268,7 @@ sub_label_of() { [ -f "$SUBS_STATE/.subs" ] && grep "^$1$SUBS_TAB" "$SUBS_STATE/
 # sub_owner_tag <имя-конфига> — ЧЬЯ это подписка. Теги бывают префиксами друг друга
 # («liberty» ⊂ «liberty-vpn»), а «-» встречается и ВНУТРИ тега ⇒ голый префикс `sub-<tag>-`
 # ловит чужие файлы. Владелец = ДЛИННЕЙШИЙ подходящий тег среди всех тегов реестра
-# (зеркало ownerTag() в panel.js и del_sub_configs в cgi-bin/action).
+# (зеркало ownerTag() в panel.js; им же судит subs-update.sh — prune_stale и cmd_drop).
 sub_owner_tag() {
 	_b="$1"; _own=""; _ol=-1
 	for _g in $(sub_tags); do

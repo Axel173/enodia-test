@@ -277,16 +277,19 @@ elif ip rule show 2>/dev/null | grep -q 'fwmark 0x1' && [ -n "$(carrier_iface)" 
 	live=1
 fi
 
-# Xray-подписка: из какой ПОДПИСКИ активный сервер (по префиксу sub-<tag>-, tag из .subs) —
+# Сервер ПОДПИСКИ: из какой подписки активный сервер (по префиксу sub-<tag>-, tag из .subs) —
 # показываем в шапке «↳ подписка: …». cfg тут ещё СЫРОЕ имя файла (до подстановки имени ниже).
+# ALL THREE config families: the fork stood on `xray` alone, and the header of an active Hysteria2 (later AmneziaWG) server of
+# a subscription showed its file name «sub-…» and no subscription — the «fork forgot the alt» class.
 sub_label=""
-if [ "$t" = xray ] && [ -n "$cfg" ] && [ -f "$DS/.subs" ]; then
+sub_fam=0; case "$t" in xray|hy2|awg) sub_fam=1 ;; esac
+if [ "$sub_fam" = 1 ] && [ -n "$cfg" ] && [ -f "$DS/.subs" ]; then
 	TAB=$(printf '\t')
 	# Владелец = ДЛИНЕЙШИЙ подходящий тег, НЕ первый по порядку в файле: теги подписок
 	# бывают префиксами друг друга («liberty» ⊂ «liberty-белые»), а «-» встречается и
 	# ВНУТРИ тега ⇒ break на первом совпадении показывал бы метку чужой подписки (симптом:
 	# конфиг верный, а «↳ подписка: …» врёт). Зеркало ownerTag() в panel.js и
-	# del_sub_configs в cgi-bin/action.
+	# subs-update.sh (prune_stale, cmd_drop).
 	blen=-1
 	while IFS="$TAB" read -r tg u lab; do
 		[ -n "$tg" ] || continue
@@ -305,7 +308,7 @@ sub_label=$(echo "$sub_label" | tr -d '\000-\037"\\')
 cfg_file=$(echo "$cfg" | tr -d '\000-\037"\\')
 # Xray-подписка: показать НАСТОЯЩЕЕ имя сервера (из .sub-names, с эмодзи/флагом) вместо
 # sub-<tag>-… — иначе шапка врала «sub-svpq96g-14» вместо выбранного «🇵🇱 Польша».
-if [ "$t" = xray ] && [ -n "$cfg" ] && [ -f "$DS/.sub-names" ]; then
+if [ "$sub_fam" = 1 ] && [ -n "$cfg" ] && [ -f "$DS/.sub-names" ]; then
 	fr=$(grep "^$cfg$(printf '\t')" "$DS/.sub-names" 2>/dev/null | head -1 | cut -f2-)
 	[ -n "$fr" ] && cfg="$fr"
 fi

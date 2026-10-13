@@ -119,6 +119,10 @@ level_of() {
 		# sched-clock — access schedules are not acting: the router clock is not synced yet (access-sched.sh, once per boot).
 		# sched-filter — «limited» is not acting (no filter component / it did not start) or acts again; geo-want-snap-skip — a
 		# category of a schedule too big for its flash snapshot (geo.sh _wanted_pass).
+		# subs-active-refused — the new config of the active server did not come up, the previous one is back; subs-held-gone — a
+		# server an exit stands on left its subscription (the config is kept); subs-exit-reup — an exit did not come up on its
+		# config changed by a subscription (subs-update.sh).
+		subs-active-refused|subs-held-gone|subs-exit-reup) echo warn ;;
 		transport-missing|geo-snap-skip|geo-want-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*|sched-clock|sched-filter) echo warn ;;
 		*)                        echo info ;;
 	esac

@@ -304,10 +304,12 @@ in_dir() {
 	trap 'rm -rf "$IN_DIR"' EXIT
 }
 # slot_ids_of <transport> <config> — the numbers of the exits whose registry line names that config («5», «3,5»; empty — none).
-# Names are compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and config «01» was shown the
-# exits of config «1». One answer to «which exits stand on this config» — the server screen's facts and the refusal to delete.
+# The answer is the REGISTRY'S (slots.sh holders — the server screen's facts and the refusal to delete here, a subscription's
+# pruning in subs-update.sh); its output goes through a filter BY FORM: a copy older than the verb prints its usage line.
+# No registry file — no exits, and no fork either (the server screen asks on every opening).
 slot_ids_of() {
-	awk -F'\t' -v t="$1" -v n="$2" '($3 "") == (t "") && ($4 "") == (n "") { printf "%s%s", (c++ ? "," : ""), $1 }' "$ENODIA_STATE/.slots" 2>/dev/null | tr -cd '0-9,'
+	[ -s "$ENODIA_STATE/.slots" ] && [ -f "$ENODIA_DIR/slots.sh" ] || return 0
+	sh "$ENODIA_DIR/slots.sh" holders "$1" "$2" 2>/dev/null | grep -E '^[2-7](,[2-7])*$' | head -n 1
 }
 # AN EXIT NAMES THIS CONFIG — it is not deleted: the exit goes on by its working copy, cannot come up after a restart or a reboot,
 # and its screen says nothing of it. Every «Получить WARP» makes such a pair, so the trap was one click away (hardware walk
@@ -434,26 +436,6 @@ if [ -f "$ENODIA_DIR/subs-lib.sh" ]; then . "$ENODIA_DIR/subs-lib.sh"; fi
 # Без библиотеки (старая установка) — молча ничего не пишем: поведение остаётся прежним.
 if [ -f "$ENODIA_DIR/lease-lib.sh" ]; then . "$ENODIA_DIR/lease-lib.sh"; fi
 command -v owner_note >/dev/null 2>&1 || owner_note() { return 0; }
-
-# del_sub_configs <tag> — удалить конфиги ПОДПИСКИ <tag>, НЕ задев соседние. Теги подписок
-# могут быть ПРЕФИКСАМИ друг друга («liberty» ⊂ «liberty-vpn»), а «-» разделяет и внутри тега →
-# голый глоб sub-<tag>-*.json смёл бы и «sub-<tag>-vpn-*.json» соседа. Владелец файла = ДЛИНЕЙШИЙ
-# тег-префикс среди ВСЕХ тегов .subs (зеркало ownerTag() в index.html). Удаляем лишь свои.
-del_sub_configs() {
-	_t="$1"; TAB=$(printf '\t')
-	_tags="$_t"; [ -f "$ENODIA_STATE/.subs" ] && _tags="$_tags $(cut -d"$TAB" -f1 "$ENODIA_STATE/.subs" 2>/dev/null)"
-	# ДВА каталога: подписка бывает смешанной (vless/vmess/trojan/ss ложатся xray-JSON'ом,
-	# hysteria2 — YAML'ом), и удаление подписки обязано уносить оба — иначе hy2-конфиги
-	# остаются сиротами с именем несуществующей подписки.
-	for _f in "$ENODIA_STATE"/xray-configs/sub-"$_t"-*.json "$ENODIA_STATE"/hy2-configs/sub-"$_t"-*.yaml; do
-		[ -e "$_f" ] || continue
-		_b=$(basename "$_f"); _own=""; _ol=-1
-		for _g in $_tags; do
-			case "$_b" in sub-"$_g"-*) _gl=${#_g}; [ "$_gl" -gt "$_ol" ] && { _own="$_g"; _ol=$_gl; } ;; esac
-		done
-		[ "$_own" = "$_t" ] && rm -f "$_f" 2>/dev/null
-	done
-}
 
 # --- Менеджер источников списков (lists-update.sh) ---------------------------
 # Категории-whitelist для generic-верб src_*. tunnel-cidr — маршрутизация (CIDR через VPN);
@@ -2072,9 +2054,8 @@ EOF
 	# JSON-массив + vless://→xray JSON делает БРАУЗЕР; busybox JSON не собираем). Тело качаем
 	# В ФАЙЛ, а не в $var: часть панелей (durev) отдаёт gzip'ом БЕЗУСЛОВНО, NUL-байты gzip
 	# обрезали бы shell-переменную; od в busybox НЕТ — не читаем магию, а ПРОБУЕМ разжать
-	# (удалось+непусто ⇒ был gzip). del_sub: снять ТОЛЬКО конфиги по метке (зовёт refresh/
-	# import для идемпотентной перезаливки — строку .subs НЕ трогает). remove_sub: полное
-	# снятие (конфиги + строка .subs) для кнопки удаления подписки.
+	# (удалось+непусто ⇒ был gzip). remove_sub: полное снятие (конфиги + строка .subs) для кнопки
+	# удаления подписки; конфиги и карты имён снимает ВЛАДЕЛЕЦ (subs-update.sh drop).
 	save_sub)
 		tag=$(field tag)
 		url=$(urldecode "$(field url)")
@@ -2148,32 +2129,31 @@ EOF
 		sub_fetch "$url" "$tmp" || { rm -f "$tmp"; fail "подписка недоступна или пустая"; }
 		data=$(base64 < "$tmp" | tr -d '\r\n'); rm -f "$tmp"
 		printf '{"ok":true,"code":0,"data":"%s"}\n' "$data"; exit 0 ;;
-	del_sub)
-		tag=$(field tag)
-		echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
-		del_sub_configs "$tag"
-		printf '{"ok":true,"code":0,"msg":"конфиги подписки сняты"}\n'; exit 0 ;;
 	remove_sub)
 		tag=$(field tag)
 		echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
-		del_sub_configs "$tag"   # снять конфиги ДО чистки строки .subs (нужен полный набор тегов)
+		# КОНФИГИ И КАРТЫ ИМЁН (.sub-names, .sub-picks) снимает ВЛАДЕЛЕЦ — `subs-update.sh drop`, ДО чистки строки .subs (владелец
+		# файла — длиннейший тег реестра). Здесь жила своя копия со своим списком каталогов: два семейства из трёх, без гарда
+		# «конфиг занят» — удаление подписки уносило и активный конфиг, и тот, на котором стоит выход. Занятые остаются СВОИМИ
+		# конфигами человека (их называет ответ). Отказ владельца — идёт обновление подписок — отказ и здесь: прогон тут же
+		# разложил бы её конфиги заново.
+		[ -f "$ENODIA_DIR/subs-update.sh" ] || fail "subs-update.sh не установлен (обновите скрипты роутера)"
+		cap_run subs-update.sh drop "$tag"; rc=$?
+		# The owner refuses for ONE reason — its run lock is held (its own words are a log line, «…выхожу»).
+		[ "$rc" = 0 ] || fail "сейчас идёт обновление подписок — удалите подписку через минуту"
+		kept=$(printf '%s\n' "$CAP_OUT" | grep -E '^(awg|xray|hy2)/[A-Za-z0-9_.-]+$' | sed 's#^[a-z0-9]*/##' | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
 		if [ -f "$ENODIA_STATE/.subs" ]; then
 			TAB=$(printf '\t'); lbl_commit_out "$ENODIA_STATE/.subs" lbl_without "$ENODIA_STATE/.subs" "^$tag$TAB" 2>/dev/null
-		fi
-		# Имена снимаем ПО ВЛАДЕЛЬЦУ, а не по префиксу (та же причина, что у del_sub_configs:
-		# «liberty» ⊂ «liberty-vpn» — голый грep уносил карту имён соседней подписки).
-		if [ -f "$ENODIA_STATE/.sub-names" ]; then
-			lbl_commit_out "$ENODIA_STATE/.sub-names" sub_names_keep_other "$tag" 2>/dev/null
-		fi
-		# …и карту выбранных выходов (.sub-picks, владелец — subs-update.sh): она ключуется теми же
-		# именами, и осиротевшие строки жили бы в ней вечно.
-		if [ -f "$ENODIA_STATE/.sub-picks" ]; then
-			lbl_commit_out "$ENODIA_STATE/.sub-picks" sub_names_keep_other "$tag" "$ENODIA_STATE/.sub-picks" 2>/dev/null
 		fi
 		# …и счётчики провайдера (.sub-info, владелец — subs-lib.sh): строка ключуется ТЕГОМ, а
 		# теги люди заводят повторно — осиротевшая запись отдала бы новой подписке чужой остаток.
 		sub_info_drop "$tag"
-		printf '{"ok":true,"code":0,"msg":"подписка удалена"}\n'; exit 0 ;;
+		if [ -n "$kept" ]; then
+			printf '{"ok":true,"code":0,"msg":"подписка удалена. Оставлены как свои конфиги — они заняты (активный сервер или выход): %s"}\n' "$kept"
+		else
+			printf '{"ok":true,"code":0,"msg":"подписка удалена"}\n'
+		fi
+		exit 0 ;;
 	# set_sub_names: настоящие имена серверов подписки (эмодзи/флаги/юникод — как в v2rayNG).
 	# В имя ФАЙЛА такое не кладём (спецсимволы ломают глоб/скрипты), поэтому сырой remark
 	# храним отдельно: .sub-names = строки "sub-<tag>-<файл>⇥<remark>". names = base64 этих

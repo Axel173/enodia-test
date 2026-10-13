@@ -45,6 +45,7 @@
 #                                  другим выходом (0 = занят, причина словами; 1 = свободен; 2 = не судить);
 #                                  без `live` — «можно ли назначить», с `live` — «поднимать ли сейчас» (см. блок ключей)
 #   slots.sh key-map             — «конфиг⇥держатель» по занятым ключам configs/ (пометки в выборе панели)
+#   slots.sh holders <транспорт> <конфиг> [on] — the numbers of the exits that NAME this config («3,5»; `on` — switched-on only)
 #   (выход-ДОРОГА, по которому едут конфиги road.sh, не выключается, не удаляется, не меняет транспорт и не берёт конфиг,
 #    который сам едет по дороге — slot_road_guard)
 
@@ -139,6 +140,15 @@ _slots_write() {   # $1 = id ; [$2..$6 = name_b64 transport config fallback en]
 # включая ВЫКЛЮЧЕННЫЕ: выключенный выход — это запись с конфигом и привязками, снесённый бинарь
 # сделал бы её невоскресимой (и «включить» молча не сработало бы).
 cmd_carriers() { [ -s "$SLOTS_FILE" ] || return 0; cut -f3 "$SLOTS_FILE" 2>/dev/null | grep -v '^$' | sort -u; }
+# holders <transport> <config> [on] — the numbers of the exits whose registry line names that config, comma-joined («5», «3,5»;
+# empty — none); with `on` — only the switched-on ones. ONE answer to «which exits stand on this config»: the server screen's facts
+# and the refusal to delete (cgi-bin/action), a subscription's pruning and its re-raise of a changed config (subs-update.sh). Names
+# are compared AS TEXT (`x ""`): awk takes a `-v` value that looks like a number for one, and config «01» was shown the exits of «1».
+cmd_holders() {
+    [ -s "$SLOTS_FILE" ] || return 0
+    awk -F"$TAB" -v t="$1" -v n="$2" -v o="${3:-}" \
+        '($3 "") == (t "") && ($4 "") == (n "") && (o != "on" || $6 == "on") { printf "%s%s", (c++ ? "," : ""), $1 }' "$SLOTS_FILE" 2>/dev/null | tr -cd '0-9,'
+}
 
 cmd_list() {
     [ -s "$SLOTS_FILE" ] || return 0
@@ -972,5 +982,6 @@ case "$1" in
     rename-config) cmd_rename_config "$2" "$3" "$4" ;;
     key-holder)   cmd_key_holder "$2" "$3" "$4" ;;
     key-map)      cmd_key_map ;;
-    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|configs <транспорт>|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>|rename-config <транспорт> <старое> <новое>|key-holder <конфиг> <main|2..7> [live]|key-map"; exit 2 ;;
+    holders)      cmd_holders "$2" "$3" "$4" ;;
+    *) echo "usage: $0 list|list-enabled|list-json|state|carriers|configs <транспорт>|show <id>|domains <id|0> [кап]|route <id|0> <домен>|add <имя> <транспорт> [конфиг] [fallback]|set <id> <поле> <знач>|enable <id>|disable <id>|del <id>|unwire <id>|rename-config <транспорт> <старое> <новое>|key-holder <конфиг> <main|2..7> [live]|key-map|holders <транспорт> <конфиг> [on]"; exit 2 ;;
 esac

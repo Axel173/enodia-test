@@ -870,7 +870,9 @@ elif [ "$ACTIVE_PROTO" = xray ] || [ "$ACTIVE_PROTO" = hy2 ] || [ "$ACTIVE_PROTO
     ok "dnsmasq перезапущен на публичный upstream (резолв для закачки списков до подъёма транспорта)"
 else
     # AmneziaWG: upstream ВНУТРИ туннеля (адрес из awg.conf поля DNS=, fallback 172.29.172.254).
+    # dns-raw: the legacy full install (not the panel-only one the PC uses); a first value that is not an address is dropped (dnsmasq would refuse `server=<word>`)
     VPN_DNS=$(grep -E '^DNS\s*=' "$AWG_CONF" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    case "$VPN_DNS" in *[!0-9.]*) VPN_DNS="" ;; esac
     [ -z "$VPN_DNS" ] && VPN_DNS="172.29.172.254"
     # upstream-own: легаси-путь полной установки (не PANEL_ONLY), файл с шапкой-комментарием для человека.
     cat > "$DNS_OVERRIDE" <<EOF

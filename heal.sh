@@ -470,7 +470,9 @@ elif [ "$active_t" = awg ] && { [ -f ./transport.sh ] || [ -f ./transport-awg.sh
     echo "DNS: upstream ставит плагин awg при подъёме несущей (5.6) — на буте не трогаю"
 elif [ "$active_t" = awg ]; then
     # Фолбэк для установки без transport.sh (старый layout): владельца DNS нет, пишем сами, как было.
+    # dns-raw: the branch of an install WITHOUT the carrier plugin (no library to ask either); a first value that is not an address (wg-quick takes search domains there) is dropped — dnsmasq would refuse `server=<word>`
     VPN_DNS=$(grep -E '^DNS\s*=' "$ENODIA_STATE/awg.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    case "$VPN_DNS" in *[!0-9.]*) VPN_DNS="" ;; esac
     [ -z "$VPN_DNS" ] && VPN_DNS=172.29.172.254
     echo "VPN_DNS: $VPN_DNS (нет плагина awg — ставлю сам)"
     # upstream-own: бут старого layout — dnsmasq перезапускает следующая секция heal, свой рестарт здесь лишний (dns_upstream_put).

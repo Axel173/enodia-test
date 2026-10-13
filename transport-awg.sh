@@ -74,6 +74,9 @@ command -v doh_apply_dns >/dev/null 2>&1 || doh_apply_dns() { return 1; }
 # см. slot_gen_conf, где молчаливый пропуск подстановки означал бы отвергнутый setconf'ом
 # конфиг слота и НИ СЛОВА в логе.
 if [ -f "$ENODIA_DIR/dns-lib.sh" ]; then . "$ENODIA_DIR/dns-lib.sh"; fi
+# The resolver a config names — dns-lib.sh::conf_dns (the first value that IS an address). A library older than the function
+# (a partial update) — the old line: the first comma part as it is.
+command -v conf_dns >/dev/null 2>&1 || conf_dns() { grep -E '^DNS[[:space:]]*=' "$1" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' '; }
 
 # Возраст отметки времени с защитой от скачка часов (clock-lib.sh). Шим = прежнее поведение:
 # частичная установка без lib не должна падать, но и защиты там не будет.
@@ -156,7 +159,9 @@ restore_vpn_dns() {
     # DoH ВКЛ → резолв через локальный прокси в туннель; ВЫКЛ → ниже как было. DOH_APPLY_NOTE — слово
     # библиотеки о том, что резолвер пришлось увести МИМО ещё не везущей несущей (см. doh_apply_dns).
     if doh_apply_dns tunnel; then [ -n "${DOH_APPLY_NOTE:-}" ] && log "DoH: $DOH_APPLY_NOTE"; return 0; fi
-    vpn_dns=$(grep -E '^DNS[[:space:]]*=' "$ACTIVE_CONF" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    # conf_dns — the first value of `DNS =` that IS an address: a search domain standing first went into dnsmasq as
+    # `server=<word>`, and dnsmasq with a line it refuses means no DNS for the house.
+    vpn_dns=$(conf_dns "$ACTIVE_CONF")
     [ -z "$vpn_dns" ] && vpn_dns=172.29.172.254
     ip route replace "$vpn_dns/32" dev "$IFACE" 2>/dev/null
     dns_upstream_put "$vpn_dns"
@@ -165,7 +170,7 @@ restore_vpn_dns() {
 # трафик к 1.1.1.1/8.8.8.8 должен идти мимо туннеля). Зеркало DNS-части safety_off.
 set_public_dns() {
     doh_apply_dns direct && return 0    # DoH ВКЛ (или авто-режим прямых) → резолв через локальный прокси; иначе → ниже как было
-    vpn_dns=$(grep -E '^DNS[[:space:]]*=' "$ACTIVE_CONF" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    vpn_dns=$(conf_dns "$ACTIVE_CONF")   # the SAME address restore_vpn_dns routed — else its route stays behind in direct mode
     [ -n "$vpn_dns" ] && ip route del "$vpn_dns/32" dev "$IFACE" 2>/dev/null
     dns_upstream_put "$PUB_DNS1" "$PUB_DNS2"
 }

@@ -6,6 +6,8 @@
 # только когда человек откроет панель и нажмёт ⟳ — а провайдеры подписок ротируют адреса и
 # UUID, и «внезапно перестал работать VPN» = просто протухший конфиг. Этот скрипт — та же
 # логика на busybox sh: fetch → разбор → раскладка `xray-configs/sub-<tag>-*.json` → `.sub-names`.
+# THREE FAMILIES of configs since then: xray JSON, Hysteria2 YAML (`hy2-configs/`) and AmneziaWG/WireGuard .conf (`configs/`) —
+# one subscription may carry all three; what differs between them sits in ONE table, `fam_set`.
 #
 # ЧТО СЧИТАЕТСЯ ИСТИНОЙ
 #   - реестр `.subs` (tag⇥url⇥label) пишет ТОЛЬКО панель (CGI); здесь он read-only — иначе
@@ -20,13 +22,18 @@
 #
 # ЧЕГО НЕ ДЕЛАЕМ. Активный конфиг не удаляем никогда (даже если сервер исчез из подписки —
 # только событие): оборвать несущую по расписанию хуже, чем оставить протухший сервер.
+# The same for a config an EXIT stands on (slots.sh holders): the exit could not come up after a restart.
 #
 # Вербы:
 #   update [tag]   — обновить все подписки (или одну). Это же зовёт cron.
+#   drop <tag>     — the subscription is being removed (cgi-bin/action remove_sub, BEFORE its `.subs` line goes): its configs
+#                    of all families and its lines of `.sub-names`/`.sub-picks`. A config in use (active, under an exit) stays
+#                    and becomes the person's own — its name moves to cfg-names.sh.
 #   fetch <tag>    — тело подписки в base64 (используется CGI: одна копия закачки).
 #   list           — что в реестре (tag, метка, сколько конфигов сейчас).
 #   parse <ссылка> — конфиг из ОДНОЙ ссылки в stdout, ничего не записывая: роутерный канон
-#                    разбора ссылок (xray + hy2), его же сверяет стенд паритета с panel.js.
+#                    разбора ссылок (xray + hy2 + AmneziaWG/WireGuard), его же сверяют стенды паритета с panel.js.
+#   name <ссылка>  — the name this link gives its server (remark, container description, config comment); read-only.
 #   sched …        — расписание живёт в update-sched.sh (job `subs`), сюда не дублируем.
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
@@ -42,6 +49,11 @@ PICKS="$ENODIA_STATE/.sub-picks"
 ACTIVE_F="$ENODIA_STATE/.xray-active"
 HY2DIR="$ENODIA_STATE/hy2-configs"
 HY2_ACTIVE_F="$ENODIA_STATE/.hy2-active"
+AWGDIR="$ENODIA_STATE/configs"
+AWG_ACTIVE_F="$ENODIA_STATE/.active"
+# «This text of the active AmneziaWG config was tried and did not come up» — `name⇥md5 of its substance`. In RAM on purpose: the
+# attempt costs the tunnel half a minute, so the SAME text is not tried on every run, but a reboot is a fair reason to try again.
+AWG_TRIED=/tmp/enodia-subs-awg-tried
 LOG=/tmp/enodia-subs-update.log
 LOCK=/tmp/enodia-subs-update.lock
 TMPD=/tmp/enodia-subs-update.$$
@@ -135,6 +147,19 @@ p_reset() {
 	P_PBK=; P_SID=; P_SPX=; P_PATH=; P_HHDR=; P_SVC=; P_ALPN=; P_MODE=; P_FLOW=
 	P_ENC=; P_AID=; P_SCY=; P_PASS=; P_METHOD=
 	P_INSECURE=; P_OBFS=; P_OBFSPASS=
+	P_CONF=
+}
+
+# b64_dec — stdin: base64 OR base64url, with or without padding → bytes on stdout. Links carry both alphabets and drop the
+# `=` as often as not, while busybox `base64 -d` knows one alphabet and loses the unpadded tail («truncated base64 input»,
+# measured on BE7000) — a password or a port came out a character short.
+b64_dec() {
+	tr -d ' \t\r\n=' | tr '_-' '/+' > "$TMPD/b64.in" 2>/dev/null || return 1
+	case $(( $(wc -c < "$TMPD/b64.in") % 4 )) in
+		2) printf '==' >> "$TMPD/b64.in" ;;
+		3) printf '=' >> "$TMPD/b64.in" ;;
+	esac
+	base64 -d < "$TMPD/b64.in" 2>/dev/null
 }
 
 # hp_split <host:port|[v6]:port> — HP_HOST/HP_PORT. Хвостовые слэши снимаем (…:443/?…),
@@ -226,7 +251,7 @@ parse_link() {
 # лежит в поле path, ws/h2-Host — в поле host (зеркало parseVmess в панели).
 parse_vmess() {
 	p_reset; P_PROTO=vmess
-	_j=$(printf '%s' "$1" | tr -d ' \r\n' | base64 -d 2>/dev/null)
+	_j=$(printf '%s' "$1" | b64_dec)
 	[ -n "$_j" ] || return 1
 	P_HOST=$(san "$(jflat "$_j" add)"); P_PORT=$(jflat "$_j" port | tr -cd '0-9')
 	P_UUID=$(san "$(jflat "$_j" id)")
@@ -253,9 +278,9 @@ parse_ss() {
 	case "$_s" in *\?*) _s=${_s%%\?*} ;; esac
 	if [ "${_s#*@}" != "$_s" ]; then
 		_ui=${_s%@*}; _hp=${_s##*@}
-		case "$_ui" in *:*) _ui=$(ud "$_ui") ;; *) _ui=$(printf '%s' "$_ui" | base64 -d 2>/dev/null) ;; esac
+		case "$_ui" in *:*) _ui=$(ud "$_ui") ;; *) _ui=$(printf '%s' "$_ui" | b64_dec) ;; esac
 	else
-		_d=$(printf '%s' "$_s" | tr -d ' \r\n' | base64 -d 2>/dev/null)
+		_d=$(printf '%s' "$_s" | b64_dec)
 		[ -n "$_d" ] || return 1
 		_ui=${_d%@*}; _hp=${_d##*@}
 	fi
@@ -327,6 +352,246 @@ emit_hy2() {
 	printf 'socks5:\n  listen: 127.0.0.1:10808\n'
 }
 
+# --- AmneziaWG and WireGuard: a link → a native .conf ------------------------
+# The third family of links. A 3x-ui subscription (≥ 3.7) carries AmneziaWG as `vpn://` + base64url of a native .conf and
+# plain WireGuard as `wireguard://key@host:port?…`; Amnezia's own `vpn://` is a JSON container, usually qCompress'ed (four
+# bytes of length + a zlib stream). The panel decodes all of them in the browser (decodeAmneziaVpn, wgLinkConf) — this is
+# the router's copy, and the two are held together by the differential stand dev/awg-link-parity-test.js, not by a comment.
+# The config TEXT lives in a FILE ($P_CONF), not in a variable: it is multi-line and holds a private key.
+# MEASURED on BE7000 (busybox 1.25.1, 13.10.2026):
+#   * gunzip inflates a zlib stream put behind a gzip header byte for byte and THEN returns 1 «corrupted data» (the trailer
+#     is adler32, not crc32 + size) ⇒ the verdict is the CONTENT, never the code;
+#   * jsonfilter has no `..`; `[n]` and `.*` work. Several matches come out one after another, and a value with line breaks
+#     in it cannot be told from two values ⇒ containers are asked BY INDEX, one value per call.
+VPN_MAX=262144   # bytes of an inflated container we agree to hold in RAM: a zlib bomb in a subscription stops here
+VPN_CONT=8       # containers of one `vpn://` we look through
+
+# zlib_at <file> <offset> — «a zlib stream starts here»: deflate (low nibble 8) AND the header checksum (CMF·256+FLG is a
+# multiple of 31). The first byte alone is not enough: plain text has an `x` there as often as not (panel: looksZlib).
+# The two bytes are read through base64 (three characters and `=`), their number put together from the characters' places
+# in the alphabet: no `od` on this busybox, and `hexdump` is not something every build has.
+ZL_ABC=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+zlib_at() {
+	_zb=$(tail -c +"$(( $2 + 1 ))" "$1" 2>/dev/null | head -c 2 | base64 2>/dev/null | tr -d '\r\n')
+	case "$_zb" in ??=*) return 1 ;; ???=) : ;; *) return 1 ;; esac     # `??==` is ONE byte: the file is shorter than a header
+	_zr=${_zb#?}; _zq=${_zr#?}
+	_z0=${ZL_ABC%%"${_zb%???}"*}; _z1=${ZL_ABC%%"${_zr%??}"*}; _z2=${ZL_ABC%%"${_zq%?}"*}
+	_zv=$(( (${#_z0} << 10) | (${#_z1} << 4) | (${#_z2} >> 2) ))
+	[ $(( _zv % 31 )) -eq 0 ] && [ $(( (_zv >> 8) & 15 )) -eq 8 ]
+}
+
+# zlib_inflate <file> <offset of the zlib header> <out> — the stream into <out>, cut at VPN_MAX. Judged by the file.
+zlib_inflate() {
+	{ printf '\037\213\010\000\000\000\000\000\000\003'; tail -c +"$(( $2 + 3 ))" "$1"; } 2>/dev/null \
+		| gunzip -c 2>/dev/null | head -c "$VPN_MAX" > "$3" 2>/dev/null
+	[ -s "$3" ]
+}
+
+# vpn_val <json file> <path> <out> — ONE value by a path into <out>; 0 = something is there. The old <out> goes first: no
+# match writes nothing, and the previous value would answer for this one.
+vpn_val() { rm -f "$3" 2>/dev/null; lbl_commit_out "$3" jf "$1" "$2" 2>/dev/null && [ -s "$3" ]; }
+
+# vpn_conf_in <value file> — the value is a config, or JSON text with one in `config` (Amnezia's last_config is a JSON
+# document kept as a string). 0 = the config is in $_vd.conf; VPN_INNER says the value was JSON (its fields are read later).
+vpn_conf_in() {
+	_vf="$1"; VPN_INNER=
+	case "$(head -c 64 "$_vf" 2>/dev/null | tr -d ' \t\r\n' | cut -c1)" in
+		'{') vpn_val "$_vf" '@.config' "$_vd.inner" && { _vf="$_vd.inner"; VPN_INNER=1; } ;;
+	esac
+	grep -qF '[Interface]' "$_vf" 2>/dev/null && grep -qF '[Peer]' "$_vf" 2>/dev/null || return 1
+	cp "$_vf" "$_vd.conf" 2>/dev/null
+}
+
+# vpn_meta <key> — a field of the container itself: the root first, then the chosen container's block, then the JSON kept
+# inside it (the app keeps `mtu` only there). First line only: these are a name, two addresses and a number.
+vpn_meta() {
+	_vm=$(jf "$_vj" "@.$1" | head -1)
+	if [ -z "$_vm" ] && [ "$_vfound" != root ]; then _vm=$(jf "$_vj" "@.containers[$_vfound].*.$1" | head -1); fi
+	if [ -z "$_vm" ] && [ -n "$VPN_INNER" ]; then _vm=$(jf "$_vd.val" "@.$1" | head -1); fi
+	printf '%s' "$_vm"
+}
+is_dns_ip() { case "$1" in ''|*[!0-9A-Fa-f:.]*) return 1 ;; esac; return 0; }
+
+# vpn_from <decoded bytes> — a config out of them: a JSON container (Amnezia) or the config itself (3x-ui, bots).
+# 0 = the finished text is in $_vd.fin, the container's name in VPN_NAME.
+vpn_from() {
+	_vj="$1"; _vfound=; VPN_INNER=; _vmtu=; _vdns1=; _vdns2=
+	rm -f "$_vd.conf" "$_vd.inner" "$_vd.val" 2>/dev/null
+	if jf "$_vj" '@' >/dev/null 2>&1; then
+		for _vp in '@.config' '@.last_config'; do
+			if vpn_val "$_vj" "$_vp" "$_vd.val" && vpn_conf_in "$_vd.val"; then _vfound=root; break; fi
+		done
+		_vi=0
+		while [ -z "$_vfound" ] && [ "$_vi" -lt "$VPN_CONT" ]; do
+			for _vp in "@.containers[$_vi].*.last_config" "@.containers[$_vi].*.config" "@.containers[$_vi].last_config" "@.containers[$_vi].config"; do
+				if vpn_val "$_vj" "$_vp" "$_vd.val" && vpn_conf_in "$_vd.val"; then _vfound=$_vi; break; fi
+			done
+			_vi=$((_vi + 1))
+		done
+		[ -n "$_vfound" ] || return 1
+		VPN_NAME=$(vpn_meta description)
+		_vdns1=$(vpn_meta dns1); _vdns2=$(vpn_meta dns2); _vmtu=$(vpn_meta mtu)
+	else
+		# Sections at LINE STARTS: inside a container «[Interface]» sits in the middle of a JSON string.
+		grep -q "^[ $TAB]*\[Interface\][ $TAB$SAN_CR]*\$" "$_vj" 2>/dev/null \
+			&& grep -q "^[ $TAB]*\[Peer\][ $TAB$SAN_CR]*\$" "$_vj" 2>/dev/null || return 1
+		cp "$_vj" "$_vd.conf" 2>/dev/null || return 1
+	fi
+	# CRLF → LF and a lone CR → LF: `awg setconf` takes a trailing CR INTO THE VALUE and rejects the whole config.
+	sed "s/$SAN_CR\$//" "$_vd.conf" 2>/dev/null | tr '\r' '\n' > "$_vd.fin" 2>/dev/null || return 1
+	# $PRIMARY_DNS / $SECONDARY_DNS — the app's templates, filled from dns1/dns2 as the app does. The value goes into a
+	# sed replacement ⇒ only what an address is made of; anything else — the default.
+	if grep -qF '$PRIMARY_DNS' "$_vd.fin" 2>/dev/null || grep -qF '$SECONDARY_DNS' "$_vd.fin" 2>/dev/null; then
+		is_dns_ip "$_vdns1" || _vdns1=1.1.1.1
+		is_dns_ip "$_vdns2" || _vdns2=1.0.0.1
+		lbl_commit_out "$_vd.fin" sed "s/\\\$[{]\\{0,1\\}PRIMARY_DNS[}]\\{0,1\\}/$_vdns1/g; s/\\\$[{]\\{0,1\\}SECONDARY_DNS[}]\\{0,1\\}/$_vdns2/g" "$_vd.fin" 2>/dev/null || return 1
+	fi
+	# MTU: the app keeps it as a FIELD of the container and sets it on the interface itself — a native .conf has no such
+	# line, and the router reads only the .conf. Written after Address (or right under [Interface]); an own line wins.
+	_vmtu=$(printf '%s' "$_vmtu" | sed 's/\..*//' | tr -cd '0-9' | sed 's/^0*//')
+	if [ -n "$_vmtu" ] && [ "${#_vmtu}" -le 4 ] && [ "$_vmtu" -ge 1280 ] && [ "$_vmtu" -le 1500 ] \
+	   && ! grep -qi "^[ $TAB]*MTU[ $TAB]*=" "$_vd.fin" 2>/dev/null; then
+		lbl_commit_out "$_vd.fin" awk -v m="$_vmtu" '
+			{ L[NR] = $0 }
+			END {
+				pos = 0
+				for (i = 1; i <= NR; i++) {
+					if (L[i] ~ /^[ \t]*\[[Ii][Nn][Tt][Ee][Rr][Ff][Aa][Cc][Ee]\]/) pos = i
+					else if (pos > 0 && L[i] ~ /^[ \t]*[Aa][Dd][Dd][Rr][Ee][Ss][Ss][ \t]*=/) { pos = i; break }
+					else if (pos > 0 && L[i] ~ /^[ \t]*\[/) break
+				}
+				for (i = 1; i <= NR; i++) { print L[i]; if (i == pos) print "MTU = " m }
+			}' "$_vd.fin" 2>/dev/null || return 1
+	fi
+	[ -s "$_vd.fin" ]
+}
+
+# vpn_decode <body of vpn://> — 0: the config text is in $_vd.fin. Four forms (qCompress · bare zlib · plain JSON · the
+# config itself), and the zlib magic does not tell them apart: the inflated text is tried first, the bytes as they are
+# second — a link that is NOT compressed must not suffer because its first bytes happen to look like a zlib header.
+vpn_decode() {
+	VPN_NAME=; _vd="$TMPD/vpn"
+	rm -f "$_vd".* 2>/dev/null
+	printf '%s' "$1" | lbl_commit_out "$_vd.bin" b64_dec 2>/dev/null
+	[ -s "$_vd.bin" ] || return 1
+	_voff=
+	if zlib_at "$_vd.bin" 4; then _voff=4; elif zlib_at "$_vd.bin" 0; then _voff=0; fi
+	if [ -n "$_voff" ] && zlib_inflate "$_vd.bin" "$_voff" "$_vd.un"; then
+		vpn_from "$_vd.un" && return 0
+	fi
+	vpn_from "$_vd.bin"
+}
+
+# awg_take <file> — accept the config a link gave: both sections at line starts, both keys, an endpoint. Fills
+# P_HOST/P_PORT and puts the text into $P_CONF (blank tail off, one newline at the end: `while read` loses a last line
+# without it).
+awg_take() {
+	grep -q "^[ $TAB]*\[Interface\][ $TAB]*\$" "$1" 2>/dev/null && grep -q "^[ $TAB]*\[Peer\][ $TAB]*\$" "$1" 2>/dev/null || return 1
+	grep -qE "^[ $TAB]*PrivateKey[ $TAB]*=[ $TAB]*[A-Za-z0-9+/]{43}=[ $TAB]*\$" "$1" || return 1
+	grep -qE "^[ $TAB]*PublicKey[ $TAB]*=[ $TAB]*[A-Za-z0-9+/]{43}=[ $TAB]*\$" "$1" || return 1
+	_ae=$(sed -n "s/^[ $TAB]*Endpoint[ $TAB]*=[ $TAB]*//p" "$1" | head -1 | tr -d " $TAB")
+	hp_split "$_ae" || return 1
+	P_HOST=$HP_HOST; P_PORT=$HP_PORT
+	lbl_commit_out "$TMPD/awg.conf" awk '{ L[NR] = $0 } END { n = NR; while (n > 0 && L[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print L[i] }' "$1" 2>/dev/null || return 1
+	[ -s "$TMPD/awg.conf" ] || return 1
+	P_CONF="$TMPD/awg.conf"
+}
+
+# awg_comment <config> — the server's name from the config's own comments: the FIRST one that is neither a commented-out
+# directive (`# MTU = 1420`) nor a licence header (longer than 40 characters). 3x-ui writes the remark exactly so. The
+# length is counted in characters, not bytes (UTF-8 continuation bytes are dropped before counting).
+awg_comment() {
+	sed -n "s/^[ $TAB]*#[ $TAB]*\([^ $TAB].*\)\$/\1/p" "$1" 2>/dev/null | sed "s/[ $TAB]*\$//" | grep -v '=' \
+		| while IFS= read -r _ac; do
+			[ "$(printf '%s' "$_ac" | tr -d '\200-\277' | wc -c)" -le 40 ] || continue
+			printf '%s' "$_ac"
+			break
+		done
+}
+
+# parse_vpn <body of vpn://> — AmneziaWG (or WireGuard) out of an Amnezia link, any of its four forms.
+parse_vpn() {
+	p_reset; P_PROTO=awg
+	vpn_decode "$1" || return 1
+	awg_take "$_vd.fin" || return 1
+	P_REMARK=$(san_txt "$VPN_NAME" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+	[ -n "$P_REMARK" ] || P_REMARK=$(san_txt "$(awg_comment "$P_CONF")")
+	return 0
+}
+
+# wg_key <text> — a WireGuard key (32 bytes of base64: 43 characters and `=`) on stdout; 1 = not a key. A space is put
+# back as `+`: a key has no spaces, and a `+` left bare in a query is read as one.
+wg_key() {
+	_wkk=$(printf '%s' "$1" | tr ' ' '+' | tr -d '\r\n\t')
+	case "$_wkk" in *=) : ;; *) [ "${#_wkk}" -eq 43 ] && _wkk="$_wkk=" ;; esac
+	printf '%s' "$_wkk" | grep -qE '^[A-Za-z0-9+/]{43}=$' || return 1
+	printf '%s' "$_wkk"
+}
+
+# wg_list <query value> <allowed characters> — a LIST field (addresses, DNS): `+` is a space here (Go's url.Values),
+# items go by comma or space, each is checked, the rest are joined back with «, ». Nothing valid — nothing.
+wg_list() {
+	ud "$(printf '%s' "$1" | tr '+' ' ')" | tr ', \t' '\n\n\n' | while IFS= read -r _wl || [ -n "$_wl" ]; do
+		[ -n "$_wl" ] || continue
+		case "$_wl" in *[!$2]*) continue ;; esac
+		printf '%s\n' "$_wl"
+	done | awk 'NR > 1 { printf ", " } { printf "%s", $0 }'
+}
+
+# parse_wg <body of wireguard://> — plain WireGuard in one line, as 3x-ui writes it:
+#   <private key>@host:port?publickey=…&address=…&dns=…&mtu=…&presharedkey=…&keepalive=…#remark
+# The text it becomes is laid out like 3x-ui's own AmneziaWG config (the remark — a comment above [Peer]).
+parse_wg() {
+	p_reset; P_PROTO=awg
+	_s=$(printf '%s' "$1" | tr -d '\r')
+	_wrem=
+	case "$_s" in *#*) _wrem=$(san_txt "$(ud "${_s#*#}")"); _s=${_s%%#*} ;; esac
+	_q=""
+	case "$_s" in *\?*) _q=${_s#*\?}; _s=${_s%%\?*} ;; esac
+	case "$_s" in *@*) : ;; *) return 1 ;; esac
+	_ui=${_s%@*}; _hp=${_s##*@}
+	hp_split "$_hp" || return 1
+	_wep="$HP_HOST:$HP_PORT"
+	case "$HP_HOST" in *:*) _wep="[$HP_HOST]:$HP_PORT" ;; esac
+	_wk=$(wg_key "$(ud "$_ui")") || return 1
+	_wpub=; _wpsk=; _waddr=; _wdns=; _wmtu=; _wka=; _wbad=
+	_oifs=$IFS; IFS='&'
+	for _kv in $_q; do
+		[ -n "$_kv" ] || continue
+		case "$_kv" in *=*) : ;; *) continue ;; esac
+		_k=${_kv%%=*}; _v=${_kv#*=}
+		case "$_k" in
+			publickey)    _wpub=$(wg_key "$(ud "$_v")") || _wbad=1 ;;
+			presharedkey) _wpsk=$(wg_key "$(ud "$_v")") || _wbad=1 ;;
+			address)      _waddr=$(wg_list "$_v" '0-9A-Fa-f:./') ;;
+			dns)          _wdns=$(wg_list "$_v" '0-9A-Za-z:.-') ;;
+			mtu)          _wmtu=$(ud "$_v" | tr -cd '0-9' | sed 's/^0*//') ;;
+			keepalive)    _wka=$(ud "$_v" | tr -cd '0-9' | sed 's/^0*//') ;;
+		esac
+	done
+	IFS=$_oifs
+	# A key that is there but is not a key — the link is broken: a config without its preshared key would come up «fine»
+	# and never shake hands.
+	[ -z "$_wbad" ] && [ -n "$_wpub" ] && [ -n "$_waddr" ] || return 1
+	lbl_commit_out "$TMPD/wg.conf" wg_emit 2>/dev/null || return 1
+	awg_take "$TMPD/wg.conf" || return 1
+	P_REMARK=$_wrem
+	return 0
+}
+# wg_emit — the config text of the link parse_wg has just read (its `_w*` fields), on stdout.
+wg_emit() {
+	printf '[Interface]\nPrivateKey = %s\nAddress = %s\n' "$_wk" "$_waddr"
+	[ -z "$_wdns" ] || printf 'DNS = %s\n' "$_wdns"
+	if [ -n "$_wmtu" ] && [ "${#_wmtu}" -le 4 ] && [ "$_wmtu" -ge 1280 ] && [ "$_wmtu" -le 1500 ]; then printf 'MTU = %s\n' "$_wmtu"; fi
+	printf '\n'
+	[ -z "$_wrem" ] || printf '# %s\n' "$_wrem"
+	printf '[Peer]\nPublicKey = %s\n' "$_wpub"
+	[ -z "$_wpsk" ] || printf 'PresharedKey = %s\n' "$_wpsk"
+	printf 'AllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\n' "$_wep"
+	if [ -n "$_wka" ] && [ "${#_wka}" -le 5 ] && [ "$_wka" -le 65535 ]; then printf 'PersistentKeepalive = %s\n' "$_wka"; fi
+	return 0
+}
+
 # parse_any <ссылка> — ЛЮБАЯ поддерживаемая ссылка → P_*. Отдельно от parse_link намеренно:
 # цикл подписки (parse_links → put_server) умеет складывать только xray-конфиги, и hy2-ссылка,
 # попав в него, легла бы YAML'ом в xray-configs/*.json.
@@ -335,6 +600,8 @@ parse_any() {
 	case "$_pl" in
 		hy2://*)       parse_hy2 "${_pl#hy2://}" ;;
 		hysteria2://*) parse_hy2 "${_pl#hysteria2://}" ;;
+		vpn://*)       parse_vpn "${_pl#vpn://}" ;;
+		wireguard://*) parse_wg "${_pl#wireguard://}" ;;
 		*)             parse_link "$_pl" ;;
 	esac
 }
@@ -420,34 +687,55 @@ emit_cfg() {
 # защита активного — у них ОБЩЕЕ. Поэтому различия сведены в ОДНУ таблицу, а не в вилки по
 # коду: иначе третий протокол снова расползётся по десятку мест (класс «вилка забыла альт»).
 FAM_DIR=; FAM_EXT=; FAM_ACT=; FAM_LIVE=; FAM_TSH=; FAM_TNAME=
+# Every per-family pass (pruning, the active config, counting, removal) walks THIS list: a family named in one loop and
+# forgotten in another is the «fork forgot the alt» class.
+FAMS="xray hy2 awg"
 fam_set() {
 	case "$1" in
 		hy2)
 			FAM_DIR="$HY2DIR"; FAM_EXT=yaml; FAM_ACT="$HY2_ACTIVE_F"
 			FAM_LIVE="$ENODIA_STATE/hysteria.yaml"; FAM_TSH=transport-hy2.sh; FAM_TNAME=hy2 ;;
+		awg)
+			# AmneziaWG (plain WireGuard too): the working copy is THREE files (awg.conf, amnezia_for_awg.conf and the derived
+			# awg0.conf) and only switch-vpn.sh lays them out ⇒ FAM_LIVE here is what the config is COMPARED with, never a
+			# target of `cp` (refresh_awg).
+			FAM_DIR="$AWGDIR";  FAM_EXT=conf; FAM_ACT="$AWG_ACTIVE_F"
+			FAM_LIVE="$ENODIA_STATE/awg.conf";      FAM_TSH=switch-vpn.sh; FAM_TNAME=awg ;;
 		*)
 			FAM_DIR="$CFGDIR";  FAM_EXT=json; FAM_ACT="$ACTIVE_F"
 			FAM_LIVE="$ENODIA_STATE/xray.json";     FAM_TSH=xray-transport.sh; FAM_TNAME=xray ;;
 	esac
 }
+# name_elsewhere <name> — a file of this name lies in ANOTHER family's directory (FAM_* = the family being laid out).
+name_elsewhere() {
+	[ "$FAM_EXT" = json ] || [ ! -f "$CFGDIR/$1.json" ] || return 0
+	[ "$FAM_EXT" = yaml ] || [ ! -f "$HY2DIR/$1.yaml" ] || return 0
+	[ "$FAM_EXT" = conf ] || [ ! -f "$AWGDIR/$1.conf" ] || return 0
+	return 1
+}
 
 # cfg_addr / cfg_port / cfg_cred <файл> — три поля, по которым решается «сервер тот же?».
-# Отдельными функциями, потому что у xray это JSON, у hy2 — YAML, а вся логика вокруг общая.
+# Отдельными функциями, потому что у xray это JSON, у hy2 — YAML, у AmneziaWG — .conf, а вся логика вокруг общая.
+# conf_val <file> <key> — the first value of a WireGuard config's key, spaces and the CR out.
+conf_val() { sed -n "s/^[ $TAB]*$2[ $TAB]*=[ $TAB]*//p" "$1" 2>/dev/null | head -1 | tr -d " $TAB\r"; }
 cfg_addr() {
 	case "$1" in
 		*.yaml) sed -n 's/^server: *\(.*\):[0-9]\{1,5\}$/\1/p' "$1" 2>/dev/null | head -1 | tr -d '[]' ;;
+		*.conf) conf_val "$1" Endpoint | sed 's/:[0-9]*$//' | tr -d '[]' ;;
 		*)      grep -o '"address": "[^"]*"' "$1" 2>/dev/null | head -1 | cut -d'"' -f4 ;;
 	esac
 }
 cfg_port() {
 	case "$1" in
 		*.yaml) sed -n 's/^server: .*:\([0-9]\{1,5\}\)$/\1/p' "$1" 2>/dev/null | head -1 ;;
+		*.conf) conf_val "$1" Endpoint | sed -n 's/^.*:\([0-9]\{1,5\}\)$/\1/p' ;;
 		*)      grep -o '"port": [0-9]*' "$1" 2>/dev/null | sed -n 2p | tr -cd '0-9' ;;
 	esac
 }
 cfg_cred() {
 	case "$1" in
 		*.yaml) sed -n 's/^auth: "\(.*\)"$/\1/p' "$1" 2>/dev/null | head -1 ;;
+		*.conf) conf_val "$1" PrivateKey ;;
 		*)      grep -oE '"(id|password)": "[^"]*"' "$1" 2>/dev/null | head -1 | cut -d'"' -f4 ;;
 	esac
 }
@@ -462,6 +750,12 @@ cfg_sig() {
 			# креды, sni/insecure и обфускацию. Отступ значим (`  sni:` — внутри tls:).
 			grep -E '^(server:|auth:|  sni:|  insecure:|  type:|    password:)' "$1" 2>/dev/null \
 				| tr -d ' \t' | sort | tr '\n' ';' ;;
+		*.conf)
+			# Every SETTING line in the file's own order, spaces out. Not the substance: comments (the remark lives there) and a
+			# key with an EMPTY value — switch-vpn.sh cuts empty I1..I5 out of the working copy, and refresh_awg compares the
+			# config with that copy: counted, a config that carries them would be «changed» forever. `^name=$` is exactly the
+			# empty one: a line that ends with a key's own «=» has the separator before it.
+			tr -d " $TAB\r" < "$1" 2>/dev/null | grep -vE '^(#|$)' | grep -vE '^[A-Za-z0-9]+=$' | tr '\n' ';' ;;
 		*)
 			grep -oE '"(address|port|id|password|method|serverName|publicKey|shortId|path|serviceName|network|security|flow|host)"[[:space:]]*:[[:space:]]*("[^"]*"|[0-9]+|\[[^]]*\])' "$1" 2>/dev/null \
 				| tr -d ' \t' | sort | tr '\n' ';' ;;
@@ -491,7 +785,7 @@ name_for() {
 			# Без этой строки подписка «liberty» брала имена соседки и писала свои серверы прямо в её
 			# файлы: замерено на живом BE7000 24.08.2026 — 16 конфигов «liberty-vpn» переписаны,
 			# в `.sub-names` 16 дублирующихся ключей. Тот же владелец (ДЛИННЕЙШИЙ тег), что у
-			# prune_stale, del_sub_configs и ownerTag() в панели — четвёртое место, где он нужен.
+			# prune_stale, cmd_drop и ownerTag() в панели — четвёртое место, где он нужен.
 			[ "$(sub_owner_tag "$_c")" = "$_t" ] || continue
 			# ИМЯ — ОДНО ПРОСТРАНСТВО НА ОБА СЕМЕЙСТВА (`.sub-names` и `$TMPD/keep` знают только
 			# имя, а файлов у имени может быть два: xray-configs/x.json и hy2-configs/x.yaml).
@@ -503,11 +797,8 @@ name_for() {
 			# удалить никогда (их имя каждый прогон лежит в `keep`), панель показывает дубли, а
 			# если такое имя было АКТИВНЫМ — активный конфиг молча начинал указывать на ДРУГОЙ
 			# сервер, ровно то, от чего защищает липкий выбор.
-			if [ "$FAM_EXT" = json ]; then
-				[ -f "$HY2DIR/$_c.yaml" ] && continue
-			else
-				[ -f "$CFGDIR/$_c.json" ] && continue
-			fi
+			# Three families now (AmneziaWG's configs/) — one owner of the question, name_elsewhere.
+			name_elsewhere "$_c" && continue
 			if [ "$(cfg_addr "$FAM_DIR/$_c.$FAM_EXT")" = "$P_HOST" ]; then _nm="$_c"; break; fi
 			# В запасные — только имя, за которым НЕТ файла ни в одном каталоге (сервер сменил
 			# адрес ⇒ переиспользуем его собственный файл) или наш собственный.
@@ -574,8 +865,11 @@ put_server() {
 	# ними или YAML. Без него подпись новичка считалась json-веткой поверх YAML (пусто), не
 	# совпадала никогда — и hy2-конфиги переписывались на флеш КАЖДЫЙ тик крона при нулевых
 	# изменениях, а отчёт врал «изменено». Поймано песочницей local/subs-mixed-test.sh.
-	if [ "$P_PROTO" = hy2 ]; then emit_hy2 > "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null
-	else emit_cfg > "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null; fi
+	case "$P_PROTO" in
+		hy2) emit_hy2 > "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null ;;
+		awg) cat "$P_CONF" > "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null ;;   # the link IS the config: awg_take has checked and trimmed it
+		*)   emit_cfg > "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null ;;
+	esac
 	[ -s "$TMPD/cfg.new.$FAM_EXT" ] || { N_BAD=$((N_BAD+1)); return 1; }
 	printf '%s\t%s\n' "$_nm" "$_raw" >> "$TMPD/names"
 	# Семейство выхода — только для подписок-JSON: у ссылочных пула нет, липнуть не к чему.
@@ -586,7 +880,9 @@ put_server() {
 	# каждый тик cron = новый сервер у несущей = ежедневный рестарт туннеля на ровном месте.
 	# Сверяем ТРИ поля (адрес+порт+креды): если провайдер сменил хоть одно — сервер действительно
 	# другой, и конфиг надо обновить, иначе несущая останется с протухшими кредами.
-	if [ -f "$_dst" ] && [ "$_nm" = "$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n\"\\')" ]; then
+	# NOT for AmneziaWG: its links are base64 (the body cannot be searched for an address), a server there is one key pair
+	# and not a pool, and the active config is applied by refresh_awg by the STATE of the working copy, not by this run's news.
+	if [ "$FAM_EXT" != conf ] && [ -f "$_dst" ] && [ "$_nm" = "$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n\"\\')" ]; then
 		_oa=$(cfg_addr "$_dst")
 		_op=$(cfg_port "$_dst")
 		_oc=$(cfg_cred "$_dst")
@@ -599,17 +895,29 @@ put_server() {
 		fi
 	fi
 	if [ ! -f "$_dst" ]; then
-		mv "$TMPD/cfg.new.$FAM_EXT" "$_dst" 2>/dev/null && chmod 600 "$_dst" 2>/dev/null
+		cfg_put "$TMPD/cfg.new.$FAM_EXT" "$_dst" || return 1
 		N_NEW=$((N_NEW+1))
 	elif [ "$(cfg_sig "$TMPD/cfg.new.$FAM_EXT")" != "$(cfg_sig "$_dst")" ]; then
-		mv "$TMPD/cfg.new.$FAM_EXT" "$_dst" 2>/dev/null && chmod 600 "$_dst" 2>/dev/null
+		cfg_put "$TMPD/cfg.new.$FAM_EXT" "$_dst" || return 1
 		N_CHG=$((N_CHG+1))
-		echo "$_nm" >> "$TMPD/changed"
+		printf '%s\t%s\n' "$FAM_TNAME" "$_nm" >> "$TMPD/changed"
 	else
 		rm -f "$TMPD/cfg.new.$FAM_EXT" 2>/dev/null
 		N_SAME=$((N_SAME+1))
 	fi
 	return 0
+}
+# cfg_put <built config> <its place> — WHOLE OR NOT AT ALL (label-lib.sh), mode 600 from the first byte. It was `mv` from /tmp
+# — a copy across file systems with nobody asking how it ended: on a full partition a stump took the config's place and the run
+# counted it «изменено». A stump of an AmneziaWG config is a lost key, and of the active one — a tunnel that will not come up.
+# The old config stays as it was; the run says so and counts the server as not laid out.
+cfg_put() {
+	( umask 077; lbl_commit_out "$2" cat "$1" ) 2>/dev/null; _cpr=$?
+	rm -f "$1" 2>/dev/null
+	[ "$_cpr" = 0 ] && return 0
+	say "  конфиг «$(basename "$2")» не записался (место на разделе?) — прежний оставлен"
+	N_BAD=$((N_BAD+1))
+	return 1
 }
 
 # --- разбор тела ------------------------------------------------------------
@@ -675,7 +983,7 @@ pick_outbound() {
 			[ -n "$_c0" ] || continue
 			grep -qxF "$_c0" "$TMPD/used" 2>/dev/null && continue
 			# ВЛАДЕЛЬЦА СПРАШИВАЕМ ЯВНО — пятое место, где нужен тот же ответ, что у name_for,
-			# prune_stale, del_sub_configs и ownerTag() в панели. Отбор выше идёт голым префиксом
+			# prune_stale, cmd_drop и ownerTag() в панели. Отбор выше идёт голым префиксом
 			# `^sub-<tag>-`, а теги бывают префиксами друг друга. Замерено на живом BE7000
 			# 24.08.2026: у тега «liberty» под этот префикс попадает 76 имён, из них 38 — чужой
 			# подписки «liberty-vpn», и 37 имён серверов у них СОВПАДАЮТ дословно (провайдер один,
@@ -833,9 +1141,9 @@ json_ob_to_p() {
 # владельца файла определяем длиннейшим тегом (соседняя подписка с тегом-надмножеством).
 prune_stale() {
 	_t="$1"
-	# Оба семейства: подписка бывает смешанной, и «устаревшим» hy2-конфигом занимаемся так же,
+	# Все семейства: подписка бывает смешанной, и «устаревшим» hy2-конфигом занимаемся так же,
 	# как xray-овским. Активный НЕ трогаем ни в одном — рвать несущую по расписанию нельзя.
-	for _psf in xray hy2; do
+	for _psf in $FAMS; do
 		fam_set "$_psf"
 		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
 		for _f in "$FAM_DIR"/sub-"$_t"-*."$FAM_EXT"; do
@@ -851,9 +1159,42 @@ prune_stale() {
 				ACT_GONE="${ACT_GONE:+$ACT_GONE }$_b"
 				continue
 			fi
-			rm -f "$_f" 2>/dev/null && N_DEL=$((N_DEL+1))
+			# AN EXIT STANDS ON IT — the same reason as the active one, and one more: the exit goes on by its working copy,
+			# but after a restart or a reboot it would find no config and fall to its spare path with nothing said. An exit
+			# that serves as a ROAD is covered by the same answer (a road is an exit). Asked only here, for a file about to
+			# go: one fork of the registry per stale config, none on a quiet run.
+			_hx=$(held_by "$FAM_TNAME" "$_b")
+			if [ -n "$_hx" ]; then
+				HELD_GONE="${HELD_GONE:+$HELD_GONE }$_b:$_hx"
+				continue
+			fi
+			cfg_gone "$_f" "$_b" && N_DEL=$((N_DEL+1))
 		done
 	done
+}
+# held_by <transport> <config> [on] — the exits that name this config («3,5»; empty — none; `on` — switched-on only): the
+# registry's own answer (slots.sh holders). Its output goes through a filter BY FORM: a copy older than the verb prints its
+# usage line, and the digits picked out of that would «hold» every config. No slots.sh — nobody is held, as before the guard.
+held_by() {
+	[ -f "$ENODIA_DIR/slots.sh" ] || return 0
+	sh "$ENODIA_DIR/slots.sh" holders "$1" "$2" ${3:+"$3"} 2>/dev/null </dev/null | grep -E '^[2-7](,[2-7])*$' | head -1
+}
+# cfg_gone <file> <name> — a config leaves the router (FAM_* — its family), and what is keyed by its name leaves with it: the
+# ROAD of an AmneziaWG config (road.sh) — its line would wait for the next config of that name and send it through an exit.
+cfg_gone() {
+	rm -f "$1" 2>/dev/null
+	[ ! -e "$1" ] || return 1
+	if [ "$FAM_TNAME" = awg ] && [ -s "$ENODIA_STATE/.cfg-via" ] && [ -f "$ENODIA_DIR/road.sh" ]; then
+		sh "$ENODIA_DIR/road.sh" del awg "$2" >/dev/null 2>&1 </dev/null
+	fi
+	return 0
+}
+# disp_of <file name> — the server as the person knows it: its real name from this run's lines, else from the map, else the
+# file name. For the words of messages and events only — identity is the file name.
+disp_of() {
+	_dp=$(awk -F"$TAB" -v n="$1" '($1 "") == (n "") { print $2; exit }' "$TMPD/names" 2>/dev/null)
+	[ -n "$_dp" ] || _dp=$(awk -F"$TAB" -v n="$1" '($1 "") == (n "") { print $2; exit }' "$NAMES" 2>/dev/null)
+	printf '%s' "${_dp:-$1}"
 }
 
 # write_names <tag> — заменить блок этой подписки в .sub-names (имя-файла⇥настоящее имя).
@@ -865,8 +1206,9 @@ names_text() {
 	# Активный конфиг, ИСЧЕЗНУВШИЙ из подписки, prune_stale намеренно оставляет на диске —
 	# значит и строку имени надо оставить: иначе файл теряет идентичность (панель показывает
 	# его именем файла), а вернувшийся сервер заведёт себе ВТОРОЙ файл вместо этого.
-	if [ -n "$ACT_GONE" ] && [ -f "$2" ]; then
-		for _ag in $ACT_GONE; do grep "^$_ag$TAB" "$2" 2>/dev/null | head -1; done
+	# The same for a config left under an exit (HELD_GONE — «name:exits»).
+	if [ -n "$ACT_GONE$HELD_GONE" ] && [ -f "$2" ]; then
+		for _ag in $ACT_GONE $HELD_GONE; do grep "^${_ag%%:*}$TAB" "$2" 2>/dev/null | head -1; done
 	fi
 	if [ -s "$3" ]; then cat "$3"; fi
 	return 0
@@ -886,13 +1228,16 @@ write_names() {
 # refresh_active — если у АКТИВНОГО конфига сменилась суть, поднять её в бой: xray.json —
 # копия активного конфига, демон читает её на старте. Перезапускаем несущую ТОЛЬКО когда
 # xray и есть активный транспорт (иначе просто обновили файл — применится при переключении).
-refresh_active() {
-	# По разу на семейство: у xray и hy2 свои «активный конфиг», живой файл и плагин несущей.
-	for _raf in xray hy2; do
+refresh_active() {   # $1 = the subscription's tag
+	_rat=$1
+	# По разу на семейство: у каждого свои «активный конфиг», живой файл и плагин несущей.
+	for _raf in $FAMS; do
 		fam_set "$_raf"
 		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
 		[ -n "$_act" ] || continue
-		grep -qxF "$_act" "$TMPD/changed" 2>/dev/null || continue
+		# AmneziaWG — its own way: the working copy is laid out by switch-vpn.sh alone, and judged by its STATE.
+		if [ "$_raf" = awg ]; then refresh_awg "$_rat" "$_act"; continue; fi
+		grep -qxF "$FAM_TNAME$TAB$_act" "$TMPD/changed" 2>/dev/null || continue
 		cp "$FAM_DIR/$_act.$FAM_EXT" "$FAM_LIVE" 2>/dev/null && chmod 600 "$FAM_LIVE" 2>/dev/null
 		if [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null)" = "$FAM_TNAME" ]; then
 			# Идёт смена транспорта — в это окно `.transport` уже/ещё указывает не туда, и наш
@@ -918,6 +1263,102 @@ refresh_active() {
 			say "  активный конфиг «$_act» обновлён (применится при переключении на $FAM_TNAME)"
 		fi
 	done
+}
+
+# refresh_awg <tag> <active config> — the ACTIVE AmneziaWG config of THIS subscription against the working copy (FAM_* = awg).
+# BY STATE, NOT BY THIS RUN'S NEWS. For Xray the news is enough: its working copy is one file, copied on the spot, and whoever
+# raises the carrier next reads it. Here the copy is laid out by switch-vpn.sh alone, and a run that could not call it (a switch
+# of transport in progress) would leave «the config is new, the tunnel runs the old one» for good — the next run sees no change.
+# So every run asks the fact: does awg.conf carry the substance of configs/<active>.conf?
+# THE SAME TEXT IS TRIED ONCE (AWG_TRIED): the new config that does not shake hands costs the tunnel half a minute before the
+# previous copy is back (switch-vpn.sh), and without the mark every cron run would pay it again.
+refresh_awg() {
+	_rwa=$2
+	[ "$(sub_owner_tag "$_rwa")" = "$1" ] || return 0
+	_rwf="$AWGDIR/$_rwa.conf"
+	# No working copy — AmneziaWG is not set up here (the config is only named): nothing to bring in line.
+	[ -f "$_rwf" ] && [ -s "$FAM_LIVE" ] || return 0
+	_rws=$(cfg_sig "$_rwf"); [ -n "$_rws" ] || return 0
+	[ "$_rws" != "$(cfg_sig "$FAM_LIVE")" ] || return 0
+	_rwd=$(disp_of "$_rwa")
+	_rwm=$(printf '%s' "$_rws" | md5sum 2>/dev/null | cut -c1-32 | tr -cd 'a-f0-9')
+	if [ -n "$_rwm" ] && [ "$(cat "$AWG_TRIED" 2>/dev/null)" = "$_rwa$TAB$_rwm" ]; then
+		say "  активный сервер «$_rwd»: новый конфиг из подписки уже пробовали — не применился, работает прежний"
+		return 0
+	fi
+	if [ -e /tmp/enodia-switching.lock ]; then
+		say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера — применю при следующем обновлении"
+		return 0
+	fi
+	[ -f "$ENODIA_DIR/switch-vpn.sh" ] || { say "  активный сервер «$_rwd» изменился, но switch-vpn.sh не найден"; return 0; }
+	# Does AmneziaWG carry right now — the same question `refresh` asks itself; here it only chooses the words.
+	_rwc=0
+	[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = awg ] && [ ! -f "$ENODIA_STATE/.vpn-off" ] && _rwc=1
+	[ "$_rwc" = 1 ] && say "  активный сервер «$_rwd» изменился в подписке — поднимаю новый конфиг"
+	# stdin from /dev/null: we run inside cmd_update's `while read` over the tags file, and a child that reads would eat it.
+	sh "$ENODIA_DIR/switch-vpn.sh" refresh "$_rwa" > "$TMPD/refresh.out" 2>&1 </dev/null; _rwr=$?
+	# THE VERDICT IS THE WORKING COPY, not the code: the code of a switch speaks of the carrier, and the copy may have been laid
+	# out with the carrier left alone (another transport, the VPN switched off in the middle).
+	if [ "$(cfg_sig "$FAM_LIVE")" = "$_rws" ]; then
+		rm -f "$AWG_TRIED" 2>/dev/null
+		if [ "$_rwc" = 1 ] && [ "$_rwr" = 0 ]; then
+			say "  новый конфиг сервера «$_rwd» поднят"
+			ev "subs-active-changed" 3600 "Подписка обновила активный сервер" \
+				"Сервер «$_rwd» изменился в подписке. Роутер поднял его новый конфиг."
+		elif [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = awg ]; then
+			say "  активный конфиг «$_rwd» обновлён (поднимется при включении VPN)"
+		else
+			say "  активный конфиг «$_rwd» обновлён (применится при переключении на awg)"
+		fi
+		return 0
+	fi
+	# Code 3 — the active server changed while we worked (the watchdog stepped onto a reserve): not ours to touch, no mark.
+	if [ "$_rwr" = 3 ]; then
+		say "  активный сервер сменился, пока шло обновление, — конфиг «$_rwd» лежит новым, рабочую копию не трогаю"
+		return 0
+	fi
+	# The reason in switch-vpn.sh's own words (its first [FAIL] line, colours off).
+	_rww=$(grep 'FAIL' "$TMPD/refresh.out" 2>/dev/null | head -1 | tr -d '\033' | sed 's/\[[0-9;]*m//g; s/^[[:space:]]*\[FAIL\][[:space:]]*//' | tr -d '\r\n\t')
+	[ -z "$_rwm" ] || lbl_commit_out "$AWG_TRIED" printf '%s\t%s\n' "$_rwa" "$_rwm" 2>/dev/null
+	# Two different refusals, and the person checks them differently: the tunnel was raised on the new text and did not come up
+	# (the previous copy is back) — or nothing was raised at all and the new text could not even be laid out (a key held by an
+	# exit, no room on the partition).
+	if [ "$_rwc" = 1 ]; then
+		say "  новый конфиг сервера «$_rwd» не поднялся — работает прежний${_rww:+ ($_rww)}"
+		_rwx="с новым конфигом туннель не поднялся — роутер вернул прежний"
+	else
+		say "  новый конфиг сервера «$_rwd» не разложен — рабочая копия прежняя${_rww:+ ($_rww)}"
+		_rwx="разложить его новый конфиг не удалось — рабочая копия осталась прежней"
+	fi
+	ev "subs-active-refused" 21600 "Новый конфиг активного сервера не применён" \
+		"Сервер «$_rwd» изменился в подписке, но $_rwx.${_rww:+ Причина: $_rww.} Роутер попробует снова после перезагрузки или когда конфиг в подписке изменится ещё раз; сразу — выберите этот сервер в панели заново."
+	return 0
+}
+
+# reup_exits — the configs this run CHANGED that switched-on exits stand on: each such exit is taken down and brought up by the
+# new text. The way is the registry's own «set the config» (slots.sh cmd_set: down, write, up; its guards and its words) — there
+# is no second way to restart an exit. Before this an exit ran on the old server until the watchdog found it dead.
+# With the VPN switched off by hand the registry raises nothing and says so. Its last line is relayed as it is.
+reup_exits() {
+	[ -s "$TMPD/changed" ] && [ -f "$ENODIA_DIR/slots.sh" ] || return 0
+	while IFS="$TAB" read -r _rxt _rxn || [ -n "$_rxt" ]; do
+		[ -n "$_rxn" ] || continue
+		_rxh=$(held_by "$_rxt" "$_rxn" on)
+		[ -n "$_rxh" ] || continue
+		_oifs=$IFS; IFS=','
+		for _rxi in $_rxh; do
+			IFS=$_oifs
+			_rxo=$(sh "$ENODIA_DIR/slots.sh" set "$_rxi" config "$_rxn" 2>&1 </dev/null); _rxr=$?
+			_rxl=$(printf '%s\n' "$_rxo" | tail -n 1 | sed 's/^\[slots\] //' | tr -d '\r\n\t')
+			say "  выход №$_rxi: сервер «$(disp_of "$_rxn")» изменился в подписке — ${_rxl:-перезапущен}"
+			if [ "$_rxr" != 0 ] || printf '%s' "$_rxo" | grep -q 'не поднялась'; then
+				ev_log "subs-exit-reup" 3600 "Выход №$_rxi не поднялся после обновления подписки" \
+					"Сервер «$(disp_of "$_rxn")» изменился в подписке, выход №$_rxi перезапущен с новым конфигом и не поднялся: ${_rxl:-причина не названа}."
+			fi
+		done
+		IFS=$_oifs
+	done < "$TMPD/changed"
+	return 0
 }
 
 # ev <key> <throttle> <тема> <текст> — событие в журнал панели + письмо (notify-event сам
@@ -950,7 +1391,10 @@ update_one() {
 	# «через WAN» = хост подписки лежит в iplist_set и обычным путём ушёл бы в туннель.
 	[ -n "$SUB_FETCH_VIA" ] && say "  (скачано напрямую через $SUB_FETCH_VIA — хост подписки маршрутизировался в туннель)"
 	: > "$TMPD/keep"; : > "$TMPD/names"; : > "$TMPD/used"; : > "$TMPD/changed"
-	N_NEW=0; N_CHG=0; N_SAME=0; N_DEL=0; N_SKIP=0; N_BAD=0; N_CUT=0; ACT_GONE=""
+	# …and this run's picks: the file used to live through the whole pass, and the second subscription wrote the first one's
+	# lines into `.sub-picks` once more.
+	: > "$TMPD/picks"
+	N_NEW=0; N_CHG=0; N_SAME=0; N_DEL=0; N_SKIP=0; N_BAD=0; N_CUT=0; ACT_GONE=""; HELD_GONE=""
 	# Вид тела: JSON-конфиги / список ссылок / base64 такого списка (детект как в панели).
 	_head=$(head -c 400 "$TMPD/body" 2>/dev/null | tr -d ' \t\r\n' | cut -c1-1)
 	_ok=1
@@ -958,7 +1402,7 @@ update_one() {
 		parse_json "$TMPD/body" "$_t" || _ok=0
 	else
 		if ! grep -q '://' "$TMPD/body" 2>/dev/null; then
-			tr -d ' \r\n' < "$TMPD/body" | base64 -d 2>/dev/null | cat > "$TMPD/body.d" 2>/dev/null || rm -f "$TMPD/body.d" 2>/dev/null   # через cat: base64 о неудачной записи молчит
+			b64_dec < "$TMPD/body" | cat > "$TMPD/body.d" 2>/dev/null || rm -f "$TMPD/body.d" 2>/dev/null   # через cat: base64 о неудачной записи молчит
 			if [ -s "$TMPD/body.d" ] && grep -q '://' "$TMPD/body.d" 2>/dev/null; then
 				mv "$TMPD/body.d" "$TMPD/body"
 			else
@@ -993,7 +1437,17 @@ update_one() {
 				"Сервер «$_ag» больше не приходит в подписке «$_lab». Конфиг на роутере оставлен (несущую по расписанию не рвём) — выберите другой сервер в панели."
 		done
 	fi
-	refresh_active
+	# The same for a config left under an exit («name:exits»): it stays, and the person is told which exit to look at.
+	if [ -n "$HELD_GONE" ]; then
+		for _hg in $HELD_GONE; do
+			_hgd=$(disp_of "${_hg%%:*}"); _hgx=$(printf '%s' "${_hg#*:}" | sed 's/,/, №/g')
+			say "  ВНИМАНИЕ: сервер «$_hgd» исчез из подписки — конфиг ОСТАВЛЕН: на нём выход №$_hgx"
+			ev "subs-held-gone" 21600 "Сервер выхода исчез из подписки" \
+				"Сервер «$_hgd» больше не приходит в подписке «$_lab», а на нём стоит выход №$_hgx. Конфиг на роутере оставлен (выход по расписанию не рвём) — выберите выходу другой сервер в «Дополнительных выходах»."
+		done
+	fi
+	refresh_active "$_t"
+	reup_exits
 	return 0
 }
 
@@ -1069,24 +1523,75 @@ cmd_parse() {
 	[ -n "$1" ] || { echo "usage: subs-update.sh parse <ссылка>" >&2; return 1; }
 	parse_any "$1" || { echo "не разобрал ссылку" >&2; return 1; }
 	is_host "$P_HOST" && is_port "$P_PORT" || { echo "плохой адрес или порт в ссылке" >&2; return 1; }
-	if [ "$P_PROTO" = hy2 ]; then emit_hy2; else emit_cfg; fi
+	case "$P_PROTO" in
+		awg) cat "$P_CONF" ;;
+		hy2) emit_hy2 ;;
+		*)   emit_cfg ;;
+	esac
+}
+
+# cmd_name <link> — the name the link gives its server: the remark (`#…`), for Amnezia's `vpn://` — the container's
+# description, else the config's own comment. Empty = the link names nothing (the file is then named by address).
+cmd_name() {
+	[ -n "$1" ] || { echo "usage: subs-update.sh name <ссылка>" >&2; return 1; }
+	parse_any "$1" || { echo "не разобрал ссылку" >&2; return 1; }
+	printf '%s\n' "$P_REMARK"
 }
 
 cmd_list() {
 	[ -f "$ENODIA_STATE/.subs" ] || { echo "подписок нет"; return 0; }
 	for _t in $(sub_tags); do
-		_n=0
-		# Считаем ОБА семейства: подписка бывает смешанной, и «серверов 0» при живых
+		_n=0; _nfam=""
+		# Считаем ВСЕ семейства: подписка бывает смешанной, и «серверов 0» при живых
 		# hy2-конфигах читалось бы как «подписка сломалась».
-		for _clf in xray hy2; do
-			fam_set "$_clf"
+		# After the total — the count of each family in the order of FAMS (xray, hy2, awg): the panel's line names the
+		# families of a mixed subscription («7 серверов: Xray 4, AmneziaWG 2, Hysteria2 1»). The reader is cgi-bin/data.
+		for _clf in $FAMS; do
+			fam_set "$_clf"; _nf=0
 			for _f in "$FAM_DIR"/sub-"$_t"-*."$FAM_EXT"; do
 				[ -e "$_f" ] || continue
-				[ "$(sub_owner_tag "$(basename "$_f" ".$FAM_EXT")")" = "$_t" ] && _n=$((_n+1))
+				[ "$(sub_owner_tag "$(basename "$_f" ".$FAM_EXT")")" = "$_t" ] && _nf=$((_nf+1))
 			done
+			_n=$((_n+_nf)); _nfam="$_nfam$TAB$_nf"
 		done
-		printf '%s\t%s\t%s\n' "$_t" "$(sub_label_of "$_t")" "$_n"
+		printf '%s\t%s\t%s%s\n' "$_t" "$(sub_label_of "$_t")" "$_n" "$_nfam"
 	done
+}
+
+# cmd_drop <tag> — THE SUBSCRIPTION IS BEING REMOVED: its configs of every family and its lines of the name maps. Called by
+# cgi-bin/action remove_sub BEFORE the `.subs` line goes (the owner of a file is the LONGEST tag of the registry). The CGI had
+# its own copy of this, with its own list of directories — the third family would have been the third place to forget.
+# A CONFIG IN USE STAYS — the active one of its family, and one an exit stands on: removing a subscription must not cut what
+# carries traffic (the old copy deleted both; the exit then could not come up after a restart). It stays as the PERSON'S OWN
+# config: with the `.subs` line gone nothing owns it, and its real name moves to cfg-names.sh — where own configs keep theirs.
+# Prints «kind/file» of each kept config, one per line; the CGI turns them into words.
+cmd_drop() {
+	_dt="$1"
+	case "$_dt" in ''|*[!a-z0-9-]*) echo "плохая метка подписки" >&2; return 1 ;; esac
+	for _dfam in $FAMS; do
+		fam_set "$_dfam"
+		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
+		for _f in "$FAM_DIR"/sub-"$_dt"-*."$FAM_EXT"; do
+			[ -e "$_f" ] || continue
+			_b=$(basename "$_f" ".$FAM_EXT")
+			# The owner — by the registry PLUS this tag: a retry after the registry line is already gone must still know its own.
+			_do=$(sub_owner_tag "$_b"); [ "${#_dt}" -gt "${#_do}" ] && _do=$_dt
+			[ "$_do" = "$_dt" ] || continue
+			if [ "$_b" = "$_act" ] || [ -n "$(held_by "$FAM_TNAME" "$_b")" ]; then
+				_dd=$(awk -F"$TAB" -v n="$_b" '($1 "") == (n "") { print $2; exit }' "$NAMES" 2>/dev/null)
+				if [ -n "$_dd" ] && [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
+					sh "$ENODIA_DIR/cfg-names.sh" set "$FAM_TNAME" "$_b" "$_dd" >/dev/null 2>&1 </dev/null
+				fi
+				printf '%s/%s\n' "$FAM_TNAME" "$_b"
+				continue
+			fi
+			cfg_gone "$_f" "$_b"
+		done
+	done
+	# The maps — by the OWNER, not by the prefix (subs-lib.sh::sub_names_keep_other); the tag is given explicitly.
+	[ ! -f "$NAMES" ] || lbl_commit_out "$NAMES" sub_names_keep_other "$_dt" "$NAMES" 2>/dev/null
+	[ ! -f "$PICKS" ] || lbl_commit_out "$PICKS" sub_names_keep_other "$_dt" "$PICKS" 2>/dev/null
+	return 0
 }
 
 # Лок: параллельный прогон (cron + кнопка в панели) топтал бы один набор файлов. Устаревший
@@ -1154,8 +1659,16 @@ case "$1" in
 	fetch) cmd_fetch "$2" ;;
 	list)  cmd_list ;;
 	parse) cmd_parse "$2" ;;
+	name)  cmd_name "$2" ;;
+	drop)
+		# Under the run's own lock: a run in progress would lay the subscription's configs out again right after us. Its
+		# refusal is the caller's answer (code 1, the words on stdout), not a silent «done».
+		take_lock || exit 1
+		cmd_drop "$2"; rc=$?
+		drop_lock
+		exit $rc ;;
 	*)
-		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | parse <ссылка>" >&2
+		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | drop <tag> | parse <ссылка> | name <ссылка>" >&2
 		echo "       расписание — update-sched.sh set subs <off|6h|12h|daily|weekly>" >&2
 		exit 1 ;;
 esac

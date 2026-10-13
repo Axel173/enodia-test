@@ -3773,7 +3773,9 @@ elif awg_hs_alive "$age"; then
         #    Маршрут к резолверу и рестарт dnsmasq делает тот же `restore_vpn_dns` — второй раз не надо.
         if [ ! -f "$XT_AWG" ]; then
             # Старый layout без плагина: владельца DNS нет, пишем сами — как было.
+            # dns-raw: the branch of an install WITHOUT the carrier plugin; a first value that is not an address is dropped (dnsmasq would refuse `server=<word>`)
             VPN_DNS=$(grep -E '^DNS\s*=' "$ENODIA_STATE/awg.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+            case "$VPN_DNS" in *[!0-9.]*) VPN_DNS="" ;; esac
             [ -z "$VPN_DNS" ] && VPN_DNS=172.29.172.254
             ip route replace "$VPN_DNS/32" dev awg0 2>/dev/null
             dns_upstream_put "$VPN_DNS"

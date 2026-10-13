@@ -36,6 +36,7 @@ fi
 # возвращал пусто → `ip a add` ниже падал, и awg0 оставался БЕЗ IPv4 (handshake идёт,
 # данные не ходят, rx≈0). Идиома та же, что для DNS в install.sh.
 address=$(grep -E '^[[:space:]]*Address[[:space:]]*=' "$config_file" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | cut -d',' -f1 | tr -d ' \t\r')
+# dns-raw: the first look, before the libraries are loaded — replaced below by dns-lib.sh::conf_dns (the first value that IS an address)
 dns=$(grep -E '^[[:space:]]*DNS[[:space:]]*=' "$config_file" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | cut -d',' -f1 | tr -d ' \t\r')
 # MTU — wg-quick-директива (в awg0.conf НЕ идёт, см. awk ниже), но применяем её к awg0
 # отдельно через `ip link set mtu`. Конфиги Cloudflare WARP несут MTU=1280 — без него
@@ -110,6 +111,10 @@ if [ -f "$ENODIA_DIR/ipt-lib.sh" ]; then . "$ENODIA_DIR/ipt-lib.sh"; fi
 if [ -f "$ENODIA_DIR/dns-lib.sh" ]; then . "$ENODIA_DIR/dns-lib.sh"; else
     echo "нет $ENODIA_DIR/dns-lib.sh — обновите установку (панель → «Обновление» или переустановка с компьютера)" >&2; exit 1
 fi
+# DNS — the first value of the line that IS an address (dns-lib.sh::conf_dns, the reader the carrier plugin asks too): wg-quick
+# takes search domains in `DNS =`, and «the first comma part» above could be a word — the guest's DNAT below would name it.
+# A library older than the function keeps the value parsed above.
+command -v conf_dns >/dev/null 2>&1 && dns=$(conf_dns "$config_file")
 ep_src=$(grep -E '^[[:space:]]*Endpoint[[:space:]]*=' "$config_file" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
 ep_host=$(echo "$ep_src" | sed 's/:[0-9]*$//')
 ep_port=$(echo "$ep_src" | sed -n 's/.*:\([0-9]*\)$/\1/p')
