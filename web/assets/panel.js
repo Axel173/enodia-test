@@ -15595,7 +15595,7 @@
     var kv='<div class="kv"><div class="grow"><div class="k">Имя файла</div><div class="v"><span class="mono sens">'+esc(name)+'</span></div></div></div>';
     if(isSub) return kv+'<div class="cline">Имя сервера подписки задаёт подписка: по нему она находит этот сервер при каждом обновлении — переименованный она создала бы заново, а этот удалила бы.</div>';
     if(name.toLowerCase()==='default') return kv+'<div class="cline">«default» — служебное имя установщика: им помечен первый конфиг, и он же — «дом» резерва по умолчанию. Переименовать его нельзя.</div>';
-    return '<div class="lnkrow" style="margin:0"><input id="srv-nm" class="inp" spellcheck="false" autocomplete="off" maxlength="120" aria-label="Новое имя" aria-describedby="srv-nm-p srv-nm-d" value="'+esc(cfgDisp(tpt, name))+'"><button type="button" class="btn" data-sv="ren">Переименовать</button></div>'
+    return '<div class="lnkrow nm" style="margin:0"><input id="srv-nm" class="inp" spellcheck="false" autocomplete="off" maxlength="120" aria-label="Новое имя" aria-describedby="srv-nm-p srv-nm-d" value="'+esc(cfgDisp(tpt, name))+'"><button type="button" class="btn" data-sv="ren">Переименовать</button></div>'
       + '<div class="cline sens" id="srv-nm-p" aria-live="polite" hidden></div>'
       + '<div class="cline" id="srv-nm-d">Имя — любое, с эмодзи и флагами. Файл на роутере — латиницей: кириллица транслитом, флаг страны — кодом (🇩🇪 → DE). Резерв перебирает серверы по алфавиту файлов — новое имя меняет и место сервера в этой очереди.</div>';
   }
