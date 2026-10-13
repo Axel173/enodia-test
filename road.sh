@@ -27,6 +27,7 @@
 # IPv6-outer WireGuard, + its S4 transport padding). `mtu-fix` only LOWERS a live rider (never raises): it runs after every
 # writer — the carrier's raise (via endpoint-set → wire) and a manual MTU (net-tune.sh). Clearing a road on a live carrier
 # re-raises it through the orchestrator: the carrier's MTU has ONE writer, its raise — no second copy of «which MTU is due».
+# A CHANGED ROAD AND AN EXIT THAT IS DOWN: its server is asked by the new path at once (`set`, the return probe).
 #
 # STORE: `$ENODIA_STATE/.cfg-via` — TSV `awg/<file>⇥<id>`; mechanics (lock, parse, atomic write) — label-lib.sh.
 #
@@ -294,13 +295,27 @@ cmd_set() {   # $1 = kind, $2 = file, $3 = id | ""
     fi
     put "$1/$2" "$3" || return 1
     cmd_wire >/dev/null || true
-    if [ -z "$3" ] && [ ! -f "$ENODIA_STATE/.vpn-off" ]; then
-        # MTU of a live carrier was lowered for the road: its raise is the only writer of the due value.
+    if [ ! -f "$ENODIA_STATE/.vpn-off" ]; then
+        # THE PATH TO THE SERVER HAS JUST CHANGED — whoever runs this config is brought in line with it NOW (BE7000, the walk of
+        # 12.10.2026, both halves):
+        #  * the road is CLEARED under a live carrier — its MTU was lowered for the road, and its raise is the only writer of the
+        #    due value: a REAL re-raise. For an exit that is slot-down + slot-up: a bare `slot-up` of a live exit is the plugin's
+        #    warm path, which writes no MTU — awg3 stayed at 1188 under a config (and a panel) that said 1376;
+        #  * an exit of this config whose carrier is DOWN (the watchdog took it down: its server did not answer by the OLD path)
+        #    is asked by the new one at once — `slot-probe`, the watchdog's own return probe: the carrier comes back only when the
+        #    server answers, a silent one changes nothing and costs no flush. Without it the exit waited out the backoff its
+        #    failures on the old path had earned (4 min on the walk, up to 30) — under a road set exactly to bring it back.
+        # A live carrier that GETS a road needs nothing here: `wire` above has moved its flow and lowered its MTU.
         for _rsr in $(runners "$2"); do
             case "$_rsr" in
-                main) sh "$ENODIA_DIR/transport.sh" restart >/dev/null 2>&1 ;;
-                warm) sh "$ENODIA_DIR/transport.sh" rewarm awg >/dev/null 2>&1 ;;
-                *)    sh "$ENODIA_DIR/transport.sh" slot-up "$_rsr" >/dev/null 2>&1 ;;
+                main) [ -n "$3" ] || sh "$ENODIA_DIR/transport.sh" restart >/dev/null 2>&1 ;;
+                warm) [ -n "$3" ] || sh "$ENODIA_DIR/transport.sh" rewarm awg >/dev/null 2>&1 ;;
+                *)  if [ ! -e "/sys/class/net/awg$_rsr" ]; then
+                        sh "$ENODIA_DIR/transport.sh" slot-probe "$_rsr" >/dev/null 2>&1
+                    elif [ -z "$3" ]; then
+                        sh "$ENODIA_DIR/transport.sh" slot-down "$_rsr" >/dev/null 2>&1
+                        sh "$ENODIA_DIR/transport.sh" slot-up "$_rsr" >/dev/null 2>&1
+                    fi ;;
             esac
         done
     fi

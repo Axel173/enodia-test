@@ -35,6 +35,9 @@
 #   warp.sh status               — that JSON (`dev` first — a device config waits; state none|running|done|error, op, name, msg,
 #                                  exit, rider, port, colo; `job` last — the id of whoever started the work)
 #   warp.sh info                 — {"now":…,"items":[…]}: every WARP config and what the record knows about it
+#   warp.sh repick <cfg> own     — the same pick with the config's OWN key: for an exit that shakes hands and carries nothing
+#                                  (the watchdog's call) — no registration, no Cloudflare API; `running` — the config a job works on now;
+#                                  `holds <cfg>` — code 0 while such a pick keeps that config's exits DOWN (nobody else raises them)
 #   warp.sh prune [give]         — drop the records of configs that are gone; `give` (the config's delete calls it so) — and
 #                                  give their registrations back to Cloudflare, in the background
 #   warp.sh import <file>        — a backup's records: merged by key (the archive's line wins), then pruned
@@ -58,6 +61,7 @@ ST=/tmp/enodia-warp.json; PIDF=/tmp/enodia-warp.pid
 STARTF=/tmp/enodia-warp.start                          # the pid of the front verb that is launching a job right now (busy)
 STARTL=/tmp/enodia-warp-start.lock                     # «is a job alive?» and «the start is mine» are ONE step under it (take_start)
 REGL=/tmp/enodia-warp-reg.lock                         # one writer of the record at a time (reg_lock)
+HOLDF=/tmp/enodia-warp.hold                            # the config whose exits an own-key pick keeps DOWN right now (cmd_holds)
 DEVF=/tmp/enodia-warp-dev.conf                         # RAM, 600: the other device's config until the panel takes it (once)
 DEV_TTL=${ENODIA_WARP_DEV_TTL:-600}                    # …and no longer than this: nobody came for it — it is removed
 case "$DEV_TTL" in ''|*[!0-9]*) DEV_TTL=600 ;; esac
@@ -119,6 +123,7 @@ conf_as() {
         { print }' "$1"
 }
 xconf() { conf_as "$_wsrc" "$_wpriv" "$_wv4/32${_wv6:+, $_wv6/128}" "$1" "$_wi1"; }
+oconf() { conf_as "$_wsrc" "" "" "$1" ""; }   # …and the config AS IT IS but for the port: its own key, address and masking
 say() { put "{\"state\":\"running\",\"op\":\"$OP\",\"name\":\"$_wnm\",\"msg\":\"$1\"}"; }
 # A registration this run made and NO SAVED CONFIG OWNS YET (_wgid, _wgtok — set by reg_new): the throwaway of a probe, a new one
 # before its config is written. Every refusal goes through `fail`, so it is given back there — no branch has to remember (the
@@ -127,7 +132,12 @@ say() { put "{\"state\":\"running\",\"op\":\"$OP\",\"name\":\"$_wnm\",\"msg\":\"
 _wgid=""; _wgtok=""
 give_back() { reg_del "$_wgid" "$_wgtok"; _wgid=""; _wgtok=""; }
 owned() { _wgid=""; _wgtok=""; }
-fail() { give_back; put "{\"state\":\"error\",\"op\":\"$OP\",\"name\":\"$_wnm\",\"msg\":\"$1\"}"; exit 1; }
+# A REFUSAL THAT IS NOT AN ANSWER (`_wsoon=1` before `fail` → `"soon":true` in the status): something passing cut the work short
+# — another config probe held the probe's lock, the probe's own interface did not come up (a loaded router, a rule that did not
+# go in: it says nothing of the ISP). Whoever repeats the work by itself (the watchdog's re-pick) reads it: such a work is
+# repeated after the SHORT pause, every other refusal is an answer that half an hour would not change.
+_wsoon=""
+fail() { give_back; put "{\"state\":\"error\",\"op\":\"$OP\",\"name\":\"$_wnm\",\"msg\":\"$1\"${_wsoon:+,\"soon\":true}}"; exit 1; }
 now_s() { if clock_sane; then date +%s 2>/dev/null; else echo 0; fi; }
 
 # ---- what a config says about itself -------------------------------------------------------------------------------------------
@@ -361,8 +371,8 @@ pick() {
             0) if printf '%s\n' "$_wtr" | grep -qx 'warp=on'; then
                    _wport=$_wp; _wcolo=$(printf '%s\n' "$_wtr" | sed -n 's/^colo=\([A-Z][A-Z][A-Z]\)$/\1/p' | head -n 1); break
                fi ;;
-            4) fail "не поднялся пробный интерфейс AmneziaWG — проверьте его в «Компонентах»" ;;
-            5) fail "сейчас идёт другая проба конфига — повторите через минуту" ;;
+            4) _wsoon=1; fail "не поднялся пробный интерфейс AmneziaWG — проверьте его в «Компонентах»" ;;
+            5) _wsoon=1; fail "сейчас идёт другая проба конфига — повторите через минуту" ;;
         esac
         _wcut="$_wcut${_wcut:+,}$_wp"
     done
@@ -438,7 +448,7 @@ conf_save() {
 # (and a masking copy whose job never started) is a killed job's leftover: nobody else would ever remove it.
 work_dir() {
     W=/tmp/enodia-warp.work.$$
-    rm -rf /tmp/enodia-warp.work.* /tmp/enodia-warp-mask.* /tmp/enodia-warp-del.* 2>/dev/null
+    rm -rf /tmp/enodia-warp.work.* /tmp/enodia-warp-mask.* /tmp/enodia-warp-del.* "$HOLDF" 2>/dev/null
     ( umask 077; mkdir "$W" ) || fail "нет места для работы"
     trap 'rm -rf "$W" "$PIDF"' EXIT
     trap 'exit 1' INT TERM HUP PIPE
@@ -556,7 +566,87 @@ cmd_run() {   # $1 = rider (optional)
 # the config's own port FIRST: it still carries ⇒ the config and its exit are not touched.
 cmd_repick() { target "$1" || { echo "[warp] $_wtm"; return 1; }; need_awg || return 1
     take_start || { echo "$BUSY_MSG"; return 1; }
-    OP=repick; start run-repick "$1"; echo "[warp] подбираю порт — до двух минут"; }
+    OP=repick
+    if [ "$2" = own ]; then start run-repick-own "$1"; else start run-repick "$1"; fi
+    echo "[warp] подбираю порт — до двух минут"; }
+# THE PICK WITH THE CONFIG'S OWN KEY — for an exit that SHAKES HANDS AND CARRIES NOTHING (the watchdog's call, `repick <cfg>
+# own`). WHY (BE7000, 12.10.2026, the walk of 1.2.0-dev.8): the throwaway registration needs Cloudflare's API, and from an ISP
+# that filters WARP the API answers only THROUGH A TUNNEL (through awg0/awg4 — 0.3 s, through WAN — a timeout). A silent WARP
+# road is exactly when there is none: the main tunnel rides that road and stands in FAILOPEN — the job answered «Cloudflare не
+# ответил», and the exit stayed silent for the six hours till the next attempt. The reason for the throwaway — «the live exit
+# is not touched», one session per key — does not hold for an exit that carries nothing: its carrier goes DOWN for the pick
+# (one session per key is kept — the probe's interface is then the only one on the key), the ports are asked by the config's
+# own text, a port that passes is written, and the exit is raised again WHATEVER the pick said (_wodn, the EXIT trap: a
+# refusal or a kill in the middle must not leave it down). The panel's button stays on the throwaway: there the exit may well
+# be carrying, and the person did not ask to stop it.
+# While the job runs the watchdog must keep its hands off the exits of this config (their carriers are gone on purpose, and
+# its return probe would raise a second session on the key) — it asks `running`.
+# …AND SO MUST EVERYBODY ELSE WHO RAISES AN EXIT (review s.128): saving a group or a geo rule, the watchdog's rule repair,
+# «Включить VPN», a component's restart, the panel's own verbs — each ends in `slot-up`, and an exit raised on the old port in the
+# middle of the pick takes the server's session from the probe: a port that passes then reads «cut». The pick says what it holds
+# (HOLDF, from before the exits go down till right before they come back), and the ONE place every raise goes through — the
+# plugin's slot-up and slot-probe — asks `holds` and refuses. A hold is a LIVE job's: a killed one holds nothing.
+# THE EXITS COME BACK BY ONE RAISE (own_back): they are down already, and the registry's «set the config» (reup_exits) would take
+# them down once more — each of those ends in a flush of the whole home's connections. A pick that found nothing must cost what
+# it has to: the exit down, the exit up.
+own_back() {
+    [ "$_wodn" = 1 ] || return 0
+    _wodn=0; rm -f "$HOLDF"; _wrf=""
+    [ ! -f "$ENODIA_STATE/.vpn-off" ] || return 0      # the VPN was switched off meanwhile: nothing is raised, as it should be
+    for _wx in $(exits_of "$_wnm"); do
+        sh "$ENODIA_DIR/transport.sh" slot-up "$_wx" >/dev/null 2>&1 || _wrf="$_wrf${_wrf:+, }№$_wx"
+    done
+}
+cmd_run_repick_own() {
+    OP=repick; target "$1" || fail "$_wtm"
+    work_dir
+    _wodn=1
+    trap 'own_back; rm -rf "$W" "$PIDF"' EXIT
+    say "снимаю выход на время подбора — он всё равно не везёт"
+    ( umask 077; set -C; printf '%s\n' "$_wnm" > "$HOLDF" ) 2>/dev/null   # noclobber: the name lives in the shared /tmp
+    for _wx in $(exits_of "$_wnm"); do sh "$ENODIA_DIR/transport.sh" slot-down "$_wx" >/dev/null 2>&1; done
+    MK=oconf; pick "$_wcur"
+    # nothing passes: the exits first (who did not come up is named in the refusal), then the refusal
+    [ -n "$_wport" ] || { own_back; fail "провайдер режет WARP на всех портах ($(echo "$_wcut" | sed 's/,/, /g')) — конфиг не изменён$(reup_note)"; }
+    _wo=$(printf '%s' "$_wold" | cut -f2); _wi=$(printf '%s' "$_wold" | cut -f9)
+    set -- "$_wopub" "${_wo:-0}" "$(printf '%s' "$_wold" | cut -f3)" "$(printf '%s' "$_wold" | cut -f4)" "$(printf '%s' "$_wold" | cut -f5)" \
+        "$_wport" "$_wcut" "$_wcolo" "${_wi:--}" "$(now_s)"
+    if [ "$_wport" = "$_wcur" ]; then
+        still_there
+        reg_put "$@"
+        own_back
+        put "{\"state\":\"done\",\"op\":\"repick\",\"name\":\"$_wnm\",\"port\":\"$_wport\",\"colo\":\"$_wcolo\",\"msg\":\"порт $_wport по-прежнему проходит — конфиг «$_wnm» не менялся$(reup_note)\"}"; exit 0
+    fi
+    conf_new "$_wsrc" "" "" "$_wport" ""
+    conf_write
+    reg_put "$@"
+    say "перезапускаю выход"
+    # AN EXIT THAT IS UP RIGHT NOW (raised a moment before the hold stood; the hold could not be written; an exit moved to this
+    # config meanwhile) would go through the plugin's WARM path in own_back — and keep the OLD port under a config and a status
+    # that say the new one, till the next pick. Down first; an exit that is down as it should be costs nothing here.
+    for _wx in $(exits_of "$_wnm"); do
+        _wxi=$(sh "$ENODIA_DIR/transport.sh" slot-iface "$_wx" 2>/dev/null | head -n 1 | tr -d ' \t\r')
+        [ -n "$_wxi" ] && [ -e "/sys/class/net/$_wxi" ] && sh "$ENODIA_DIR/transport.sh" slot-down "$_wx" >/dev/null 2>&1
+    done
+    own_back         # by the new text; a refusal above (the config deleted, no room for it) brings them back by the old one — the trap
+    put "{\"state\":\"done\",\"op\":\"repick\",\"name\":\"$_wnm\",\"port\":\"$_wport\",\"colo\":\"$_wcolo\",\"msg\":\"«$_wnm»: порт $_wcur провайдер режет — теперь $_wport$(reup_note)\"}"
+    exit 0
+}
+# Does an own-key pick keep the exits of config $1 down right now → 0. The answer of a LIVE job only: the name it wrote and its
+# own pid alive — a job killed in the middle left the name behind and holds nothing (the watchdog's return probe takes over).
+cmd_holds() {
+    [ -n "$1" ] && [ -f "$HOLDF" ] || return 1
+    [ "$(head -n 1 "$HOLDF" 2>/dev/null | tr -d '\r\n')" = "$1" ] || return 1
+    job_alive "$PIDF"
+}
+# The config a job is working on right now (its name, code 0) — or nothing, code 1. The watchdog asks it once per sweep, before
+# it judges that config's exits.
+cmd_running() {
+    busy || return 1
+    _wrn=$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' "$ST" 2>/dev/null | head -n 1)
+    [ -n "$_wrn" ] || return 1
+    printf '%s\n' "$_wrn"
+}
 cmd_run_repick() {
     OP=repick; target "$1" || fail "$_wtm"
     work_dir
@@ -713,7 +803,7 @@ cmd_status() {
             if ! busy; then
                 _wss=$(cat "$ST" 2>/dev/null)
                 case "$_wss" in '{"state":"running",'*)
-                    _wss=$(printf '%s\n' "$_wss" | sed 's/^{"state":"running",/{"state":"error",/; s/"msg":"[^"]*"/"msg":"работа прервалась — запустите её снова"/') ;;
+                    _wss=$(printf '%s\n' "$_wss" | sed 's/^{"state":"running",/{"state":"error",/; s/"msg":"[^"]*"/"msg":"работа прервалась — запустите её снова","soon":true/') ;;
                 esac
             fi ;;
     esac
@@ -778,7 +868,9 @@ cmd_colo() {
 
 case "$1" in
     get)         cmd_get "$2" ;;
-    repick)      cmd_repick "$2" ;;
+    repick)      cmd_repick "$2" "$3" ;;
+    running)     cmd_running ;;
+    holds)       cmd_holds "$2" ;;
     reget)       cmd_reget "$2" ;;
     mask)        cmd_mask "$2" "$3" ;;
     device)      cmd_device ;;
@@ -790,6 +882,7 @@ case "$1" in
     import)      cmd_import "$2" ;;
     run)         cmd_run "$2" ;;
     run-repick)  cmd_run_repick "$2" ;;
+    run-repick-own) cmd_run_repick_own "$2" ;;
     run-reget)   cmd_run_reget "$2" ;;
     run-mask)    cmd_run_mask "$2" "$3" ;;
     run-device)  cmd_run_device ;;

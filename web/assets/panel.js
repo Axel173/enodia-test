@@ -11225,6 +11225,7 @@
     "роутер не ответил — конфиг для устройства не запрошен":"the router didn't answer — the device config was not requested",
     "роутер не отвечает — работа с WARP идёт на нём сама: обновите экран позже":"the router does not answer — the WARP job goes on there by itself: refresh the screen later",
     "перезапускаю выход":"restarting the exit",
+    "снимаю выход на время подбора — он всё равно не везёт":"taking the exit down for the pick — it carries nothing anyway",
     "не удалось собрать конфиг":"could not build the config",
     "конфиг уже забран или не получен — получите новый":"the config is already taken or was not obtained — get a new one",
     "имена WARP … WARP-9 заняты — удалите ненужный конфиг":"the names WARP … WARP-9 are taken — delete a config you don't need",
@@ -11396,6 +11397,7 @@
     [/^Получить «([^«»]*)» заново\? Ключ станет новым, прежний перестанет работать — у всех, кто пользовался этим конфигом, и в бэкапе, снятом раньше\. Выход перезапустится, дороги через него останутся\.$/,"Get «$1» anew? The key becomes new, the old one stops working — for everyone who used this config, and in a backup taken earlier. The exit restarts, the roads through it stay."],
     [/^спрашиваю WARP с этой маскировкой \(порт (\d+)\)$/,"asking WARP with this masking (port $1)"],
     [/^порт (\d+) по-прежнему проходит — конфиг «([^«»]*)» не менялся$/,"port $1 still passes — the config «$2» was not changed"],
+    [/^порт (\d+) по-прежнему проходит — конфиг «([^«»]*)» не менялся; выход ([№0-9, ]+) не поднялся — откройте его в «Дополнительных выходах»$/,"port $1 still passes — the config «$2» was not changed; exit $3 did not come up — open it in «Additional exits»"],
     [/^«([^«»]*)»: порт (\d+) провайдер режет — теперь (\d+)$/,"«$1»: the ISP cuts port $2 — now $3"],
     [/^«([^«»]*)»: порт (\d+) провайдер режет — теперь (\d+); выход ([№0-9, ]+) не поднялся — откройте его в «Дополнительных выходах»$/,"«$1»: the ISP cuts port $2 — now $3; exit $4 did not come up — open it in «Additional exits»"],
     [/^«([^«»]*)» получен заново: ключ новый, порт (\d+); выход ([№0-9, ]+) не поднялся — откройте его в «Дополнительных выходах»$/,"«$1» obtained anew: a new key, port $2; exit $3 did not come up — open it in «Additional exits»"],
@@ -11404,6 +11406,7 @@
     // …the exits' numbers of the four rules above came through as the router wrote them («№2, №5»): English writes «#».
     [/ exit ((?:№[2-7](?:, )?)+) did not come up — /,function(m, a){ return ' exit '+a.replace(/№/g, '#')+' did not come up — '; }],
     [/^провайдер режет WARP на всех портах \(([0-9, ]*)\) — конфиг не изменён$/,"the ISP cuts WARP on every port ($1) — the config is not changed"],
+    [/^провайдер режет WARP на всех портах \(([0-9, ]*)\) — конфиг не изменён; выход ([№0-9, ]+) не поднялся — откройте его в «Дополнительных выходах»$/,"the ISP cuts WARP on every port ($1) — the config is not changed; exit $2 did not come up — open it in «Additional exits»"],
     [/^«([^«»]*)» получен заново: ключ новый, порт (\d+)$/,"«$1» obtained anew: a new key, port $2"],
     [/^Cloudflare выдал WARP, но провайдер режет его на всех портах \(([0-9, ]*)\) — конфиг «([^«»]*)» не изменён$/,"Cloudflare issued WARP, but the ISP cuts it on every port ($1) — the config «$2» is not changed"],
     [/^Cloudflare выдал WARP, но провайдер режет его на всех портах \(([0-9, ]*)\) — конфиг не собран$/,"Cloudflare issued WARP, but the ISP cuts it on every port ($1) — no config was built"],

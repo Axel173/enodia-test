@@ -11,7 +11,8 @@
 #  без параметров  -> сервер АКТИВНОГО транспорта: {transport,server,ms,method} (для шапки).
 #  ?all=1          -> ВСЕ конфиги всех транспортов: {configs:[{transport,name,host,port,
 #                     proto,active,ms,method,cdn,blk,tms,tmt,ncmp,via,vup,vms,vmt}]} (для окна «Серверы и конфиги»):
-#                     blk/tms/tmt — напрямую молчит, через туннель отвечает (адрес заблокирован провайдером);
+#                     blk/tms/tmt — напрямую молчит (и при повторе тем же способом — direct_again), через туннель отвечает
+#                     (адрес заблокирован провайдером);
 #                     ncmp — напрямую молчит, а сравнить не с чем: живой несущей, ведущей к другому серверу, нет;
 #                     via/vms/vmt — сервер на дороге (road.sh) и его число через неё (tmt/vmt — чем ответил, как method).
 # Проба идёт НАПРЯМУЮ (endpoint VPS в main-таблице, не через туннель) — честная задержка.
@@ -149,6 +150,26 @@ probe_if() {   # $1 = iface, $2 = host, $3 = port, $4 = proto -> VMS (мс ил�
 	VMS=$(awk -v t="$im" 'BEGIN{ if(t+0>0) printf "%.0f", t }'); [ -n "$VMS" ] && VMT=icmp
 	return 0
 }
+# «BLOCKED» IS SAID ONLY OF A SERVER THAT KEPT SILENT DIRECTLY TWICE (BE7000, the walk of 12.10.2026). The direct pass gives each
+# port ONE second — one SYN: lost on the way, it reads «silent», the tunnel then answers, and the screen said «адрес заблокирован
+# провайдером» about a server that answered directly a minute before and a minute after (TCP :22 in 31–64 ms; the person: «вроде
+# же не заблокирован?»). One failed pass is not a cause. So once the tunnel HAS answered, the direct path is asked again — by the
+# very way the tunnel answered (that port, or ICMP: it is known to be open) and with room for a retransmit: BLK_AGAIN_T seconds.
+# It answers — the server is reachable directly: its number, no verdict. Costs nothing unless the verdict is about to be said.
+BLK_AGAIN_T=3
+direct_again() {   # $1 = host, $2 = its own port, $3 = how the tunnel answered (VMT) -> MS, METHOD (+CDN) when it answers directly after all
+	case "$3" in
+		tcp)   r=$(tcp_ms "$1" "$2" "$BLK_AGAIN_T") ;;
+		net:*) r=$(tcp_ms "$1" "${3#net:}" "$BLK_AGAIN_T") ;;
+		icmp)  im=$(ping -c2 -W"$BLK_AGAIN_T" ${WAN:+-I $WAN} "$1" 2>/dev/null | sed -n 's/.*time=\([0-9.][0-9.]*\).*/\1/p' | head -1)
+		       MS=$(awk -v t="$im" 'BEGIN{ if(t+0>0) printf "%.0f", t }'); [ -n "$MS" ] && METHOD=icmp
+		       return 0 ;;
+		*)     return 0 ;;
+	esac
+	MS=${r%%|*}
+	[ -n "$MS" ] && { METHOD=$3; TCP_IP=${r#*|}; is_cdn "$TCP_IP" && CDN=1; }
+	return 0
+}
 # LIVE CARRIERS TO COMPARE THROUGH — «iface address» per line: the main one (default in table 1000 —
 # ip-lib.sh::carrier_iface) and every exit that is up (default in its table 100N). None — nothing to compare with: there is no
 # «blocked» verdict, and the answer says so (`ncmp`) — the panel then offers the road instead of a bare «не отвечает».
@@ -259,7 +280,13 @@ if [ "$QUERY_STRING" = "all=1" ] || [ "${QUERY_STRING#*all=1}" != "$QUERY_STRING
 			if [ "$_own" = 1 ] && main_carries; then :   # reachable through its own tunnel — nothing is compared, nothing is claimed
 			else
 				_ti=$(tunnel_for "$(clean "$3")" "$_own")
-				if [ -n "$_ti" ]; then probe_if "$_ti" "$3" "$4" "$5"; [ -n "$VMS" ] && { blk=true; tmj=$VMS; tmt=$VMT; }
+				if [ -n "$_ti" ]; then
+					probe_if "$_ti" "$3" "$4" "$5"
+					# the tunnel answered — the direct path is asked once more before the verdict (direct_again)
+					[ -n "$VMS" ] && direct_again "$3" "$4" "$VMT"
+					if [ -n "$MS" ]; then msj=$MS
+					else [ -n "$VMS" ] && { blk=true; tmj=$VMS; tmt=$VMT; }
+					fi
 				else ncmp=true; fi
 			fi
 		fi

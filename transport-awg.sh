@@ -82,6 +82,7 @@ command -v age_since >/dev/null 2>&1 || age_since() {
     case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
     [ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
 }
+command -v uptime_s >/dev/null 2>&1 || uptime_s() { _cl_u=$(awk '{print int($1)}' /proc/uptime 2>/dev/null); case "$_cl_u" in ''|*[!0-9]*) _cl_u=999999999 ;; esac; echo "$_cl_u"; }
 # «VPN выключен вручную — несущую не берёт никто» (daemon-lib.sh: carrier_barred/carrier_run, разбор там). Нет библиотеки —
 # шимы дают прежний путь байт-в-байт.
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
@@ -319,6 +320,20 @@ awg_kill_daemon() {   # $1 = iface
     done
     rm -f "/var/run/amneziawg/$_if.sock" "/var/run/wireguard/$_if.sock" 2>/dev/null
 }
+# HOW OLD THIS INTERFACE'S DAEMON IS, seconds: its start in /proc/<pid>/stat (field 22, hundredths of a second since boot)
+# against the uptime. A kernel fact — no mark of ours to write, to lose, or to outlive the daemon; the clock's jumps do not touch
+# it. Nothing printed, code 1 — no daemon, or the line is not the form we know. Asked by the watchdog (`slot-age`) before it
+# judges a carrier that has never shaken hands: one that is seconds old has not been asked yet.
+awg_daemon_age() {   # $1 = iface
+    _dap=$(awg_daemon_pids "$1" | head -n 1)
+    [ -n "$_dap" ] || return 1
+    # the command's name stands in brackets and may hold spaces: the fields are counted after the LAST bracket (22 − 2 = 20)
+    _das=$(sed 's/^.*) //' "/proc/$_dap/stat" 2>/dev/null | awk 'NR == 1 && $20 ~ /^[0-9]+$/ { print int($20 / 100) }')
+    case "$_das" in ''|*[!0-9]*) return 1 ;; esac
+    _dau=$(uptime_s)
+    [ "$_dau" -ge "$_das" ] 2>/dev/null || return 1
+    echo $((_dau - _das))
+}
 
 # Дефолтный MTU доп-выхода, когда строки MTU= в конфиге нет (у нативных .conf Amnezia её нет
 # НИКОГДА). Зеркало AWG_MTU_DEFAULT из awg_setup.sh — полный разбор «почему 1376, а не 1420»
@@ -500,11 +515,22 @@ slot_wait_hs() {   # $1 = iface -> 0 — the handshake is there
     return 1
 }
 
+# A WARP JOB KEEPS THIS CONFIG'S EXITS DOWN ON PURPOSE (warp.sh `repick <cfg> own`: the ports are asked with the config's own
+# key, and the server holds ONE session per key) → 0. Every raise of an exit's carrier ends here — the watchdog's sweep and return
+# probe, `slots-up` of a saved group or geo rule, of the rule repair, of «Включить VPN», of a component's restart, the panel's
+# verbs — so here is where it is refused: an exit raised on the old port in the middle of the pick takes the session from the
+# probe, and a port that passes reads «cut» (review s.128). The owner answers (`holds`: the name it wrote AND its job alive);
+# the pick brings the exits back itself, having dropped the hold first — its own raise is not refused.
+slot_held() {   # $1 = cfg
+    [ -f "$ENODIA_DIR/warp.sh" ] || return 1
+    sh "$ENODIA_DIR/warp.sh" holds "$1" >/dev/null 2>&1
+}
 # Контракт слота (transport.sh _slot_dispatch): slot-up <id> <cfg> / slot-down <id>.
 cmd_slot_up() {   # $1 = id, $2 = cfg
     _id="$1"; _cfg="$2"
     case "$_id" in [2-7]) ;; *) log "слот: id = 2..7"; return 1 ;; esac
     [ -n "$_cfg" ] && [ "$_cfg" != '-' ] || { log "слот №$_id: awg-выходу нужен конфиг (configs/<имя>.conf)"; return 1; }
+    slot_held "$_cfg" && { log "слот №$_id: не поднимаю — на его конфиге идёт подбор порта WARP, выход вернёт сам подбор"; return 1; }
     # КЛЮЧ ЗАНЯТ — НЕ ПОДНИМАЕМ (последний рубеж; форма отказывает раньше — slots.sh add/set/enable). Сюда доходит то, что мимо
     # формы: импорт бэкапа с чужого роутера, ручная правка `.slots`, перезалитый файл конфига. Поднятый выход на чужом ключе
     # выбивал бы сессию у основного канала или соседа и гас бы сам. Судим по ФАКТУ (`live`: сессию занимает живой awg0, живой
@@ -570,6 +596,8 @@ cmd_slot_probe() {   # $1 = id, $2 = cfg
     _if=$(slot_iface "$_id")
     # Несущая уже есть — пробовать нечего: её поднял кто-то другой (heal, панель), судить её будет следующий тик по рукопожатию.
     ip link show "$_if" >/dev/null 2>&1 && return 5
+    # A WARP pick holds the config (slot_held): no probe either, and no verdict — the same code as «somebody else has it».
+    slot_held "$_cfg" && { log "слот №$_id: пробу возврата не делаю — на его конфиге идёт подбор порта WARP"; return 5; }
     if [ -f "$ENODIA_DIR/slots.sh" ] && _kb=$(sh "$ENODIA_DIR/slots.sh" key-holder "$_cfg" "$_id" live 2>/dev/null); then
         log "слот №$_id: пробу возврата не делаю — $_kb"
         return 3
@@ -855,8 +883,9 @@ case "$1" in
     # интерфейса, и третьей копии формулы «id -> awgN» в проекте быть не должно — она уже
     # живёт в двух местах (здесь и slot_tun в slot-tun-lib.sh), и разъехались бы они молча.
     slot-iface) slot_iface "$2" ;;
+    slot-age)   awg_daemon_age "$(slot_iface "$2")"; exit $? ;;   # how old the exit's daemon is, s (nothing — no daemon)
     conf-gen)   shift; cmd_conf_gen "$@" ;;   # поколение протокола конфигов (разбор у cmd_conf_gen)
     # The config probe on a throwaway interface takes no carrier (its own awgt0, no route, no marks) — hence no carrier_run.
     try)        cmd_try "$2" "$3" "$4"; exit $? ;;
-    *) echo "usage: $0 up|down|cold|rewarm|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-probe <id> <cfg>|slot-iface <id>|conf-gen <файл>…|try <конфиг> <URL> [с]"; exit 2 ;;
+    *) echo "usage: $0 up|down|cold|rewarm|status|health|failover|dns|slot-up <id> <cfg>|slot-down <id>|slot-probe <id> <cfg>|slot-iface <id>|slot-age <id>|conf-gen <файл>…|try <конфиг> <URL> [с]"; exit 2 ;;
 esac
