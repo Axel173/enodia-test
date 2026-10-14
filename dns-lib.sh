@@ -286,9 +286,13 @@ is_ipv4() { echo "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
 # has no DNS at all (the tunnel resolver is the single upstream). One reader also keeps the route honest: whoever adds
 # `<resolver>/32 dev awg0` and whoever removes it must name the same address, else the route of a public resolver stays behind
 # in direct mode. IPv6 values are skipped — the consumers route the resolver as an IPv4 host.
+# «AN ADDRESS» IS FOUR OCTETS OF 0..255, not four groups of digits: `999.1.1.1` passed for one, went to dnsmasq as `server=`
+# and was refused there — the very outcome this reader exists to prevent (review s.133). EVERY `DNS` line is read, in any letter
+# case (wg-quick takes several lines and does not look at the case): a config whose first line held only a search domain, or
+# spelled the key `dns`, named a resolver and was told it names none.
 conf_dns() {
-    grep -E '^[[:space:]]*DNS[[:space:]]*=' "$1" 2>/dev/null | head -n 1 | sed 's/^[^=]*=//' | tr -d ' \t\r' | tr ',' '\n' \
-        | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | head -n 1
+    grep -iE '^[[:space:]]*DNS[[:space:]]*=' "$1" 2>/dev/null | sed 's/^[^=]*=//' | tr -d ' \t\r' | tr ',' '\n' \
+        | grep -E '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$' | head -n 1
 }
 
 # ============================================================

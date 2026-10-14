@@ -1793,6 +1793,12 @@
     var h=(held && held[name]) ? String(held[name]).split(',').filter(function(x){ return /^s\d$/.test(x); }) : [];
     return h[0]||'';
   }
+  // ВЫХОДЫ, ЧЬЯ СТРОКА РЕЕСТРА НАЗЫВАЕТ ЭТОТ КОНФИГ (номера; реестр — `slotAll`). Такой конфиг роутер не удалит (cgi-bin/action
+  // held_refuse: выход шёл бы дальше по рабочей копии и не поднялся бы после перезапуска) — у любого транспорта. Один ответ на
+  // строки «Серверов» и экрана подписки (у них нет «✕» и пункта «Удалить конфиг») и на экран сервера (там — причина и дверь к
+  // выходу): строка рисовала крестик, на который роутер отвечал отказом (обход на железе 13.10.2026, выход №5 на сервере подписки).
+  // Не то же, что `awg.held`: там КЛЮЧ (его может держать и другой конфиг с тем же ключом), здесь — сам файл.
+  function cfgExits(tpt, name){ return slotAll.filter(function(s){ return s.transport===tpt && s.config===name; }).map(function(s){ return s.id; }); }
   // ДОРОГА К СЕРВЕРУ И WARP (road.sh, warp.sh) — панель только рисует ответы роутера: карта дорог (`roads` из /cgi-bin/list:
   // {"awg/<файл>":"<номер выхода>"}), какие конфиги — WARP (`warp`: {"<файл>":1|0}, 1 — с маскировкой I1; узнаёт роутер по ключу
   // сервера Cloudflare) и реестр выходов (`slotAll` из section=slots: у выхода — пассажиры `riders` и признак `warp`). Один разбор
@@ -6645,7 +6651,7 @@
   // родителю-экрану, «назад» браузера), и closeModal там не зовётся: подбор стратегии применял бы
   // стратегии на выходе невидимо, без кнопки «Стоп» (ревью шага 3a, круг 1). Поэтому зовут двое — снятие
   // экрана и показ на НОВОМ адресе в `navShow`; перерисовку того же экрана и шаг без адреса поверх не трогает.
-  function screenStop(){ if(dsRun) dsAbort=true; if(testSweepRun) testSweepAbort=true; if(speedSweepRun) speedSweepAbort=true; if(siTimer){ clearInterval(siTimer); siTimer=null; } if(_rmTimer){ clearInterval(_rmTimer); _rmTimer=null; } if(updT){ clearTimeout(updT); updT=null; } if(supTimer){ clearInterval(supTimer); supTimer=null; } wpDevForget(); }
+  function screenStop(){ if(dsRun) dsAbort=true; if(testSweepRun) testSweepAbort=true; if(speedSweepRun) speedSweepAbort=true; if(siTimer){ clearInterval(siTimer); siTimer=null; } if(_rmTimer){ clearInterval(_rmTimer); _rmTimer=null; } if(updT){ clearTimeout(updT); updT=null; } if(supTimer){ clearInterval(supTimer); supTimer=null; } wpDevForget(); srvExpForget(); }
   function closeModal(){ dwGen++; screenStop(); document.getElementById('modal').classList.remove('open'); setTimeout(ovKick, 0); }
   // `closeModal` — только СНЯТИЕ экрана (фоновые прогоны, класс `open`), без адреса. Зовёт его ровно
   // один владелец — `leaveScreen` при переходе в раздел (следит C103): закрой экран кто-то ещё мимо
@@ -6843,7 +6849,10 @@
     if(h>=0){ try{remark=decodeURIComponent(s.substring(h+1));}catch(e){remark=s.substring(h+1);} s=s.substring(0,h); }
     var q='', qi=s.indexOf('?'); if(qi>=0){ q=s.substring(qi+1); s=s.substring(0,qi); }
     var at=s.indexOf('@'); if(at<0) return null;
-    var uuid=s.substring(0,at), hp=hostPort(s.substring(at+1)); if(!uuid || !hp) return null;
+    // The id is percent-decoded — as the router's reader does (subs-update.sh parse_link) and as an app does: `a%41b` is «aAb».
+    var uuid, hp=hostPort(s.substring(at+1));
+    try{ uuid=decodeURIComponent(s.substring(0,at)); }catch(e){ uuid=s.substring(0,at); }
+    if(!uuid || !hp) return null;
     var p={proto:'vless',uuid:uuid,host:hp.host,port:hp.port,remark:remark};
     applyXrayQuery(q, p);
     return p;
@@ -6959,17 +6968,21 @@
   // параметров p (совместимых с xrayJson). Из каждого конфига берём основной vless-outbound
   // (тег 'proxy…', иначе первый vless), имя — из 'remarks'. Обратная карта к xrayJson
   // (DRY — заливка не различает источник; зеркало _xray_sub_to_params из enodia.py).
+  // The outbound that IS the server in a ready xray config: tagged 'proxy…', else the first of the four protocols. One answer for
+  // the form (xraySubToParams) and for «what the link does not carry» (xrayLoss) — two pickers would name different outbounds.
+  function xrayMainOb(c){
+    var PROTOS={vless:1,vmess:1,trojan:1,shadowsocks:1};
+    var obs=((c && c.outbounds)||[]).filter(function(o){return o && PROTOS[o.protocol];}), i;
+    for(i=0;i<obs.length;i++){ if(String(obs[i].tag||'').indexOf('proxy')===0) return obs[i]; }
+    return obs.length ? obs[0] : null;
+  }
   function xraySubToParams(doc){
     var configs = Object.prototype.toString.call(doc)==='[object Array]' ? doc : [doc];
     var out=[];
     configs.forEach(function(c){
       if(!c || typeof c!=='object') return;
-      var PROTOS={vless:1,vmess:1,trojan:1,shadowsocks:1};
-      var obs=(c.outbounds||[]).filter(function(o){return o && PROTOS[o.protocol];});
-      if(!obs.length) return;
-      var vob=null, i;
-      for(i=0;i<obs.length;i++){ if(String(obs[i].tag||'').indexOf('proxy')===0){ vob=obs[i]; break; } }
-      if(!vob) vob=obs[0];
+      var vob=xrayMainOb(c);
+      if(!vob) return;
       var proto=vob.protocol, ss=vob.streamSettings||{};
       var p={proto:proto, remark:c.remarks||vob.tag||'', type:ss.network||'tcp', security:ss.security||'none'};
       if(proto==='vless' || proto==='vmess'){
@@ -7037,6 +7050,17 @@
   // Хост кавычек не требует: hostPort матчит его регуляркой (точка не берёт перевод
   // строки), порт — только цифры.
   function hy2Quote(v){ return '"'+String(v).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\r/g,'\\r').replace(/\n/g,'\\n')+'"'; }
+  // The INVERSE of hy2Quote, not «strip the quotes»: a password with a quote or a backslash came back into the form as `a\"b` and
+  // «Сохранить» wrote it into the config already spoiled. The quotes are put by our generator — taken off by the code that knows
+  // its rules. One copy: the editor's form (hy2ToParams) and the export card (hy2Loss).
+  // …and a value ENDS WHERE ITS COMMENT BEGINS: `auth: secret  # my password` is «secret» to Hysteria, and read whole it went
+  // into the form (and from there, quoted, back into the file) and into the exported link (review s.133). After a quoted value
+  // a comment may follow the closing quote; in a plain one it starts at « #».
+  function hy2Unq(v){ v=String(v).trim();
+    var m;
+    if(v.charAt(0)==='"'){ m=/^"((?:[^"\\]|\\.)*)"[ \t]*(?:#.*)?$/.exec(v); if(m) return m[1].replace(/\\([\\"nr])/g,function(_,c){ return c==='n'?'\n':(c==='r'?'\r':c); }); return v; }
+    if(v.charAt(0)==="'"){ m=/^'((?:[^']|'')*)'[ \t]*(?:#.*)?$/.exec(v); if(m) return m[1].replace(/''/g,"'"); return v; }
+    return v.replace(/[ \t]+#.*$/,''); }
   function hy2Yaml(p){
     var sni=p.sni||p.host, L=[];
     var hostp=(String(p.host).indexOf(':')>=0)?('['+p.host+']'):p.host;   // IPv6 → в скобки
@@ -7046,6 +7070,206 @@
     if(p.obfs==='salamander' && p.obfsPass){ L.push('obfs:'); L.push('  type: salamander'); L.push('  salamander:'); L.push('    password: '+hy2Quote(p.obfsPass)); }
     L.push('socks5:'); L.push('  listen: 127.0.0.1:10808');
     return L.join('\n')+'\n';
+  }
+  // ---- «ЭКСПОРТ КОНФИГА»: p → the link an app or another router reads. Each builder is the INVERSE of its parser above and of
+  //      nothing wider: a field the parser does not read is not written. So the export card's two questions are answered by the
+  //      code, not by a list kept by hand: «is there a link at all» — the link read back gives the same config (xrayLinkOf,
+  //      hy2LinkOf); «what it does not carry» — the stored config against the one the standard fields build (xrayLoss, hy2Loss).
+  //      Held by the round trip of dev/link-parity-test.js: every sample link → p → link → BOTH readers (this file's and
+  //      subs-update.sh's) → the same config.
+  // A lone surrogate (JSON allows "\ud83c") makes encodeURIComponent throw — it is dropped, as dispCap drops it.
+  function linkTxt(v){ return (String(v==null?'':v).match(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[^\uD800-\uDFFF]/g)||[]).join(''); }
+  function linkEnc(v){ return encodeURIComponent(linkTxt(v)); }
+  function linkHost(h){ h=String(h||''); return (h.indexOf(':')>=0) ? '['+h+']' : h; }
+  // The query of vless:// and trojan:// — applyXrayQuery read backwards; an empty field is left out.
+  function xrayQuery(p, first){
+    var q=first.slice();
+    [['sni','sni'],['fp','fp'],['pbk','pbk'],['sid','sid'],['spx','spx'],['alpn','alpn'],['path','path'],['host','hostHeader'],
+     ['serviceName','serviceName'],['mode','mode'],['flow','flow']].forEach(function(m){
+      var v=p[m[1]]; if(v!=null && String(v)!=='') q.push(m[0]+'='+linkEnc(v)); });
+    return q.join('&');
+  }
+  function xrayLink(p, remark){
+    if(!p || !p.host || !p.port) return '';
+    var pr=p.proto||'vless', tail=linkHost(p.host)+':'+p.port, rm=remark ? '#'+linkEnc(remark) : '';
+    // The transport by the name links use TODAY: splithttp is xhttp (xrayJson rewrites it the same way), and HTTP/2 is «http»
+    // in the query of vless:// and trojan:// while the v2rayN JSON of vmess:// keeps «h2».
+    var net=p.type||'tcp'; if(net==='splithttp') net='xhttp';
+    var qnet=(net==='h2') ? 'http' : net;
+    // TLS WITHOUT a serverName: xray sends the server's ADDRESS as the SNI — the link says so in `sni=`. Left empty, v2rayN and
+    // v2rayNG take the Host header for the SNI — another handshake, another server behind a CDN (review s.134, round 2). The vmess
+    // form is refused in that case instead (xrayLinkOf): its reader here does not default the SNI.
+    if((pr==='vless' || pr==='trojan') && !p.sni && p.security && p.security!=='none'){
+      var pc={}, pk; for(pk in p) if(Object.prototype.hasOwnProperty.call(p,pk)) pc[pk]=p[pk];
+      pc.sni=String(p.host); p=pc;
+    }
+    if(pr==='vless'){
+      if(!p.uuid) return '';
+      return 'vless://'+linkEnc(p.uuid)+'@'+tail+'?'+xrayQuery(p, ['type='+linkEnc(qnet), 'security='+linkEnc(p.security||'none'), 'encryption='+linkEnc(p.encryption||'none')])+rm;
+    }
+    if(pr==='trojan'){
+      if(!p.password) return '';
+      return 'trojan://'+linkEnc(p.password)+'@'+tail+'?'+xrayQuery(p, ['type='+linkEnc(qnet), 'security='+linkEnc(p.security||'none')])+rm;
+    }
+    if(pr==='vmess'){
+      // The v2rayN form parseVmess reads: grpc keeps its serviceName in `path`, the rest — path and Host header.
+      if(!p.uuid) return '';
+      var sec=p.security||'none';
+      var o={v:'2', ps:String(remark||''), add:String(p.host), port:String(p.port), id:String(p.uuid), aid:String(p.aid!=null ? p.aid : 0),
+             scy:String(p.scy||'auto'), net:net, type:'none', host:(net==='grpc') ? '' : String(p.hostHeader||''),
+             path:(net==='grpc') ? String(p.serviceName||'') : String(p.path||''), tls:(sec==='reality') ? 'reality' : (sec==='none' ? '' : 'tls')};
+      if(p.sni) o.sni=String(p.sni);
+      if(p.alpn) o.alpn=String(p.alpn);
+      if(p.fp) o.fp=String(p.fp);
+      return 'vmess://'+b64utf8(JSON.stringify(o));
+    }
+    if(pr==='shadowsocks'){
+      // SIP002: «method:password» as base64url without padding; the 2022 ciphers go percent-encoded in the open — their keys are
+      // base64 themselves, and the standard forbids wrapping them twice.
+      if(!p.method) return '';
+      var ui=/^2022-/.test(p.method) ? linkEnc(p.method)+':'+linkEnc(p.password||'')
+                                     : b64utf8(p.method+':'+(p.password||'')).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      return 'ss://'+ui+'@'+tail+rm;
+    }
+    return '';
+  }
+  function hy2Link(p, remark){
+    if(!p || !p.host || !p.port || !p.auth) return '';
+    var q=[];
+    if(p.sni) q.push('sni='+linkEnc(p.sni));
+    if(p.insecure) q.push('insecure=1');
+    if(p.obfs==='salamander' && p.obfsPass){ q.push('obfs=salamander'); q.push('obfs-password='+linkEnc(p.obfsPass)); }
+    return 'hy2://'+linkEnc(p.auth)+'@'+linkHost(p.host)+':'+p.port+(q.length ? '?'+q.join('&') : '')+(remark ? '#'+linkEnc(remark) : '');
+  }
+  // The link of a stored config, or '': offered only when reading it back gives the very config its standard fields give — a link
+  // that would import as something else is not a link to this server (a port list of Hysteria2, a vmess whose SNI is its Host
+  // header) — and only when it is PRINTABLE ASCII: a name of a server in another script (an IDN typed as it is) the readers of
+  // this panel forgive, an app does not.
+  // «THE SAME CONFIG» IS UP TO THE DEFAULT SNI: with no serverName xray sends the server's address, and the reader of trojan://
+  // writes that very default into the config — a config without serverName and one with serverName = address lead to one server
+  // the same way (a Trojan config with TLS and no serverName was told «no link»; review s.133).
+  var LINK_ASCII=/^[\x21-\x7e]+$/;
+  function xraySame(a, b){
+    function c(x){ var q={}, k; for(k in x) if(Object.prototype.hasOwnProperty.call(x,k)) q[k]=x[k]; if(!q.sni && q.security && q.security!=='none') q.sni=q.host; return xrayJson(q); }
+    return c(a)===c(b);
+  }
+  function xrayLinkOf(p, remark){
+    try{
+      var l=xrayLink(p, linkTxt(remark)), b=l ? parseXrayLink(l) : null;
+      return (b && LINK_ASCII.test(l) && xraySame(b, p)) ? l : '';
+    }catch(e){ return ''; }
+  }
+  function hy2LinkOf(p, remark){
+    try{
+      var l=hy2Link(p, linkTxt(remark)), b=l ? parseHy2(l) : null;
+      return (b && LINK_ASCII.test(l) && hy2Yaml(b)===hy2Yaml(p)) ? l : '';
+    }catch(e){ return ''; }
+  }
+  // WHAT THE LINK DOES NOT CARRY. `a` — the stored config, `b` — the one the standard fields build; named is every place where
+  // `a` says something `b` does not say, by the path as the raw config spells it, a missing subtree — by its root. A value that
+  // says nothing (empty, false, zero — the defaults) is not a loss, and what `b` adds (our generator's defaults) is not either.
+  function lossEmpty(v){
+    if(v==null || v==='' || v===false || v===0 || v==='none') return true;   // «none» is xray's own word for «nothing» (a header type, a cipher)
+    if(typeof v!=='object') return false;
+    for(var k in v) if(Object.prototype.hasOwnProperty.call(v,k) && !lossEmpty(v[k])) return false;
+    return true;
+  }
+  function lossWalk(a, b, path, out){
+    if(lossEmpty(a)) return;
+    var ta=Object.prototype.toString.call(a), tb=Object.prototype.toString.call(b), k;
+    if(ta!==tb){
+      // One value in two spellings is not a loss: "443" and 443 are one port, «h2,http/1.1» and ["h2","http/1.1"] — one ALPN list.
+      var sa=(ta==='[object Array]') ? a.join(',') : a, sb=(tb==='[object Array]') ? b.join(',') : b;
+      if(b==null || (typeof sa==='object') || (typeof sb==='object') || String(sa)!==String(sb)) out.push(path);
+      return;
+    }
+    if(ta==='[object Array]'){ for(k=0;k<a.length;k++) lossWalk(a[k], b[k], path+'['+k+']', out); return; }
+    if(ta==='[object Object]'){ for(k in a) if(Object.prototype.hasOwnProperty.call(a,k)) lossWalk(a[k], b[k], path ? path+'.'+k : k, out); return; }
+    if(a!==b) out.push(path);
+  }
+  // Xray. `log` and `inbounds` are the router's own furniture (its socks port, its log file) and `remarks` is the name — it rides
+  // in the link's «#…»; every other top-level section, every outbound but the server's own and every field of the server's
+  // outbound the form does not know is named. The old names xrayJson itself rewrites (splithttp, http) are not a loss.
+  function xrayLoss(doc, p){
+    var c=(Object.prototype.toString.call(doc)==='[object Array]') ? doc[0] : doc, out=[], std=null, k;
+    if(!c || typeof c!=='object') return out;
+    try{ std=JSON.parse(xrayJson(p)).outbounds[0]; }catch(e){ return out; }
+    for(k in c) if(Object.prototype.hasOwnProperty.call(c,k) && !/^(log|inbounds|outbounds|remarks)$/.test(k) && !lossEmpty(c[k])){
+      // `routing` with no rule and no balancer routes nothing (apps export it as a bare «domainStrategy») — nothing to lose.
+      if(k==='routing' && typeof c[k]==='object' && lossEmpty(c[k].rules) && lossEmpty(c[k].balancers)) continue;
+      out.push(k);
+    }
+    var vob=xrayMainOb(c), m=null;
+    if(vob){
+      try{ m=JSON.parse(JSON.stringify(vob)); }catch(e){ m=null; }
+      if(m){
+        delete m.tag;
+        // A mux that is not switched on does nothing; a user's `level` and `email` are the client's own bookkeeping (a policy
+        // index, a label for its log) — none of them is a property of the server (apps export all three; review s.133). A VLESS
+        // user's `security` is the vmess cipher field v2rayNG's export writes there too («auto») — VLESS has no cipher (review s.134).
+        if(m.mux && m.mux.enabled!==true) delete m.mux;
+        var st=m.settings||{}, ul=[].concat((st.vnext||[]).map(function(v){ return (v && v.users)||[]; })).concat([st.servers||[]]);
+        ul.forEach(function(us){ (us||[]).forEach(function(u){ if(u && typeof u==='object'){ delete u.level; delete u.email; if(m.protocol==='vless') delete u.security; } }); });
+        var ss=m.streamSettings;
+        if(ss && typeof ss==='object'){
+          if(ss.network==='splithttp'){ ss.network='xhttp'; if(ss.splithttpSettings && !ss.xhttpSettings){ ss.xhttpSettings=ss.splithttpSettings; delete ss.splithttpSettings; } }
+          if(ss.network==='http') ss.network='h2';
+        }
+        lossWalk(m, std, '', out);
+      }
+    }
+    ((c.outbounds && c.outbounds.length) ? c.outbounds : []).forEach(function(o){ if(o && o!==vob) out.push('outbound '+String(o.tag||o.protocol||'?')); });
+    return out;
+  }
+  // Hysteria2: the YAML is read by indentation into «path → value» (values without their quotes), a list item or a continuation
+  // line belongs to the key above it. `socks5` is the router's own listener.
+  function yamlFlat(y){
+    var v={}, order=[], st=[];
+    String(y||'').replace(/\r/g,'').split('\n').forEach(function(ln){
+      var t=ln.trim(); if(!t || t.charAt(0)==='#') return;
+      var ind=ln.match(/^[ \t]*/)[0].length, m=/^([A-Za-z0-9_.\-]+):(?:[ \t]+(.*))?$/.exec(t);
+      // A list item sits at its key's own indent as often as deeper: it must not close the key it belongs to.
+      while(st.length && (m ? st[st.length-1].ind>=ind : st[st.length-1].ind>ind)) st.pop();
+      var base=st.map(function(x){ return x.key; }).join('.');
+      if(!m){ if(base){ if(!(base in v)){ v[base]=''; order.push(base); } v[base]+=(v[base] ? '\n' : '')+t; } return; }
+      var path=(base ? base+'.' : '')+m[1];
+      st.push({ind:ind, key:m[1]});
+      if(m[2]!=null && m[2]!==''){ if(!(path in v)) order.push(path); v[path]=hy2Unq(m[2]); }
+    });
+    return {v:v, order:order};
+  }
+  function hy2Loss(yaml, p){
+    var a=yamlFlat(yaml), b=yamlFlat(hy2Yaml(p)), out=[], seen={};
+    function has(pre){ for(var k in b.v) if(Object.prototype.hasOwnProperty.call(b.v,k) && (k===pre || k.indexOf(pre+'.')===0)) return true; return false; }
+    a.order.forEach(function(k){
+      var val=a.v[k];
+      if(/^socks5(\.|$)/.test(k) || val==='' || val==='false' || val==='0' || val===b.v[k]) return;
+      var parts=k.split('.'), root=k, i;
+      for(i=1;i<=parts.length;i++){ var pre=parts.slice(0,i).join('.'); if(!has(pre)){ root=pre; break; } }
+      if(!seen[root]){ seen[root]=1; out.push(root); }
+    });
+    return out;
+  }
+  // AmneziaWG: `vpn://` + base64url of the plain config, no padding — the form 3x-ui writes and AmneziaVPN, this panel
+  // (decodeAmneziaVpn) and the router (subs-update.sh::parse_vpn) all read. The name rides as the config's first comment (that is
+  // where every reader looks for it — amneziaName, awg_comment): written above [Peer] only when the config has no comment that
+  // would be taken for a name and the name itself passes their rule (no «=», 40 characters at most).
+  function awgNameIn(conf){
+    var got=false;
+    (String(conf||'').match(/^[ \t]*#[ \t]*\S.*$/mg)||[]).some(function(c){
+      var t=c.replace(/^[ \t]*#[ \t]*/,'').replace(/[ \t]+$/,'');
+      if(t.indexOf('=')>=0 || t.length>40) return false;
+      got=true; return true;
+    });
+    return got;
+  }
+  function awgVpnLink(conf, name){
+    var c=String(conf||'').replace(/\r\n?/g,'\n'), n=linkTxt(name).replace(/[\x00-\x1f]+/g,' ').trim();
+    if(n && n.indexOf('=')<0 && n.length<=40 && !awgNameIn(c)){
+      var L=c.split('\n'), i;
+      for(i=0;i<L.length;i++) if(/^[ \t]*\[Peer\][ \t]*$/.test(L[i])){ L.splice(i, 0, '# '+n); c=L.join('\n'); break; }
+    }
+    return 'vpn://'+b64utf8(c).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   }
   // ---- Amnezia vpn:// → native AmneziaWG .conf. The router has its own copy (subs-update.sh::parse_vpn — subscriptions carry
   //      such links), and the two are held together by the differential stand dev/awg-link-parity-test.js; the PC side reads
@@ -7148,14 +7372,19 @@
     if(!m) return conf;
     var n=parseInt(m,10);
     if(!(n>=1280 && n<=1500)) return conf;                         // диапазон тот же, что у net-tune.sh
+    return amneziaIfaceAdd(conf, 'MTU = '+n);
+  }
+  // One line into the [Interface] section, where the app puts what it keeps as container fields: after Address, else right under
+  // [Interface]; no [Interface] — nothing. The router's twin is subs-update.sh::iface_add (the parity stand holds the two together).
+  function amneziaIfaceAdd(conf, line){
     var lines=conf.split('\n'), pos=-1, i;
     for(i=0;i<lines.length;i++){
       if(/^[ \t]*\[Interface\]/i.test(lines[i])) pos=i+1;
       else if(pos>=0 && /^[ \t]*Address[ \t]*=/i.test(lines[i])){ pos=i+1; break; }
-      else if(pos>=0 && /^[ \t]*\[/.test(lines[i])) break;         // дошли до [Peer] — там MTU не про интерфейс
+      else if(pos>=0 && /^[ \t]*\[/.test(lines[i])) break;         // дошли до [Peer] — там строка не про интерфейс
     }
     if(pos<0) return conf;
-    lines.splice(pos,0,'MTU = '+n);
+    lines.splice(pos,0,line);
     return lines.join('\n');
   }
   // Возвращает Promise: null (не Amnezia-контейнер) или {conf, name}. name = description
@@ -7187,9 +7416,13 @@
       // того, что её первые байты СЛУЧАЙНО похожи на zlib-заголовок.
       if(!conf) return (body && !canInflate) ? Promise.reject(new Error('nostream')) : null;
       conf=conf.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-      if(conf.indexOf('$PRIMARY_DNS')>=0 || conf.indexOf('$SECONDARY_DNS')>=0)
+      // Гард знает и скобки: при ОБОИХ шаблонах в виде `${…}` он не видел ни одного, и строка DNS оставалась шаблоном.
+      if(/\$\{?(PRIMARY|SECONDARY)_DNS/.test(conf))
         conf=conf.replace(/\$\{?PRIMARY_DNS\}?/g, meta.dns1||'1.1.1.1')
                  .replace(/\$\{?SECONDARY_DNS\}?/g, meta.dns2||'1.0.0.1');
+      // No resolver named (3x-ui writes `DNS =` only when its inbound has one): without the line the router's carrier falls back to
+      // Amnezia's internal resolver, which a 3x-ui server does not run — the defaults of the templates above (review s.134).
+      if(!/^[ \t]*DNS[ \t]*=/mi.test(conf)) conf=amneziaIfaceAdd(conf, 'DNS = 1.1.1.1, 1.0.0.1');
       conf=amneziaAddMtu(conf, meta.mtu);
       return {conf:conf, name:(meta.description||'').trim()};
     }).catch(function(e){
@@ -7237,7 +7470,9 @@
     });
     if(bad || !pub || !addr) return null;
     var L=['[Interface]', 'PrivateKey = '+key, 'Address = '+addr];
-    if(dns) L.push('DNS = '+dns);
+    // A link that names no resolver gets one: without a `DNS =` line the router's carrier falls back to Amnezia's internal
+    // resolver, which a plain WireGuard server does not run (review s.133). The router's wg_emit writes the same two addresses.
+    L.push('DNS = '+(dns||'1.1.1.1, 1.0.0.1'));
     if(mtu && mtu.length<=4 && +mtu>=1280 && +mtu<=1500) L.push('MTU = '+mtu);
     L.push('');
     if(remark) L.push('# '+remark);
@@ -7807,6 +8042,34 @@
     "подписка вернёт его при следующем обновлении. Чтобы убрать насовсем — уберите сервер там, где подписку выпускают":"the subscription brings it back on the next update. To remove it for good — remove the server where the subscription is issued",
     "Поправить этот сервер — у провайдера или в своей панели 3x-ui: загруженную сюда правку перепишет следующее обновление. Нужен свой вариант — добавьте конфиг файлом или ссылкой на «Серверах», он встанет отдельной строкой, и подписка его не тронет.":"To change this server — at the provider or in your own 3x-ui panel: an edit uploaded here is overwritten by the next update. Need your own variant — add a config by file or link on «Servers»: it lands as a separate row, and the subscription leaves it alone.",
     "Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.":"The endpoint ping is checked — as for any AmneziaWG server.",
+    // «Экспорт конфига» (экран сервера, 13.10.2026): закрытая и раскрытая карточка, отказы роутера. Фрагменты — вокруг <span class="mono kw">.
+    "Экспорт конфига":"Config export","Ссылка, QR-код или файл":"Link, QR code or file","Показать":"Show",
+    "перенести этот сервер в приложение на телефоне или на другой роутер":"move this server into an app on a phone or onto another router",
+    "Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.":"What is given is the server itself, not the subscription link: the router does not show that one to the panel. One config — one device at a time.",
+    "QR-код и файл":"The QR code and the","— приложению AmneziaWG или WireGuard, ссылка":"file are for the AmneziaWG or WireGuard app, the","— AmneziaVPN и другому роутеру.":"link is for AmneziaVPN and for another router.",
+    "Конфиг — ключ к серверу: панель берёт его с роутера только по этой кнопке и убирает с экрана, когда вы уходите.":"The config is the key to the server: the panel takes it from the router only by this button and takes it off the screen when you leave.",
+    "и её QR-код — для приложений (v2rayNG, Hiddify); файл":"and its QR code are for apps (v2rayNG, Hiddify); the file",
+    "— конфиг как есть. Ссылка собирается из стандартных полей: mux, routing и fragment из сырого JSON в неё не попадают — их несёт только файл, и панель скажет, если в этом конфиге такое есть.":"is the config as it is. The link is built from the standard fields: mux, routing and fragment of the raw JSON do not get into it — only the file carries them, and the panel will say if this config has any.",
+    "и её QR-код — для приложений; файл":"and its QR code are for apps; the file","— конфиг как есть.":"is the config as it is.",
+    "У конфига WARP экспорт тоже есть — решать вам. Но ключ у него один, и по нему ходит сам роутер: включите этот конфиг на другом устройстве — WARP роутера начнёт рваться, а с ним и дорога к серверам. Телефону проще дать свой:":"A WARP config can be exported too — it is your call. But it has one key, and the router itself rides on it: turn this config on on another device — the router's WARP starts breaking, and the road to the servers with it. A phone is better off with its own:",
+    "— бесплатно и за минуту.":"— free, and it takes a minute.",
+    "В приложении":"In the","нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл":"app tap «+» → «Scan QR code» and point the camera at this code. For AmneziaVPN and for another router — the link; the file",
+    "примет и обычный WireGuard, если в конфиге нет полей обфускации.":"is taken by plain WireGuard too, if the config has no obfuscation fields.",
+    "Один конфиг — одно устройство одновременно.":"One config — one device at a time.",
+    "У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.":"The server has one seat for this key: turn the config on on a phone while the router rides on it — they start kicking each other out, and the connection breaks for both. A phone needs its own config: issue one at the provider or on your own server. And the config itself is the key to the server: do not send it over messengers or mail, show the QR code from the screen or carry the file yourself.",
+    "Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл":"Scan the code in an app (v2rayNG, Hiddify) or copy the link; on another router with Enodia it is pasted on «Servers». The file",
+    "Отсканируйте код в приложении или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл":"Scan the code in an app or copy the link; on another router with Enodia it is pasted on «Servers». The file",
+    "Конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.":"The config is the key to the server: do not send it over messengers or mail, show the QR code from the screen or carry the file yourself.",
+    "Ссылку для этого конфига панель не соберёт: его сервер записан не так, как несёт ссылка. Конфиг целиком — в файле.":"The panel cannot build a link for this config: its server is written in a way a link does not carry. The whole config is in the file.",
+    "Конфиг оказался слишком длинным для QR-кода — скачайте файл или скопируйте ссылку: у AmneziaWG 1.5 и новее строки I1–I5 бывают длиннее, чем код вмещает.":"The config turned out too long for a QR code — download the file or copy the link: with AmneziaWG 1.5 and newer the I1–I5 lines can be longer than the code holds.",
+    "Ссылка оказалась слишком длинной для QR-кода — скопируйте её или скачайте файл.":"The link turned out too long for a QR code — copy it or download the file.",
+    "Скопировать ссылку":"Copy the link","Показать ссылку":"Show the link","В ссылку не попало:":"Not in the link:","и ещё":"and another",
+    ". Это несёт только файл.":". Only the file carries it.",
+    "Панель взяла конфиг с роутера по вашей кнопке и уберёт его с экрана, когда вы уйдёте.":"The panel took the config from the router by your button and will take it off the screen when you leave.",
+    "Ссылка и код — ключ к серверу: панель показывает их только по этой кнопке и убирает с экрана, когда вы уходите.":"The link and the code are the key to the server: the panel shows them only by this button and takes them off the screen when you leave.",
+    "Ссылку и код панель собрала по вашей кнопке и уберёт с экрана, когда вы уйдёте.":"The panel built the link and the code by your button and will take them off the screen when you leave.",
+    "ссылка скопирована":"the link is copied","роутер не умеет отдавать конфиг AmneziaWG — обновите Enodia":"the router can't give out an AmneziaWG config — update Enodia",
+    "не удалось прочитать конфиг: роутер отдал пустой файл":"could not read the config: the router gave an empty file",
     "-ссылка бывает четырёх форм, и по сжатию их не различить: панель пробует распаковать, а не вышло — читает как есть. Нативный":" links come in four forms that compression can't tell apart: the panel tries to unpack one and, failing that, reads it as is. A native",
     ", вставленный вместо ссылки, тоже принимается.":" pasted instead of a link is accepted too.","— обычный WireGuard одной строкой: встанет в этот же список с бейджем «WireGuard».":"— plain WireGuard in one line: it lands in this same list with the «WireGuard» badge.",
     "Редактора конфига у AmneziaWG нет":"AmneziaWG has no config editor",
@@ -11485,7 +11748,20 @@
     [/^\[road\] выход №([2-7]) идёт к тому же серверу \(([^()\s]+)\) — его пакеты к серверу пошли бы сами в себя; выберите выход к другому серверу$/,"[road] exit #$1 goes to the same server ($2) — its packets to the server would go into itself; pick an exit to another server"],
     [/^\[road\] дорога к серверу — через выход №([2-7])$/,"[road] the road to the server — via exit #$1"],
     [/^\[slots\] выход №([2-7]) служит дорогой к серверу \(([^()]*)\) — сначала переключите их дорогу на «напрямую», потом (.*)$/,"[slots] exit #$1 serves as a road to a server ($2) — switch their road to «direct» first, then $3"],
+    // Две оговорки записи сводки подписок (subs-update.sh, 13.10.2026): серверы, которые ушли из подписки, но заняты и потому
+    // оставлены, и новый конфиг активного сервера, который роутер не применил, — каждая после «;», запись может нести обе. СТОЯТ
+    // ЗДЕСЬ, выше токенов: короткое «применён» → «applied» ниже по списку успевало первым, и вся сводка оставалась русской.
+    [/; занятых оставлено (\d+)/g,"; kept in use: $1"],
+    [/; новый конфиг активного сервера не применён, прежний не отвечает — роутер в прямом режиме/g,"; the active server's new config was not applied and the previous one does not answer — the router is in direct mode"],
+    [/; новый конфиг активного сервера не применён — работает прежний/g,"; the active server's new config was not applied — the previous one works"],
     [/^подписка удалена\. Оставлены как свои конфиги — они заняты \(активный сервер или выход\): (.+)$/,"subscription deleted. Kept as your own configs — they are in use (the active server or an exit): $1"],
+    // …the names come in «…» (the person's data, left as they are), a long list ends with a count
+    [/» и ещё (\d+)$/,"» and $1 more"],
+    // remove_sub: a kept server's file could not leave the subscription's namespace — the subscription stays, without its link
+    [/^подписка удалена не до конца: занятые серверы не удалось переименовать \((.+)\) — она осталась без ссылки; повторите удаление$/,"the subscription is not fully removed: servers in use could not be renamed ($1) — it stays without its link; remove it again"],
+    // save_sub's refusal of a tag whose removed subscription left servers in use (the panel's subTagFree picks another tag first;
+    // the router speaks when the panel had no list to ask)
+    [/^имя занято: от удалённой подписки с таким именем на роутере остались серверы \((\d+)\) — назовите подписку иначе$/,"name taken: a removed subscription with this name left servers on the router ($1) — name the subscription differently"],
     [/^конфиг (\S+) держит выход №([2-7]) — сначала удалите выход или смените его сервер$/,"the config $1 is held by exit #$2 — delete the exit or change its server first"],
     [/^конфиг (\S+) служит дорогой \(выход №([2-7])\) — сначала переключите дорогу его пассажиров на «напрямую»$/,"the config $1 serves as a road (exit #$2) — switch its riders' road to «direct» first"],
     [/^сервис проверки не ответил \(HTTP ([^()]*)\)$/,"the check service did not answer (HTTP $1)"],
@@ -11598,7 +11874,7 @@
     [/ · весь трафик через VPS$/," · all traffic via VPS"],
     [/^за 7 дней · через туннель /,"over 7 days · through the tunnel "],[/ · пик /," · peak "],[/ · статистика копится$/," · statistics are accumulating"],
     [/^Весь трафик роутера за сегодня · через туннель /,"All of the router's traffic today · through the tunnel "],
-    [/^обновлялась /,"updated "],[/^обновлён /,"updated "],[/^сбой обновления /,"update failed "],
+    [/^обновлялась /,"updated "],[/^сбой обновления /,"update failed "],
     [/^Открыть сервер «([^»]*)»$/,"Open server «$1»"],[/^Изменить конфиг «([^»]*)»$/,"Edit config «$1»"],[/^Удалить конфиг «([^»]*)»$/,"Delete config «$1»"],
     [/^Действия с сервером «([^»]*)»$/,"Server actions «$1»"],
     [/^сервера «([^»]*)» на роутере нет — удалён или переименован$/,"server «$1» is not on the router — deleted or renamed"],
@@ -13557,15 +13833,23 @@
   // как «устаревшие» — владелец-то у них теперь новая подписка. Ровно тот класс, ради которого
   // заводился ownerTag («liberty» ⊂ «liberty-vpn»), только источник коллизии — наш генератор.
   // ТА ЖЕ метка = ТОТ ЖЕ тег: повторный импорт остаётся идемпотентным (меняем ссылку, не плодим).
-  function subTagFree(label, subs){
-    var base=subTag(label), taken={}, i;
+  // ЗАНЯТ И ТЕГ, ЧЬИ КОНФИГИ ЕЩЁ ЛЕЖАТ НА РОУТЕРЕ (`names` — имена файлов всех трёх семейств из /cgi-bin/list). Удалённая
+  // подписка оставляет занятые серверы своими конфигами человека — под прежними именами `sub-<тег>-…`; новая подписка с тем же
+  // тегом снова стала бы их владельцем: объявила бы «пропавшими», а освободившиеся УДАЛИЛА (ревью с.133). Чей файл — отвечает
+  // то же правило, что у роутера: владелец — длиннейший тег (`sub-test-2-x` при живой подписке `test-2` тег `test` не занимает).
+  function subTagFree(label, subs, names){
+    var base=subTag(label), taken={}, tags=[], i;
     for(i=0;i<subs.length;i++){
       if(subs[i].label===label) return subs[i].tag;   // это ОНА же — обновляем на месте
-      taken[subs[i].tag]=1;
+      taken[subs[i].tag]=1; tags.push(subs[i].tag);
     }
-    if(!taken[base]) return base;
+    function free(t){
+      if(taken[t]) return false;
+      return !(names||[]).some(function(n){ return ownerTag(n, tags.concat([t]))===t; });
+    }
+    if(free(base)) return base;
     var stem=base.substring(0,13).replace(/-+$/,'')||'s';   // 13+«-»+2 цифры = потолок тега (16)
-    for(i=2;i<100;i++){ if(!taken[stem+'-'+i]) return stem+'-'+i; }
+    for(i=2;i<100;i++){ if(free(stem+'-'+i)) return stem+'-'+i; }
     return '';
   }
   function importSub(url, label, done){
@@ -13577,9 +13861,10 @@
     // Список подписок читаем ДО записи: тег обязан быть свободен, а знает об этом только роутер
     // (панель могла быть открыта со вчера). Не отдался — идём прежним путём: отказывать в импорте
     // из-за недоступного /cgi-bin/list было бы хуже, но в журнале это видно.
-    fetchJson('/cgi-bin/list').then(function(l){ return (l&&l.subs)||[]; }, function(){ logLine('подписка: список подписок не прочитан — тег не проверен на занятость', null); return null; })
+    var _lnames=[];
+    fetchJson('/cgi-bin/list').then(function(l){ ['awg','xray','hy2'].forEach(function(k){ _lnames=_lnames.concat((l && l[k] && l[k].servers)||[]); }); return (l&&l.subs)||[]; }, function(){ logLine('подписка: список подписок не прочитан — тег не проверен на занятость', null); return null; })
       .then(function(subs){
-        var tag = subs ? subTagFree(label, subs) : subTag(label);
+        var tag = subs ? subTagFree(label, subs, _lnames) : subTag(label);
         if(!tag) throw new Error('слишком много подписок с похожей меткой — задайте другую');
         if(subs && tag!==subTag(label)) logLine('подписка «'+label+'»: метка занята другой подпиской — беру тег '+tag, null);
         return subPost({action:'save_sub', tag:tag, url:url, label:label}).then(function(d){
@@ -14774,7 +15059,7 @@
     o=o||{};
     var act = name===grp.active, canAct = canActivate(grp);
     var rd = (key==='awg') ? cfgRiders(name) : [], rv = (key==='awg') ? roadOf(name) : '';
-    var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length;
+    var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length && !cfgExits(key, name).length;
     var m = key==='hy2' ? (hy2Meta[name]||{}) : {};
     var ds = m.host ? '<span class="mono">'+esc(m.host)+'</span>'+(m.obfs?' · '+esc(m.obfs):'') : '';
     // WARP узнаёт роутер (по ключу сервера Cloudflare): под именем — «Cloudflare», у дороги — кого она везёт (макет).
@@ -14819,7 +15104,7 @@
   function serverCard(name, grp, disp, subLabel, pinned){
     var act = name===grp.active, canAct = canActivate(grp);
     var meta=xrayMeta[name]||{}, host=meta.host||'';
-    var canDel = !(act && cur.transport==='xray');
+    var canDel = !(act && cur.transport==='xray') && !cfgExits('xray', name).length;
     var ds = host ? '<span class="mono">'+esc(host)+'</span>' : '';
     if(subLabel) ds += (ds?' · ':'')+'↳ <span>подписка</span> «<span class="sens" translate="no">'+esc(subLabel)+'</span>»';
     var st = !canAct ? '<span class="chip">'+(act?actLbl(false):notReadyLbl(grp))+'</span>'
@@ -15037,7 +15322,9 @@
           items.push({label:'Сделать активным', onClick:function(){ activateServer('xray', name, row.getAttribute('data-act')==='1', d.subs); }});
         items.push({label:'Проверить', onClick:function(){ checkServer(name); }},
                    {label:'Тест скорости', onClick:function(){ speedServer(name); }},
-                   {label:'Изменить конфиг', onClick:function(){ srvScrGo('xray', name); }});
+                   {label:'Изменить конфиг', onClick:function(){ srvScrGo('xray', name); }},
+                   // К КАРТОЧКЕ экрана сервера (openAt): пункт открывает место, а не ключи — конфиг приходит по «Показать».
+                   {label:'Экспорт конфига', onClick:function(){ openAt(function(){ srvScrGo('xray', name); }, 'srv-exp'); }});
         if(canDel) items.push({label:'Удалить конфиг', danger:true, onClick:function(){
           var dn=cfgDisp('xray', name, d.subs);
           postAction('del_xray_server', 'Удалить конфиг «'+dn+'» (Xray)? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop('xray',name); repaint(); });
@@ -15326,7 +15613,10 @@
       if(rep){ showToast('не удалось обновить экран подписки', false); return; }
       showToast('роутер не ответил — открываю список подписок', false); if(navSplit(location.hash).r==='cn-sub') navReplace('cn-subs'); openSubs();
     }
-    Promise.all([fetchJson('/cgi-bin/data?section=subs'), fetchJson('/cgi-bin/list')]).then(function(r){
+    // Реестр выходов — тоже: по нему строки знают, что конфиг держит выход (нет «✕» и «Удалить конфиг» — cfgExits), а дороги — свои
+    // хвосты. Экран, открытый перезагрузкой страницы или прямым адресом, жил с пустым реестром и предлагал удаление, в котором
+    // роутер откажет (ревью с.133). Не ответил — строки без этого знания, экран тот же (refreshEnabledSlots не отвергается).
+    Promise.all([fetchJson('/cgi-bin/data?section=subs'), fetchJson('/cgi-bin/list'), refreshEnabledSlots()]).then(function(r){
       if(g!==_navGen) return;      // пока ждали роутер, человек ушёл — его выбор важнее
       _navPend=false;
       if(rep && !navShows('cn-sub')) return;   // за время ответа поверх экрана встал шаг без адреса — не сносим его
@@ -15428,17 +15718,8 @@
   // hy2 YAML → params (обратно к hy2Yaml). Простой построчный разбор (YAML на роутере плоский).
   function hy2ToParams(y){
     y=String(y||'');
-    // Разбор значения — ОБРАТНАЯ операция к hy2Quote, а не «снять кавычки». Прежний strip
-    // (/^["']|["']$/g) экранирование не трогал, поэтому пароль или auth с кавычкой либо
-    // обратным слэшем возвращался в форму как `a\"b` и по кнопке «Сохранить» уезжал в конфиг
-    // уже ИСПОРЧЕННЫМ — молча, при зелёном экране. Кавычки ставит наш генератор, значит и
-    // снимать их обязан код, знающий его правила.
-    function unq(v){ v=String(v).trim();
-      if(v.length>1 && v.charAt(0)==='"' && v.charAt(v.length-1)==='"')
-        return v.slice(1,-1).replace(/\\([\\"nr])/g,function(_,c){ return c==='n'?'\n':(c==='r'?'\r':c); });
-      if(v.length>1 && v.charAt(0)==="'" && v.charAt(v.length-1)==="'") return v.slice(1,-1).replace(/''/g,"'");
-      return v; }
-    function g(re){ var m=y.match(re); return m?unq(m[1]):''; }
+    // Значение разбирает hy2Unq — обратная операция к hy2Quote (разбор там).
+    function g(re){ var m=y.match(re); return m?hy2Unq(m[1]):''; }
     var hp=hostPort(g(/^[ \t]*server:[ \t]*(.+)$/m));
     return { proto:'hy2', host:hp?hp.host:'', port:hp?hp.port:'',
              auth:g(/^[ \t]*auth:[ \t]*(.+)$/m), sni:g(/^[ \t]*sni:[ \t]*(.+)$/m),
@@ -15548,7 +15829,7 @@
     // Перерисовка — ТОЛЬКО после успеха: отказ роутера («нет outbound-протокола», конфиг переименовали в другой вкладке) иначе перечитал бы
     // файл и стёр набранное вместе с отказом (ревью пачки 2). Вкладку, с которой сохраняли, перерисовка сохраняет (`_edTabWant`).
     postAction('save_config_raw', conf, 'сохраняю '+state.name, {kind:state.tpt, name:state.name, content:b64utf8(content)},
-      function(d){ if(!(d && d.ok) || !srvHere(state.tpt, state.name)) return; _edTabWant=state.tab; state.repaint(); });
+      function(d){ if(!(d && d.ok)) return; srvExpClose(state.tpt, state.name); if(!srvHere(state.tpt, state.name)) return; _edTabWant=state.tab; state.repaint(); });
   }
   // РЕДАКТОР КОНФИГА Xray/Hysteria2 — КАРТОЧКА ЭКРАНА СЕРВЕРА (форма стандартных полей ⇄ сырой JSON/YAML). Прежде он подменял
   // экран «Серверы» целиком и жил без своего адреса: «назад» браузера и перезагрузка из него уводили (приёмка 25.09.2026). `repaint`
@@ -15564,7 +15845,7 @@
   }
   // Вкладка редактора, заказанная перерисовкой после сохранения: сохраняли из «Сырого» — там и остаёмся. Заказ одноразовый.
   var _edTabWant=null;
-  function srvEditorInto(box, tpt, name, activeCarrier, repaint, acts){
+  function srvEditorInto(box, tpt, name, activeCarrier, repaint, acts, after){
     box.innerHTML='<div class="cline">читаю конфиг…</div>';
     var kind=(tpt==='xray'?'JSON':'YAML');
     subPost({action:'get_config_raw', kind:tpt, name:name}).then(function(d){
@@ -15606,11 +15887,13 @@
       if(want==='raw'){ editSwitchTab(state, 'raw'); var sr=document.getElementById('ed-save-raw'); if(sr && document.activeElement===document.body && sr.focus) sr.focus(); }
       else { var sf=document.getElementById('ed-save'); if(want && sf && document.activeElement===document.body && sf.focus) sf.focus(); }
       srvStatsRepaint(document.getElementById('modal-body'), tpt, name, activeCarrier || (_srvShown && _srvShown.act));
+      if(after) after();
     }).catch(function(e){
       if(!screenAlive(box)) return;
       // Конфиг не прочитан — действия экрана (проверка, удаление) остаются доступны: сломанный файл удаляют ровно отсюда.
       srvBoxFill(box, '<div class="card w2">'+noteBox(esc('не удалось прочитать конфиг: '+((e&&e.message)||'ошибка')), 'warn')
         +(acts ? '<div class="rr-acts" style="margin-top:13px">'+acts+'</div>' : '')+'</div>');
+      if(after) after();
     });
   }
   // ЭКРАН СЕРВЕРА (`cn-server/<транспорт>/<имя файла>`, шаг приёмки 25.09.2026; макет — cn-server, cn-server-awg, cn-server-hy2):
@@ -15757,11 +16040,13 @@
     // …and a config an exit merely HOLDS (its registry line names it): the exit would go on by its working copy and could not come
     // up after a restart. The router refuses that deletion (cgi-bin/action held_refuse) — the screen does not offer it and says why,
     // with a door to the exit (hardware walk 12.10.2026: «Удалить конфиг» on a WARP config under its exit).
-    var hex=slotAll.filter(function(s){ return s.transport===tpt && s.config===name; }).map(function(s){ return s.id; });
+    var hex=cfgExits(tpt, name);
     var canDel=!(act && (tpt==='awg' || tpt===cur.transport)) && !rdr.length;
     var meta=(tpt==='xray') ? (xrayMeta[name]||{}) : {};
     if(hex.length) canDel=false;
     var rep=navIfShown('cn-server', srvScrOpen), fsig=focusMark();
+    // Раскрытый текст в «Экспорте конфига» перерисовка не сворачивает (спросить надо ДО показа: показ меняет тело экрана).
+    var expTxt=!!document.querySelector('#modal-body #srv-exp .vs-txt[open]');
     // Заголовок — имя как есть: у сервера подписки это имя от провайдера (с флагом и кириллицей), метка стримера прячет его.
     openModal(disp, {route:'cn-server', arg:tpt+'/'+name, deck:true, sens:true});
     var body=document.getElementById('modal-body');
@@ -15797,6 +16082,13 @@
                                    : hex.length ? '<span>Конфиг держит</span> <span class="nbr"><button type="button" class="ilink" data-cact="exit:'+hex[0]+'">выход №'+hex[0]+'</button><span>.</span></span> <span>Удалить его можно, когда выход удалён или переведён на другой сервер.</span>'
                                    : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
+    // «Экспорт конфига»: закрыта; раскрытой остаётся только при перерисовке ЭТОГО же экрана (запомненное — того же сервера).
+    var expO=srvExpOpts(tpt, name), expM=(_srvExp && _srvExp.k===chkKey(tpt,name)) ? _srvExp : null;
+    // Чужой сервер в памяти — забыть; своего нет — забывать нечего, а запрос «Показать», который в пути у ЭТОГО экрана, его
+    // перерисовку переживает (srvExpShow рисует ответ в экран, какой есть к тому времени).
+    if(_srvExp && !expM) srvExpForget();
+    if(expM) expO.txtOpen=expTxt;
+    var expH=expM ? srvExpOpenHtml(expM, expO) : srvExpClosedHtml(tpt, expO);
     if(tpt==='awg'){
       // СЕРВЕР AmneziaWG ИЗ ПОДПИСКИ. От своего конфига его отличает одно — кто хозяин файла, и из этого три правды экрана: имя
       // задаёт подписка; «поправленный конфиг загрузите заново» здесь неправда (загруженное перепишет следующее обновление); удалённый
@@ -15813,6 +16105,7 @@
         + '<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why
         + (subAwg ? '<div class="cline">Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.</div>'
                   : '<div style="margin-top:11px">'+noteBox('У AmneziaWG проверяется пинг эндпоинта, а не выход: демон один на интерфейс, поднять его временно на другом порту нельзя. Поэтому «сервер отвечает» здесь значит меньше, чем у Xray, — и панель не выдаёт одно за другое.', 'info')+'</div>')+'</div>';
+      h+=expH;
       if(roadOk && !via) h+=srvRoadHtml(name, crec);
       // WARP без маскировки (I1): провайдер пропускает рукопожатие чистого WireGuard и обрывает поток после него (замер 10.10.2026).
       if(isWarp(name) && warpMap[name]===0) h+=noteBox('<b>В конфиге WARP нет маскировки</b> (строки <span class="mono kw">I1</span>): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».', 'warn');
@@ -15820,6 +16113,7 @@
     } else h+='<div id="srv-ed" class="wfull"></div>';
     // У сервера AmneziaWG из подписки имя файла стоит в карточке владельца — отдельной карточки «Имя» с одним файлом не нужно.
     if(!subAwg) h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
+    if(tpt!=='awg') h+=expH;
     if(tpt==='hy2') h+=noteBox('Hysteria2 делит <b>один tun2socks и один socks</b> с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».', 'info');
     body.innerHTML=h+'</div>';
     _srvShown={tpt:tpt, name:name, act:act, body:body};
@@ -15836,6 +16130,10 @@
       ag.textContent='обновлён '+fmtAge(Math.max(0, sn-okAt)); sp.hidden=false;
     }, function(){});
     focusBack(body, fsig);
+    // «⋮ → Экспорт конфига» строки ведёт сюда К КАРТОЧКЕ (openAt): взгляд — на неё, фокус — на «Показать». У Xray и Hysteria2 —
+    // после редактора: он встаёт ВЫШЕ карточки уже после показа и увёл бы её из-под взгляда.
+    function expSee(){ if(screenAlive(body)) setFocusKbd(body, function(id){ return id==='srv-exp' ? body.querySelector('#srv-exp [data-sv="exp"]') : null; }); }
+    if(tpt==='awg') expSee();
     // Действия — делегатом на обёртке ЭКРАНА: кнопки Xray/Hysteria2 рождаются в карточке параметров после ответа роутера, а обёртка
     // пересоздаётся с каждым показом — провод не копится между экранами.
     var wrap=body.querySelector('.vwrap');
@@ -15866,6 +16164,11 @@
           function(r){ if(r && r.ok){ chkDrop(tpt, name); if(srvHere(tpt, name)) navUp(); } });
       }
       else if(v==='ren') srvRename(tpt, name);
+      else if(v==='exp') srvExpShow(tpt, name);
+      else if(v==='exphide') srvExpClose(tpt, name);
+      else if(v==='expcopy'){ if(_srvExp && _srvExp.link) copyToClip(_srvExp.link, 'ссылка скопирована'); }
+      // Имя файла — имя конфига на роутере: оно уже латиницей (cfgSlug), и другой роутер назовёт сервер так же.
+      else if(v==='expdl'){ if(_srvExp) downloadText(name+_srvExp.ext, _srvExp.raw); }
     });
     var nm=document.getElementById('srv-nm'), pv=document.getElementById('srv-nm-p');
     if(nm && pv){
@@ -15915,8 +16218,163 @@
         srvColoLoad(body, crec, true);
       }, function(){ if(!screenAlive(body)) return; var box=document.getElementById('srv-awg'); if(box) box.innerHTML=noteBox('роутер не ответил', 'warn'); });
     } else srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep,
-      chk+(tpt==='xray' ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '')+'<span class="grow"></span>'+del);
+      chk+(tpt==='xray' ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '')+'<span class="grow"></span>'+del, expSee);
     if(tpt!=='awg' && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
+  }
+  // ==== «ЭКСПОРТ КОНФИГА» НА ЭКРАНЕ СЕРВЕРА (макет cn-server, cn-server-awg, cn-server-awg-sub, cn-server-hy2; 13.10.2026) ======
+  // Три формы на любой сохранённый конфиг — ссылка · QR-код · файл. КОНФИГ — КРЕД: карточка закрыта, панель берёт его с роутера
+  // отдельным запросом и только по кнопке человека (get_config_raw), а ушёл человек с экрана — забыла (srvExpForget зовёт
+  // screenStop, как у «WARP для другого устройства»). Перерисовка ТОГО ЖЕ экрана (дорога, «Сделать активным») раскрытую карточку
+  // не закрывает; сохранение в редакторе и смена имени — закрывают сразу (srvExpClose): показанное было бы конфигом до правки.
+  // Ссылку Xray и Hysteria2 СОБИРАЮТ из стандартных полей — что она не унесла, называет сама карточка (xrayLoss, hy2Loss). У
+  // AmneziaWG свои две правды: один ключ — одно устройство, и QR примет не всякий конфиг (строки I1–I5 длиннее кода).
+  // WARP — без исключения (решение человека 13.10.2026): экспорт есть, а рядом — чем он кончится и дверь к своему WARP для телефона.
+  var _srvExp=null, _srvExpGen=0, _srvExpAsk='';
+  var SRV_EXP_SCH={vless:'vless://', vmess:'vmess://', trojan:'trojan://', shadowsocks:'ss://'};
+  // Забыть — это и конец ВИЗИТА: поколение меняется, и ответ на «Показать» прошлого визита уже никому не показывают; отметка
+  // «запрос в пути» снимается вместе с ним.
+  // …и ПОКАЗАННОЕ уходит со страницы, а не только из памяти модуля: уход в раздел лишь прячет `#modal-body`, уход на другой экран
+  // отцепляет его — а `_srvShown.body` держал это дерево живым, с ключом в `<pre>`, в QR и в ссылке (ревью с.134, круг 2; тот же
+  // класс, что у wpDevForget). От раскрытой карточки остаётся заголовок; закрытую поверх рисует перерисовка или srvExpClose.
+  function srvExpForget(){
+    _srvExp=null; _srvExpAsk=''; _srvExpGen++;
+    [(_srvShown && _srvShown.body) ? _srvShown.body.querySelector('#srv-exp') : null, document.getElementById('srv-exp')].forEach(function(c){
+      if(c && c.getAttribute('data-exp')==='open') while(c.lastChild && c.lastChild!==c.firstChild) c.removeChild(c.lastChild);
+    });
+  }
+  // Что карточка покажет по тексту конфига, который отдал роутер. Чистая: стенд кормит её текстами.
+  function srvExpModel(tpt, name, raw, disp){
+    var m={k:chkKey(tpt,name), tpt:tpt, name:name, raw:raw, link:'', sch:'', ext:'', loss:[]};
+    if(tpt==='awg'){ m.ext='.conf'; m.sch='vpn://'; m.link=awgVpnLink(raw, disp); return m; }
+    if(tpt==='xray'){
+      var doc=null, p; try{ doc=JSON.parse(raw); }catch(e){}
+      p=doc ? xraySubToParams(doc)[0] : null;
+      m.ext='.json';
+      if(p){ m.sch=SRV_EXP_SCH[p.proto]||''; m.link=xrayLinkOf(p, disp); if(m.link) m.loss=xrayLoss(doc, p); }
+      return m;
+    }
+    var hp=hy2ToParams(raw);
+    m.ext='.yaml'; m.sch='hy2://'; m.link=hy2LinkOf(hp, disp);
+    if(m.link) m.loss=hy2Loss(raw, hp);
+    return m;
+  }
+  // Строка WARP — в обоих состояниях карточки: о цене человек узнаёт ДО кнопки, а не после кода на экране.
+  function srvExpWarpHtml(){
+    return '<div class="cline"><span>У конфига WARP экспорт тоже есть — решать вам. Но ключ у него один, и по нему ходит сам роутер: включите этот конфиг на другом устройстве — WARP роутера начнёт рваться, а с ним и дорога к серверам. Телефону проще дать свой:</span> '
+      + '<button type="button" class="ilink" data-cact="warp">WARP для другого устройства</button> <span>— бесплатно и за минуту.</span></div>';
+  }
+  // `o.sub` — сервер AmneziaWG из подписки, `o.warp` — конфиг WARP, `o.proto` — протокол Xray (из меты списка), `o.err` — отказ роутера.
+  function srvExpClosedHtml(tpt, o){
+    o=o||{};
+    // У AmneziaWG панель ключей не держит вовсе — конфиг приходит только по кнопке. У Xray и Hysteria2 конфиг уже читает редактор
+    // этого же экрана: по кнопке появляются ссылка и код, и обещать про них большее было бы неправдой.
+    var KEY=(tpt==='awg') ? 'Конфиг — ключ к серверу: панель берёт его с роутера только по этой кнопке и убирает с экрана, когда вы уходите.'
+                          : 'Ссылка и код — ключ к серверу: панель показывает их только по этой кнопке и убирает с экрана, когда вы уходите.';
+    var h='<div class="card" id="srv-exp"><div class="wt">Экспорт конфига</div>'
+      + '<div class="kv"><div class="grow"><div class="k">Ссылка, QR-код или файл</div><div class="v">перенести этот сервер в приложение на телефоне или на другой роутер</div></div>'
+      + '<button type="button" class="btn sm gh" data-sv="exp">Показать</button></div>';
+    if(o.err) h+='<div style="margin-top:9px">'+noteBox(esc(o.err), 'warn')+'</div>';
+    if(tpt==='awg'){
+      h+=o.sub ? '<div class="cline">Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.</div>'
+               : '<div class="cline"><span>QR-код и файл</span> <span class="mono kw">.conf</span> <span>— приложению AmneziaWG или WireGuard, ссылка</span> <span class="mono kw">vpn://</span> <span>— AmneziaVPN и другому роутеру.</span></div>'
+                 + '<div class="cline">'+KEY+'</div>';
+      if(o.warp) h+=srvExpWarpHtml();
+    } else if(tpt==='xray'){
+      h+='<div class="cline"><span>Ссылка</span> <span class="mono kw">'+esc(SRV_EXP_SCH[o.proto]||'vless://')+'</span> <span>и её QR-код — для приложений (v2rayNG, Hiddify); файл</span> <span class="mono kw">.json</span> '
+        + '<span>— конфиг как есть. Ссылка собирается из стандартных полей: mux, routing и fragment из сырого JSON в неё не попадают — их несёт только файл, и панель скажет, если в этом конфиге такое есть.</span></div>'
+        + '<div class="cline">'+KEY+'</div>';
+    } else {
+      h+='<div class="cline"><span>Ссылка</span> <span class="mono kw">hy2://</span> <span>и её QR-код — для приложений; файл</span> <span class="mono kw">.yaml</span> <span>— конфиг как есть.</span></div>'
+        + '<div class="cline">'+KEY+'</div>';
+    }
+    return h+'</div>';
+  }
+  var SRV_EXP_LOSS_MAX=8;
+  function srvExpOpenHtml(m, o){
+    o=o||{};
+    var awg=(m.tpt==='awg'), KEEP='Конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.';
+    // Раскрытая карточка высока (код, плашка, текст): `r2` — два ряда колоды, и соседние короткие карточки встают друг под другом
+    // рядом с ней, а не оставляют под собой пустоту в её высоту (замер 1440 px: 514 px пустой колонки).
+    var h='<div class="card w2 r2" id="srv-exp" data-exp="open"><div class="wt">Экспорт конфига</div>';
+    if(awg) h+='<div class="tiny" style="margin-bottom:11px"><span>В приложении</span> <b>AmneziaWG</b> <span>нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл</span> <span class="mono kw">.conf</span> <span>примет и обычный WireGuard, если в конфиге нет полей обфускации.</span></div>'
+      + noteBox('<b>Один конфиг — одно устройство одновременно.</b> У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.', 'warn');
+    else h+='<div class="tiny" style="margin-bottom:11px"><span>'+(m.tpt==='xray' ? 'Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл'
+                                                                                 : 'Отсканируйте код в приложении или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл')
+      + '</span> <span class="mono kw">'+esc(m.ext)+'</span> <span>— конфиг как есть.</span></div>'+noteBox(KEEP, 'warn');
+    // Ссылки нет — не «код не влез», а «собрать нечего»: причина своей плашкой, из действий остаётся файл.
+    if(!m.link) h+='<div style="margin-top:11px">'+noteBox('Ссылку для этого конфига панель не соберёт: его сервер записан не так, как несёт ссылка. Конфиг целиком — в файле.', 'info')+'</div>';
+    h+=qrShareHtml({qr:awg ? m.raw : m.link,
+      long:awg ? 'Конфиг оказался слишком длинным для QR-кода — скачайте файл или скопируйте ссылку: у AmneziaWG 1.5 и новее строки I1–I5 бывают длиннее, чем код вмещает.'
+               : 'Ссылка оказалась слишком длинной для QR-кода — скопируйте её или скачайте файл.',
+      acts:(m.link ? '<button type="button" class="btn" data-sv="expcopy"><span>Скопировать ссылку</span> <span class="mono kw">'+esc(m.sch)+'</span></button>' : '')
+        + '<button type="button" class="btn" data-sv="expdl">'+icUse('i-dl','s','',true)+'<span>Скачать</span> <span class="mono kw">'+esc(m.ext)+'</span></button>',
+      sum:awg ? 'Показать текст конфига' : 'Показать ссылку', txt:awg ? m.raw : m.link, open:!!o.txtOpen});
+    if(m.loss.length){
+      var ls=m.loss.slice(0, SRV_EXP_LOSS_MAX).map(function(x){ return '<span class="mono kw">'+esc(x)+'</span>'; }).join(', ');
+      h+='<div class="cline"><span>В ссылку не попало:</span> '+ls+(m.loss.length>SRV_EXP_LOSS_MAX ? ' <span>и ещё</span> <b>'+(m.loss.length-SRV_EXP_LOSS_MAX)+'</b>' : '')+'<span>. Это несёт только файл.</span></div>';
+    }
+    h+='<div class="rr-acts" style="margin-top:12px"><span class="grow tiny">'+(awg ? 'Панель взяла конфиг с роутера по вашей кнопке и уберёт его с экрана, когда вы уйдёте.'
+                                                                                    : 'Ссылку и код панель собрала по вашей кнопке и уберёт с экрана, когда вы уйдёте.')+'</span>'
+      + '<button type="button" class="btn sm gh" data-sv="exphide">Скрыть</button></div>';
+    if(o.warp) h+=srvExpWarpHtml();
+    return h+'</div>';
+  }
+  // Карточка — в своё место колоды, целиком; фокус, оставшийся на исчезнувшей кнопке, уходит на `foc` (иначе он падает на <body>,
+  // и следующий Tab начинает экран сначала).
+  function srvExpPaint(body, html, foc){
+    var el=body.querySelector('#srv-exp'); if(!el) return null;
+    var had=(document.activeElement===document.body) || el.contains(document.activeElement);
+    var tmp=document.createElement('div'); tmp.innerHTML=html;
+    var nn=tmp.firstChild; el.parentNode.replaceChild(nn, el);
+    var f=(had && foc) ? nn.querySelector(foc) : null;
+    if(f && f.focus) f.focus({preventScroll:true});
+    return nn;
+  }
+  function srvExpOpts(tpt, name){
+    var tag=(tpt==='awg') ? ownerTag(name, _subTagsKnown) : '';
+    return {sub:!!tag, warp:(tpt==='awg' && isWarp(name)), proto:(tpt==='xray') ? String((xrayMeta[name]||{}).proto||'').toLowerCase() : ''};
+  }
+  // «Показать»: один запрос за раз — и через перерисовки экрана тоже (отметка в модуле, а не на узле карточки).
+  // ОТВЕТ РИСУЕМ В ЭКРАН ЭТОГО СЕРВЕРА, КАКОЙ ЕСТЬ К ЕГО ПРИХОДУ, а не в тело, с которого нажали: перерисовка того же экрана
+  // (плитка дороги, «Сделать активным») даёт ему новое тело, и ответ, привязанный к прежнему, пропадал молча — закрытая карточка
+  // без слова (ревью с.133). Чей это визит — по поколению: уход с экрана (srvExpForget из screenStop) его меняет, и ответ на
+  // «Показать» прошлого визита вернувшемуся человеку не показывают — конфиг приходит только по кнопке ЭТОГО визита.
+  function srvExpShow(tpt, name){
+    var k=chkKey(tpt,name), g=_srvExpGen, o=srvExpOpts(tpt, name);
+    if(_srvExpAsk===k) return;
+    _srvExpAsk=k;
+    function here(){
+      if(g!==_srvExpGen) return null;
+      _srvExpAsk='';
+      var b=srvHere(tpt, name) ? document.getElementById('modal-body') : null;
+      return (b && screenAlive(b) && b.querySelector('#srv-exp')) ? b : null;
+    }
+    function refuse(msg){
+      var body=here(); if(!body) return;
+      o.err=msg; srvExpPaint(body, srvExpClosedHtml(tpt, o), '[data-sv="exp"]');
+    }
+    subPost({action:'get_config_raw', kind:tpt, name:name}).then(function(r){
+      var body=here(); if(!body) return;
+      // Роутер старше этого действия для AmneziaWG (частичная заливка) отвечает «неизвестный тип» — говорим своими словами.
+      if(!r || !r.ok){ refuse((r && /неизвестный тип/.test(r.msg||'')) ? 'роутер не умеет отдавать конфиг AmneziaWG — обновите Enodia' : 'не удалось прочитать конфиг: '+((r&&r.msg)||'ошибка')); return; }
+      var raw=b64toUtf8(r.content||'');
+      if(!raw){ refuse('не удалось прочитать конфиг: роутер отдал пустой файл'); return; }
+      _srvExp=srvExpModel(tpt, name, raw, cfgDisp(tpt, name));
+      srvExpPaint(body, srvExpOpenHtml(_srvExp, o), _srvExp.link ? '[data-sv="expcopy"]' : '[data-sv="expdl"]');
+    }, function(){ refuse('роутер не ответил'); });
+  }
+  // ЗАКРЫТЬ: забыть конфиг и, если экран этого сервера показан, нарисовать закрытую карточку СЕЙЧАС — «Скрыть», сохранение в
+  // редакторе (показанное было конфигом до правки), смена имени (в ссылке стояло прежнее). Только забыть — мало: перерисовка
+  // экрана приходит позже, а при сбое чтения списка не приходит вовсе, и прежние код и ссылка стояли бы на экране с кнопками,
+  // которые уже ничего не делают (ревью с.133).
+  // Закрывает ТОЛЬКО карточку этого сервера: ответ на сохранение или переименование сервера A, доехавший, когда раскрыта карточка
+  // B (или её «Показать» в пути), забывал конфиг B — карточка оставалась раскрытой с мёртвыми кнопками (ревью с.134, круг 2).
+  function srvExpClose(tpt, name){
+    var k=chkKey(tpt,name);
+    if((_srvExp && _srvExp.k!==k) || (_srvExpAsk && _srvExpAsk!==k)) return;
+    srvExpForget();
+    var b=srvHere(tpt, name) ? document.getElementById('modal-body') : null;
+    if(b && b.querySelector('#srv-exp')) srvExpPaint(b, srvExpClosedHtml(tpt, srvExpOpts(tpt, name)), '[data-sv="exp"]');
   }
   // ==== ДОРОГА, «АДРЕС ЗАБЛОКИРОВАН» И ВТОРОЕ МНЕНИЕ НА ЭКРАНЕ СЕРВЕРА (road.sh, cgi-bin/ping, cheburcheck.sh) =================
   // Дорога — свойство КОНФИГА (`roads`), а не выхода: один сервер едет по ней и основным транспортом, и выходом. Плитки, а не кнопка —
@@ -16183,6 +16641,7 @@
       if(!r || !r.ok) return;
       var to=r.name||nn;
       if(to!==name) chkRename(tpt, name, to);   // сменился только показ — файл тот же, кэшу проверок ехать некуда
+      srvExpClose(tpt, name);                    // …а в раскрытом «Экспорте конфига» ссылка и код несли ПРЕЖНЕЕ имя
       // Адрес и экран — только если человек всё ещё на экране ЭТОГО сервера: иначе navReplace переписал бы адрес чужого экрана.
       if(!srvHere(tpt, name)) return;
       navReplace(navKey('cn-server', tpt+'/'+to));
@@ -23522,14 +23981,22 @@
   // 3c-3, круг 2). Только для перерисовки ТОГО ЖЕ экрана (`keep`): номер освобождается при удалении и достаётся новому устройству,
   // и чужой, уже мёртвый ключ на экране нового — даже на секунду — недопустим.
   var _vsConf=null;
-  function vsConfHtml(conf, txtOpen){
-    var svg=qrSvg(conf, 320);
+  // КОД СЛЕВА, ДЕЙСТВИЯ СПРАВА — одна раскладка на «Доступ домой» (конфиг устройства) и «Экспорт конфига» сервера. `o.qr` — текст,
+  // который несёт код (нет текста — нет и кода, без слов о длине), `o.long` — что сказать, когда он в код не влез, `o.acts` — кнопки,
+  // `o.sum`/`o.txt` — что раскрывает «Показать …» (нет текста — нет и строки), `o.open` — раскрыто ли.
+  function qrShareHtml(o){
+    var svg=o.qr ? qrSvg(o.qr, 320) : null;
     // QR — на белом при любой теме (тёмная подложка у кода ломает чтение камерой части телефонов).
     return '<div class="vs-qr">'+(svg ? '<div class="qrbox">'+svg+'</div>' : '')
-      + '<div class="grow">'+(svg ? '' : noteBox('Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.','warn'))
-      + '<div class="acts"><button type="button" class="btn" data-pa="copy">Скопировать конфиг</button>'
-      +   '<button type="button" class="btn" data-pa="dl">'+icUse('i-dl','s','',true)+'<span>Скачать файлом</span></button></div>'
-      + '<details class="vs-txt"'+(txtOpen?' open':'')+'><summary class="act mut">Показать текст конфига</summary><pre class="mono">'+esc(conf)+'</pre></details></div></div>';
+      + '<div class="grow">'+((svg || !o.qr) ? '' : noteBox(o.long,'warn'))
+      + '<div class="acts">'+o.acts+'</div>'
+      + (o.txt ? '<details class="vs-txt"'+(o.open?' open':'')+'><summary class="act mut">'+o.sum+'</summary><pre class="mono">'+esc(o.txt)+'</pre></details>' : '')+'</div></div>';
+  }
+  function vsConfHtml(conf, txtOpen){
+    return qrShareHtml({qr:conf, long:'Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.',
+      acts:'<button type="button" class="btn" data-pa="copy">Скопировать конфиг</button>'
+        + '<button type="button" class="btn" data-pa="dl">'+icUse('i-dl','s','',true)+'<span>Скачать файлом</span></button>',
+      sum:'Показать текст конфига', txt:conf, open:txtOpen});
   }
   function openVpnSrvPeer(p, d, keep){
     var id=String(p.id), nm=vsPeerName(p), on=!!p.on, lan=!!p.lan, run=!!d.running, net=vsNetOf(d), fsig=focusMark();

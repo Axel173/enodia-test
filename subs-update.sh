@@ -28,7 +28,8 @@
 #   update [tag]   — обновить все подписки (или одну). Это же зовёт cron.
 #   drop <tag>     — the subscription is being removed (cgi-bin/action remove_sub, BEFORE its `.subs` line goes): its configs
 #                    of all families and its lines of `.sub-names`/`.sub-picks`. A config in use (active, under an exit) stays
-#                    and becomes the person's own — its name moves to cfg-names.sh.
+#                    and becomes the person's own — its name moves to cfg-names.sh, the CGI then moves its FILE out of
+#                    «sub-<tag>-». The `.subs` line is left without its link (no run lays the configs out again meanwhile).
 #   fetch <tag>    — тело подписки в base64 (используется CGI: одна копия закачки).
 #   list           — что в реестре (tag, метка, сколько конфигов сейчас).
 #   parse <ссылка> — конфиг из ОДНОЙ ссылки в stdout, ничего не записывая: роутерный канон
@@ -54,6 +55,8 @@ AWG_ACTIVE_F="$ENODIA_STATE/.active"
 # «This text of the active AmneziaWG config was tried and did not come up» — `name⇥md5 of its substance`. In RAM on purpose: the
 # attempt costs the tunnel half a minute, so the SAME text is not tried on every run, but a reboot is a fair reason to try again.
 AWG_TRIED=/tmp/enodia-subs-awg-tried
+# The watchdog's state (NORMAL / FAILOPEN): switch-vpn.sh keeps it in step when it leaves the router in direct mode (safety_off).
+WD_STATE=/tmp/enodia-watchdog.state
 LOG=/tmp/enodia-subs-update.log
 LOCK=/tmp/enodia-subs-update.lock
 TMPD=/tmp/enodia-subs-update.$$
@@ -441,29 +444,43 @@ vpn_from() {
 	sed "s/$SAN_CR\$//" "$_vd.conf" 2>/dev/null | tr '\r' '\n' > "$_vd.fin" 2>/dev/null || return 1
 	# $PRIMARY_DNS / $SECONDARY_DNS — the app's templates, filled from dns1/dns2 as the app does. The value goes into a
 	# sed replacement ⇒ only what an address is made of; anything else — the default.
-	if grep -qF '$PRIMARY_DNS' "$_vd.fin" 2>/dev/null || grep -qF '$SECONDARY_DNS' "$_vd.fin" 2>/dev/null; then
+	# The gate knows the braces too: with BOTH templates written `${…}` it saw neither, and the line stayed a template.
+	if grep -qE '\$[{]?(PRIMARY|SECONDARY)_DNS' "$_vd.fin" 2>/dev/null; then
 		is_dns_ip "$_vdns1" || _vdns1=1.1.1.1
 		is_dns_ip "$_vdns2" || _vdns2=1.0.0.1
 		lbl_commit_out "$_vd.fin" sed "s/\\\$[{]\\{0,1\\}PRIMARY_DNS[}]\\{0,1\\}/$_vdns1/g; s/\\\$[{]\\{0,1\\}SECONDARY_DNS[}]\\{0,1\\}/$_vdns2/g" "$_vd.fin" 2>/dev/null || return 1
 	fi
+	# NO RESOLVER NAMED: 3x-ui writes `DNS =` only when its inbound has one (by default it has none). Without the line the carrier
+	# falls back to Amnezia's internal resolver, which a 3x-ui server does not run — a handshake, a green panel, nothing resolves
+	# (the twin of a wireguard:// link without dns, review s.134). The two addresses the templates above default to.
+	if ! grep -qi "^[ $TAB]*DNS[ $TAB]*=" "$_vd.fin" 2>/dev/null; then
+		iface_add "$_vd.fin" "DNS = 1.1.1.1, 1.0.0.1" || return 1
+	fi
 	# MTU: the app keeps it as a FIELD of the container and sets it on the interface itself — a native .conf has no such
-	# line, and the router reads only the .conf. Written after Address (or right under [Interface]); an own line wins.
+	# line, and the router reads only the .conf. An own line wins.
 	_vmtu=$(printf '%s' "$_vmtu" | sed 's/\..*//' | tr -cd '0-9' | sed 's/^0*//')
 	if [ -n "$_vmtu" ] && [ "${#_vmtu}" -le 4 ] && [ "$_vmtu" -ge 1280 ] && [ "$_vmtu" -le 1500 ] \
 	   && ! grep -qi "^[ $TAB]*MTU[ $TAB]*=" "$_vd.fin" 2>/dev/null; then
-		lbl_commit_out "$_vd.fin" awk -v m="$_vmtu" '
-			{ L[NR] = $0 }
-			END {
-				pos = 0
-				for (i = 1; i <= NR; i++) {
-					if (L[i] ~ /^[ \t]*\[[Ii][Nn][Tt][Ee][Rr][Ff][Aa][Cc][Ee]\]/) pos = i
-					else if (pos > 0 && L[i] ~ /^[ \t]*[Aa][Dd][Dd][Rr][Ee][Ss][Ss][ \t]*=/) { pos = i; break }
-					else if (pos > 0 && L[i] ~ /^[ \t]*\[/) break
-				}
-				for (i = 1; i <= NR; i++) { print L[i]; if (i == pos) print "MTU = " m }
-			}' "$_vd.fin" 2>/dev/null || return 1
+		iface_add "$_vd.fin" "MTU = $_vmtu" || return 1
 	fi
 	[ -s "$_vd.fin" ]
+}
+
+# iface_add <file> <line> — one line into the [Interface] section, where the app puts what it keeps as container fields: after
+# Address, else right under [Interface]; no [Interface] — nothing. The file is replaced whole or not at all. The panel's twin is
+# amneziaIfaceAdd (the parity stand holds the two together).
+iface_add() {
+	lbl_commit_out "$1" awk -v l="$2" '
+		{ L[NR] = $0 }
+		END {
+			pos = 0
+			for (i = 1; i <= NR; i++) {
+				if (L[i] ~ /^[ \t]*\[[Ii][Nn][Tt][Ee][Rr][Ff][Aa][Cc][Ee]\]/) pos = i
+				else if (pos > 0 && L[i] ~ /^[ \t]*[Aa][Dd][Dd][Rr][Ee][Ss][Ss][ \t]*=/) { pos = i; break }
+				else if (pos > 0 && L[i] ~ /^[ \t]*\[/) break
+			}
+			for (i = 1; i <= NR; i++) { print L[i]; if (i == pos) print l }
+		}' "$1" 2>/dev/null
 }
 
 # vpn_decode <body of vpn://> — 0: the config text is in $_vd.fin. Four forms (qCompress · bare zlib · plain JSON · the
@@ -581,7 +598,11 @@ parse_wg() {
 # wg_emit — the config text of the link parse_wg has just read (its `_w*` fields), on stdout.
 wg_emit() {
 	printf '[Interface]\nPrivateKey = %s\nAddress = %s\n' "$_wk" "$_waddr"
-	[ -z "$_wdns" ] || printf 'DNS = %s\n' "$_wdns"
+	# A LINK THAT NAMES NO RESOLVER GETS ONE (3x-ui writes `dns` only when the inbound has it set — by default it has not). With
+	# no `DNS =` line the carrier falls back to Amnezia's internal resolver (transport-awg.sh), which a plain WireGuard server does
+	# not run: such a server chosen as the main one shook hands under a green panel and resolved nothing (review s.133). The
+	# two addresses are the ones an Amnezia container's templates default to (vpn_from); the panel's wgLinkConf writes the same.
+	printf 'DNS = %s\n' "${_wdns:-1.1.1.1, 1.0.0.1}"
 	if [ -n "$_wmtu" ] && [ "${#_wmtu}" -le 4 ] && [ "$_wmtu" -ge 1280 ] && [ "$_wmtu" -le 1500 ]; then printf 'MTU = %s\n' "$_wmtu"; fi
 	printf '\n'
 	[ -z "$_wrem" ] || printf '# %s\n' "$_wrem"
@@ -880,7 +901,7 @@ put_server() {
 	# каждый тик cron = новый сервер у несущей = ежедневный рестарт туннеля на ровном месте.
 	# Сверяем ТРИ поля (адрес+порт+креды): если провайдер сменил хоть одно — сервер действительно
 	# другой, и конфиг надо обновить, иначе несущая останется с протухшими кредами.
-	# NOT for AmneziaWG: its links are base64 (the body cannot be searched for an address), a server there is one key pair
+	# NOT for AmneziaWG: a `vpn://` link is base64 (the body cannot be searched for an address), a server there is one key pair
 	# and not a pool, and the active config is applied by refresh_awg by the STATE of the working copy, not by this run's news.
 	if [ "$FAM_EXT" != conf ] && [ -f "$_dst" ] && [ "$_nm" = "$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n\"\\')" ]; then
 		_oa=$(cfg_addr "$_dst")
@@ -1146,11 +1167,15 @@ prune_stale() {
 	for _psf in $FAMS; do
 		fam_set "$_psf"
 		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
+		# «ДОМ» РЕЗЕРВА (AmneziaWG, `.failover-home`) — the server the watchdog returns to from a reserve. While the router sits
+		# on the reserve «active» is another name, and the home pruned left the watchdog a home that is gone (review s.133).
+		_phome=""; [ "$_psf" != awg ] || _phome=$(cat "$ENODIA_STATE/.failover-home" 2>/dev/null | tr -d ' \r\n"\\')
 		for _f in "$FAM_DIR"/sub-"$_t"-*."$FAM_EXT"; do
 			[ -e "$_f" ] || continue
 			_b=$(basename "$_f" ".$FAM_EXT")
 			[ "$(sub_owner_tag "$_b")" = "$_t" ] || continue
 			grep -qxF "$_b" "$TMPD/keep" 2>/dev/null && continue
+			if [ -n "$_phome" ] && [ "$_b" = "$_phome" ] && [ "$_b" != "$_act" ]; then HOME_GONE="${HOME_GONE:+$HOME_GONE }$_b"; continue; fi
 			if [ "$_b" = "$_act" ]; then
 				# СПИСОК, а не одно имя: активные конфиги у семейств РАЗНЫЕ, и оба могут
 				# исчезнуть в одном прогоне. Держали одно — второй оставался на диске, но
@@ -1207,8 +1232,8 @@ names_text() {
 	# значит и строку имени надо оставить: иначе файл теряет идентичность (панель показывает
 	# его именем файла), а вернувшийся сервер заведёт себе ВТОРОЙ файл вместо этого.
 	# The same for a config left under an exit (HELD_GONE — «name:exits»).
-	if [ -n "$ACT_GONE$HELD_GONE" ] && [ -f "$2" ]; then
-		for _ag in $ACT_GONE $HELD_GONE; do grep "^${_ag%%:*}$TAB" "$2" 2>/dev/null | head -1; done
+	if [ -n "$ACT_GONE$HELD_GONE$HOME_GONE" ] && [ -f "$2" ]; then
+		for _ag in $ACT_GONE $HELD_GONE $HOME_GONE; do grep "^${_ag%%:*}$TAB" "$2" 2>/dev/null | head -1; done
 	fi
 	if [ -s "$3" ]; then cat "$3"; fi
 	return 0
@@ -1282,12 +1307,28 @@ refresh_awg() {
 	[ "$_rws" != "$(cfg_sig "$FAM_LIVE")" ] || return 0
 	_rwd=$(disp_of "$_rwa")
 	_rwm=$(printf '%s' "$_rws" | md5sum 2>/dev/null | cut -c1-32 | tr -cd 'a-f0-9')
+	# AWG_LAGS — «the working copy stays behind the config» for the run's record (update_one): every exit below this line
+	# that leaves it so sets it; the two that bring the copy in line, and «the active server is another one now», do not.
 	if [ -n "$_rwm" ] && [ "$(cat "$AWG_TRIED" 2>/dev/null)" = "$_rwa$TAB$_rwm" ]; then
-		say "  активный сервер «$_rwd»: новый конфиг из подписки уже пробовали — не применился, работает прежний"
+		if awg_direct; then
+			say "  активный сервер «$_rwd»: новый конфиг из подписки уже пробовали — не применился; роутер в прямом режиме, мимо VPN"
+			AWG_LAGS=2
+		else
+			say "  активный сервер «$_rwd»: новый конфиг из подписки уже пробовали — не применился, работает прежний"
+			AWG_LAGS=1
+		fi
 		return 0
 	fi
 	if [ -e /tmp/enodia-switching.lock ]; then
-		say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера — применю при следующем обновлении"
+		# The lock is most often the watchdog's failover, and that one begins with safety_off — «работает прежний» would be the
+		# R4 lie in this branch's words (review s.134, round 2).
+		if awg_direct; then
+			say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера, а роутер в прямом режиме — применю при следующем обновлении"
+			AWG_LAGS=2
+		else
+			say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера — применю при следующем обновлении"
+			AWG_LAGS=1
+		fi
 		return 0
 	fi
 	[ -f "$ENODIA_DIR/switch-vpn.sh" ] || { say "  активный сервер «$_rwd» изменился, но switch-vpn.sh не найден"; return 0; }
@@ -1319,11 +1360,16 @@ refresh_awg() {
 	fi
 	# The reason in switch-vpn.sh's own words (its first [FAIL] line, colours off).
 	_rww=$(grep 'FAIL' "$TMPD/refresh.out" 2>/dev/null | head -1 | tr -d '\033' | sed 's/\[[0-9;]*m//g; s/^[[:space:]]*\[FAIL\][[:space:]]*//' | tr -d '\r\n\t')
+	AWG_LAGS=1
 	[ -z "$_rwm" ] || lbl_commit_out "$AWG_TRIED" printf '%s\t%s\n' "$_rwa" "$_rwm" 2>/dev/null
 	# Two different refusals, and the person checks them differently: the tunnel was raised on the new text and did not come up
 	# (the previous copy is back) — or nothing was raised at all and the new text could not even be laid out (a key held by an
 	# exit, no room on the partition).
-	if [ "$_rwc" = 1 ]; then
+	if [ "$_rwc" = 1 ] && awg_direct; then
+		say "  новый конфиг сервера «$_rwd» не поднялся, прежний тоже — роутер в прямом режиме, мимо VPN${_rww:+ ($_rww)}"
+		_rwx="с новым конфигом туннель не поднялся, прежний тоже не отвечает — роутер в прямом режиме, мимо VPN"
+		AWG_LAGS=2
+	elif [ "$_rwc" = 1 ]; then
 		say "  новый конфиг сервера «$_rwd» не поднялся — работает прежний${_rww:+ ($_rww)}"
 		_rwx="с новым конфигом туннель не поднялся — роутер вернул прежний"
 	else
@@ -1334,6 +1380,11 @@ refresh_awg() {
 		"Сервер «$_rwd» изменился в подписке, но $_rwx.${_rww:+ Причина: $_rww.} Роутер попробует снова после перезагрузки или когда конфиг в подписке изменится ещё раз; сразу — выберите этот сервер в панели заново."
 	return 0
 }
+
+# awg_direct — «the router is in direct mode right now». A refused config's words used to end «работает прежний» whatever
+# came of the return: the previous copy may be dead as well (its server changed for a reason), the switch then leaves the router
+# in direct mode — and the journal, the event and the run's record said the tunnel was back (review s.133).
+awg_direct() { [ "$(head -n 1 "$WD_STATE" 2>/dev/null | tr -d ' \r\n')" = FAILOPEN ]; }
 
 # reup_exits — the configs this run CHANGED that switched-on exits stand on: each such exit is taken down and brought up by the
 # new text. The way is the registry's own «set the config» (slots.sh cmd_set: down, write, up; its guards and its words) — there
@@ -1394,7 +1445,7 @@ update_one() {
 	# …and this run's picks: the file used to live through the whole pass, and the second subscription wrote the first one's
 	# lines into `.sub-picks` once more.
 	: > "$TMPD/picks"
-	N_NEW=0; N_CHG=0; N_SAME=0; N_DEL=0; N_SKIP=0; N_BAD=0; N_CUT=0; ACT_GONE=""; HELD_GONE=""
+	N_NEW=0; N_CHG=0; N_SAME=0; N_DEL=0; N_SKIP=0; N_BAD=0; N_CUT=0; ACT_GONE=""; HELD_GONE=""; HOME_GONE=""
 	# Вид тела: JSON-конфиги / список ссылок / base64 такого списка (детект как в панели).
 	_head=$(head -c 400 "$TMPD/body" 2>/dev/null | tr -d ' \t\r\n' | cut -c1-1)
 	_ok=1
@@ -1429,7 +1480,10 @@ update_one() {
 	say "  серверов $_tot (новых $N_NEW, изменено $N_CHG, снято $N_DEL, пропущено $((N_SKIP+N_BAD)))$([ "$N_CUT" = 1 ] && printf ', обрезано по капу %s' "$MAXSRV")"
 	CH_TOTAL=$((CH_TOTAL+N_NEW+N_CHG+N_DEL))
 	SRV_TOTAL=$((SRV_TOTAL+_tot))
-	SUMMARY="$SUMMARY«$_lab»: серверов $_tot (новых $N_NEW, изменено $N_CHG, снято $N_DEL). "
+	# The run's record for the panel (the toast of «Обновить серверы», the «Автообновление» card, the journal) is put together
+	# BELOW, after the active config and the exits: the hardware walk of 13.10.2026 showed a green «серверов 3 (… изменено 1 …)»
+	# over a run whose new config of the ACTIVE server had not come up — the person learnt of it from the bell alone.
+	_sumrec="«$_lab»: серверов $_tot (новых $N_NEW, изменено $N_CHG, снято $N_DEL)"
 	if [ -n "$ACT_GONE" ]; then
 		for _ag in $ACT_GONE; do
 			say "  ВНИМАНИЕ: активный сервер «$_ag» исчез из подписки — конфиг ОСТАВЛЕН"
@@ -1446,8 +1500,23 @@ update_one() {
 				"Сервер «$_hgd» больше не приходит в подписке «$_lab», а на нём стоит выход №$_hgx. Конфиг на роутере оставлен (выход по расписанию не рвём) — выберите выходу другой сервер в «Дополнительных выходах»."
 		done
 	fi
+	# …and for the reserve's «home»: the journal says it, the record counts it among the kept; no letter — nothing is wrong yet.
+	for _hm in $HOME_GONE; do
+		say "  ВНИМАНИЕ: сервер «$(disp_of "$_hm")» исчез из подписки — конфиг ОСТАВЛЕН: он «дом» резерва, сторож вернётся на него"
+	done
+	AWG_LAGS=0
 	refresh_active "$_t"
 	reup_exits
+	# Two facts a person must not miss, said in the record itself (each after «;» — the record's own clause stays whole for
+	# the panel's translation): servers that left the subscription and were KEPT because they are in use, and a new config of
+	# the active server that is NOT applied (refused now or earlier — said on every run while the working copy lags).
+	_sumk=0; for _sk in $ACT_GONE $HELD_GONE $HOME_GONE; do _sumk=$((_sumk+1)); done
+	[ "$_sumk" = 0 ] || _sumrec="$_sumrec; занятых оставлено $_sumk"
+	case "$AWG_LAGS" in
+		1) _sumrec="$_sumrec; новый конфиг активного сервера не применён — работает прежний" ;;
+		2) _sumrec="$_sumrec; новый конфиг активного сервера не применён, прежний не отвечает — роутер в прямом режиме" ;;
+	esac
+	SUMMARY="$SUMMARY$_sumrec. "
 	return 0
 }
 
@@ -1563,21 +1632,23 @@ cmd_list() {
 # its own copy of this, with its own list of directories — the third family would have been the third place to forget.
 # A CONFIG IN USE STAYS — the active one of its family, and one an exit stands on: removing a subscription must not cut what
 # carries traffic (the old copy deleted both; the exit then could not come up after a restart). It stays as the PERSON'S OWN
-# config: with the `.subs` line gone nothing owns it, and its real name moves to cfg-names.sh — where own configs keep theirs.
-# Prints «kind/file» of each kept config, one per line; the CGI turns them into words.
+# config: its real name moves to cfg-names.sh — where own configs keep theirs — and the CGI renames its file out of the
+# subscription's namespace (cfg_mv): under «sub-<tag>-» a subscription whose tag is a prefix of this one would own it.
+# Prints «kind/file» of each kept config, one per line; the CGI moves them and turns them into words.
 cmd_drop() {
 	_dt="$1"
 	case "$_dt" in ''|*[!a-z0-9-]*) echo "плохая метка подписки" >&2; return 1 ;; esac
 	for _dfam in $FAMS; do
 		fam_set "$_dfam"
 		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
+		_dhome=""; [ "$_dfam" != awg ] || _dhome=$(cat "$ENODIA_STATE/.failover-home" 2>/dev/null | tr -d ' \r\n"\\')
 		for _f in "$FAM_DIR"/sub-"$_dt"-*."$FAM_EXT"; do
 			[ -e "$_f" ] || continue
 			_b=$(basename "$_f" ".$FAM_EXT")
 			# The owner — by the registry PLUS this tag: a retry after the registry line is already gone must still know its own.
 			_do=$(sub_owner_tag "$_b"); [ "${#_dt}" -gt "${#_do}" ] && _do=$_dt
 			[ "$_do" = "$_dt" ] || continue
-			if [ "$_b" = "$_act" ] || [ -n "$(held_by "$FAM_TNAME" "$_b")" ]; then
+			if [ "$_b" = "$_act" ] || { [ -n "$_dhome" ] && [ "$_b" = "$_dhome" ]; } || [ -n "$(held_by "$FAM_TNAME" "$_b")" ]; then
 				_dd=$(awk -F"$TAB" -v n="$_b" '($1 "") == (n "") { print $2; exit }' "$NAMES" 2>/dev/null)
 				if [ -n "$_dd" ] && [ -f "$ENODIA_DIR/cfg-names.sh" ]; then
 					sh "$ENODIA_DIR/cfg-names.sh" set "$FAM_TNAME" "$_b" "$_dd" >/dev/null 2>&1 </dev/null
@@ -1591,6 +1662,14 @@ cmd_drop() {
 	# The maps — by the OWNER, not by the prefix (subs-lib.sh::sub_names_keep_other); the tag is given explicitly.
 	[ ! -f "$NAMES" ] || lbl_commit_out "$NAMES" sub_names_keep_other "$_dt" "$NAMES" 2>/dev/null
 	[ ! -f "$PICKS" ] || lbl_commit_out "$PICKS" sub_names_keep_other "$_dt" "$PICKS" 2>/dev/null
+	# The registry line stays, WITHOUT its link: the caller (cgi-bin/action remove_sub) still moves the kept servers out of the
+	# subscription's namespace and removes the line only then — a run that starts in between (cron, another tab's button) sees no
+	# link and skips the subscription instead of laying all its configs out again (review s.134, round 2). Until it is moved, the
+	# owner of a kept file is still this tag. «-», not an empty field: readers split the line with `IFS=TAB read`, and two tabs in a
+	# row are ONE separator there — the label slid into the link's place (review s.134, round 3). The registry keeps the other
+	# subscriptions' tokens: written closed, as its writer does (cgi-bin/action::subs_put).
+	[ ! -f "$ENODIA_STATE/.subs" ] || ( umask 077; lbl_commit_out "$ENODIA_STATE/.subs" \
+		awk -F"$TAB" -v t="$_dt" 'BEGIN { OFS = FS } ($1 "") == (t "") { $2 = "-" } { print }' "$ENODIA_STATE/.subs" ) 2>/dev/null
 	return 0
 }
 
@@ -1638,7 +1717,11 @@ trim_log() {
 	tail -n 300 "$LOG" > "$LOG.new" 2>/dev/null && mv "$LOG.new" "$LOG" 2>/dev/null
 }
 
-mkdir -p "$TMPD" 2>/dev/null
+# THE RUN'S FILES CARRY PRIVATE KEYS (a decoded link, a config on its way to its place): the dir is the run's OWN and CLOSED —
+# made, not «made or found». `mkdir -p` under the caller's umask left them readable to every process of the router, in a dir a
+# stranger could have put there first (review s.133; the same care as cap_run of cgi-bin/action).
+rm -rf "$TMPD" 2>/dev/null
+( umask 077; mkdir "$TMPD" ) 2>/dev/null || { echo "не удалось создать каталог работы $TMPD" >&2; exit 1; }
 # PIPE/HUP в списке не для красоты: прогон пишет прогресс в stdout, и оборванный читатель
 # (панель закрыла трубу, `| head`) убивает нас сигналом — EXIT-ловушка тогда не срабатывает,
 # и каталог остаётся в /tmp, то есть в ОЗУ. Замерено на живом роутере: такой каталог (тогда он звался

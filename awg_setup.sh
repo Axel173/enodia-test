@@ -114,7 +114,12 @@ fi
 # DNS — the first value of the line that IS an address (dns-lib.sh::conf_dns, the reader the carrier plugin asks too): wg-quick
 # takes search domains in `DNS =`, and «the first comma part» above could be a word — the guest's DNAT below would name it.
 # A library older than the function keeps the value parsed above.
-command -v conf_dns >/dev/null 2>&1 && dns=$(conf_dns "$config_file")
+if command -v conf_dns >/dev/null 2>&1; then
+    _dns0=$dns; dns=$(conf_dns "$config_file")
+    # The line «DNS: …» above printed the first look: say it when the resolver is another value (hardware walk 13.10.2026 — the
+    # log said «DNS: corp.local» over a config whose resolver was taken as 1.1.1.1).
+    [ "$dns" = "$_dns0" ] || echo "DNS: резолвер — ${dns:-нет адреса в строке} (первое значение строки, «$_dns0», — не адрес)"
+fi
 ep_src=$(grep -E '^[[:space:]]*Endpoint[[:space:]]*=' "$config_file" | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d ' \t\r')
 ep_host=$(echo "$ep_src" | sed 's/:[0-9]*$//')
 ep_port=$(echo "$ep_src" | sed -n 's/.*:\([0-9]*\)$/\1/p')
