@@ -15227,7 +15227,8 @@
     o=o||{};
     var act = name===grp.active, canAct = canActivate(grp);
     var rd = (key==='awg') ? cfgRiders(name) : [], rv = (key==='awg') ? roadOf(name) : '';
-    var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length && !cfgExits(key, name).length;
+    // An Amnezia Premium server has no ✕: a country is taken away on the subscription's screen (its server screen has no «Удалить» either).
+    var canDel = !(act && (key==='awg' || key===cur.transport)) && !rd.length && !cfgExits(key, name).length && !isPremSrv(name);
     var m = key==='hy2' ? (hy2Meta[name]||{}) : {};
     var ds = m.host ? '<span class="mono">'+esc(m.host)+'</span>'+(m.obfs?' · '+esc(m.obfs):'') : '';
     // WARP узнаёт роутер (по ключу сервера Cloudflare): под именем — «Cloudflare», у дороги — кого она везёт (макет).
@@ -15272,7 +15273,7 @@
   function serverCard(name, grp, disp, subLabel, pinned){
     var act = name===grp.active, canAct = canActivate(grp);
     var meta=xrayMeta[name]||{}, host=meta.host||'';
-    var canDel = !(act && cur.transport==='xray') && !cfgExits('xray', name).length;
+    var canDel = !(act && cur.transport==='xray') && !cfgExits('xray', name).length && !isPremSrv(name);
     var ds = host ? '<span class="mono">'+esc(host)+'</span>' : '';
     if(subLabel) ds += (ds?' · ':'')+'↳ <span>подписка</span> «<span class="sens" translate="no">'+esc(subLabel)+'</span>»';
     var st = !canAct ? '<span class="chip">'+(act?actLbl(false):notReadyLbl(grp))+'</span>'
@@ -16453,6 +16454,9 @@
     var canDel=!(act && (tpt==='awg' || tpt===cur.transport)) && !rdr.length;
     var meta=(tpt==='xray') ? (xrayMeta[name]||{}) : {};
     if(hex.length) canDel=false;
+    // AN AMNEZIA PREMIUM SERVER IS NOT DELETED HERE (user's decision 14.10.2026, mockup cn-server-prem): a country is taken away by its
+    // switch on the subscription's screen — the «Конфиг выдаёт Amnezia» card says so, and there the router says why it refuses.
+    if(prem) canDel=false;
     var rep=navIfShown('cn-server', srvScrOpen), fsig=focusMark();
     // Раскрытый текст в «Экспорте конфига» перерисовка не сворачивает (спросить надо ДО показа: показ меняет тело экрана).
     var expTxt=!!document.querySelector('#modal-body #srv-exp .vs-txt[open]');
@@ -16487,7 +16491,7 @@
     h+='<div id="srv-chb" hidden></div>';
     if(via) h+=srvRoadHtml(name, crec);
     var del=canDel ? '<button type="button" class="btn bad" data-sv="del">'+icUse('i-trash','s','',true)+(tpt==='awg' ? 'Удалить конфиг' : 'Удалить')+'</button>' : '';
-    var why=!canDel ? '<div class="cline">'+(rdr.length ? '<span>Конфиг служит дорогой:</span> '+ridersHtml(rdr)+'<span>. Удалить его можно, когда по нему никто не едет.</span>'
+    var why=(!canDel && !prem) ? '<div class="cline">'+(rdr.length ? '<span>Конфиг служит дорогой:</span> '+ridersHtml(rdr)+'<span>. Удалить его можно, когда по нему никто не едет.</span>'
                                    : hex.length ? '<span>Конфиг держит</span> <span class="nbr"><button type="button" class="ilink" data-cact="exit:'+hex[0]+'">выход №'+hex[0]+'</button><span>.</span></span> <span>Удалить его можно, когда выход удалён или переведён на другой сервер.</span>'
                                    : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
@@ -16650,9 +16654,7 @@
         srvColoLoad(body, crec, true);
       }, function(){ if(!screenAlive(body)) return; var box=document.getElementById('srv-awg'); if(box) box.innerHTML=noteBox('роутер не ответил', 'warn'); });
     } else if(!prem) srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep, chk+spd+'<span class="grow"></span>'+del, expSee);
-    // «Why it cannot be deleted» of Xray/Hysteria2 goes into the header (their buttons live in the editor); a Premium server has it in
-    // its «Проверка» card already.
-    if(tpt!=='awg' && !prem && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
+    if(tpt!=='awg' && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
   }
   // ==== «ЭКСПОРТ КОНФИГА» НА ЭКРАНЕ СЕРВЕРА (макет cn-server, cn-server-awg, cn-server-awg-sub, cn-server-hy2; 13.10.2026) ======
   // Три формы на любой сохранённый конфиг — ссылка · QR-код · файл. КОНФИГ — КРЕД: карточка закрыта, панель берёт его с роутера
