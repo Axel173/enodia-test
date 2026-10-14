@@ -261,6 +261,9 @@ PM_TUN_HOST=1.1.1.1
 # keeps no verdict of — `busy` (a switch or a tick drives a carrier now, the probe interface held by others) or `idle` (the key is live
 # elsewhere under another name, or held by an exit that is down: nothing carries it now). An empty method with no number used to reach
 # the panel as ✗, cached for every device.
+# MEASURED SILENCE IS STILL `tun` (walk 15.10.2026, dev.20): a probe that ran — through a live interface or a throwaway one — and got
+# no answer says so with METHOD=tun and no number. The key does not carry; the panel says that instead of an endpoint's silence or
+# a second opinion about the relay (one address for every country — the same relay carried FI that minute).
 prem_ms() {   # $1 = config name, $2 = active (true|false) [$3 = live] -> MS, METHOD (tun | busy | idle: no verdict) — or nothing
 	MS=""; METHOD=""; CDN=0; TCP_IP=""; _pi=""
 	[ -n "$PM_LIB" ] || { PM_LIB=1; if [ -f "$D/daemon-lib.sh" ]; then . "$D/daemon-lib.sh"; fi; }
@@ -284,7 +287,7 @@ prem_ms() {   # $1 = config name, $2 = active (true|false) [$3 = live] -> MS, ME
 		fi
 	fi
 	if [ -n "$_pi" ]; then
-		r=$(tcp_ms "$PM_TUN_HOST" 443 3 "$_pi"); MS=${r%%|*}; [ -n "$MS" ] && METHOD=tun
+		r=$(tcp_ms "$PM_TUN_HOST" 443 3 "$_pi"); MS=${r%%|*}; METHOD=tun
 		return 0
 	fi
 	[ "${3:-}" != live ] || return 0
@@ -299,7 +302,7 @@ prem_ms() {   # $1 = config name, $2 = active (true|false) [$3 = live] -> MS, ME
 	done
 	[ "$_pr" != 5 ] || { METHOD=busy; return 0; }
 	MS=$(printf '%s\n' "$_po" | sed -n 's/^try_ms=\([0-9][0-9]*\)$/\1/p' | head -n 1)
-	[ -n "$MS" ] && METHOD=tun
+	METHOD=tun
 	return 0
 }
 

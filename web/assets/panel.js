@@ -6418,7 +6418,11 @@
     } else if(c.st==='dead'){
       // Сравнить не с чем (туннеля нет), а второе мнение сказало своё — его слова вместо голого ✗ (только при включённом Cheburcheck).
       var cb=chbParse(c.chb);
-      if(cb && cb.v==='blocked'){ parts.push('<span style="color:var(--text-warning)">похоже, блокировка ('+cb.b+' из '+cb.n+')</span>'); tips.push('туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России'); }
+      // An Amnezia Premium server measured through its own tunnel and silent (method `tun` with no number, cgi-bin/ping prem_ms): the
+      // KEY does not carry. Neither the relay's silence nor a second opinion about the relay — one address for every country, and it
+      // carried another country the same minute (walk 15.10.2026: DE read «из России доступен»).
+      if(c.method==='tun'){ parts.push('<span style="color:var(--text-warning)">ключ не везёт</span>'); tips.push('через туннель на ключе Amnezia ответа нет — ключ не везёт; узел Amnezia тут ни при чём, он один у всех стран. Новый ключ — на экране сервера'); }
+      else if(cb && cb.v==='blocked'){ parts.push('<span style="color:var(--text-warning)">похоже, блокировка ('+cb.b+' из '+cb.n+')</span>'); tips.push('туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России'); }
       else if(cb && cb.v==='clear'){ parts.push('<span style="color:var(--text-warning)">из России доступен</span>'); tips.push('второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне'); }
       else { parts.push('<span style="color:var(--text-warning)">✗</span>'+recVia(c)); tips.push(c.via ? 'через дорогу сервер не отвечает: лежит дорога или сам сервер' : (c.ncmp ? 'сервер не отвечает, и сравнить не с чем: туннеля AmneziaWG к другому серверу при проверке не было' : 'сервер не отвечает или не даёт интернета (пинг мог врать)')); }
     }
@@ -11490,6 +11494,10 @@
     "напрямую молчит, а через работающий туннель отвечает — сервер жив, не пускает ваш провайдер":"silent directly but answers through a working tunnel — the server is alive, your ISP doesn't let you through",
     "туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России":"there is no tunnel to compare with, and the second opinion sees a block at Russian ISPs",
     "второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне":"the second opinion reaches the server — your ISP cuts it or the fault is on your side",
+    "ключ не везёт":"the key does not carry",
+    "сервер Amnezia Premium: его узел на пинг не отвечает, и число — задержка через сам туннель":"an Amnezia Premium server: its relay answers no ping, and the number is the delay through the tunnel itself",
+    "сервер Amnezia Premium молчит через свой туннель: ключ не везёт — новый берут на экране сервера":"an Amnezia Premium server silent through its own tunnel: the key does not carry — a new one is taken on the server's screen",
+    "через туннель на ключе Amnezia ответа нет — ключ не везёт; узел Amnezia тут ни при чём, он один у всех стран. Новый ключ — на экране сервера":"no answer through the tunnel on the Amnezia key — the key does not carry; Amnezia's relay is not the cause, it is one for every country. A new key is on the server's screen",
     "сервер едет по дороге — число меряно через неё":"the server rides a road — the number is measured through it",
     "Пинг через":"Ping via",
     "Дорога":"Road",
@@ -12100,6 +12108,7 @@
     [/^(\d+) — общий \(«Параметры сети»\)$/,"$1 — the common one («Network settings»)"],
     [/^✓ «([^»]*)» отвечает · (\d+) мс$/,"✓ «$1» responds · $2 ms"],[/^✓ «([^»]*)» отвечает$/,"✓ «$1» responds"],
     [/^✗ «([^»]*)»: роутер не ответил$/,"✗ «$1»: the router did not respond"],[/^✗ «([^»]*)»: эндпоинт не отвечает$/,"✗ «$1»: the endpoint does not respond"],
+    [/^✗ «([^»]*)»: ключ не везёт — через его туннель ответа нет$/,"✗ «$1»: the key does not carry — no answer through its tunnel"],
     // Имя конфига — всегда латиница (cfgSlug): правило не ловит «переименовываю группу» и прочие фразы со своими правилами ниже.
     [/^переименовываю ([A-Za-z0-9_][A-Za-z0-9._-]*)$/,"renaming $1"],
     [/^конфиг «([^»]*)» переименован в «([^»]*)»$/,"config «$1» renamed to «$2»"],
@@ -16539,7 +16548,7 @@
       // у дороги, которой нет, читались фактом, и о простое говорила одна шапка (обход на железе 12.10.2026). Клетки говорят
       // то же, что шапка; прямой пинг — замер мимо дороги, он остаётся.
       var rdn=roadDown(c.via);
-      return cell('<span>Пинг через</span> '+roadExitHtml(c.via), rdn ? 'дорога не поднята' : ((c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : 'нет ответа'), rdn || c.ms==null)
+      return cell('<span>Пинг через</span> '+roadExitHtml(c.via), rdn ? 'дорога не поднята' : ((c.ms!=null) ? esc(c.ms+' мс'+pingSuffix(c)) : (c.method==='tun' ? 'ключ не везёт' : 'нет ответа')), rdn || c.ms==null)
         + cell('Напрямую', (c.dms!=null) ? esc(c.dms+' мс') : 'не отвечает', c.dms==null)
         + cell('Дорога', roadExitHtml(c.via)+(rdn ? ' <span>· не поднята</span>' : '<span id="srv-colo">'+(_srvColo[srvColoKey(c)] ? ' · '+esc(_srvColo[srvColoKey(c)]) : '')+'</span>'), rdn)
         + srvStatsTail(tpt, name, act, c);
@@ -16551,7 +16560,7 @@
     }
     if(run==='check') ping='проверяю…';
     else if(c && c.ms!=null) ping=c.ms+' мс'+pingSuffix(c)+(c.cdn?' · CDN':'');
-    else if(c && c.st==='dead' && c.kind!=='speed') ping='нет ответа';
+    else if(c && c.st==='dead' && c.kind!=='speed') ping=(c.method==='tun') ? 'ключ не везёт' : 'нет ответа';   // `tun` silent — the Premium key does not carry (recView)
     else if(c && c.st==='ok' && c.kind==='ping') ping='✓';
     else ping='—';
     var h=cell((tpt==='xray' || isPremSrv(name)) ? 'Пинг' : 'Пинг эндпоинта', esc(ping), !run && !!(c && c.st==='dead' && c.ms==null && c.kind!=='speed'));
@@ -17250,7 +17259,7 @@
     logLine('→ проверка: «'+dn+'»', null);
     checkOne(tpt, name, null, function(ok, c, r, unknown, blocked){
       srvRunSet(tpt, name, null);
-      var m=ok ? '✓ «'+dn+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? pmNoMeasure(c, dn) : blocked ? '«'+dn+'»: адрес заблокирован провайдером — сервер отвечает через туннель' : '✗ «'+dn+'»: эндпоинт не отвечает');
+      var m=ok ? '✓ «'+dn+'» отвечает'+(c&&c.ms!=null?(' · '+c.ms+' мс'):'') : (unknown ? pmNoMeasure(c, dn) : blocked ? '«'+dn+'»: адрес заблокирован провайдером — сервер отвечает через туннель' : (c && c.method==='tun') ? '✗ «'+dn+'»: ключ не везёт — через его туннель ответа нет' : '✗ «'+dn+'»: эндпоинт не отвечает');
       showToast(m, ok); logLine(m, ok);
     });
   }
@@ -25313,10 +25322,13 @@
       [smp({st:'dead', ms:null, chb:'blocked:23:30'}), 'туннеля для сравнения нет, а второе мнение видит блокировку у провайдеров России', 'chb'],
       [smp({st:'dead', ms:null, chb:'clear:0:30'}), 'второе мнение до сервера доходит — режет ваш провайдер или сбой на вашей стороне', 'chb'],
       [smp({st:'ok', ms:39, via:'4', viaNm:'WARP'}), 'сервер едет по дороге — число меряно через неё'],
+      // Amnezia Premium — only when such a subscription is on the router (its servers' number and silence are read differently).
+      [smp({st:'ok', ms:64, method:'tun'}), 'сервер Amnezia Premium: его узел на пинг не отвечает, и число — задержка через сам туннель', 'prem'],
+      [smp({st:'dead', ms:null, method:'tun'}), 'сервер Amnezia Premium молчит через свой туннель: ключ не везёт — новый берут на экране сервера', 'prem'],
       [smp({mbps:480}), 'мегабиты последнего теста скорости; стоит рядом с пингом через точку'],
       [smp({st:'ok', ms:40, cdn:1}), 'ответил не ваш сервер, а сеть доставки — число к вашему VPS отношения не имеет'],
       ['<span class="lempty">пусто</span>', 'сервер не проверялся: пустое место честнее подписи']
-    ].filter(function(x){ return x[2]!=='chb' || chbOn; }).map(function(x){ return '<div class="lrow"><div class="grow"><div class="nm">'+x[0]+'</div><div class="ds">'+x[1]+'</div></div></div>'; }).join('');   // образец — именем строки над пояснением (макет)
+    ].filter(function(x){ return x[2]==='chb' ? chbOn : x[2]==='prem' ? _subPremKnown.length>0 : true; }).map(function(x){ return '<div class="lrow"><div class="grow"><div class="nm">'+x[0]+'</div><div class="ds">'+x[1]+'</div></div></div>'; }).join('');   // образец — именем строки над пояснением (макет)
   }
   function ckBtns(l){
     var all=0, xr=((l.xray&&l.xray.servers)||[]).length;
