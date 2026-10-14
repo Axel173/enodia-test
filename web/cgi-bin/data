@@ -980,6 +980,16 @@ emit_subs() {
 			case "$sfv" in 0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) : ;; *) sfok=0 ;; esac
 		done
 		[ "$sfok" = 1 ] && sfam=",\"fam\":{\"xray\":$snx,\"hy2\":$snh,\"awg\":$sna}"
+		# The kind (the owner's last field): an Amnezia Premium key or a link. A copy of the owner older than the field — a link.
+		skind=link; case "$srest" in premium*) skind=premium ;; esac
+		# …and for a Premium one, its places: «устройств 4 из 7» of the list line — from Amnezia's last answer the router keeps
+		# (premium.sh account), not asked here. Numbers by their text (a leading zero is no JSON number), four digits at most.
+		sdev=""
+		if [ "$skind" = premium ] && [ -s "$DS/premium/$tag.account" ] && command -v jsonfilter >/dev/null 2>&1; then
+			du=$(jsonfilter -i "$DS/premium/$tag.account" -e '@.active_device_count' 2>/dev/null | head -n 1 | tr -cd '0-9' | cut -c1-4 | sed 's/^0*//')
+			dm=$(jsonfilter -i "$DS/premium/$tag.account" -e '@.max_device_count' 2>/dev/null | head -n 1 | tr -cd '0-9' | cut -c1-4 | sed 's/^0*//')
+			[ -n "$dm" ] && sdev=",\"dev\":[${du:-0},$dm]"
+		fi
 		tag=$(printf '%s' "$tag" | tr -cd 'a-z0-9-')
 		[ -n "$tag" ] || continue
 		# `jtxt`, а не `jesc`: метка — ДАННЫЕ человека, и `jesc` вырезал бы из «Speed [50m]» «код цвета» (ревью приёмки, круг 3; тот же
@@ -1007,7 +1017,7 @@ emit_subs() {
 		case "$ex" in ''|*[!0-9]*) ex=0 ;; *) z=${ex%%[!0]*}; ex=${ex#$z}; [ -n "$ex" ] || ex=0 ;; esac
 		z=${n%%[!0]*}; n=${n#$z}; [ -n "$n" ] || n=0
 		case "$hv" in 1) hv=true ;; *) hv=false ;; esac
-		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\",\"srv\":$n$sfam,\"ok\":$ok,\"err\":$er,\"have\":$hv,\"up\":$up,\"down\":$dn,\"total\":$tt,\"expire\":$ex}"
+		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\",\"kind\":\"$skind\"$sdev,\"srv\":$n$sfam,\"ok\":$ok,\"err\":$er,\"have\":$hv,\"up\":$up,\"down\":$dn,\"total\":$tt,\"expire\":$ex}"
 	done <<EOF
 $(sh "$D/subs-update.sh" list 2>/dev/null)
 EOF

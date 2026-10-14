@@ -47,6 +47,7 @@ echo ""
 D=${ENODIA_DIR:-/data/usr/app/enodia}
 DS=${ENODIA_STATE:-/data/usr/app/enodia-state}
 DB=${ENODIA_BIN:-/data/usr/app/enodia-bin}
+TAB=$(printf '\t')
 
 # WAN-интерфейс: пробу гоним НАПРЯМУЮ через него. КРИТИЧНО: IP серверов подписки часто ∈
 # iplist_set → curl из роутера к ним МАРКИРУЕТСЯ 0x1 → уходит в АКТИВНЫЙ туннель (xtun/awg0),
@@ -324,6 +325,13 @@ if [ "$QUERY_STRING" = "all=1" ] || [ "${QUERY_STRING#*all=1}" != "$QUERY_STRING
 		host=$(grep -oE '"address"[[:space:]]*:[[:space:]]*"[^"]*"' "$cf" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 		# порт вненга (vnext), НЕ inbound socks 10808 — берём первый порт != 10808
 		port=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$cf" 2>/dev/null | grep -oE '[0-9]+' | grep -v '^10808$' | head -1)
+		# A CHAIN (`dialerProxy`, Amnezia Premium: relay → exit): the first address is the exit, reached THROUGH the relay — the server
+		# to ask from home is the relay. The plugin's parser answers (xray-transport.sh endpoint); asked only for a chain — a fork
+		# per config would cost a list of 40 servers seconds.
+		if grep -q '"dialerProxy"' "$cf" 2>/dev/null && [ -f "$D/xray-transport.sh" ]; then
+			xep=$(sh "$D/xray-transport.sh" endpoint "$cf" 2>/dev/null </dev/null | head -n 1)
+			case "$xep" in ?*"$TAB"?*) host=${xep%%"$TAB"*}; port=${xep#*"$TAB"} ;; esac
+		fi
 		net=$(grep -oE '"network"[[:space:]]*:[[:space:]]*"[^"]*"' "$cf" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 		case "$net" in quic|kcp) pr=udp ;; *) pr=tcp ;; esac
 		a=$([ "$name" = "$xr_active" ] && echo true || echo false)
@@ -354,7 +362,12 @@ case "$t" in
 	xray) host=$(grep -oE '"address"[[:space:]]*:[[:space:]]*"[^"]*"' "$DS/xray.json" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 	      port=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$DS/xray.json" 2>/dev/null | grep -oE '[0-9]+' | grep -v '^10808$' | head -1)
 	      net=$(grep -oE '"network"[[:space:]]*:[[:space:]]*"[^"]*"' "$DS/xray.json" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-	      case "$net" in quic|kcp) pr=udp ;; *) pr=tcp ;; esac ;;
+	      case "$net" in quic|kcp) pr=udp ;; *) pr=tcp ;; esac
+	      # A chain — the relay the router dials (see the list's branch above).
+	      if grep -q '"dialerProxy"' "$DS/xray.json" 2>/dev/null && [ -f "$D/xray-transport.sh" ]; then
+	          xep=$(sh "$D/xray-transport.sh" endpoint "$DS/xray.json" 2>/dev/null </dev/null | head -n 1)
+	          case "$xep" in ?*"$TAB"?*) host=${xep%%"$TAB"*}; port=${xep#*"$TAB"} ;; esac
+	      fi ;;
 esac
 host=$(clean "$host")
 

@@ -905,6 +905,9 @@ showmeta "$ENODIA_STATE/.sub-names"
 showmeta "$ENODIA_STATE/.cfg-names"   # свои имена конфигов (cfg-names.sh): в бэкапе — с конфигами; содержимое — имена человека
 showmeta "$ENODIA_STATE/.cfg-via"     # дороги к серверам (road.sh): конфиг → номер выхода-дороги
 showmeta "$ENODIA_STATE/.sub-picks"
+showmeta "$ENODIA_STATE/premium"      # Amnezia Premium (premium.sh): the router's installation id and the last answers — not read
+# …and what the last Premium work said (no key in it: state, op, the subscription's tag, the words).
+[ -s /tmp/enodia-premium.json ] && echo "premium: $(head -c 400 /tmp/enodia-premium.json)"
 # Вход в панель: только режим/размер. Содержимое — ключи от панели (хэш пароля вскрывают офлайн,
 # .totp-recovery = коды восстановления, .totp-sessions = живые сессии), и в дамп оно не едет.
 # Здесь важен сам ФАКТ: нет .panel-pass ⇒ панель не поднимется вовсе, а «войти» будет нечем.

@@ -2146,7 +2146,16 @@
     [['xray','Xray'],['awg','AmneziaWG'],['hy2','Hysteria2']].forEach(function(f){ var fn=ownVal(fam, f[0])|0; if(fn>0) fams.push(f[1]+' '+fn); });
     var srvTxt=srv>0 ? (srv+' '+unitF(srv,'серверов')+(fams.length>1 ? ': '+fams.join(', ') : '')) : 'серверов пока нет';
     var ds=[], chip='', dotK='', warn=false, bad=false;
-    if(!ok){
+    // AMNEZIA PREMIUM (`kind` of the router's list): no traffic cap and no download — the date is Amnezia's, and in place of the
+    // quota its PLACES («устройств 4 из 7», the router's copy of Amnezia's last answer). The badge names the kind.
+    if(s.kind==='premium'){
+      var pdv=Array.isArray(s.dev) ? s.dev : null;
+      ds.push(srv>0 ? srvTxt : 'стран пока не выбрано');
+      if(pdv && (pdv[1]|0)>0) ds.push('устройств '+(pdv[0]|0)+' из '+(pdv[1]|0));
+      if(!ok){ if(!er) ds.push('Amnezia ещё не ответила'); dotK=' off'; }
+      chip='<span class="badge">Premium</span>';
+    }
+    else if(!ok){
       // УСПЕШНОЙ ЗАКАЧКИ НЕ БЫЛО НИ РАЗУ — и чипа тут не будет НИКАКОГО. «Без счётчика» значит
       // «провайдер лимитов не сообщает», а мы его ещё не спрашивали (или спросили и не дозвались):
       // это разные ответы, и второй нам неизвестен. Пустая строка «роутер её ещё не скачивал»
@@ -7391,7 +7400,11 @@
   // контейнера (иначе хост Endpoint / 'amnezia'). DNS-шаблоны $PRIMARY_DNS/$SECONDARY_DNS
   // подставляются из dns1/dns2, а MTU дописывается из поля mtu — как это делает само
   // приложение Amnezia. У НЕсжатых форм контейнерных полей нет: там только сам конфиг.
-  function decodeAmneziaVpn(text){
+  // amneziaVpnText — the TEXT a `vpn://` link holds, inflated when it is zlib (qCompress or bare) → {s, nostream}; null — nothing in
+  // base64 there. `nostream` — a zlib body this browser could not inflate (no DecompressionStream): the text is the raw bytes then,
+  // and a caller that finds nothing in it says «old browser», not «broken link». ONE unpacking for the config decoder below and for
+  // the recognition of an Amnezia Premium key (amneziaPremiumKey).
+  function amneziaVpnText(text){
     var t=String(text||'').trim(); if(t.indexOf('vpn://')===0) t=t.slice(6); t=t.trim();
     if(!t) return Promise.resolve(null);
     // Голый native .conf контейнером НЕ считаем: у него свой путь — заливается как есть.
@@ -7405,6 +7418,24 @@
     return (body && canInflate ? inflateZlib(body) : Promise.resolve(null)).then(function(un){
       var s;                                        // un = null ⇒ данные не сжаты (или поток битый)
       try{ s=new TextDecoder('utf-8').decode(un||raw); }catch(e){ return null; }
+      return {s:s, nostream:!!(body && !canInflate)};
+    });
+  }
+  // amneziaPremiumKey — is the link an Amnezia Premium KEY (a pass to Amnezia's API: `api_config` + `auth_data.api_key`, no server in
+  // it)? → {svc, name} | null. The router checks it again and for good (premium.sh check); the panel only chooses the door: such a
+  // key is a subscription («Подписки»), not a server.
+  function amneziaPremiumKey(text){
+    return amneziaVpnText(text).then(function(v){
+      if(!v) return null;
+      var o=null; try{ o=JSON.parse(v.s); }catch(e){ return null; }
+      if(!o || typeof o!=='object' || !o.api_config || typeof o.api_config!=='object' || !o.auth_data || typeof o.auth_data!=='object' || !o.auth_data.api_key) return null;
+      return {svc:String(o.api_config.service_type||''), name:String(o.name||'').trim()};
+    }, function(){ return null; });
+  }
+  function decodeAmneziaVpn(text){
+    return amneziaVpnText(text).then(function(v){
+      if(!v) return null;
+      var s=v.s;
       var conf=null, meta={}, obj=null;
       try{ obj=JSON.parse(s); }catch(e){}
       if(obj && typeof obj==='object'){
@@ -7414,7 +7445,7 @@
       // «Обнови браузер» — правда ТОЛЬКО про сжатую ссылку, которую мы не смогли распаковать.
       // Сперва честно пробуем прочесть байты как есть: НЕсжатая ссылка не должна страдать от
       // того, что её первые байты СЛУЧАЙНО похожи на zlib-заголовок.
-      if(!conf) return (body && !canInflate) ? Promise.reject(new Error('nostream')) : null;
+      if(!conf) return v.nostream ? Promise.reject(new Error('nostream')) : null;
       conf=conf.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
       // Гард знает и скобки: при ОБОИХ шаблонах в виде `${…}` он не видел ни одного, и строка DNS оставалась шаблоном.
       if(/\$\{?(PRIMARY|SECONDARY)_DNS/.test(conf))
@@ -7573,7 +7604,15 @@
       // AmneziaWG: ждём vpn://-контейнер Amnezia (не «серверную ссылку») → декод → .conf.
       logLine('декодирую Amnezia vpn://…', true);
       decodeAmneziaVpn(link).then(function(res){
-        if(!res || !res.conf){ logLine('не разобрал Amnezia vpn:// (повреждена или не AmneziaWG-контейнер)', false); showToast('не разобрал vpn://-ссылку', false); return; }
+        if(!res || !res.conf){
+          // An AMNEZIA PREMIUM KEY has no server in it — a pass to the service: its door is «Подписки», and «не разобрал» about a
+          // valid key sent the person looking for a fault (backlog s.134).
+          amneziaPremiumKey(link).then(function(k){
+            if(k){ var pm='это ключ подписки Amnezia Premium, а не сервер — добавьте его в «Подписках»: роутер сам возьмёт конфиги стран'; logLine(pm, false); showToast(pm, false); return; }
+            logLine('не разобрал Amnezia vpn:// (повреждена или не AmneziaWG-контейнер)', false); showToast('не разобрал vpn://-ссылку', false);
+          });
+          return;
+        }
         uploadOne('awg', amneziaName(res), b64utf8(res.conf), function(){ setTimeout(navIfShown('cn-servers', openServers),400); }, flagDisp(res.name, awgHost(res.conf)), 1);
       }).catch(function(){ logLine('браузер не умеет распаковку vpn:// (DecompressionStream) — обновите браузер или добавьте файл .conf', false); showToast('браузер не поддерживает vpn://', false); });
       return;
@@ -11596,6 +11635,76 @@
     "[warp] получаю WARP заново — обычно до 30 секунд":"[warp] getting WARP anew — usually up to 30 seconds",
     "[warp] проверяю маскировку — до 20 секунд":"[warp] checking the masking — up to 20 seconds",
     "[warp] получаю WARP для устройства — обычно до 30 секунд":"[warp] getting WARP for a device — usually up to 30 seconds",
+    // — AMNEZIA PREMIUM (14.10.2026): the screen's own words and the router's (premium.sh, subs-update.sh put/unput). Lines with a
+    //   name, a country or a number are rules (I18N_RULES, its first block). —
+    "[premium] другая работа с Amnezia Premium уже идёт — дождитесь её":"[premium] another Amnezia Premium job is already running — wait for it",
+    "[premium] беру конфиг у Amnezia":"[premium] taking the config from Amnezia",
+    "[premium] беру у Amnezia новый конфиг":"[premium] taking a new config from Amnezia",
+    "[premium] спрашиваю Amnezia о подписке":"[premium] asking Amnezia about the subscription",
+    "[premium] освобождаю место устройства":"[premium] freeing the device's place",
+    "[premium] нет AmneziaWG — поставьте его в «Компонентах»":"[premium] no AmneziaWG — install it in «Components»",
+    "[premium] плохой идентификатор устройства":"[premium] bad device id","[premium] плохой код страны":"[premium] bad country code",
+    "[premium] протокол — awg или vless":"[premium] the protocol is awg or vless",
+    "[premium] нет subs-lib.sh — обновите скрипты роутера":"[premium] no subs-lib.sh — update the router's scripts",
+    "беру конфиг у Amnezia":"taking the config from Amnezia","раскладываю конфиг":"laying out the config",
+    "спрашиваю Amnezia о подписке":"asking Amnezia about the subscription","освобождаю место устройства":"freeing the device's place",
+    "место устройства освобождено":"the device's place is freed",
+    "ни один шлюз Amnezia не ответил":"no Amnezia gateway answered",
+    "нет openssl для шифрования запроса":"no openssl to encrypt the request","не удалось зашифровать запрос":"could not encrypt the request",
+    "не удалось зашифровать запрос (ключ Amnezia)":"could not encrypt the request (Amnezia's key)",
+    "в ключе непонятный api_key":"the key's api_key is unreadable",
+    "это готовый конфиг Amnezia, а не ключ подписки — добавьте его как сервер":"this is a ready Amnezia config, not a subscription key — add it as a server",
+    "это не ключ подписки Amnezia Premium (нет api_key)":"this is not an Amnezia Premium subscription key (no api_key)",
+    "Amnezia прислала конфиг Xray с другим локальным входом — нужна новая версия панели":"Amnezia sent an Xray config with another local inbound — a newer panel is needed",
+    "в конфиге Xray от Amnezia нет сервера":"Amnezia's Xray config has no server","в ответе Amnezia нет конфига Xray":"Amnezia's answer has no Xray config",
+    "конфиг Xray от Amnezia не читается":"Amnezia's Xray config is unreadable",
+    "все места подписки заняты — освободите одно в списке устройств подписки (или в приложении AmneziaVPN)":"all the subscription's places are taken — free one in the subscription's device list (or in the AmneziaVPN app)",
+    "подписка не активна — истекла или ещё не оплачена":"the subscription is not active — expired or not paid yet",
+    "пробный период этого аккаунта уже использован":"this account's trial has already been used",
+    "Amnezia не знает этот ключ — он отозван или набран с ошибкой":"Amnezia does not know this key — it is revoked or mistyped",
+    "Amnezia не нашла конфиг этого устройства — возьмите страну заново":"Amnezia found no config of this device — pick the country again",
+    "Amnezia просит подождать: слишком много запросов — повторите через несколько минут":"Amnezia asks to wait: too many requests — retry in a few minutes",
+    "Amnezia просит пройти капчу — роутер этого не умеет; откройте приложение AmneziaVPN и повторите там, потом здесь":"Amnezia asks for a captcha — the router can't solve it; open the AmneziaVPN app, retry there, then here",
+    "Amnezia требует новую версию клиента — обновите Enodia":"Amnezia requires a newer client — update Enodia",
+    "Amnezia не успела ответить — повторите":"Amnezia did not answer in time — retry",
+    "Amnezia ответила без конфига — её ответ изменился, нужна новая версия панели":"Amnezia answered without a config — its answer changed, a newer panel is needed",
+    "в ответе Amnezia нет годного конфига AmneziaWG":"Amnezia's answer has no usable AmneziaWG config",
+    "ключ подписки не читается":"the subscription key is unreadable","конфиг Amnezia не читается":"Amnezia's config is unreadable",
+    "не удалось завести идентификатор роутера":"could not create the router's id","не удалось создать идентификатор VLESS":"could not create a VLESS id",
+    "не удалось сохранить ответ — нет места?":"could not save the answer — no room?",
+    "нет AmneziaWG — поставьте его в «Компонентах»":"no AmneziaWG — install it in «Components»",
+    "не удалось разложить конфиг":"could not lay out the config","нет ключа Amnezia":"no Amnezia key",
+    "занята другой работой с Amnezia — в следующий раз":"busy with another Amnezia job — next time",
+    "плохое семейство конфига":"bad config family","нет конфига":"no config",
+    "не удалось записать конфиг — нет места?":"could not write the config — no room?",
+    "это не ключ vpn://":"this is not a vpn:// key","слишком длинный ключ":"the key is too long","нет места для ключа":"no room for the key",
+    "premium.sh не установлен (обновите скрипты роутера)":"premium.sh is not installed (update the router's scripts)",
+    "ключ не принят":"the key was not accepted",
+    "подписка Amnezia Premium сохранена — спрашиваю о ней Amnezia":"the Amnezia Premium subscription is saved — asking Amnezia about it",
+    "это ключ подписки Amnezia Premium, а не сервер — добавьте его в «Подписках»: роутер сам возьмёт конфиги стран":"this is an Amnezia Premium subscription key, not a server — add it under «Subscriptions»: the router takes the countries' configs itself",
+    "это не ключ подписки Amnezia Premium — готовый конфиг vpn:// добавьте в «Серверах» на вкладке AmneziaWG":"this is not an Amnezia Premium subscription key — add a ready vpn:// config under «Servers», on the AmneziaWG tab",
+    "не разобрал Amnezia vpn:// (повреждена или не AmneziaWG-контейнер)":"couldn't parse the Amnezia vpn:// link (damaged or not an AmneziaWG container)",
+    "Срок, устройства и страны — учёт Amnezia: роутер спрашивает их при обновлении подписки (кнопка или автообновление). Трафик у Premium не ограничен.":"The date, devices and countries are Amnezia's records: the router asks for them when the subscription is updated (the button or auto-update). Premium traffic is unlimited.",
+    "не отмечена":"not picked","беру конфиг…":"taking the config…","работа идёт…":"work in progress…",
+    "спросить ещё раз":"ask again","убираю сервер":"removing the server","Освободить":"Free","Этот роутер":"This router","этот роутер":"this router",
+    "Файл конфигурации":"Config file","основной сервер":"the main server","выбран основным":"chosen as the main one","в списке серверов":"in the server list",
+    "Amnezia ещё не ответила о подписке — нажмите «Обновить»":"Amnezia has not answered about the subscription yet — press «Refresh»",
+    "Amnezia ещё не ответила о подписке":"Amnezia has not answered about the subscription yet",
+    "Amnezia не назвала ни одной страны этой подписки":"Amnezia named no countries for this subscription",
+    "Amnezia не назвала ни одного устройства":"Amnezia named no devices",
+    "Отметьте страну и протокол":"Pick a country and a protocol",
+    "— роутер возьмёт у Amnezia её конфиг, и сервер встанет в список: его можно сделать основным, поставить на выход или в резерв. Снимите отметку — сервер уйдёт. Занятый сервер (основной, выход, «дом» резерва) не снимается: сперва выберите вместо него другой.":"— the router takes its config from Amnezia, and the server joins the list: it can be made the main one, put on an exit or in the reserve. Unpick it — the server goes. A server in use (the main one, an exit, the reserve's «home») is not unpicked: choose another in its place first.",
+    "Какая страна отвечает быстрее, покажет «Проверить» в списке серверов. AmneziaWG у Premium — поколения 3.0, VLESS — Reality через промежуточный узел Amnezia.":"Which country answers faster, «Check» in the server list shows. Premium's AmneziaWG is generation 3.0, its VLESS is Reality through an Amnezia relay.",
+    "— место вернётся подписке. Доступ у того устройства пропадёт не сразу: Amnezia гасит его ключ с задержкой (замер: до двух часов).":"— the place returns to the subscription. That device loses access not at once: Amnezia turns its key off with a delay (measured: up to two hours).",
+    "Заняты все места, а роутера среди них нет — страну он взять не сможет: Amnezia ответит «все места подписки заняты». Освободите место устройства, которым больше не пользуетесь.":"All places are taken and the router is not among them — it can't take a country: Amnezia will answer «all the subscription's places are taken». Free the place of a device you no longer use.",
+    "Освободить место этого устройства? Подписка вернёт его себе; доступ у того устройства пропадёт не сразу — Amnezia гасит его ключ с задержкой.":"Free this device's place? The subscription takes it back; that device loses access not at once — Amnezia turns its key off with a delay.",
+    "Конфиг выдаёт Amnezia":"Amnezia issues this config","Новый конфиг":"New config","Взять новый":"Get a new one","Сервер замолчал":"The server went silent","Убрать страну":"Remove the country",
+    "роутер попросит у Amnezia свежий конфиг этой страны — с новым ключом. Сервер активный или на выходе — поднимется на новом сам; не поднялся — вернётся прежний":"the router asks Amnezia for a fresh config of this country — with a new key. The server is active or on an exit — it comes up on the new one by itself; if it doesn't, the previous one comes back",
+    "сторож сначала берёт новый конфиг сам и только если и он молчит — уводит на резерв":"the watchdog first takes a new config by itself, and only if that one is silent too moves to the reserve",
+    "снимите отметку на экране подписки — сервер уйдёт, место устройства останется за роутером":"unpick it on the subscription's screen — the server goes, the device place stays the router's",
+    "Править этот конфиг незачем: Amnezia выдаст его заново по кнопке выше. Адрес Endpoint — промежуточный узел Amnezia, он один у всех стран; выход в стране — за ним.":"There is no need to edit this config: Amnezia issues it anew by the button above. The Endpoint is an Amnezia relay, one for all countries; the exit in the country is behind it.",
+    "роутер не отвечает — работа с Amnezia идёт на нём сама: обновите экран позже":"the router does not answer — the work with Amnezia goes on there by itself: refresh the screen later",
+    "последняя страна:":"last country:",
     "[warp] нет текста маскировки":"[warp] no masking text",
     "[warp] недопустимое имя конфига":"[warp] invalid config name",
     "[warp] нет места для работы":"[warp] no room to work",
@@ -11714,6 +11823,37 @@
   // буквы внутри слов). i18nStr применяет их подряд и, если в итоге остаётся кириллица, ВОЗВРАЩАЕТ
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
+    // ─── Amnezia Premium (14.10.2026): the router's words with a country, a name or a number (premium.sh, subs-update.sh put/unput),
+    //     and the screen's lines built from them. Whole lines — anchored; the parts of a joined line («· »-separated) — tokens. ───
+    [/^\[premium\] «(.+)» — не сервер подписки Amnezia Premium$/,"[premium] «$1» is not a server of an Amnezia Premium subscription"],
+    [/^\[premium\] нет подписки Amnezia Premium «(.+)»$/,"[premium] no Amnezia Premium subscription «$1»"],
+    [/^подписка проверена: стран (\d+)$/,"subscription checked: $1 countries"],
+    [/^сервер «(.+)» добавлен$/,"server «$1» added"],
+    [/^новый конфиг «(.+)» на месте — (.+)$/,"the new config «$1» is in place — $2"],
+    [/^новый конфиг «(.+)» на месте$/,"the new config «$1» is in place"],
+    [/^ключ Amnezia незнакомого вида \(config_version (.+)\) — нужна новая версия панели$/,"an Amnezia key of an unknown kind (config_version $1) — a newer panel is needed"],
+    [/^этот вид подписки Amnezia \(«(.+)»\) роутер не поддерживает$/,"the router does not support this kind of Amnezia subscription («$1»)"],
+    [/^Amnezia не выдала конфиг: (.+)$/,"Amnezia did not issue a config: $1"],["Amnezia не выдала конфиг","Amnezia did not issue a config"],
+    [/^Amnezia ответила ошибкой (\S+): (.+)$/,"Amnezia answered with error $1: $2"],[/^Amnezia ответила ошибкой (\S+)$/,"Amnezia answered with error $1"],
+    [/^у подписки «(.+)» нет ключа Amnezia$/,"subscription «$1» has no Amnezia key"],
+    [/^устройств (\d+|\?) из (\d+|\?), выбрано стран (\d+)$/,"devices $1 of $2, countries picked $3"],
+    [/^конфиг «(.+)» на месте$/,"config «$1» is in place"],
+    [/^сервер «(.+)» убран$/,"server «$1» removed"],
+    [/^«(.+)» — активный сервер: сперва выберите другой$/,"«$1» is the active server: choose another first"],
+    [/^«(.+)» — «дом» резерва: сторож вернётся на него; сперва выберите основным другой сервер$/,"«$1» is the reserve's «home»: the watchdog returns to it; make another server the main one first"],
+    [/^на «(.+)» стоит выход №(.+) — сперва смените выходу сервер$/,"exit #$2 stands on «$1» — change the exit's server first"],
+    [/^не удалось удалить «(.+)»$/,"could not delete «$1»"],
+    [/^имя «(.+)» не принадлежит подписке «(.+)»$/,"name «$1» does not belong to subscription «$2»"],
+    [/^имя «(.+)» занято конфигом другого протокола$/,"name «$1» is taken by another protocol's config"],
+    [/^Убрать «(.+)» \((AmneziaWG|VLESS)\)\? Сервер уйдёт из списка; отметить страну снова можно в любой момент\.$/,"Remove «$1» ($2)? The server leaves the list; you can pick the country again at any time."],
+    [/^→ беру у Amnezia конфиг: (.+) \((AmneziaWG|VLESS)\)$/,"→ taking the config from Amnezia: $1 ($2)"],
+    [/^Взять у Amnezia новый конфиг «(.+)»\? Ключ станет новым; сервер занят — роутер поднимет его на новом конфиге, а не поднимется — вернёт прежний\.$/,"Get a new config «$1» from Amnezia? The key becomes new; the server is in use — the router raises it on the new config, and if it does not come up, brings the previous one back."],
+    [/^Взять у Amnezia новый конфиг «(.+)»\? Ключ станет новым\.$/,"Get a new config «$1» from Amnezia? The key becomes new."],
+    [/^→ беру у Amnezia новый конфиг «(.+)»$/,"→ taking a new config «$1» from Amnezia"],
+    [/^· отмечено (\d+)$/,"· $1 picked"],[/^· (\d+) из (\d+)$/,"· $1 of $2"],
+    [/(AmneziaWG|VLESS) — основной сервер/g,"$1 — the main server"],[/(AmneziaWG|VLESS) — выбран основным/g,"$1 — chosen as the main one"],
+    [/(AmneziaWG|VLESS) — выход №([\d, №]+)/g,"$1 — exit #$2"],[/(AmneziaWG|VLESS) — в списке серверов/g,"$1 — in the server list"],
+    ["стран пока не выбрано","no countries picked yet"],[/устройств (\d+) из (\d+)/g,"devices $1 of $2"],["Amnezia ещё не ответила","Amnezia has not answered yet"],
     // ─── Дорога к серверу, WARP, второе мнение (10.10.2026): склейки с числами и именами, шаги и отказы роутера — ПЕРВЫМИ ───
     [/^похоже, блокировка \((\d+) из (\d+)\)$/,"looks blocked ($1 of $2)"],
     [/^· через туннель (\d+) мс$/,"· through the tunnel $1 ms"],
@@ -13855,8 +13995,24 @@
   function importSub(url, label, done){
     if(busy) return;
     url=(url||'').trim().replace(/^["']|["']$/g,''); label=(label||'').trim();
+    // AN AMNEZIA PREMIUM KEY goes into the same field (the user's decision 14.10.2026): no servers in it — the router asks Amnezia
+    // itself (premium.sh). Recognized here only to choose the door; the router checks the key again before it writes anything.
+    if(url.indexOf('vpn://')===0){
+      amneziaPremiumKey(url).then(function(k){
+        if(!k){ var nk='это не ключ подписки Amnezia Premium — готовый конфиг vpn:// добавьте в «Серверах» на вкладке AmneziaWG'; logLine('подписка: '+nk, false); showToast(nk, false); if(done) done(false); return; }
+        subSave(url, label || k.name || 'Amnezia Premium', true, done);
+      });
+      return;
+    }
     if(!/^https?:\/\//.test(url)){ logLine('подписка: нужен URL http(s)://', false); showToast('подписка: нужен URL', false); if(done)done(false); return; }
     if(!label){ logLine('подписка: задайте метку', false); showToast('подписка: задайте метку', false); if(done)done(false); return; }
+    subSave(url, label, false, done);
+  }
+  // subSave — the registry line of a new subscription: a FREE tag first (the router knows which), then the owner's action — a link
+  // (save_sub, then its servers fetched) or an Amnezia Premium key (save_premium: the router asks Amnezia in the background, and the
+  // subscription's screen, opened at once, picks that work up and shows the countries when it ends).
+  function subSave(url, label, prem, done){
+    if(busy) return;
     setBusy(true,'сохраняю подписку…');
     // Список подписок читаем ДО записи: тег обязан быть свободен, а знает об этом только роутер
     // (панель могла быть открыта со вчера). Не отдался — идём прежним путём: отказывать в импорте
@@ -13867,8 +14023,16 @@
         var tag = subs ? subTagFree(label, subs, _lnames) : subTag(label);
         if(!tag) throw new Error('слишком много подписок с похожей меткой — задайте другую');
         if(subs && tag!==subTag(label)) logLine('подписка «'+label+'»: метка занята другой подпиской — беру тег '+tag, null);
-        return subPost({action:'save_sub', tag:tag, url:url, label:label}).then(function(d){
+        var pj=prem ? premJobId() : '';
+        return subPost(prem ? {action:'save_premium', tag:tag, key:url, label:label, job:pj} : {action:'save_sub', tag:tag, url:url, label:label}).then(function(d){
           if(!d || !d.ok) throw new Error((d&&d.msg)||'не удалось сохранить подписку');
+          if(prem){
+            _pmOwn=pj;
+            logLine(d.msg||'подписка сохранена', true); showToast(d.msg||'подписка сохранена', true);
+            setBusy(false); if(done) done(true);
+            subScrOpen(tag);
+            return;
+          }
           syncSubServers(tag, label, done);
         });
       }).catch(function(e){
@@ -15641,6 +15805,9 @@
     openModal(trNow('Подписка')+' «'+label+'»', {route:'cn-sub', arg:tag, deck:true, sens:true});
     var body=document.getElementById('modal-body');
     srvListTake(l);
+    // A subscription by an Amnezia Premium KEY: the same screen (one show of the route), its body — countries and devices instead of
+    // a server pool (premSubPaint).
+    if(s.kind==='premium') return premSubPaint(body, s, now, l, fsig);
     // Владелец — длиннейший тег из ВСЕГО известного набора (разбор у ownerTag): оба ответа и сама метка. Набор из одного
     // /cgi-bin/list, где соседней «liberty-vpn» нет, отдал бы её серверы «liberty» (поймал стенд шага 3c-1).
     var tags=[tag], gx=l.xray||{}, gh=l.hy2||{}, ga=l.awg||{};
@@ -15703,6 +15870,222 @@
   // «Сырой режим» правит весь файл текстом. Переключение вкладок синхронизирует стороны:
   // форма→сырой = пересобрать текст из полей; сырой→форма = разобрать текст обратно.
   // Поля и подписи редактора — вид макета (`Fld`: бумага, рамка 1px, радиус 11; подпись 12 px приглушённым).
+  // ==== AMNEZIA PREMIUM — a subscription whose link field is the service's key (premium.sh) ======================================
+  // The key holds no server: it is a pass to Amnezia's API. The router asks the API itself and lays the config of a country the
+  // person PICKED into the ordinary lists (the user's decisions 14.10.2026: the key lives in «Подписки», countries by pick). The
+  // screen: the subscriptions' own head (subRow + actions), then what a link subscription has not — the COUNTRIES (a country and its
+  // two protocols; a picked one IS a server of the list) and the DEVICES (Amnezia's places, the router marked). Every number is
+  // Amnezia's last answer the router keeps (`premium_info`) — the panel counts nothing. The works (ask Amnezia, take a country, a new
+  // config, free a place) run at the router in the background, ONE at a time (the router says «busy» itself); the screen polls
+  // `premium_status` and says the router's words.
+  var PM_NOTE='Срок, устройства и страны — учёт Amnezia: роутер спрашивает их при обновлении подписки (кнопка или автообновление). Трафик у Premium не ограничен.';
+  var _pmOwn='', _pmBody=null, PM_NET_TRIES=3;
+  function premJobId(){ return wpJobId(); }
+  var PM_PROTO={awg:'AmneziaWG', vless:'VLESS'};
+  // A country's flag by its code («us-east» → 🇺🇸): a pair of regional letters; anything else — none.
+  function ccFlag(cc){
+    var c=String(cc||'').slice(0,2).toUpperCase();
+    if(!/^[A-Z]{2}$/.test(c)) return '';
+    return String.fromCharCode(0xD83C, 0xDDE6+c.charCodeAt(0)-65, 0xD83C, 0xDDE6+c.charCodeAt(1)-65);
+  }
+  // What a picked server is busy with now — the words of the country's line: the main one, an exit's, or just «in the list».
+  function pmRole(tpt, name, grp){
+    if(grp && grp.active===name) return (cur.transport===tpt && !cur.vpnOff) ? 'основной сервер' : 'выбран основным';
+    var ex=cfgExits(tpt, name);
+    if(ex.length) return 'выход №'+ex.join(', №');
+    return 'в списке серверов';
+  }
+  // A device of the subscription, as the person knows it: the router itself, a config FILE (a place taken by a downloaded .conf), or
+  // the app's system.
+  function pmDevName(d){
+    if(d.me) return 'Этот роутер';
+    if(d.kind==='country_config') return 'Файл конфигурации';
+    var o=String(d.os||'').toLowerCase();
+    if(o.indexOf('android')===0) return 'Android';
+    if(o.indexOf('ios')===0) return 'iPhone · iPad';
+    if(o.indexOf('macos')===0 || o.indexOf('osx')===0) return 'Mac';
+    if(o.indexOf('windows')===0) return 'Windows';
+    if(o.indexOf('linux')===0) return 'Linux';
+    return d.os ? String(d.os) : 'устройство';
+  }
+  function premSubPaint(body, s, now, l, fsig){
+    var tag=s.tag, label=s.label||s.tag, rep=navIfShown('cn-sub', subScrOpen);
+    var h='<div class="vwrap">'
+      + '<div class="card wfull"><div class="wt">Подписка</div>'+subRow(s, now, null)
+      + '<div class="acts">'
+      +   '<button type="button" class="btn sm gh" data-pa="account">Обновить</button>'
+      +   '<button type="button" class="btn sm gh" data-pa="rename">Переименовать</button>'
+      +   '<span class="grow"></span><button type="button" class="btn sm bad" data-pa="del">Удалить подписку</button>'
+      + '</div><div class="cline">'+PM_NOTE+'</div><div class="cline" id="pm-st" hidden></div></div>'
+      + '<div class="card wfull" id="pm-cn"><div class="wt">Страны</div><div class="lempty">загрузка…</div></div>'
+      + '<div class="card wfull" id="pm-dv"><div class="wt">Устройства</div><div class="lempty">загрузка…</div></div>';
+    body.innerHTML=h+'</div>';
+    focusBack(body, fsig);
+    var info=null, st=null;
+    // A work's start: the tab's job id goes with it (the router writes it into every status line of that work), the buttons are locked
+    // until the screen is drawn again, and the screen polls the work. A refusal of the start (another work runs, a bad argument) is
+    // the router's words.
+    function job(params, line){
+      if(busy){ showToast('панель ещё выполняет прошлое действие — повторите через секунду', false); return; }
+      pmLock(body);
+      var jid=premJobId(); params.job=jid; params.tag=params.tag||tag;
+      subPost(params).then(function(a){
+        if(!(a && a.ok)){ showToast((a && a.msg)||'роутер отказал', false); rep(); return; }
+        logLine('→ '+line, null);
+        _pmOwn=jid;
+        if(!screenAlive(body)) return;
+        _pmBody=body; premPoll(body, tag, 0);
+      }, function(){ showToast('роутер не ответил', false); rep(); });
+    }
+    Promise.all([subPost({action:'premium_info', tag:tag}).then(null, function(){ return null; }),
+                 subPost({action:'premium_status'}).then(null, function(){ return null; })]).then(function(r){
+      if(!screenAlive(body)) return;
+      info=r[0]; st=r[1];
+      var run=(st && st.state==='running') ? st : null;
+      var cn=document.getElementById('pm-cn'), dv=document.getElementById('pm-dv');
+      if(!info || !info.ok){
+        var nm='<div class="lempty">роутер не ответил — <button type="button" class="ilink" data-pa="redraw">спросить ещё раз</button></div>';
+        if(cn) cn.innerHTML='<div class="wt">Страны</div>'+nm;
+        if(dv) dv.innerHTML='<div class="wt">Устройства</div>'+nm;
+      } else {
+        if(cn) cn.innerHTML=pmCountriesHtml(info, l, st, run);
+        if(dv) dv.innerHTML=pmDevicesHtml(info);
+      }
+      if(run){ pmStLine(body, run); pmLock(body); _pmBody=body; premPoll(body, tag, 0); }
+    });
+    body.addEventListener('click', function(ev){
+      for(var el=ev.target; el && el!==body; el=el.parentNode){
+        var a=el.getAttribute && el.getAttribute('data-pa');
+        if(a){
+          if(el.disabled) return;
+          if(a==='account') job({action:'premium_account'}, 'спрашиваю Amnezia о подписке');
+          else if(a==='rename'){ renameSub(tag, label); }
+          else if(a==='del'){ delSub(tag, label); }
+          else if(a==='redraw') rep();
+          return;
+        }
+        var p=el.getAttribute && el.getAttribute('data-pp');
+        if(p){
+          if(el.disabled) return;
+          var cc=el.getAttribute('data-cc'), pr=el.getAttribute('data-p'), cn=el.getAttribute('data-cn')||cc;
+          if(p==='pick') job({action:'premium_pick', cc:cc, proto:pr}, 'беру у Amnezia конфиг: '+cn+' ('+PM_PROTO[pr]+')');
+          // Unpick — no network: the owner of the files removes it at once, or refuses a server in use in its own words.
+          else if(p==='unpick') postAction('premium_unpick', 'Убрать «'+cn+'» ('+PM_PROTO[pr]+')? Сервер уйдёт из списка; отметить страну снова можно в любой момент.', 'убираю сервер', {tag:tag, cc:cc, proto:pr}, rep, rep);
+          return;
+        }
+        var dvid=el.getAttribute && el.getAttribute('data-pd');
+        if(dvid){
+          if(el.disabled) return;
+          if(askConfirm('Освободить место этого устройства? Подписка вернёт его себе; доступ у того устройства пропадёт не сразу — Amnezia гасит его ключ с задержкой.')) job({action:'premium_revoke', dev:dvid}, 'освобождаю место устройства');
+          return;
+        }
+        var go=el.getAttribute && el.getAttribute('data-pg');
+        if(go){ var i=go.indexOf('/'); srvScrGo(go.slice(0,i), go.slice(i+1)); return; }
+      }
+    });
+  }
+  // The countries: a line per country Amnezia offers, two protocol switches on it; a picked protocol is a server of the list (its
+  // role said in the line, a chevron to its screen). The work in progress names its country (`cc`, `p` of the status) — «беру
+  // конфиг…» stands in that switch's place; a refusal of the last pick is said at its country's line, in Amnezia's words.
+  function pmCountriesHtml(info, l, st, run){
+    var picks={}, n=0;
+    (info.picks||[]).forEach(function(p){ picks[p.cc+':'+p.p]=p.name; n++; });
+    var ga=(l&&l.awg)||{}, gx=(l&&l.xray)||{};
+    var err=(st && st.state==='error' && st.op==='pick' && st.cc) ? st : null;
+    if(!info.have) return '<div class="wt">Страны</div><div class="lempty">Amnezia ещё не ответила о подписке — нажмите «Обновить»</div>';
+    var cs=info.countries||[];
+    var h='<div class="wt">Страны <span class="sub">· отмечено '+n+'</span></div>';
+    if(!cs.length) h+='<div class="lempty">Amnezia не назвала ни одной страны этой подписки</div>';
+    cs.forEach(function(c){
+      var aw=picks[c.cc+':awg'], vl=picks[c.cc+':vless'], roles=[];
+      if(aw) roles.push('AmneziaWG — '+pmRole('awg', aw, ga));
+      if(vl) roles.push('VLESS — '+pmRole('xray', vl, gx));
+      var bad=(err && err.cc===c.cc && !(aw && err.p==='awg') && !(vl && err.p==='vless'));
+      var ds=bad ? String(err.msg||'') : (roles.length ? roles.join(' · ') : 'не отмечена');
+      var dot=bad ? ' warn' : ((aw && ga.active===aw) || (vl && gx.active===vl) || (aw && cfgExits('awg', aw).length) || (vl && cfgExits('xray', vl).length)) ? '' : (roles.length ? ' off' : '');
+      var sw='';
+      ['awg','vless'].forEach(function(pr){
+        if((c.p||[]).indexOf(pr)<0) return;
+        var nm=pr==='awg' ? aw : vl;
+        if(run && run.cc===c.cc && run.p===pr){ sw+=' <span class="chip">беру конфиг…</span>'; return; }
+        sw+=' <button type="button" class="chip'+(nm?' acc':'')+'" data-pp="'+(nm?'unpick':'pick')+'" data-cc="'+esc(c.cc)+'" data-p="'+pr+'" data-cn="'+esc(c.name||c.cc)+'"'
+          + ' aria-pressed="'+(nm?'true':'false')+'">'+PM_PROTO[pr]+(nm?' ✓':'')+'</button>';
+      });
+      var first=aw ? 'awg/'+aw : (vl ? 'xray/'+vl : '');
+      h+='<div class="lrow">'+(dot!=='' || roles.length || bad ? '<span class="dot'+dot+'"></span>' : '')
+        + '<div class="grow"><div class="nm"><span translate="no">'+ccFlag(c.cc)+'</span> <span translate="no">'+esc(c.name||c.cc)+'</span></div><div class="ds">'+esc(ds)+'</div></div>'
+        + '<span class="srv-r">'+sw+'</span>'
+        + (first ? '<button type="button" class="srv-edit srv-chev" data-pg="'+esc(first)+'" title="Открыть сервер" aria-label="'+esc('Открыть сервер «'+(c.name||c.cc)+'»')+'">'+icUse('i-chev','s')+'</button>' : '')
+        + '</div>';
+    });
+    h+='<div style="margin-top:11px">'+noteBox('<b>Отметьте страну и протокол</b> — роутер возьмёт у Amnezia её конфиг, и сервер встанет в список: его можно сделать основным, поставить на выход или в резерв. Снимите отметку — сервер уйдёт. Занятый сервер (основной, выход, «дом» резерва) не снимается: сперва выберите вместо него другой.', 'info')+'</div>'
+      + '<div class="cline">Какая страна отвечает быстрее, покажет «Проверить» в списке серверов. AmneziaWG у Premium — поколения 3.0, VLESS — Reality через промежуточный узел Amnezia.</div>';
+    return h;
+  }
+  function pmDevicesHtml(info){
+    if(!info.have) return '<div class="wt">Устройства</div><div class="lempty">Amnezia ещё не ответила о подписке</div>';
+    var ds=info.devices||[], now=info.now|0, me=false;
+    var h='<div class="wt">Устройства <span class="sub">· '+(info.used|0)+' из '+(info.max|0)+'</span></div>';
+    if(!ds.length) h+='<div class="lempty">Amnezia не назвала ни одного устройства</div>';
+    ds.forEach(function(d){
+      if(d.me) me=true;
+      // Each part its own node: the system and the country are DATA (Amnezia's words — not translated), the label and the age are
+      // the panel's (translated) — one text node of both would be left Russian whole by the «Cyrillic tail» guard.
+      var pr=[];
+      if(d.os && !d.me && d.kind!=='country_config' && pmDevName(d)!==String(d.os)) pr.push('<span translate="no">'+esc(String(d.os))+'</span>');
+      if(d.me) pr.push('<span translate="no">'+esc(String(d.os||'linux:openwrt'))+'</span>');
+      if(d.country) pr.push((d.me ? '<span>последняя страна:</span> ' : '')+'<span translate="no">'+esc(d.country)+'</span>');
+      if((d.at|0)>0 && now>0) pr.push('<span>'+esc(fmtAge(Math.max(0, now-(d.at|0))))+'</span>');
+      h+='<div class="lrow"><span class="dot'+(d.me?'':' off')+'"></span>'
+        + '<div class="grow"><div class="nm">'+esc(pmDevName(d))+'</div><div class="ds">'+pr.join(' · ')+'</div></div>'
+        + (d.me ? '<span class="badge">этот роутер</span>' : '<button type="button" class="btn sm gh" data-pd="'+esc(d.id)+'">Освободить</button>')
+        + '</div>';
+    });
+    h+='<div style="margin-top:11px">'+noteBox('<b>Освободить</b> — место вернётся подписке. Доступ у того устройства пропадёт не сразу: Amnezia гасит его ключ с задержкой (замер: до двух часов).', 'info')+'</div>';
+    if((info.max|0)>0 && (info.used|0)>=(info.max|0) && !me)
+      h+='<div style="margin-top:9px">'+noteBox('Заняты все места, а роутера среди них нет — страну он взять не сможет: Amnezia ответит «все места подписки заняты». Освободите место устройства, которым больше не пользуетесь.', 'warn')+'</div>';
+    return h;
+  }
+  // The card of a Premium server's screen (openSrvScr): who issues its config and what «a new config» does. The words are the
+  // router's behaviour (premium.sh refresh; the watchdog's step — watchdog.sh premium_refresh).
+  function premSrvCard(){
+    return '<div class="card wfull"><div class="wt">Конфиг выдаёт Amnezia</div>'
+      + '<div class="kv"><div class="grow"><div class="k">Новый конфиг</div><div class="v">роутер попросит у Amnezia свежий конфиг этой страны — с новым ключом. Сервер активный или на выходе — поднимется на новом сам; не поднялся — вернётся прежний</div></div><button type="button" class="btn sm gh" data-sv="pmref">Взять новый</button></div>'
+      + '<div class="kv"><div class="grow"><div class="k">Сервер замолчал</div><div class="v">сторож сначала берёт новый конфиг сам и только если и он молчит — уводит на резерв</div></div></div>'
+      + '<div class="kv"><div class="grow"><div class="k">Убрать страну</div><div class="v">снимите отметку на экране подписки — сервер уйдёт, место устройства останется за роутером</div></div></div>'
+      + '<div style="margin-top:11px">'+noteBox('Править этот конфиг незачем: Amnezia выдаст его заново по кнопке выше. Адрес Endpoint — промежуточный узел Amnezia, он один у всех стран; выход в стране — за ним.', 'info')+'</div></div>';
+  }
+  // Every work switch of the screen is locked while a work runs — the router would refuse a second one anyway.
+  function pmLock(body){ Array.prototype.forEach.call(body.querySelectorAll('[data-pa="account"],[data-pp],[data-pd]'), function(b){ b.disabled=true; }); }
+  function pmStLine(body, st){
+    var e=body.querySelector('#pm-st'); if(!e) return;
+    e.hidden=false; e.textContent='⟳ '+(st.msg||'работа идёт…');
+  }
+  function premPoll(body, tag, miss){
+    if(body!==_pmBody || !screenAlive(body)) return;
+    subPost({action:'premium_status'}).then(function(st){
+      st=st||{};
+      if(body!==_pmBody || !screenAlive(body)) return;
+      if(st.state==='running'){ pmStLine(body, st); setTimeout(function(){ premPoll(body, tag, 0); }, 1500); return; }
+      _pmBody=null;
+      premJobEnd(st);
+    }, function(){
+      if(body!==_pmBody || !screenAlive(body)) return;
+      if(miss+1<PM_NET_TRIES){ setTimeout(function(){ premPoll(body, tag, miss+1); }, 3000); return; }
+      _pmBody=null;
+      showToast('роутер не отвечает — работа с Amnezia идёт на нём сама: обновите экран позже', false);
+      navIfShown('cn-sub', subScrOpen)();
+    });
+  }
+  // The end of a work: the router's words as a toast (the tab's own work, or one this screen found running), the lists asked again
+  // (a picked country is a new server), the screen drawn again.
+  function premJobEnd(st){
+    var ok=(st.state==='done');
+    logLine(st.msg||(ok?'готово':'не удалось'), ok); showToast(st.msg||(ok?'готово':'не удалось'), ok);
+    load(true); ovcInvalidate();
+    navIfShown('cn-sub', subScrOpen)();
+    navIfShown('cn-server', srvScrOpen)();
+  }
   var EDI='width:100%;box-sizing:border-box;padding:9px 12px;font:inherit;font-size:13.5px;border:1px solid var(--line2);border-radius:11px;background:var(--paper);color:var(--ink)';
   var EDL='display:block;font-size:12px;color:var(--ink3);margin:0 0 5px';
   // Поля редактора — адреса, ключи и пароли сервера: под меткой стримера (`sens`). Пароли (auth, obfs-пароль, пароль trojan/ss) — точками,
@@ -16026,8 +16409,12 @@
   }
   function openSrvScr(tpt, name, d){
     // Сервер подписки — по ВЛАДЕЛЬЦУ (длиннейший известный тег), а не по префиксу: свой файл «sub-test» живёт в «Своих» и переименовывается.
-    var grp=d[tpt]||{}, subs=d.subs||[], tag=ownerTag(name, subs.map(function(s){ return s.tag; }).concat(_subTagsKnown)), isSub=!!tag, subLbl='';
-    subs.forEach(function(x){ if(x && x.tag===tag) subLbl=x.label||x.tag; });
+    var grp=d[tpt]||{}, subs=d.subs||[], tag=ownerTag(name, subs.map(function(s){ return s.tag; }).concat(_subTagsKnown)), isSub=!!tag, subLbl='', subKind='';
+    subs.forEach(function(x){ if(x && x.tag===tag){ subLbl=x.label||x.tag; subKind=x.kind||''; } });
+    // A server of an AMNEZIA PREMIUM subscription (the router's list names the kind): Amnezia issued its config by a picked country —
+    // instead of «the subscription changes it» and an editor the screen offers a NEW config (premium.sh refresh). No editor for its
+    // Xray either: Amnezia's VLESS is a chain relay → exit, and the form knows one outbound — a save would have cut the chain.
+    var prem=isSub && subKind==='premium';
     var disp=cfgDisp(tpt, name, subs), fl=srvFlag(disp);
     // Несущий — активный конфиг транспорта, который сейчас везёт, и только при включённом VPN: выключенный человеком туннель роутер при
     // сохранении не поднимает (C67), и обещать «несущая перезапустится» было бы неправдой.
@@ -16094,7 +16481,8 @@
       // задаёт подписка; «поправленный конфиг загрузите заново» здесь неправда (загруженное перепишет следующее обновление); удалённый
       // сервер подписка вернёт. Что обновление делает с АКТИВНЫМ — главный страх человека («роутер сам что-то переключит ночью»),
       // поэтому сказано строками, а не в подсказке. Слова — то, что делает роутер (subs-update.sh: refresh_awg, prune_stale).
-      if(subAwg) h+='<div class="card wfull"><div class="wt">Этим конфигом владеет подписка</div>'
+      if(prem) h+=premSrvCard();
+      else if(subAwg) h+='<div class="card wfull"><div class="wt">Этим конфигом владеет подписка</div>'
         + '<div class="kv"><div class="grow"><div class="k">Имя файла</div><div class="v"><span class="mono sens">'+esc(name)+'</span> <span>— имя задаёт подписка: по нему она находит этот сервер при каждом обновлении</span></div></div></div>'
         + '<div class="kv"><div class="grow"><div class="k">Сервер изменился в подписке</div><div class="v">файл перепишется. Если сервер активный, роутер сменит конфиг сам: поднимет новый, а не поднялся — вернёт прежний. О том и о другом придёт уведомление</div></div></div>'
         + '<div class="kv"><div class="grow"><div class="k">Сервер пропал из подписки</div><div class="v">конфиг удалится. Активный, занятый выходом или служащий дорогой останется — оборвать связь по расписанию хуже, чем оставить устаревший сервер; придёт уведомление</div></div></div>'
@@ -16110,10 +16498,14 @@
       // WARP без маскировки (I1): провайдер пропускает рукопожатие чистого WireGuard и обрывает поток после него (замер 10.10.2026).
       if(isWarp(name) && warpMap[name]===0) h+=noteBox('<b>В конфиге WARP нет маскировки</b> (строки <span class="mono kw">I1</span>): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».', 'warn');
       if(via) h+=noteBox('<b>Дорога — в один шаг.</b> Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.', 'info');
-    } else h+='<div id="srv-ed" class="wfull"></div>';
+    } else if(prem) h+=premSrvCard()+'<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why+'</div>';
+    else h+='<div id="srv-ed" class="wfull"></div>';
     // У сервера AmneziaWG из подписки имя файла стоит в карточке владельца — отдельной карточки «Имя» с одним файлом не нужно.
-    if(!subAwg) h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
-    if(tpt!=='awg') h+=expH;
+    // У сервера Premium имя тоже задаёт подписка (страна от Amnezia).
+    if(!subAwg && !prem) h+='<div class="card"><div class="wt">Имя</div>'+srvNameHtml(tpt, name, isSub)+'</div>';
+    // A Premium VLESS server is a CHAIN (relay → exit): a vless:// link carries one hop — it would hand out the exit alone, which does
+    // not answer without the relay. No export for it; the subscription key itself is the way to another device.
+    if(tpt!=='awg' && !(prem && tpt==='xray')) h+=expH;
     if(tpt==='hy2') h+=noteBox('Hysteria2 делит <b>один tun2socks и один socks</b> с Xray и ByeDPI: несущим может быть ровно один из них. «Сделать активным» выбирает конфиг Hysteria2, а сменить сам транспорт — в «Транспорте».', 'info');
     body.innerHTML=h+'</div>';
     _srvShown={tpt:tpt, name:name, act:act, body:body};
@@ -16152,6 +16544,20 @@
       var v=b.getAttribute('data-sv');
       if(v==='use') activateServer(tpt, name, canAct, subs);
       else if(v==='check') srvCheck(tpt, name);
+      // «Взять новый» of an Amnezia Premium server: the router asks Amnezia for a fresh config of the same country (a new key) and
+      // brings it into service when the server is in use; the screen polls the work and is drawn again at its end.
+      else if(v==='pmref'){
+        if(busy){ showToast('панель ещё выполняет прошлое действие — повторите через секунду', false); return; }
+        if(!askConfirm('Взять у Amnezia новый конфиг «'+disp+'»? Ключ станет новым'+(act||hex.length ? '; сервер занят — роутер поднимет его на новом конфиге, а не поднимется — вернёт прежний.' : '.'))) return;
+        b.disabled=true;
+        var pj=premJobId();
+        subPost({action:'premium_refresh', name:name, job:pj}).then(function(a){
+          if(!(a && a.ok)){ showToast((a && a.msg)||'роутер отказал', false); rep(); return; }
+          _pmOwn=pj; logLine('→ беру у Amnezia новый конфиг «'+disp+'»', null);
+          if(!screenAlive(body)) return;
+          _pmBody=body; premPoll(body, '', 0);
+        }, function(){ showToast('роутер не ответил', false); rep(); });
+      }
       else if(v==='viawarp'){ var wx=warpExitFor(name); if(wx) srvRoadSet(name, String(wx.id)); else openWarp(name); }
       else if(v==='chb') srvChbCheck(body);
       else if(v==='chblink'){ var cu=chbUrl(_chbHost); if(cu) window.open(cu, '_blank', 'noopener,noreferrer'); }

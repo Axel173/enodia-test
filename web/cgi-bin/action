@@ -84,6 +84,19 @@ command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1;
 # the three verbs that write it; subs_drop — without it (remove_sub). Written under umask 077: the temp file a line goes through IS
 # the registry after `mv`, and under uhttpd's umask it went 644 for a moment (subs_put's chmod) or for good (the removal's rewrite
 # had no chmod; review s.134, round 3).
+# sub_tag_free <tag> — may a NEW subscription take this tag? Not while configs of a removed one with the same tag are on the router
+# (see save_sub); a tag already in the registry is that subscription's own. _sl — how many such configs were found.
+sub_tag_free() {
+	_sl=0
+	grep -q "^$1$(printf '\t')" "$ENODIA_STATE/.subs" 2>/dev/null && return 0
+	for _sf in "$ENODIA_STATE"/configs/sub-"$1"-*.conf "$ENODIA_STATE"/xray-configs/sub-"$1"-*.json "$ENODIA_STATE"/hy2-configs/sub-"$1"-*.yaml; do
+		[ -e "$_sf" ] || continue
+		_sb=${_sf##*/}; _sb=${_sb%.*}
+		_so=$(sub_owner_tag "$_sb")
+		[ "${#_so}" -gt "${#1}" ] || _sl=$((_sl+1))
+	done
+	[ "$_sl" = 0 ]
+}
 subs_put() {
 	_spt=$(printf '\t')
 	( umask 077; lbl_commit_out "$ENODIA_STATE/.subs" lbl_without "$ENODIA_STATE/.subs" "^$1$_spt" "$1$_spt$2$_spt$3" ) 2>/dev/null || return 1
@@ -296,6 +309,13 @@ warp_job() {
 	case "$ENODIA_WARP_JOB" in ''|*[!a-f0-9]*) ENODIA_WARP_JOB="" ;; esac
 	[ "${#ENODIA_WARP_JOB}" -le 32 ] || ENODIA_WARP_JOB=""
 	export ENODIA_WARP_JOB
+}
+# premium_job — the same for an Amnezia Premium start (premium.sh `JOB`).
+premium_job() {
+	ENODIA_PREMIUM_JOB=$(field job)
+	case "$ENODIA_PREMIUM_JOB" in ''|*[!a-f0-9]*) ENODIA_PREMIUM_JOB="" ;; esac
+	[ "${#ENODIA_PREMIUM_JOB}" -le 32 ] || ENODIA_PREMIUM_JOB=""
+	export ENODIA_PREMIUM_JOB
 }
 owner_relay() {
 	cap_run "$@"
@@ -2144,16 +2164,7 @@ EOF
 		# that were in use as the person's own — under their `sub-<tag>-` names; a newcomer with the same tag would own them
 		# again: report them «gone from the subscription» and, once they are free, DELETE them (review s.133, shown on the real
 		# scripts). The panel picks a free tag by itself (subTagFree) — this is the router's word for any other client.
-		if ! grep -q "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null; then
-			_sl=0
-			for _sf in "$ENODIA_STATE"/configs/sub-"$tag"-*.conf "$ENODIA_STATE"/xray-configs/sub-"$tag"-*.json "$ENODIA_STATE"/hy2-configs/sub-"$tag"-*.yaml; do
-				[ -e "$_sf" ] || continue
-				_sb=${_sf##*/}; _sb=${_sb%.*}
-				_so=$(sub_owner_tag "$_sb")
-				[ "${#_so}" -gt "${#tag}" ] || _sl=$((_sl+1))
-			done
-			[ "$_sl" = 0 ] || fail "имя занято: от удалённой подписки с таким именем на роутере остались серверы ($_sl) — назовите подписку иначе"
-		fi
+		sub_tag_free "$tag" || fail "имя занято: от удалённой подписки с таким именем на роутере остались серверы ($_sl) — назовите подписку иначе"
 		_oldu=$([ -f "$ENODIA_STATE/.subs" ] && grep "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2)
 		[ "$_oldu" = "$url" ] || sub_info_drop "$tag"
 		subs_put "$tag" "$url" "$label" || fail "не удалось сохранить подписку — нет места?"
@@ -2611,6 +2622,62 @@ EOF
 	warp_dev_take)
 		owner_relay warp.sh device-take ;;
 	# Где Cloudflare принял подключение выхода (экран выхода-WARP): трасса через его интерфейс — у владельца.
+	# premium_*: AMNEZIA PREMIUM (premium.sh) — a subscription whose link field is the service's key. The long works go in the
+	# background at the owner; the panel polls premium_status. A start may carry the tab's job id (as warp_*).
+	# save_premium: the key is checked by the owner WITHOUT the network (`check`), the registry line written, and Amnezia asked
+	# about the subscription at once — its screen shows the countries when the answer comes. The key travels in a private file.
+	save_premium)
+		tag=$(field tag)
+		label=$(urldecode "$(field label)")
+		key=$(urldecode "$(field key)" | tr -d ' \r\n\t')
+		echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
+		printf '%s' "$key" | grep -qE '^vpn://[A-Za-z0-9_=-]+$' || fail "это не ключ vpn://"
+		[ "${#key}" -le 4096 ] || fail "слишком длинный ключ"
+		[ -f "$ENODIA_DIR/premium.sh" ] || fail "premium.sh не установлен (обновите скрипты роутера)"
+		in_dir
+		( umask 077; printf '%s\n' "$key" > "$IN_DIR/key" ) || fail "нет места для ключа"
+		cap_run premium.sh check "$IN_DIR/key"
+		_pck=$(printf '%s\n' "$CAP_OUT" | grep '^{' | tail -n 1)
+		_pckm=$(printf '%s' "$_pck" | sed -n 's/.*"msg":"\([^"]*\)".*/\1/p')
+		case "$_pck" in '{"ok":true'*) ;; *) fail "${_pckm:-ключ не принят}" ;; esac
+		_pckn=$(printf '%s' "$_pck" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+		TAB=$(printf '\t')
+		sub_tag_free "$tag" || fail "имя занято: от удалённой подписки с таким именем на роутере остались серверы ($_sl) — назовите подписку иначе"
+		label=$(printf '%s' "$label" | tr -d '\000-\037\177')
+		[ -n "$label" ] || label=$_pckn
+		[ -n "$label" ] || label="Amnezia Premium"
+		_oldu=$([ -f "$ENODIA_STATE/.subs" ] && grep "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2)
+		[ "$_oldu" = "$key" ] || sub_info_drop "$tag"
+		subs_put "$tag" "$key" "$label" || fail "не удалось сохранить подписку — нет места?"
+		premium_job
+		cap_run premium.sh account "$tag"
+		printf '{"ok":true,"code":0,"msg":"подписка Amnezia Premium сохранена — спрашиваю о ней Amnezia","tag":"%s"}\n' "$tag"; exit 0 ;;
+	premium_status)
+		owner_relay premium.sh status ;;
+	premium_info)
+		tag=$(field tag)
+		echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки"
+		owner_relay premium.sh info "$tag" ;;
+	premium_account|premium_pick|premium_unpick|premium_refresh|premium_revoke)
+		tag=$(field tag); cc=$(field cc); proto=$(field proto); name=$(field name); dev=$(field dev)
+		case "$action" in premium_refresh) ;; *) echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки" ;; esac
+		case "$action" in premium_pick|premium_unpick)
+			echo "$cc" | grep -qE '^[a-z][a-z0-9-]{1,15}$' || fail "плохой код страны"
+			case "$proto" in awg|vless) ;; *) fail "протокол — awg или vless" ;; esac ;;
+		esac
+		[ -f "$ENODIA_DIR/premium.sh" ] || fail "premium.sh не установлен (обновите скрипты роутера)"
+		premium_job
+		case "$action" in
+			premium_account) run premium.sh account "$tag" ;;
+			premium_pick)    run premium.sh pick "$tag" "$cc" "$proto" ;;
+			premium_unpick)  run premium.sh unpick "$tag" "$cc" "$proto" ;;
+			premium_refresh)
+				echo "$name" | grep -qE '^sub-[a-z0-9-]{1,80}$' || fail "плохое имя конфига"
+				run premium.sh refresh "$name" ;;
+			premium_revoke)
+				echo "$dev" | grep -qE '^[a-f0-9-]{36}$' || fail "плохой идентификатор устройства"
+				run premium.sh revoke "$tag" "$dev" ;;
+		esac ;;
 	warp_colo)
 		sid=$(field id); case "$sid" in [2-7]) ;; *) fail "битый номер выхода" ;; esac
 		owner_relay warp.sh colo "$sid" ;;

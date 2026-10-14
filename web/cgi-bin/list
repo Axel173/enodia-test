@@ -154,7 +154,10 @@ subs_list() {
 		# разбор ВСЕГО ответа (ревью приёмки, круг 2). Обычную метку это не меняет ни на байт. Диапазон — ПЕРВЫМ: busybox не читает
 		# восьмеричный код сразу после `\\` и снимал бы только кавычку с косой (замер на BE7000, круг 3; следит C111).
 		label=$(printf '%s' "$label" | tr -d '\000-\037"\\')
-		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\"}"
+		# The KIND, never the link itself: an Amnezia Premium key (premium.sh) — its servers are countries Amnezia issued, and the
+		# server's screen offers «a new config» instead of an editor or «the subscription changes it».
+		kind=link; case "$url" in vpn://*) kind=premium ;; esac
+		out="$out${out:+,}{\"tag\":\"$tag\",\"label\":\"$label\",\"kind\":\"$kind\"}"
 	done < "$DS/.subs"
 	printf '%s' "$out"
 }

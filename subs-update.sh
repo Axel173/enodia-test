@@ -487,17 +487,24 @@ iface_add() {
 # config itself), and the zlib magic does not tell them apart: the inflated text is tried first, the bytes as they are
 # second — a link that is NOT compressed must not suffer because its first bytes happen to look like a zlib header.
 vpn_decode() {
+	vpn_raw "$1" || return 1
+	if [ -s "$_vd.un" ]; then vpn_from "$_vd.un" && return 0; fi
+	vpn_from "$_vd.bin"
+}
+# vpn_raw <body of vpn://> — the link's bytes in $_vd.bin and, when they hold a zlib stream (qCompress or bare), that stream inflated
+# in $_vd.un. One unpacking for the config decoder above and for Amnezia Premium's keys and answers (cmd_vpn_json).
+vpn_raw() {
 	VPN_NAME=; _vd="$TMPD/vpn"
 	rm -f "$_vd".* 2>/dev/null
 	printf '%s' "$1" | lbl_commit_out "$_vd.bin" b64_dec 2>/dev/null
 	[ -s "$_vd.bin" ] || return 1
 	_voff=
 	if zlib_at "$_vd.bin" 4; then _voff=4; elif zlib_at "$_vd.bin" 0; then _voff=0; fi
-	if [ -n "$_voff" ] && zlib_inflate "$_vd.bin" "$_voff" "$_vd.un"; then
-		vpn_from "$_vd.un" && return 0
-	fi
-	vpn_from "$_vd.bin"
+	[ -z "$_voff" ] || zlib_inflate "$_vd.bin" "$_voff" "$_vd.un" || rm -f "$_vd.un" 2>/dev/null
+	return 0
 }
+# vpn_body <file> — the body of the `vpn://` link a file holds (its first line; the scheme off). Secrets travel in FILES, not argv.
+vpn_body() { head -n 1 "$1" 2>/dev/null | tr -d " \r\t" | sed 's#^vpn://##'; }
 
 # awg_take <file> — accept the config a link gave: both sections at line starts, both keys, an endpoint. Fills
 # P_HOST/P_PORT and puts the text into $P_CONF (blank tail off, one newline at the end: `while read` loses a last line
@@ -1423,6 +1430,22 @@ ev_log() { [ -f "$ENODIA_DIR/events.sh" ] && sh "$ENODIA_DIR/events.sh" add "$1"
 update_one() {
 	_t="$1"
 	_url=$(sub_url_of "$_t"); _lab=$(sub_label_of "$_t"); [ -n "$_lab" ] || _lab="$_t"
+	# AMNEZIA PREMIUM — the link field holds the service's key: nothing to download, its servers are the countries the person
+	# picked (premium.sh). A run asks the service about the subscription (date, devices) and leaves the configs alone: a new config
+	# is a new key, and taking one on every run would restart a tunnel that works.
+	case "$_url" in
+		vpn://*)
+			say "подписка «$_lab» ($_t): Amnezia Premium — спрашиваю о подписке"
+			if [ ! -f "$ENODIA_DIR/premium.sh" ]; then
+				say "  premium.sh не установлен — пропуск"; SUMMARY="$SUMMARY«$_lab»: нет premium.sh. "; FAILED=$((FAILED+1)); return 1
+			fi
+			_pmo=$(sh "$ENODIA_DIR/premium.sh" update "$_t" 2>&1 </dev/null); _pmr=$?
+			_pmo=$(printf '%s\n' "$_pmo" | tail -n 1 | tr -d '\r\t')
+			say "  $_pmo"
+			if [ "$_pmr" = 0 ]; then SUMMARY="$SUMMARY«$_lab»: $_pmo. "; return 0; fi
+			SUMMARY="$SUMMARY«$_lab»: не обновилась ($_pmo). "; FAILED=$((FAILED+1))
+			return 1 ;;
+	esac
 	case "$_url" in http://*|https://*) : ;; *) say "подписка «$_lab»: нет ссылки в реестре — пропуск"; return 1 ;; esac
 	sub_host_public "$_url" || { say "подписка «$_lab»: ссылка ведёт на приватный адрес — отказ (SSRF)"; return 1; }
 	say "подписка «$_lab» ($_t): скачиваю"
@@ -1623,7 +1646,10 @@ cmd_list() {
 			done
 			_n=$((_n+_nf)); _nfam="$_nfam$TAB$_nf"
 		done
-		printf '%s\t%s\t%s%s\n' "$_t" "$(sub_label_of "$_t")" "$_n" "$_nfam"
+		# …and last, the KIND: `premium` — the link field holds an Amnezia Premium key (premium.sh), `link` — a subscription by URL.
+		# The panel draws the two differently (a Premium one has countries and devices, no link to show or edit).
+		_kind=link; case "$(sub_url_of "$_t")" in vpn://*) _kind=premium ;; esac
+		printf '%s\t%s\t%s%s\t%s\n' "$_t" "$(sub_label_of "$_t")" "$_n" "$_nfam" "$_kind"
 	done
 }
 
@@ -1638,6 +1664,7 @@ cmd_list() {
 cmd_drop() {
 	_dt="$1"
 	case "$_dt" in ''|*[!a-z0-9-]*) echo "плохая метка подписки" >&2; return 1 ;; esac
+	_dkept=0
 	for _dfam in $FAMS; do
 		fam_set "$_dfam"
 		_act=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
@@ -1654,6 +1681,7 @@ cmd_drop() {
 					sh "$ENODIA_DIR/cfg-names.sh" set "$FAM_TNAME" "$_b" "$_dd" >/dev/null 2>&1 </dev/null
 				fi
 				printf '%s/%s\n' "$FAM_TNAME" "$_b"
+				_dkept=$((_dkept+1))
 				continue
 			fi
 			cfg_gone "$_f" "$_b"
@@ -1662,6 +1690,11 @@ cmd_drop() {
 	# The maps — by the OWNER, not by the prefix (subs-lib.sh::sub_names_keep_other); the tag is given explicitly.
 	[ ! -f "$NAMES" ] || lbl_commit_out "$NAMES" sub_names_keep_other "$_dt" "$NAMES" 2>/dev/null
 	[ ! -f "$PICKS" ] || lbl_commit_out "$PICKS" sub_names_keep_other "$_dt" "$PICKS" 2>/dev/null
+	# AMNEZIA PREMIUM: its cache goes and — nothing kept — the router's place in the subscription is given back. premium.sh reads
+	# the key from the registry, so BEFORE the link is cleared below.
+	case "$(sub_url_of "$_dt")" in
+		vpn://*) [ ! -f "$ENODIA_DIR/premium.sh" ] || sh "$ENODIA_DIR/premium.sh" drop "$_dt" "$_dkept" >/dev/null 2>&1 </dev/null ;;
+	esac
 	# The registry line stays, WITHOUT its link: the caller (cgi-bin/action remove_sub) still moves the kept servers out of the
 	# subscription's namespace and removes the line only then — a run that starts in between (cron, another tab's button) sees no
 	# link and skips the subscription instead of laying all its configs out again (review s.134, round 2). Until it is moved, the
@@ -1671,6 +1704,87 @@ cmd_drop() {
 	[ ! -f "$ENODIA_STATE/.subs" ] || ( umask 077; lbl_commit_out "$ENODIA_STATE/.subs" \
 		awk -F"$TAB" -v t="$_dt" 'BEGIN { OFS = FS } ($1 "") == (t "") { $2 = "-" } { print }' "$ENODIA_STATE/.subs" ) 2>/dev/null
 	return 0
+}
+
+# vpn-json <in> <out> — the JSON a `vpn://` link holds (the link — the first line of <in>), whole, into <out> (600). For Amnezia
+# Premium (premium.sh): its key and its answers are such containers, and their fields are read by the caller.
+cmd_vpn_json() {
+	_vjb=$(vpn_body "$1"); [ -n "$_vjb" ] || return 1
+	vpn_raw "$_vjb" || return 1
+	for _vjf in "$_vd.un" "$_vd.bin"; do
+		[ -s "$_vjf" ] && jf "$_vjf" '@' >/dev/null 2>&1 || continue
+		( umask 077; lbl_commit_out "$2" cat "$_vjf" ) 2>/dev/null || return 1
+		return 0
+	done
+	return 1
+}
+# vpn-conf <in> <out> [<private key file>] — the AmneziaWG config of a `vpn://` container, by the SAME decoder as a subscription's
+# link (vpn_from: templates of the resolver, MTU, a resolver when none is named; awg_take: both keys, an endpoint) → <out> (600).
+# The key file fills the template the API leaves for the key the CLIENT made (`$WIREGUARD_CLIENT_PRIVATE_KEY` — Amnezia Premium's
+# config answer): the substitution is a sed SCRIPT in the run's closed dir, the key never in argv.
+cmd_vpn_conf() {
+	_vcb=$(vpn_body "$1"); [ -n "$_vcb" ] || return 1
+	vpn_raw "$_vcb" || return 1
+	if [ -n "${3:-}" ]; then
+		_vck=$(head -n 1 "$3" 2>/dev/null | tr -d " \r\n$TAB")
+		printf '%s' "$_vck" | grep -qE '^[A-Za-z0-9+/]{43}=$' || return 1
+		printf 's#\\$WIREGUARD_CLIENT_PRIVATE_KEY#%s#g\n' "$_vck" > "$TMPD/key.sed" || return 1
+		for _vcf in "$_vd.un" "$_vd.bin"; do
+			[ ! -s "$_vcf" ] || lbl_commit_out "$_vcf" sed -f "$TMPD/key.sed" "$_vcf" 2>/dev/null || return 1
+		done
+		rm -f "$TMPD/key.sed"
+	fi
+	if ! { [ -s "$_vd.un" ] && vpn_from "$_vd.un"; }; then vpn_from "$_vd.bin" || return 1; fi
+	awg_take "$_vd.fin" || return 1
+	( umask 077; lbl_commit_out "$2" cat "$P_CONF" ) 2>/dev/null
+}
+
+# put <tag> <family> <name> <src> <display> — ONE server laid out by a source that brings them one at a time (Amnezia Premium:
+# premium.sh asks the API, this owner lays the file out): the config whole or not at all (600), its real name in `.sub-names`, and —
+# when the name is in use (the active server, an exit) — brought into service the way a run does it (refresh_active, reup_exits),
+# with the same refusals and events. Under the run's lock (the caller takes it): the same files as a run.
+cmd_put() {
+	_put=$1; _pufam=$2; _pun=$3; _pus=$4
+	case "$_put" in ''|*[!a-z0-9-]*) echo "плохая метка подписки"; return 1 ;; esac
+	case "$_pufam" in xray|awg) ;; *) echo "плохое семейство конфига"; return 1 ;; esac
+	printf '%s' "$_pun" | grep -qE '^sub-[a-z0-9-]{1,80}$' || { echo "плохое имя конфига"; return 1; }
+	[ "$(sub_owner_tag "$_pun")" = "$_put" ] || { echo "имя «$_pun» не принадлежит подписке «$_put»"; return 1; }
+	[ -s "$_pus" ] || { echo "нет конфига"; return 1; }
+	_pud=$(san_txt "$5" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); [ -n "$_pud" ] || _pud=$_pun
+	fam_set "$_pufam"
+	if name_elsewhere "$_pun"; then echo "имя «$_pun» занято конфигом другого протокола"; return 1; fi
+	( umask 077; mkdir -p "$FAM_DIR" ) 2>/dev/null
+	_puf="$FAM_DIR/$_pun.$FAM_EXT"
+	( umask 077; lbl_commit_out "$_puf" cat "$_pus" ) 2>/dev/null || { echo "не удалось записать конфиг — нет места?"; return 1; }
+	chmod 600 "$_puf" 2>/dev/null
+	lbl_commit_out "$NAMES" lbl_without "$NAMES" "^$_pun$TAB" "$_pun$TAB$_pud" 2>/dev/null && chmod 600 "$NAMES" 2>/dev/null
+	printf '%s\t%s\n' "$FAM_TNAME" "$_pun" > "$TMPD/changed"
+	refresh_active "$_put"
+	reup_exits
+	echo "конфиг «$_pud» на месте"
+}
+# unput <tag> <family> <name> — that server removed. A config in use stays: the active server, the reserve's home, an exit's — the
+# same three guards a run keeps (prune_stale), said in words and code 2.
+cmd_unput() {
+	_unt=$1; _unfam=$2; _unn=$3
+	case "$_unt" in ''|*[!a-z0-9-]*) echo "плохая метка подписки"; return 1 ;; esac
+	case "$_unfam" in xray|awg) ;; *) echo "плохое семейство конфига"; return 1 ;; esac
+	printf '%s' "$_unn" | grep -qE '^sub-[a-z0-9-]{1,80}$' || { echo "плохое имя конфига"; return 1; }
+	[ "$(sub_owner_tag "$_unn")" = "$_unt" ] || { echo "имя «$_unn» не принадлежит подписке «$_unt»"; return 1; }
+	fam_set "$_unfam"
+	_unf="$FAM_DIR/$_unn.$FAM_EXT"
+	_und=$(disp_of "$_unn")
+	if [ -e "$_unf" ]; then
+		[ "$_unn" != "$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')" ] || { echo "«$_und» — активный сервер: сперва выберите другой"; return 2; }
+		if [ "$_unfam" = awg ] && [ "$_unn" = "$(cat "$ENODIA_STATE/.failover-home" 2>/dev/null | tr -d ' \r\n"\\')" ]; then
+			echo "«$_und» — «дом» резерва: сторож вернётся на него; сперва выберите основным другой сервер"; return 2
+		fi
+		_unx=$(held_by "$FAM_TNAME" "$_unn")
+		[ -z "$_unx" ] || { echo "на «$_und» стоит выход №$(printf '%s' "$_unx" | sed 's/,/, №/g') — сперва смените выходу сервер"; return 2; }
+		cfg_gone "$_unf" "$_unn" || { echo "не удалось удалить «$_und»"; return 1; }
+	fi
+	[ ! -f "$NAMES" ] || lbl_commit_out "$NAMES" lbl_without "$NAMES" "^$_unn$TAB" 2>/dev/null
+	echo "сервер «$_und» убран"
 }
 
 # Лок: параллельный прогон (cron + кнопка в панели) топтал бы один набор файлов. Устаревший
@@ -1743,6 +1857,15 @@ case "$1" in
 	list)  cmd_list ;;
 	parse) cmd_parse "$2" ;;
 	name)  cmd_name "$2" ;;
+	vpn-json) cmd_vpn_json "$2" "$3" ;;
+	vpn-conf) cmd_vpn_conf "$2" "$3" "$4" ;;
+	put|unput)
+		# The run's lock, as `drop`: these write a run's files. Its refusal is the caller's answer (code 1, words on stdout).
+		take_lock || exit 1
+		if [ "$1" = put ]; then cmd_put "$2" "$3" "$4" "$5" "$6"; else cmd_unput "$2" "$3" "$4"; fi
+		rc=$?
+		drop_lock
+		exit $rc ;;
 	drop)
 		# Under the run's own lock: a run in progress would lay the subscription's configs out again right after us. Its
 		# refusal is the caller's answer (code 1, the words on stdout), not a silent «done».
@@ -1751,7 +1874,7 @@ case "$1" in
 		drop_lock
 		exit $rc ;;
 	*)
-		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | drop <tag> | parse <ссылка> | name <ссылка>" >&2
+		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | drop <tag> | parse <ссылка> | name <ссылка> | vpn-json <in> <out> | vpn-conf <in> <out> [key] | put <tag> <fam> <name> <src> <имя> | unput <tag> <fam> <name>" >&2
 		echo "       расписание — update-sched.sh set subs <off|6h|12h|daily|weekly>" >&2
 		exit 1 ;;
 esac

@@ -173,7 +173,10 @@ SETTINGS="$SETTINGS .traffic-dev .traffic-dev-hosts"                            
 # panel-cert.pem/panel-key.pem = самоподписанный сертификат HTTPS панели (решение 30.09.2026): без него
 # переезд выписывал новый, и каждый браузер и телефон заново спрашивал о доверии. Едет ТОЛЬКО ПАРОЙ, которая
 # сходится (разбор у импорта), и ничего не открывает: флаги HTTPS и входа снаружи остаются в EXCLUDE.
-SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .cfg-names .cfg-via .warp-reg .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem"
+# premium/ = Amnezia Premium (premium.sh): `.installation` — the router's identity at Amnezia (ONE place of the subscription for any
+# number of countries) and the last answer about each subscription. With the configs: a restore keeps the router's place instead of
+# taking a second one (its key is in `.subs`, a secret too).
+SECRETS="awg.conf amnezia_for_awg.conf awg0.conf notify.conf xray.json hysteria.yaml .active .xray-active .hy2-active .transport .subs .sub-names .cfg-names .cfg-via .warp-reg .sub-picks configs xray-configs hy2-configs server panel-cert.pem panel-key.pem premium"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
 	echo "Content-Type: application/json; charset=utf-8"

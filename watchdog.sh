@@ -765,6 +765,30 @@ slot_road_lies() {   # $1 = id ; $2 = cfg ; $3 = fallback ; $4 = the exit's tran
 # часовым троттлом на КАЖДОМ буте. Поднять — поднимаем (это и есть польза раннего тика), а вердикт
 # откладываем до первого честного тика после грейса (ревью 06.09.2026).
 slot_boot_window() { [ "$(up_secs)" -lt "$BOOT_GRACE" ]; }
+# AMNEZIA PREMIUM — A FRESH CONFIG BEFORE THE LADDER (the user's decision 14.10.2026). A Premium server's config is issued by Amnezia
+# for this router's key; a server that went silent may be a config Amnezia moved (another relay, the key revoked from the app) — a
+# new config of the same country (premium.sh run-refresh: a new key, laid out by the subscriptions' owner, which also brings it into
+# service when it is in use) costs one API call, while the ladder takes the person off the server they chose. Once per
+# PM_REFRESH_GAP per config, by uptime (no clock trust needed): a refresh that did not help must not run on every tick. Code 0 — a
+# new config is in place (the caller gives the carrier its verdict on the next tick or waits for a handshake); 1 — not a Premium
+# server, too soon, or Amnezia did not give one (the ladder goes on as before).
+PM_REFRESH_GAP=${PM_REFRESH_GAP:-1800}
+premium_refresh() {   # $1 = config name
+    case "$1" in sub-*-awg|sub-*-vless) ;; *) return 1 ;; esac
+    [ -f "$ENODIA_DIR/premium.sh" ] || return 1
+    _pmf="/tmp/enodia-premium-wd.$1"
+    _pmu=$(up_secs); _pml=$(cat "$_pmf" 2>/dev/null | tr -cd '0-9')
+    if [ -n "$_pml" ] && [ "$_pmu" -ge "$_pml" ] && [ $((_pmu - _pml)) -lt "$PM_REFRESH_GAP" ]; then return 1; fi
+    echo "$_pmu" > "$_pmf" 2>/dev/null
+    if ! sh "$ENODIA_DIR/premium.sh" run-refresh "$1" >>"$LOG" 2>&1 </dev/null; then
+        # «Not a Premium server» answers the same code and says nothing: only a work that ran leaves its words in the status file.
+        _pmw=$(sed -n 's/.*"op":"refresh".*"msg":"\([^"]*\)".*/\1/p' /tmp/enodia-premium.json 2>/dev/null | head -n 1)
+        [ -z "$_pmw" ] || log "сервер Amnezia Premium «$1» молчит; новый конфиг взять не удалось: $_pmw"
+        return 1
+    fi
+    log "сервер Amnezia Premium «$1» молчал → взял у Amnezia новый конфиг (новый ключ), резервы — только если и он не поможет"
+    return 0
+}
 # «НЕДОСТУПЕН» И «СНОВА РАБОТАЕТ» — ДВЕ ПОЛОВИНЫ ОДНОГО ЭПИЗОДА (пожелание тестера 02.10.2026: журнал говорил только о падении
 # выхода, и после каждого письма приходилось лезть проверять, вернулся ли он). Выходы xray/hy2/byedpi сторож переподнимает сам
 # на каждом тике, и удачный подъём знал лишь его лог. Отметка эпизода — `$SLOT_DOWN.<id>`: падение объявляем ОДИН раз на эпизод
@@ -1270,6 +1294,12 @@ EOF
         # блэкхолом на все ~3 минуты до честного тика, против инварианта «оставленный маршрут =
         # БЛЭКХОЛ вместо fail-open». Гасим (fallback заработает сразу), а откладываем ровно то, что
         # и должно ждать: ВЕРДИКТ человеку — письмо о падении выхода.
+        # An Amnezia Premium server: a fresh config of its country first (premium_refresh) — the owner restarts the exit on it, and
+        # the next tick judges a carrier that is seconds old (slot_young) instead of this dead one.
+        if ! slot_boot_window && premium_refresh "$scfg"; then
+            log "slot-health: awg-выход №$sid ($scfg): handshake ${_age}с — выход перезапущен на новом конфиге Amnezia, вердикт следующим тиком"
+            continue
+        fi
         log "slot-health: awg-выход №$sid ($scfg) мёртв (handshake ${_age}с) → гашу несущую → fallback=$sfb"
         if slot_boot_window; then
             [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
@@ -2997,6 +3027,13 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
         fi
     fi
 
+    # An Amnezia Premium server under Xray: a fresh config of its country before the ladder (premium_refresh). The owner restarts
+    # the carrier on it (subs-update.sh refresh_active), and the carrier's grace gives it the next tick.
+    if [ "$TRANSPORT" = xray ] && premium_refresh "$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')"; then
+        log "$TRANSPORT: несущая перезапущена на новом конфиге Amnezia — вердикт следующим тиком"
+        finish
+    fi
+
     mode=$(fo_mode)
     fo_mode_note "$mode"
 
@@ -3661,6 +3698,26 @@ back up; once it answers, the VPN returns by itself and a second email arrives."
             log "переподъём после ожившей дороги не помог — возвращаю прямой режим (safety-off)"
             sh "$SWITCH_VPN" safety-off >>"$LOG" 2>&1
         fi
+    fi
+    # AN AMNEZIA PREMIUM SERVER: a fresh config of its country before the ladder (premium_refresh). The owner raises it at once
+    # (switch-vpn.sh refresh: the new text up, else the previous back) — the handshake is asked as the re-raise above asks it. Not
+    # under our switch lock: the owner takes the lock itself and would refuse under ours.
+    if [ -f "$ENODIA_STATE/awg.conf" ] && premium_refresh "$(cat "$ACTIVE_NAME" 2>/dev/null | tr -d ' \r\n')"; then
+        off_bail "нового конфига Amnezia"
+        i=0
+        while [ "$i" -lt 25 ]; do
+            hs2=$($WG show awg0 latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+            case "$hs2" in
+                ''|0) ;;
+                *)  if [ "$(age_since "$hs2")" -lt "$HS_DEAD" ]; then
+                        log "новый конфиг Amnezia помог: handshake вернулся — резервы не трогаю"
+                        finish
+                    fi ;;
+            esac
+            sleep 1
+            i=$((i + 1))
+        done
+        log "новый конфиг Amnezia не ожил (handshake так и не пришёл) — иду по лестнице failover"
     fi
     mode=$(fo_mode)
     nbk=$(count_backups)

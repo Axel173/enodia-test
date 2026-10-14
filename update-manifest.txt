@@ -127,6 +127,11 @@ road.sh
 # с гардом `-f`; нет файла — панель честно отказывает, остальное как раньше.
 cheburcheck.sh
 warp.sh
+# Amnezia Premium (premium.sh): a subscription by the service's key — the router asks Amnezia's API itself. amnezia-gw.pem is
+# Amnezia's PUBLIC key, byte for byte (the gateway lists' AES key is SHA-512 of its exact bytes; C138 pins the sum). Callers
+# (subs-update.sh, cgi-bin/action, watchdog.sh) guard by `-f`: no file — no Premium, the rest as before.
+premium.sh
+amnezia-gw.pem
 lists-update.sh
 groups.sh
 geo.sh
