@@ -337,8 +337,10 @@ ask() {
 # ---- what an answer says ---------------------------------------------------------------------------------------------------------
 # account_save <tag> — the decrypted account_info → premium/<tag>.account (600, whole) and the subscription's own line (.sub-info):
 # the end date is the list line's «до …», `have` with no total is «без лимита» (Premium has no traffic cap).
+# Code 1 — not saved: the caller decides whether that ends its work (the account's own job) or not (a pick, a revoke: their work is
+# done, the cache is a courtesy to the screen).
 account_save() {
-    ( umask 077; mkdir -p "$PDIR" && lbl_commit_out "$PDIR/$1.account" cat "$W/resp.json" ) 2>/dev/null || fail "не удалось сохранить ответ — нет места?"
+    ( umask 077; mkdir -p "$PDIR" && lbl_commit_out "$PDIR/$1.account" cat "$W/resp.json" ) 2>/dev/null || return 1
     _pae=$(iso_date_epoch "$(jf "$PDIR/$1.account" '@.subscription_end_date')") || _pae=0
     SUB_UI_HAVE=1 SUB_UI_UP=0 SUB_UI_DOWN=0 SUB_UI_TOTAL=0 SUB_UI_EXP=$_pae sub_info_put "$1" ok
 }
@@ -399,7 +401,7 @@ run_account() {
     printf '{%s,"cli_version":"%s","subscription_status":"active"}' "$(common)" "$APP_VER" > "$W/req.json"
     if ! call v1/account_info "$W/req.json"; then sub_info_put "$1" fail; fail "$CALL_WHY"; fi
     case "$HS" in 2??) ;; *) sub_info_put "$1" fail; fail "$(api_why)" ;; esac
-    account_save "$1"
+    account_save "$1" || fail "не удалось сохранить ответ — нет места?"
     _pan=$(jf "$PDIR/$1.account" '@.available_countries[*].server_country_code' | wc -l)
     done_ "подписка проверена: стран $_pan"
 }
@@ -472,6 +474,11 @@ run_pick() {   # $1 tag  $2 cc  $3 proto  [$4 refresh]
     # What the owner did with a config IN USE (the active server raised on the new text, an exit restarted — or why not): its lines
     # before its last one («конфиг … на месте»); the last of them is the news.
     _prw=$(printf '%s\n' "$_pro" | grep -v '^[[:space:]]*$' | sed '$d' | tail -n 1 | sed 's/^[[:space:]]*//' | jline 300)
+    # The subscription as Amnezia sees it now (walk 14.10.2026: after the first country the screen still said «устройств 2 из 7» —
+    # that config made the router a device of the subscription, and the cache was older). Its failure is not the pick's.
+    say "сверяю устройства подписки"
+    printf '{%s,"cli_version":"%s","subscription_status":"active"}' "$(common)" "$APP_VER" > "$W/req.json"
+    if call v1/account_info "$W/req.json"; then case "$HS" in 2??) account_save "$1" || : ;; esac; fi
     if [ "$OP" = refresh ]; then done_ "новый конфиг «$_prd» на месте${_prw:+ — $_prw}" "\"name\":\"$_prn\""
     else done_ "сервер «$_prd» добавлен" "\"name\":\"$_prn\""; fi
 }
@@ -531,7 +538,7 @@ run_revoke() {   # $1 tag  $2 uuid
     ask v1/revoke_config "$W/req.json"
     # The list as it is now: the freed place shows at once.
     printf '{%s,"cli_version":"%s","subscription_status":"active"}' "$(common)" "$APP_VER" > "$W/req.json"
-    if call v1/account_info "$W/req.json"; then case "$HS" in 2??) account_save "$1" ;; esac; fi
+    if call v1/account_info "$W/req.json"; then case "$HS" in 2??) account_save "$1" || : ;; esac; fi
     done_ "место устройства освобождено"
 }
 

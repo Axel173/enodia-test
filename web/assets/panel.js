@@ -6364,7 +6364,7 @@
   // заново — остаётся. Надгробия живут до перезагрузки страницы: после неё сброшенного нет и на роутере.
   // Подписка сбрасывается по ВЛАДЕЛЬЦУ сервера, а не по префиксу имени: «liberty» ⊂ «liberty-vpn», и префикс `sub-liberty-` унёс бы кэш
   // соседней подписки (класс ownerTag). Известные теги — из ответа списка серверов (`srvListTake`) и из самих сбросов.
-  var _chkGone={}, _chkGoneTag={}, _subTagsKnown=[];
+  var _chkGone={}, _chkGoneTag={}, _subTagsKnown=[], _subPremKnown=[];
   function chkOwner(k){
     if(k.indexOf('xray|sub-')!==0) return '';
     var tags=_subTagsKnown.slice(), t;
@@ -11705,6 +11705,9 @@
     "Править этот конфиг незачем: Amnezia выдаст его заново по кнопке выше. Адрес Endpoint — промежуточный узел Amnezia, он один у всех стран; выход в стране — за ним.":"There is no need to edit this config: Amnezia issues it anew by the button above. The Endpoint is an Amnezia relay, one for all countries; the exit in the country is behind it.",
     "роутер не отвечает — работа с Amnezia идёт на нём сама: обновите экран позже":"the router does not answer — the work with Amnezia goes on there by itself: refresh the screen later",
     "последняя страна:":"last country:",
+    "Этот конфиг — ключ роутера: на другом устройстве он заберёт у роутера соединение. Для телефона лучше вставить в приложение AmneziaVPN сам ключ подписки — это ещё одно место из семи.":"This config is the router's key: on another device it takes the connection away from the router. For a phone, paste the subscription key itself into the AmneziaVPN app — that is one more place of seven.",
+    "сверяю устройства подписки":"checking the subscription's devices",
+    "Промежуточный узел Amnezia на пинг не отвечает: «нет ответа» здесь не значит, что сервер мёртв, — рабочий ли он, покажет выход на нём или «Сделать активным».":"Amnezia's relay does not answer a ping: «no answer» here does not mean the server is dead — whether it works, an exit on it or «Make active» shows.",
     "Ключ":"A key","из приложения AmneziaVPN или личного кабинета) вставляется сюда же. Серверов в нём нет: роутер сам спросит Amnezia о подписке и покажет её страны — вы отметите нужные.":"from the AmneziaVPN app or the personal dashboard) goes here too. It holds no servers: the router asks Amnezia about the subscription itself and shows its countries — you pick the ones you need.",
     "[warp] нет текста маскировки":"[warp] no masking text",
     "[warp] недопустимое имя конфига":"[warp] invalid config name",
@@ -15444,6 +15447,8 @@
     if(!d || typeof d!=='object' || d.error || d.need_login) return;
     subNames = d.names||{}; cfgNames = d.cfgnames||{};
     _subTagsKnown = (d.subs||[]).map(function(s){ return s && s.tag; }).filter(function(t){ return !!t; });
+    // …and which of them are Amnezia Premium (the router's `kind`): their servers' screens say other things (export, a new config).
+    _subPremKnown = (d.subs||[]).filter(function(s){ return s && s.tag && s.kind==='premium'; }).map(function(s){ return s.tag; });
   }
   // ОТВЕТ /cgi-bin/list → общие кэши экранов с серверами: имена (listNamesTake), мета Xray (хост, бейдж) и «стоит ли бинарь».
   // Читают его «Серверы» и экран подписки; второй разбор разошёлся бы с первым.
@@ -15882,7 +15887,7 @@
   // config, free a place) run at the router in the background, ONE at a time (the router says «busy» itself); the screen polls
   // `premium_status` and says the router's words.
   var PM_NOTE='Срок, устройства и страны — учёт Amnezia: роутер спрашивает их при обновлении подписки (кнопка или автообновление). Трафик у Premium не ограничен.';
-  var _pmOwn='', _pmBody=null, PM_NET_TRIES=3;
+  var _pmOwn='', _pmPoll=0, PM_NET_TRIES=3;
   function premJobId(){ return wpJobId(); }
   var PM_PROTO={awg:'AmneziaWG', vless:'VLESS'};
   // A country's flag by its code («us-east» → 🇺🇸): a pair of regional letters; anything else — none.
@@ -15936,8 +15941,7 @@
         if(!(a && a.ok)){ showToast((a && a.msg)||'роутер отказал', false); rep(); return; }
         logLine('→ '+line, null);
         _pmOwn=jid;
-        if(!screenAlive(body)) return;
-        _pmBody=body; premPoll(body, tag, 0);
+        premPollStart();
       }, function(){ showToast('роутер не ответил', false); rep(); });
     }
     Promise.all([subPost({action:'premium_info', tag:tag}).then(null, function(){ return null; }),
@@ -15954,7 +15958,7 @@
         if(cn) cn.innerHTML=pmCountriesHtml(info, l, st, run);
         if(dv) dv.innerHTML=pmDevicesHtml(info);
       }
-      if(run){ pmStLine(body, run); pmLock(body); _pmBody=body; premPoll(body, tag, 0); }
+      if(run){ pmStShow(run); premPollStart(); }
     });
     body.addEventListener('click', function(ev){
       for(var el=ev.target; el && el!==body; el=el.parentNode){
@@ -16059,25 +16063,34 @@
       + '<div style="margin-top:11px">'+noteBox('Править этот конфиг незачем: Amnezia выдаст его заново по кнопке выше. Адрес Endpoint — промежуточный узел Amnezia, он один у всех стран; выход в стране — за ним.', 'info')+'</div></div>';
   }
   // Every work switch of the screen is locked while a work runs — the router would refuse a second one anyway.
-  function pmLock(body){ Array.prototype.forEach.call(body.querySelectorAll('[data-pa="account"],[data-pp],[data-pd]'), function(b){ b.disabled=true; }); }
-  function pmStLine(body, st){
-    var e=body.querySelector('#pm-st'); if(!e) return;
-    e.hidden=false; e.textContent='⟳ '+(st.msg||'работа идёт…');
+  function pmLock(body){ Array.prototype.forEach.call(body.querySelectorAll('[data-pa="account"],[data-pp],[data-pd],[data-sv="pmref"]'), function(b){ b.disabled=true; }); }
+  // The running work on whatever Premium screen is shown NOW (the node is looked up on every tick, never kept): the status line, the
+  // switch of the work's country — «беру конфиг…» in its place, as the mockup draws it — and the work's buttons locked.
+  function pmStShow(st){
+    var body=document.getElementById('modal-body'); if(!body) return;
+    var e=body.querySelector('#pm-st');
+    if(e){ e.hidden=false; e.textContent='⟳ '+trNow(st.msg||'работа идёт…'); }
+    if(st.cc && st.p){
+      var sw=body.querySelector('[data-pp][data-cc="'+selVal(st.cc)+'"][data-p="'+selVal(st.p)+'"]');
+      if(sw && !sw.getAttribute('data-run')){ sw.setAttribute('data-run','1'); sw.classList.remove('acc'); sw.textContent=trNow('беру конфиг…'); }
+    }
+    pmLock(body);
   }
-  function premPoll(body, tag, miss){
-    if(body!==_pmBody || !screenAlive(body)) return;
+  // ONE POLL PER PANEL, NOT PER SCREEN NODE (walk 14.10.2026): the screen is drawn again by others while a work runs (the lists'
+  // refresh, a navigation back and forth), and a poll tied to the node it started on stopped with that node — the work ended on the
+  // router, and the panel neither said so nor drew the new server. Whatever screen is shown at the end is drawn again.
+  function premPollStart(){ if(_pmPoll) return; _pmPoll=1; premPollTick(0); }
+  function premPollTick(miss){
     subPost({action:'premium_status'}).then(function(st){
       st=st||{};
-      if(body!==_pmBody || !screenAlive(body)) return;
-      if(st.state==='running'){ pmStLine(body, st); setTimeout(function(){ premPoll(body, tag, 0); }, 1500); return; }
-      _pmBody=null;
+      if(st.state==='running'){ pmStShow(st); setTimeout(function(){ premPollTick(0); }, 1500); return; }
+      _pmPoll=0;
       premJobEnd(st);
     }, function(){
-      if(body!==_pmBody || !screenAlive(body)) return;
-      if(miss+1<PM_NET_TRIES){ setTimeout(function(){ premPoll(body, tag, miss+1); }, 3000); return; }
-      _pmBody=null;
+      if(miss+1<PM_NET_TRIES){ setTimeout(function(){ premPollTick(miss+1); }, 3000); return; }
+      _pmPoll=0;
       showToast('роутер не отвечает — работа с Amnezia идёт на нём сама: обновите экран позже', false);
-      navIfShown('cn-sub', subScrOpen)();
+      navIfShown('cn-sub', subScrOpen)(); navIfShown('cn-server', srvScrOpen)();
     });
   }
   // The end of a work: the router's words as a toast (the tab's own work, or one this screen found running), the lists asked again
@@ -16494,7 +16507,9 @@
       h+='<div class="card"><div class="wt">Что панель о нём показывает</div><div id="srv-awg"><div class="cline">читаю конфиг…</div></div>'
         + (subAwg ? '' : '<div style="margin-top:9px">'+noteBox('Ключи и конфиг целиком AmneziaWG панель не показывает и не правит: <span class="mono kw">awg setconf</span> принимает конфиг только целиком, и полуправка оставила бы интерфейс без рукопожатия. Поправленный конфиг загрузите заново — файлом или ссылкой на «Серверах»: панель спросит, заменить ли им этот.', 'info')+'</div>')+'</div>'
         + '<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why
-        + (subAwg ? '<div class="cline">Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.</div>'
+        // Amnezia's relay does not answer a ping (walk 14.10.2026: «нет ответа» on a server that carried an exit at the same minute).
+        + (prem ? '<div class="cline">Промежуточный узел Amnezia на пинг не отвечает: «нет ответа» здесь не значит, что сервер мёртв, — рабочий ли он, покажет выход на нём или «Сделать активным».</div>'
+           : subAwg ? '<div class="cline">Проверяется пинг эндпоинта — как у любого сервера AmneziaWG.</div>'
                   : '<div style="margin-top:11px">'+noteBox('У AmneziaWG проверяется пинг эндпоинта, а не выход: демон один на интерфейс, поднять его временно на другом порту нельзя. Поэтому «сервер отвечает» здесь значит меньше, чем у Xray, — и панель не выдаёт одно за другое.', 'info')+'</div>')+'</div>';
       h+=expH;
       if(roadOk && !via) h+=srvRoadHtml(name, crec);
@@ -16557,8 +16572,7 @@
         subPost({action:'premium_refresh', name:name, job:pj}).then(function(a){
           if(!(a && a.ok)){ showToast((a && a.msg)||'роутер отказал', false); rep(); return; }
           _pmOwn=pj; logLine('→ беру у Amnezia новый конфиг «'+disp+'»', null);
-          if(!screenAlive(body)) return;
-          _pmBody=body; premPoll(body, '', 0);
+          premPollStart();
         }, function(){ showToast('роутер не ответил', false); rep(); });
       }
       else if(v==='viawarp'){ var wx=warpExitFor(name); if(wx) srvRoadSet(name, String(wx.id)); else openWarp(name); }
@@ -16684,7 +16698,10 @@
       + '<button type="button" class="btn sm gh" data-sv="exp">Показать</button></div>';
     if(o.err) h+='<div style="margin-top:9px">'+noteBox(esc(o.err), 'warn')+'</div>';
     if(tpt==='awg'){
-      h+=o.sub ? '<div class="cline">Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.</div>'
+      // An Amnezia Premium server's config is the ROUTER'S key at Amnezia: used elsewhere, it takes the connection from the router; the
+      // way for a phone is the subscription key itself — one more place of seven (mockup cn-server-prem).
+      h+=o.prem ? '<div class="cline">Этот конфиг — ключ роутера: на другом устройстве он заберёт у роутера соединение. Для телефона лучше вставить в приложение AmneziaVPN сам ключ подписки — это ещё одно место из семи.</div>'
+        : o.sub ? '<div class="cline">Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.</div>'
                : '<div class="cline"><span>QR-код и файл</span> <span class="mono kw">.conf</span> <span>— приложению AmneziaWG или WireGuard, ссылка</span> <span class="mono kw">vpn://</span> <span>— AmneziaVPN и другому роутеру.</span></div>'
                  + '<div class="cline">'+KEY+'</div>';
       if(o.warp) h+=srvExpWarpHtml();
@@ -16741,7 +16758,7 @@
   }
   function srvExpOpts(tpt, name){
     var tag=(tpt==='awg') ? ownerTag(name, _subTagsKnown) : '';
-    return {sub:!!tag, warp:(tpt==='awg' && isWarp(name)), proto:(tpt==='xray') ? String((xrayMeta[name]||{}).proto||'').toLowerCase() : ''};
+    return {sub:!!tag, prem:!!tag && _subPremKnown.indexOf(tag)>=0, warp:(tpt==='awg' && isWarp(name)), proto:(tpt==='xray') ? String((xrayMeta[name]||{}).proto||'').toLowerCase() : ''};
   }
   // «Показать»: один запрос за раз — и через перерисовки экрана тоже (отметка в модуле, а не на узле карточки).
   // ОТВЕТ РИСУЕМ В ЭКРАН ЭТОГО СЕРВЕРА, КАКОЙ ЕСТЬ К ЕГО ПРИХОДУ, а не в тело, с которого нажали: перерисовка того же экрана
