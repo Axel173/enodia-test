@@ -15450,6 +15450,9 @@
     // …and which of them are Amnezia Premium (the router's `kind`): their servers' screens say other things (export, a new config).
     _subPremKnown = (d.subs||[]).filter(function(s){ return s && s.tag && s.kind==='premium'; }).map(function(s){ return s.tag; });
   }
+  // Is this file a server of an Amnezia Premium subscription — by its OWNER (the longest known tag), not by a prefix. Any transport:
+  // the export card asks it of AmneziaWG, the Xray row's menu of VLESS.
+  function isPremSrv(name){ var t=ownerTag(name, _subTagsKnown); return !!t && _subPremKnown.indexOf(t)>=0; }
   // ОТВЕТ /cgi-bin/list → общие кэши экранов с серверами: имена (listNamesTake), мета Xray (хост, бейдж) и «стоит ли бинарь».
   // Читают его «Серверы» и экран подписки; второй разбор разошёлся бы с первым.
   function srvListTake(d){
@@ -15490,11 +15493,14 @@
         var items=[];
         if(row && !row.classList.contains('active'))
           items.push({label:'Сделать активным', onClick:function(){ activateServer('xray', name, row.getAttribute('data-act')==='1', d.subs); }});
+        // An Amnezia Premium server's screen has neither an editor nor an export (its VLESS is a chain the form and a link cannot
+        // carry): the menu promises neither — «Открыть сервер» leads to it (walk 14.10.2026).
+        var pm=isPremSrv(name);
         items.push({label:'Проверить', onClick:function(){ checkServer(name); }},
                    {label:'Тест скорости', onClick:function(){ speedServer(name); }},
-                   {label:'Изменить конфиг', onClick:function(){ srvScrGo('xray', name); }},
-                   // К КАРТОЧКЕ экрана сервера (openAt): пункт открывает место, а не ключи — конфиг приходит по «Показать».
-                   {label:'Экспорт конфига', onClick:function(){ openAt(function(){ srvScrGo('xray', name); }, 'srv-exp'); }});
+                   {label:pm ? 'Открыть сервер' : 'Изменить конфиг', onClick:function(){ srvScrGo('xray', name); }});
+        // К КАРТОЧКЕ экрана сервера (openAt): пункт открывает место, а не ключи — конфиг приходит по «Показать».
+        if(!pm) items.push({label:'Экспорт конфига', onClick:function(){ openAt(function(){ srvScrGo('xray', name); }, 'srv-exp'); }});
         if(canDel) items.push({label:'Удалить конфиг', danger:true, onClick:function(){
           var dn=cfgDisp('xray', name, d.subs);
           postAction('del_xray_server', 'Удалить конфиг «'+dn+'» (Xray)? Файл удалится с роутера.', 'удаляю «'+dn+'»', {name:name}, function(d){ if(d && d.ok) chkDrop('xray',name); repaint(); });
@@ -16485,6 +16491,7 @@
                                    : hex.length ? '<span>Конфиг держит</span> <span class="nbr"><button type="button" class="ilink" data-cact="exit:'+hex[0]+'">выход №'+hex[0]+'</button><span>.</span></span> <span>Удалить его можно, когда выход удалён или переведён на другой сервер.</span>'
                                    : tpt==='awg' ? 'Активный конфиг AmneziaWG удалить нельзя — сначала выберите другой.' : 'Этот конфиг сейчас несёт трафик — удалить его можно, переключившись на другой.')+'</div>' : '';
     var chk='<button type="button" class="btn gh" data-sv="check">'+icUse('i-refresh','s','',true)+'Проверить</button>';
+    var spd=(tpt==='xray') ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '';
     // «Экспорт конфига»: закрыта; раскрытой остаётся только при перерисовке ЭТОГО же экрана (запомненное — того же сервера).
     var expO=srvExpOpts(tpt, name), expM=(_srvExp && _srvExp.k===chkKey(tpt,name)) ? _srvExp : null;
     // Чужой сервер в памяти — забыть; своего нет — забывать нечего, а запрос «Показать», который в пути у ЭТОГО экрана, его
@@ -16516,7 +16523,9 @@
       // WARP без маскировки (I1): провайдер пропускает рукопожатие чистого WireGuard и обрывает поток после него (замер 10.10.2026).
       if(isWarp(name) && warpMap[name]===0) h+=noteBox('<b>В конфиге WARP нет маскировки</b> (строки <span class="mono kw">I1</span>): многие провайдеры пропускают рукопожатие чистого WireGuard, а потом обрывают поток. Свой WARP роутер получит с маскировкой — «Серверы» → «Получить WARP».', 'warn');
       if(via) h+=noteBox('<b>Дорога — в один шаг.</b> Выход, который служит дорогой, сам по дороге не ездит, и сервер не может ехать по выходу, который на нём же и стоит: роутер откажет словами.', 'info');
-    } else if(prem) h+=premSrvCard()+'<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+'<span class="grow"></span>'+del+'</div>'+why+'</div>';
+    // A Premium Xray server has no editor, and the editor's card carried the screen's actions — they stand in «Проверка» here, «Тест
+    // скорости» too (the header has a «Скорость» cell); `#srv-ed` is not drawn, and nobody fills it (walk 14.10.2026: the screen threw).
+    } else if(prem) h+=premSrvCard()+'<div class="card"><div class="wt">Проверка</div><div class="rr-acts">'+chk+spd+'<span class="grow"></span>'+del+'</div>'+why+'</div>';
     else h+='<div id="srv-ed" class="wfull"></div>';
     // У сервера AmneziaWG из подписки имя файла стоит в карточке владельца — отдельной карточки «Имя» с одним файлом не нужно.
     // У сервера Premium имя тоже задаёт подписка (страна от Amnezia).
@@ -16640,9 +16649,10 @@
         srvChbLoad(body, r.endpoint);
         srvColoLoad(body, crec, true);
       }, function(){ if(!screenAlive(body)) return; var box=document.getElementById('srv-awg'); if(box) box.innerHTML=noteBox('роутер не ответил', 'warn'); });
-    } else srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep,
-      chk+(tpt==='xray' ? '<button type="button" class="btn gh" data-sv="speed">Тест скорости</button>' : '')+'<span class="grow"></span>'+del, expSee);
-    if(tpt!=='awg' && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
+    } else if(!prem) srvEditorInto(document.getElementById('srv-ed'), tpt, name, carrier, rep, chk+spd+'<span class="grow"></span>'+del, expSee);
+    // «Why it cannot be deleted» of Xray/Hysteria2 goes into the header (their buttons live in the editor); a Premium server has it in
+    // its «Проверка» card already.
+    if(tpt!=='awg' && !prem && why){ var hd=document.getElementById('srv-head'); if(hd) hd.insertAdjacentHTML('beforeend', why); }
   }
   // ==== «ЭКСПОРТ КОНФИГА» НА ЭКРАНЕ СЕРВЕРА (макет cn-server, cn-server-awg, cn-server-awg-sub, cn-server-hy2; 13.10.2026) ======
   // Три формы на любой сохранённый конфиг — ссылка · QR-код · файл. КОНФИГ — КРЕД: карточка закрыта, панель берёт его с роутера
@@ -16758,7 +16768,7 @@
   }
   function srvExpOpts(tpt, name){
     var tag=(tpt==='awg') ? ownerTag(name, _subTagsKnown) : '';
-    return {sub:!!tag, prem:!!tag && _subPremKnown.indexOf(tag)>=0, warp:(tpt==='awg' && isWarp(name)), proto:(tpt==='xray') ? String((xrayMeta[name]||{}).proto||'').toLowerCase() : ''};
+    return {sub:!!tag, prem:!!tag && isPremSrv(name), warp:(tpt==='awg' && isWarp(name)), proto:(tpt==='xray') ? String((xrayMeta[name]||{}).proto||'').toLowerCase() : ''};
   }
   // «Показать»: один запрос за раз — и через перерисовки экрана тоже (отметка в модуле, а не на узле карточки).
   // ОТВЕТ РИСУЕМ В ЭКРАН ЭТОГО СЕРВЕРА, КАКОЙ ЕСТЬ К ЕГО ПРИХОДУ, а не в тело, с которого нажали: перерисовка того же экрана
