@@ -101,6 +101,9 @@ trap 'exit 1' INT TERM HUP PIPE
 
 [ -n "$name" ] || { emit '{"ok":false,"msg":"не задано имя конфига"}'; exit 0; }
 src="$ENODIA_STATE/xray-configs/$name.json"
+# A CONFIG NOT LAID OUT YET (premium.sh wait_live: a new Amnezia key is asked by the result BEFORE it replaces the file in use) — by
+# its path in the caller's environment; the name stays the run's label. The CGI cannot set it: uhttpd passes no environment.
+case "${XRAY_TEST_SRC:-}" in /*) src=$XRAY_TEST_SRC ;; esac
 [ -x "$XRAY" ] || { emit '{"ok":false,"msg":"xray не установлен на роутере"}'; exit 0; }
 [ -s "$src" ]  || { emit '{"ok":false,"msg":"конфиг не найден"}'; exit 0; }
 
@@ -113,10 +116,13 @@ cleanup   # снять возможный прошлый тест (замок н
 # соединение в ОЗУ и никем не ротируется (~15 МБ/сут, замер 29.08.2026), а тест его не читает —
 # вердикт выносится по коду curl через временный socks. $TACC остаётся только в cleanup: подчищает
 # файлы, оставшиеся от прогонов ДО этой правки.
-sed -e "s/\"port\"[[:space:]]*:[[:space:]]*10808/\"port\": $TPORT/" \
-    -e "s#/tmp/xray-access.log#none#g" \
-    -e "s#/tmp/xray\.log#$TLOG#g" \
-    "$src" > "$TCONF" 2>/dev/null
+# The copy holds the server's credential (an Amnezia Premium standby key among them, probed every ~15 s for minutes): born closed
+# and new — the caller's umask made it 0644, and a name planted in shared /tmp would be followed by `>` (review s.136 r2, L5).
+( umask 077; rm -f "$TCONF"; set -C
+  sed -e "s/\"port\"[[:space:]]*:[[:space:]]*10808/\"port\": $TPORT/" \
+      -e "s#/tmp/xray-access.log#none#g" \
+      -e "s#/tmp/xray\.log#$TLOG#g" \
+      "$src" > "$TCONF" ) 2>/dev/null
 [ -s "$TCONF" ] || { emit '{"ok":false,"msg":"не удалось подготовить тест-конфиг"}'; exit 0; }
 
 : > "$TLOG" 2>/dev/null

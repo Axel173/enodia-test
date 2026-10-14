@@ -234,6 +234,75 @@ road_of() { [ -n "$ROADS" ] && printf '%s\n' "$ROADS" | awk -F'\t' -v k="$1" '$1
 
 clean() { printf '%s' "$1" | tr -d '"\\ '; }
 
+# AN AMNEZIA PREMIUM AmneziaWG SERVER (premium.sh): its Endpoint is Amnezia's relay, and the relay answers neither ICMP nor any TCP
+# port — «нет ответа» on a server that carried an exit the same minute (walk 14.10.2026). Its number is THE TUNNEL'S OWN (the
+# user's request 14.10.2026): a TCP connect to 1.1.1.1:443 through it. A server in use is measured through its LIVE interface —
+# awg0 (the active config) or awgN (an exit's): a second interface on the same key would make Amnezia's server swing between two
+# addresses and cut the live tunnel. A server not in use — through a throwaway interface on its key (transport-awg.sh try: the
+# handshake first, then the measure). An exit that holds it and is down — no number: nothing carries it now, and a probe on its key
+# could meet the exit's own raise. METHOD=tun.
+# THE THROWAWAY PROBE IS NOT RUN (review s.136 r2, L2): for the ACTIVE config without awg0 (awg0 is absent for seconds inside every
+# switch — a second endpoint on the key it is about to raise, at the very handshake the switch judges); while a switch or a watchdog
+# tick drives a carrier (the same window, by the owner's answer — daemon-lib.sh::carrier_busy); on a key a live interface holds under
+# another name (slots.sh key-holder … live — the project's one answer). It goes by the config's road (TRY_ROAD; review s.136 r2, M3).
+# BUSY IS NOT A VERDICT (review s.136 r2, L1): the probe interface held by another probe longer than the wait (the panel's sweep asks
+# four at a time, and Premium servers stand side by side), or a switch running — METHOD=busy with no number; the panel keeps no
+# verdict of it.
+# prem_srv <name> — 0: the config's OWNER (the longest tag, as everywhere) is an Amnezia Premium subscription (its link is a key).
+prem_srv() {
+	case "$1" in sub-*-awg) ;; *) return 1 ;; esac
+	[ -s "$DS/.subs" ] || return 1
+	awk -F'\t' -v n="$1" '{ p = "sub-" $1 "-"; if (substr(n, 1, length(p)) == p && length($1) > bl) { bl = length($1); pr = ($2 ~ /^vpn:\/\//) } } END { exit pr ? 0 : 1 }' "$DS/.subs"
+}
+PM_TUN_HOST=1.1.1.1
+# $3 = live — only through a live interface, never a throwaway one: the header asks every 10 s, and an interface up and down each time
+# is not a measure but a load.
+# NOT MEASURED IS NOT DEAD (review s.136 r3, router L1 / panel 2): every branch that chooses not to measure answers a method the panel
+# keeps no verdict of — `busy` (a switch or a tick drives a carrier now, the probe interface held by others) or `idle` (the key is live
+# elsewhere under another name, or held by an exit that is down: nothing carries it now). An empty method with no number used to reach
+# the panel as ✗, cached for every device.
+prem_ms() {   # $1 = config name, $2 = active (true|false) [$3 = live] -> MS, METHOD (tun | busy | idle: no verdict) — or nothing
+	MS=""; METHOD=""; CDN=0; TCP_IP=""; _pi=""
+	[ -n "$PM_LIB" ] || { PM_LIB=1; if [ -f "$D/daemon-lib.sh" ]; then . "$D/daemon-lib.sh"; fi; }
+	command -v carrier_busy >/dev/null 2>&1 || carrier_busy() { return 1; }
+	if [ "$2" = true ]; then
+		if [ -d /sys/class/net/awg0 ]; then _pi=awg0
+		else
+			# The ACTIVE config without awg0. Inside a switch (or a tick) — no verdict: a throwaway interface would meet the key the
+			# switch is raising. AmneziaWG should carry and awg0 is gone — no verdict either (the watchdog judges that). The VPN switched
+			# off by hand, or another transport carrying with no warm reserve — its key is not live: measured as a free server below.
+			if [ -e /tmp/enodia-switching.lock ] || carrier_busy; then METHOD=busy; return 0; fi
+			case "$(cat "$DS/.transport" 2>/dev/null | tr -d ' \r\n')" in
+				''|awg) [ -f "$DS/.vpn-off" ] || { METHOD=busy; return 0; } ;;
+			esac
+		fi
+	else
+		_ph=$([ -f "$D/slots.sh" ] && sh "$D/slots.sh" holders awg "$1" 2>/dev/null </dev/null | grep -E '^[2-7](,[2-7])*$' | head -n 1)
+		if [ -n "$_ph" ]; then
+			_ph=${_ph%%,*}; [ -d "/sys/class/net/awg$_ph" ] || { METHOD=idle; return 0; }
+			_pi="awg$_ph"
+		fi
+	fi
+	if [ -n "$_pi" ]; then
+		r=$(tcp_ms "$PM_TUN_HOST" 443 3 "$_pi"); MS=${r%%|*}; [ -n "$MS" ] && METHOD=tun
+		return 0
+	fi
+	[ "${3:-}" != live ] || return 0
+	[ -f "$D/transport-awg.sh" ] && [ -f "$DS/configs/$1.conf" ] || return 0
+	if [ -e /tmp/enodia-switching.lock ] || carrier_busy; then METHOD=busy; return 0; fi
+	if [ -f "$D/slots.sh" ] && sh "$D/slots.sh" key-holder "$1" none live >/dev/null 2>&1 </dev/null; then METHOD=idle; return 0; fi
+	_pn=0; _po=""; _pr=1
+	while [ "$_pn" -lt 8 ]; do
+		_po=$(TRY_MS=1 TRY_ROAD=$1 sh "$D/transport-awg.sh" try "$DS/configs/$1.conf" "https://$PM_TUN_HOST/cdn-cgi/trace" 6 2>/dev/null </dev/null); _pr=$?
+		[ "$_pr" = 5 ] || break      # another probe holds the throwaway interface — its turn first
+		sleep 2; _pn=$((_pn + 1))
+	done
+	[ "$_pr" != 5 ] || { METHOD=busy; return 0; }
+	MS=$(printf '%s\n' "$_po" | sed -n 's/^try_ms=\([0-9][0-9]*\)$/\1/p' | head -n 1)
+	[ -n "$MS" ] && METHOD=tun
+	return 0
+}
+
 # Разбор host:port (учитывая [v6]:port). $1 = строка "host:port" -> EH, EP.
 split_hp() {
 	s=$(clean "$1"); EP=${s##*:}; EH=${s%:*}; EH=$(printf '%s' "$EH" | tr -d '[]')
@@ -261,7 +330,8 @@ if [ "$QUERY_STRING" = "all=1" ] || [ "${QUERY_STRING#*all=1}" != "$QUERY_STRING
 	first=1
 	emit() { # transport name host port proto active
 		[ "$first" = 1 ] || printf ','; first=0
-		probe "$3" "$4" "$5"
+		_pmx=0
+		if [ "$1" = awg ] && prem_srv "$(clean "$2")"; then prem_ms "$(clean "$2")" "$6"; _pmx=1; else probe "$3" "$4" "$5"; fi
 		msj=$MS; [ -n "$msj" ] || msj=null
 		# Дорога (road.sh, только AmneziaWG): число — ЧЕРЕЗ НЕЁ, интерфейс дороги — awg<id>.
 		# vup — выход-дорога поднят: тогда число судят через неё; лежит — пакеты к серверу идут напрямую (fail-open), и честное число —
@@ -269,13 +339,22 @@ if [ "$QUERY_STRING" = "all=1" ] || [ "${QUERY_STRING#*all=1}" != "$QUERY_STRING
 		rv=""; vmj=null; vmt=""; vup=false
 		if [ "$1" = awg ]; then
 			rv=$(road_of "awg/$(clean "$2")")
-			if [ -n "$rv" ] && [ -d "/sys/class/net/awg$rv" ]; then vup=true; probe_if "awg$rv" "$3" "$4" "$5"; [ -n "$VMS" ] && { vmj=$VMS; vmt=$VMT; }; fi
+			if [ -n "$rv" ] && [ -d "/sys/class/net/awg$rv" ]; then
+				vup=true
+				# An Amnezia Premium server: prem_ms has already measured it by this road (TRY_ROAD, or a live carrier following the
+				# kernel's road rule) — and its relay answers no probe through the road either: the probe painted a working server ✗ and
+				# threw the right number away (review s.136 r3, M2).
+				if [ "$_pmx" = 1 ]; then [ -n "$MS" ] && { vmj=$MS; vmt=$METHOD; }
+				else probe_if "awg$rv" "$3" "$4" "$5"; [ -n "$VMS" ] && { vmj=$VMS; vmt=$VMT; }; fi
+			fi
 		fi
 		# Silent directly — asked again through a live carrier that is a second path to it (tunnel_for): an answer there ⇒ «address
 		# blocked by the ISP». No such carrier — nobody was asked, and that is said too (`ncmp`): «не отвечает» with nothing to
 		# compare with is not «the server is dead» (the only server, blocked — its own tunnel is the one that fell).
 		blk=false; tmj=null; tmt=""; ncmp=false
-		if [ -z "$MS" ] && [ -n "$3" ]; then
+		# An Amnezia Premium relay answers nobody from outside — «blocked by the ISP» or «nothing to compare with» would be about the
+		# relay's silence, not the server; its own tunnel is its number (prem_ms).
+		if [ -z "$MS" ] && [ -n "$3" ] && [ "$_pmx" = 0 ]; then
 			_own=0; [ "$1" = awg ] && [ "$6" = true ] && _own=1
 			tunnels
 			if [ "$_own" = 1 ] && main_carries; then :   # reachable through its own tunnel — nothing is compared, nothing is claimed
@@ -383,14 +462,15 @@ DEADF=/tmp/enodia-ping-active-dead
 DEAD_TTL=25
 pfresh=0; case "$QUERY_STRING" in *fresh=1*) pfresh=1 ;; esac
 if [ "$pfresh" != 1 ] && [ -n "$host" ] && [ -f "$DEADF" ]; then
-	read -r dt dh dts _drest < "$DEADF" 2>/dev/null
+	read -r dt dh dts dm _drest < "$DEADF" 2>/dev/null
+	dm=$(printf '%s' "$dm" | tr -cd 'a-z0-9:')
 	case "$dts" in ''|*[!0-9]*) dts=0 ;; esac
 	now=$(date +%s 2>/dev/null); case "$now" in ''|*[!0-9]*) now=0 ;; esac
 	# clock-raw: «протухло» здесь означает БЕЗДЕЙСТВИЕ (лишний честный проб), а не действие, поэтому
 	# кламп age_since («скачок ⇒ 0 = свежее») тут вреден — он УДЕРЖАЛ бы отрицательный кэш. Разбор — выше.
 	age=$((now - dts))
 	if [ "$dt" = "$t" ] && [ "$dh" = "$host" ] && [ "$age" -ge 0 ] && [ "$age" -lt "$DEAD_TTL" ]; then
-		printf '{"transport":"%s","server":"%s","ms":null,"method":"","cdn":false,"cached":true}\n' "$t" "${host:-?}"
+		printf '{"transport":"%s","server":"%s","ms":null,"method":"%s","cdn":false,"cached":true}\n' "$t" "${host:-?}" "$dm"
 		exit 0
 	fi
 fi
@@ -402,12 +482,17 @@ if [ "$t" = awg ] && [ -n "$host" ]; then
 	_hrv=$(road_of "awg/$(cat "$DS/.active" 2>/dev/null | tr -d ' \r\n"\\')")
 	[ -n "$_hrv" ] && [ -d "/sys/class/net/awg$_hrv" ] || _hrv=""
 fi
-if [ -n "$_hrv" ]; then probe_if "awg$_hrv" "$host" "$port" "$pr"; MS=$VMS; METHOD=$VMT; CDN=0
+_hpm=""; [ "$t" = awg ] && _hpm=$(cat "$DS/.active" 2>/dev/null | tr -d ' \r\n"\\')
+# An Amnezia Premium server — FIRST, before its road: its own tunnel is the number (prem_ms; awg0's packets ride the road by the kernel's
+# rule anyway), and the relay answers no probe through the road (review s.136 r3, M2). No number — still METHOD=tun: the header must not
+# say «no answer to a TCP probe and ping» about a server nobody probed that way (review s.136 r2, panel 10).
+if [ -n "$_hpm" ] && prem_srv "$_hpm"; then prem_ms "$_hpm" true live; METHOD=tun
+elif [ -n "$_hrv" ]; then probe_if "awg$_hrv" "$host" "$port" "$pr"; MS=$VMS; METHOD=$VMT; CDN=0
 else probe "$host" "$port" "$pr"; fi
 # Обновляем негативный кэш по факту пробы: мёртв → пишем метку, жив → сносим (мгновенное восстановление).
 if [ -n "$host" ]; then
 	if [ -z "$MS" ]; then now=$(date +%s 2>/dev/null); case "$now" in ''|*[!0-9]*) now=0 ;; esac
-		printf '%s %s %s\n' "$t" "$host" "$now" > "$DEADF" 2>/dev/null
+		printf '%s %s %s %s\n' "$t" "$host" "$now" "${METHOD:-}" > "$DEADF" 2>/dev/null   # the method too: a cached «no answer» of a Premium server is still `tun`
 	else rm -f "$DEADF" 2>/dev/null; fi
 fi
 msj=$MS; [ -n "$msj" ] || msj=null

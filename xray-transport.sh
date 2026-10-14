@@ -51,6 +51,10 @@ command -v bin_path >/dev/null 2>&1 || bin_path() { printf '%s' "$ENODIA_BIN/$1"
 # Нет файла (частичный apply-scripts) — шим повторяет ПРЕЖНИЙ путь: фиксированный срок и никакого
 # различения «умер»/«жив, но не готов».
 if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+# lbl_commit_out — a config is replaced whole or not at all (access_off; C135): `cat tmp > config` truncated the config FIRST, and
+# a full partition left the server's config empty (review s.136, L9).
+if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi
+command -v lbl_commit_out >/dev/null 2>&1 || lbl_commit_out() { _lcf=$1; shift; "$@" > "$_lcf.$$.new" && mv -f "$_lcf.$$.new" "$_lcf" && return 0; rm -f "$_lcf.$$.new"; return 1; }   # write-blind: the shim of a missing library is the old line
 # «VPN выключен вручную — несущую не берёт никто» (carrier_barred/carrier_run, разбор в daemon-lib.sh). Нет — прежний путь.
 command -v carrier_barred >/dev/null 2>&1 || carrier_barred() { return 1; }
 command -v carrier_run >/dev/null 2>&1 || carrier_run() { shift; "$@"; }
@@ -280,7 +284,7 @@ access_off() {   # $1 = json-конфиг xray; $2 = "keep" — накоплен
             /"log"[[:space:]]*:[[:space:]]*{[[:space:]]*}/ { s/"log"[[:space:]]*:[[:space:]]*{[[:space:]]*}/"log":{"access":"none"}/; b; }
             /"log"[[:space:]]*:[[:space:]]*{/ { s/"log"[[:space:]]*:[[:space:]]*{/"log":{"access":"none",/; b; }
             s/^[[:space:]]*{/{"log":{"access":"none"},/' > "$1.acc" ) 2>/dev/null
-        if [ "$(jsonfilter -i "$1.acc" -e '@.log.access' 2>/dev/null)" = none ] && cat "$1.acc" > "$1" 2>/dev/null; then
+        if [ "$(jsonfilter -i "$1.acc" -e '@.log.access' 2>/dev/null)" = none ] && ( umask 077; lbl_commit_out "$1" cat "$1.acc" ) 2>/dev/null; then
             ACCESS_FIXED=1
             log "в конфиге $(basename "$1") погашен access-лог xray (ключа не было — лог шёл в stdout, в ОЗУ)"
         fi
@@ -291,7 +295,7 @@ access_off() {   # $1 = json-конфиг xray; $2 = "keep" — накоплен
     # копия обязана быть такой же. Перенаправление создаёт файл ДО того, как успел бы сработать
     # chmod, — значит право отбирать надо ЗАРАНЕЕ, а не после.
     ( umask 077; sed 's#\("access"[[:space:]]*:[[:space:]]*\)"/tmp/[^"]*"#\1"none"#' "$1" > "$1.acc" ) 2>/dev/null
-    if [ -s "$1.acc" ] && cat "$1.acc" > "$1" 2>/dev/null; then
+    if [ -s "$1.acc" ] && ( umask 077; lbl_commit_out "$1" cat "$1.acc" ) 2>/dev/null; then
         ACCESS_FIXED=1
         log "в конфиге $(basename "$1") погашен access-лог xray ($_aold рос в ОЗУ)"
         # Накопленное освобождаем ЗДЕСЬ ЖЕ, но ТОЛЬКО ПОСЛЕ удачной правки: демон в этот момент

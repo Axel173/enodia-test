@@ -908,6 +908,13 @@ showmeta "$ENODIA_STATE/.sub-picks"
 showmeta "$ENODIA_STATE/premium"      # Amnezia Premium (premium.sh): the router's installation id and the last answers — not read
 # …and what the last Premium work said (no key in it: state, op, the subscription's tag, the words).
 [ -s /tmp/enodia-premium.json ] && echo "premium: $(head -c 400 /tmp/enodia-premium.json)"
+# Its standbys — new keys issued and not laid out yet (premium.sh run_pick): the config's name and the uptime of the issue, never the
+# text (it holds the key).
+for _dpn in /tmp/enodia-premium-next.*.at; do
+	[ -f "$_dpn" ] || continue
+	_dpb=${_dpn##*/}; _dpb=${_dpb#enodia-premium-next.}
+	echo "premium standby: ${_dpb%.at} — issued at uptime $(cut -f1 "$_dpn" 2>/dev/null | tr -cd '0-9') (now $(awk '{print int($1)}' /proc/uptime 2>/dev/null))"   # raw-uptime: printed for a person beside the mark it compares with
+done
 # Вход в панель: только режим/размер. Содержимое — ключи от панели (хэш пароля вскрывают офлайн,
 # .totp-recovery = коды восстановления, .totp-sessions = живые сессии), и в дамп оно не едет.
 # Здесь важен сам ФАКТ: нет .panel-pass ⇒ панель не поднимется вовсе, а «войти» будет нечем.

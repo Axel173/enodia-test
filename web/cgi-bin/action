@@ -97,6 +97,11 @@ sub_tag_free() {
 	done
 	[ "$_sl" = 0 ]
 }
+# THE LINE'S KIND IS ITS LINK FIELD: an Amnezia Premium key (`vpn://`) or a subscription's URL. A save never turns one into the other
+# under the same tag (review s.136, panel 1 / L7): a link written over a key left Amnezia's place taken and its countries pruned as
+# «gone from the subscription»; a key over a link made the link's servers Premium ones nobody could remove. A key is changed by
+# adding a new subscription (the old one removed), as the mockup says.
+sub_link_of() { [ -f "$ENODIA_STATE/.subs" ] && grep "^$1$(printf '\t')" "$ENODIA_STATE/.subs" 2>/dev/null | head -n 1 | cut -d"$(printf '\t')" -f2; }
 subs_put() {
 	_spt=$(printf '\t')
 	( umask 077; lbl_commit_out "$ENODIA_STATE/.subs" lbl_without "$ENODIA_STATE/.subs" "^$1$_spt" "$1$_spt$2$_spt$3" ) 2>/dev/null || return 1
@@ -1949,7 +1954,10 @@ EOF
 			[ "$mtu" -gt "$rcap" ] 2>/dev/null && { mtu=$rcap; msrc=road; }
 			[ "$xmtu" -gt "$rcap" ] 2>/dev/null && { xmtu=$rcap; xsrc=road; }
 		fi
-		printf '{"ok":true,"code":0,"endpoint":"%s","mtu":%s,"mtu_src":"%s","exits":[%s],"exit_mtu":%s,"exit_mtu_src":"%s","road":"%s","road_mtu":%s}\n' "$ep" "$mtu" "$msrc" "$xs" "$xmtu" "$xsrc" "$road" "${rcap:-null}"; exit 0 ;;
+		# When the file was written, by the router's clock both ways (the panel says «конфиг взят N назад» of an Amnezia Premium server:
+		# its config is the key the router took, not a subscription's download; mockup cn-server-prem).
+		at=$(stat -c %Y "$cfg" 2>/dev/null | tr -cd '0-9'); now=$(date +%s 2>/dev/null | tr -cd '0-9')
+		printf '{"ok":true,"code":0,"endpoint":"%s","mtu":%s,"mtu_src":"%s","exits":[%s],"exit_mtu":%s,"exit_mtu_src":"%s","road":"%s","road_mtu":%s,"at":%s,"now":%s}\n' "$ep" "$mtu" "$msrc" "$xs" "$xmtu" "$xsrc" "$road" "${rcap:-null}" "${at:-0}" "${now:-0}"; exit 0 ;;
 	# save_config_raw: пишет ПОЛНЫЙ конфиг (из формы — пересобран фронтом, или сырой текст).
 	# Валидация: xray → JSON через jsonfilter (на роутере есть) + наличие outbound-протокола;
 	# hy2 → наличие server:. Атомарно (.new+mv). Если конфиг активен и транспорт его несёт —
@@ -2166,6 +2174,7 @@ EOF
 		# scripts). The panel picks a free tag by itself (subTagFree) — this is the router's word for any other client.
 		sub_tag_free "$tag" || fail "имя занято: от удалённой подписки с таким именем на роутере остались серверы ($_sl) — назовите подписку иначе"
 		_oldu=$([ -f "$ENODIA_STATE/.subs" ] && grep "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2)
+		case "$_oldu" in vpn://*) fail "это имя у подписки Amnezia Premium — назовите подписку иначе" ;; esac
 		[ "$_oldu" = "$url" ] || sub_info_drop "$tag"
 		subs_put "$tag" "$url" "$label" || fail "не удалось сохранить подписку — нет места?"
 		printf '{"ok":true,"code":0,"msg":"подписка сохранена"}\n'; exit 0 ;;
@@ -2196,6 +2205,7 @@ EOF
 		# Счётчики принадлежат ССЫЛКЕ (см. save_sub): сменили адрес — остаток и срок теперь
 		# рассказывают о чужом провайдере, и до первой закачки панель выдавала бы их за свои.
 		_oldu=$(grep "^$tag$TAB" "$ENODIA_STATE/.subs" | head -1 | cut -d"$TAB" -f2)
+		case "$_oldu" in vpn://*) fail "у подписки Amnezia Premium нет ссылки — другой ключ добавляют новой подпиской" ;; esac
 		[ "$_oldu" = "$url" ] || sub_info_drop "$tag"
 		subs_put "$tag" "$url" "$label" || fail "не удалось сохранить подписку — нет места?"
 		printf '{"ok":true,"code":0,"msg":"ссылка обновлена"}\n'; exit 0 ;;
@@ -2239,7 +2249,9 @@ EOF
 		{ [ -e /tmp/enodia-watchdog.lock ] && [ -n "$_rwp" ] && [ -d "/proc/$_rwp" ]; } && fail "сторож сейчас проверяет туннель — повторите через минуту"
 		hold_switch
 		cap_run subs-update.sh drop "$tag"; rc=$?
-		# The owner refuses for ONE reason — its run lock is held (its own words are a log line, «…выхожу»).
+		# The owner refuses for TWO reasons: an Amnezia Premium work runs for the key (code 3) — or its run lock is held (its own
+		# words are a log line, «…выхожу»).
+		[ "$rc" = 3 ] && fail "идёт работа с Amnezia Premium (страна или новый ключ) — дождитесь её конца и удалите подписку снова"
 		[ "$rc" = 0 ] || fail "сейчас идёт обновление подписок — удалите подписку через минуту"
 		# A KEPT server leaves the subscription's namespace: under «sub-<tag>-» a subscription whose tag is a prefix of this one
 		# («test» ⊂ «test-vpn») owned it the moment the line was gone — counted it as its own server, said «исчез из подписки» about
@@ -2646,12 +2658,27 @@ EOF
 		label=$(printf '%s' "$label" | tr -d '\000-\037\177')
 		[ -n "$label" ] || label=$_pckn
 		[ -n "$label" ] || label="Amnezia Premium"
-		_oldu=$([ -f "$ENODIA_STATE/.subs" ] && grep "^$tag$TAB" "$ENODIA_STATE/.subs" 2>/dev/null | head -1 | cut -d"$TAB" -f2)
+		_oldu=$(sub_link_of "$tag")
+		case "$_oldu" in
+			''|"$key") ;;
+			vpn://*) fail "это имя у подписки Amnezia Premium с другим ключом — новый ключ добавьте отдельной подпиской (старую удалите)" ;;
+			*) fail "это имя у обычной подписки — назовите подписку иначе" ;;
+		esac
+		# One key — one line: two lines of one key are one account on one installation, and each would lay out and prune the other's
+		# countries as its own.
+		_okt=$(awk -F"$TAB" -v k="$key" -v t="$tag" '$2 == k && $1 != t { print $1; exit }' "$ENODIA_STATE/.subs" 2>/dev/null)
+		[ -z "$_okt" ] || fail "этот ключ уже добавлен — подписка «$(grep "^$_okt$TAB" "$ENODIA_STATE/.subs" | head -1 | cut -d"$TAB" -f3- | tr -d '\000-\037\177"\\')»"
 		[ "$_oldu" = "$key" ] || sub_info_drop "$tag"
 		subs_put "$tag" "$key" "$label" || fail "не удалось сохранить подписку — нет места?"
 		premium_job
-		cap_run premium.sh account "$tag"
-		printf '{"ok":true,"code":0,"msg":"подписка Amnezia Premium сохранена — спрашиваю о ней Amnezia","tag":"%s"}\n' "$tag"; exit 0 ;;
+		# Another Amnezia work running refuses the ask (code 1) — the answer says so instead of «спрашиваю» (review s.136 r2, L8):
+		# the screen would wait for countries that nobody went to get.
+		if cap_run premium.sh account "$tag"; then
+			printf '{"ok":true,"code":0,"msg":"подписка Amnezia Premium сохранена — спрашиваю о ней Amnezia","tag":"%s"}\n' "$tag"
+		else
+			printf '{"ok":true,"code":0,"msg":"подписка Amnezia Premium сохранена; спросить о ней Amnezia сейчас нельзя — идёт другая работа с Amnezia: когда она кончится, нажмите «Обновить»","tag":"%s","asked":false}\n' "$tag"
+		fi
+		exit 0 ;;
 	premium_status)
 		owner_relay premium.sh status ;;
 	premium_info)

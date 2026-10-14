@@ -765,28 +765,57 @@ slot_road_lies() {   # $1 = id ; $2 = cfg ; $3 = fallback ; $4 = the exit's tran
 # часовым троттлом на КАЖДОМ буте. Поднять — поднимаем (это и есть польза раннего тика), а вердикт
 # откладываем до первого честного тика после грейса (ревью 06.09.2026).
 slot_boot_window() { [ "$(up_secs)" -lt "$BOOT_GRACE" ]; }
-# AMNEZIA PREMIUM — A FRESH CONFIG BEFORE THE LADDER (the user's decision 14.10.2026). A Premium server's config is issued by Amnezia
-# for this router's key; a server that went silent may be a config Amnezia moved (another relay, the key revoked from the app) — a
-# new config of the same country (premium.sh run-refresh: a new key, laid out by the subscriptions' owner, which also brings it into
-# service when it is in use) costs one API call, while the ladder takes the person off the server they chose. Once per
-# PM_REFRESH_GAP per config, by uptime (no clock trust needed): a refresh that did not help must not run on every tick. Code 0 — a
-# new config is in place (the caller gives the carrier its verdict on the next tick or waits for a handshake); 1 — not a Premium
-# server, too soon, or Amnezia did not give one (the ladder goes on as before).
-PM_REFRESH_GAP=${PM_REFRESH_GAP:-1800}
-premium_refresh() {   # $1 = config name
-    case "$1" in sub-*-awg|sub-*-vless) ;; *) return 1 ;; esac
-    [ -f "$ENODIA_DIR/premium.sh" ] || return 1
-    _pmf="/tmp/enodia-premium-wd.$1"
-    _pmu=$(up_secs); _pml=$(cat "$_pmf" 2>/dev/null | tr -cd '0-9')
-    if [ -n "$_pml" ] && [ "$_pmu" -ge "$_pml" ] && [ $((_pmu - _pml)) -lt "$PM_REFRESH_GAP" ]; then return 1; fi
-    echo "$_pmu" > "$_pmf" 2>/dev/null
-    if ! sh "$ENODIA_DIR/premium.sh" run-refresh "$1" >>"$LOG" 2>&1 </dev/null; then
-        # «Not a Premium server» answers the same code and says nothing: only a work that ran leaves its words in the status file.
-        _pmw=$(sed -n 's/.*"op":"refresh".*"msg":"\([^"]*\)".*/\1/p' /tmp/enodia-premium.json 2>/dev/null | head -n 1)
-        [ -z "$_pmw" ] || log "сервер Amnezia Premium «$1» молчит; новый конфиг взять не удалось: $_pmw"
-        return 1
+# IS THE HOME SERVER BACK (the return home of mode «home») — by ICMP: cheap, and the working reserve is not touched. AN AMNEZIA PREMIUM
+# home — by a probe through its own key: Amnezia's relay answers neither ICMP nor any TCP port (walk 14.10.2026), and the return
+# never fired while the background job had laid out a key that carried (review s.136 r2, M1). The probe is a throwaway interface
+# (transport-awg.sh try, by the config's road), never on a key a live interface holds (slots.sh key-holder … live).
+home_alive() {   # $1 = home config name, $2 = its endpoint address
+    if [ -f "$ENODIA_DIR/premium.sh" ] && sh "$ENODIA_DIR/premium.sh" is "$1" </dev/null >/dev/null 2>&1; then
+        [ -f "$ENODIA_DIR/transport-awg.sh" ] || return 1
+        if [ -f "$ENODIA_DIR/slots.sh" ] && sh "$ENODIA_DIR/slots.sh" key-holder "$1" none live >/dev/null 2>&1 </dev/null; then return 1; fi
+        TRY_ROAD=$1 sh "$ENODIA_DIR/transport-awg.sh" try "$CONFIGS_DIR/$1.conf" https://1.1.1.1/cdn-cgi/trace 10 2>/dev/null </dev/null | grep -q '^ip='
+        return $?
     fi
-    log "сервер Amnezia Premium «$1» молчал → взял у Amnezia новый конфиг (новый ключ), резервы — только если и он не поможет"
+    ping -c 1 -W 2 "$2" >/dev/null 2>&1
+}
+# home_back <home> <endpoint> — 0: the home answers, go back now. Not yet — a Premium home gets its kick (premium_kick: a new key in
+# the background, laid out once it carries; its own PM_REFRESH_GAP): the only other kick is the tick where the home died, and that
+# tick steps onto a reserve — a kick that did not land there (a key slower than 4 min, «another Amnezia work», the API down) was never
+# repeated, and the return probed a superseded key for good (review s.136 r3, M1). premium_kick returns at once for any other name.
+home_back() { home_alive "$1" "$2" && return 0; premium_kick "$1"; return 1; }
+# AMNEZIA PREMIUM — A NEW KEY IN THE BACKGROUND, NEVER IN THE TICK (the user's decisions 14.10.2026: «a fresh config of a silent
+# Premium server», then — after the walk measured a fresh key carrying only ~2 min after issue, and one assigned server pair never —
+# «in the background, on standby»). The refresh used to run INSIDE the tick: the API without a time budget while the home had no
+# DNS, a 25-s handshake wait a fresh key cannot meet, a rollback to the key Amnezia had just superseded, the Xray carrier restarted
+# in direct mode (review s.136, H1/H2/M2/M4). Now a silent Premium server goes down the ladder like any server, and beside it the
+# tick STARTS `premium.sh refresh <name> auto` and returns: the job lays the new key out only once it carries (premium.sh
+# wait_live); one that did not carry in time is kept as the config's standby and tried first next time, another key is asked only
+# after PM_NOCARRY_GAP (premium.sh: Amnezia gave the same pair three times on the walk).
+# WHO BRINGS THE SERVER BACK (review s.136 r2, M1): the ACTIVE server — the job itself (the owner raises it on the new file under the
+# switching lock; a ladder holding the lock — `settle` once it is over); an exit — its retry, once the file is new; a reserve the
+# ladder stepped onto — ONLY the return home of mode «home» (a Premium home is asked through its own key, home_alive, and kicked again
+# while it does not answer, home_back; under another transport the warm awg0 is raised again on the new key by subs-update.sh
+# refresh_awg, and a silent warm awg0 kicks its config). Mode «sticky» has no return: the reserve stays, as for any server. Once per PM_REFRESH_GAP per config, by uptime (no clock trust needed). A «busy» refusal (another Amnezia
+# work runs) writes no stamp: asked again next tick.
+PM_REFRESH_GAP=${PM_REFRESH_GAP:-1800}
+pm_recent() {   # $1 = stamp file, $2 = gap → 0 when the stamp is younger than the gap
+    _pmu=$(up_secs); _pml=$(cat "$1" 2>/dev/null | tr -cd '0-9')
+    [ -n "$_pml" ] && [ "$_pmu" -ge "$_pml" ] && [ $((_pmu - _pml)) -lt "$2" ]
+}
+premium_kick() {   # $1 = config name
+    case "$1" in sub-*-awg|sub-*-vless) ;; *) return 0 ;; esac
+    [ -f "$ENODIA_DIR/premium.sh" ] || return 0
+    pm_recent "/tmp/enodia-premium-wd.$1" "$PM_REFRESH_GAP" && return 0
+    # The tick's switch-holder mark is not the job's: inherited (start-stop-daemon keeps the environment), a lock a killed tick left
+    # read as «work alive» for the job's minutes (daemon-lib.sh::switch_work_alive; review s.136 r2, L4).
+    _pmo=$(unset ENODIA_SWITCH_HOLDER; sh "$ENODIA_DIR/premium.sh" refresh "$1" auto 2>&1 </dev/null); _pmr=$?
+    _pmo=$(printf '%s\n' "$_pmo" | tail -n 1 | sed 's/^\[premium\] //')
+    case "$_pmo" in *"другая работа с Amnezia"*) log "сервер Amnezia Premium «$1» молчит; новый ключ возьму следующим тиком: $_pmo"; return 0 ;; esac
+    up_secs > "/tmp/enodia-premium-wd.$1" 2>/dev/null
+    # «Not a Premium server» (a link subscription's file under the same mask) is said by premium.sh and is not ours to log.
+    case "$_pmo" in *"не сервер подписки Amnezia Premium"*) return 0 ;; esac
+    if [ "$_pmr" = 0 ]; then log "сервер Amnezia Premium «$1» молчит → в фоне беру у Amnezia новый ключ (или проверяю отложенный): встанет на место, когда повезёт"
+    else log "сервер Amnezia Premium «$1» молчит; новый ключ не взять: $_pmo"; fi
     return 0
 }
 # «НЕДОСТУПЕН» И «СНОВА РАБОТАЕТ» — ДВЕ ПОЛОВИНЫ ОДНОГО ЭПИЗОДА (пожелание тестера 02.10.2026: журнал говорил только о падении
@@ -1145,6 +1174,7 @@ EOF
             else
                 sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
                 slot_fail_event "$sid" "$scfg" "$sfb" noanswer "$st"
+                [ "$st" = xray ] && premium_kick "$scfg"   # an Amnezia Premium VLESS server: a new key in the background (review s.136, L1)
             fi
             continue
         fi
@@ -1294,13 +1324,9 @@ EOF
         # блэкхолом на все ~3 минуты до честного тика, против инварианта «оставленный маршрут =
         # БЛЭКХОЛ вместо fail-open». Гасим (fallback заработает сразу), а откладываем ровно то, что
         # и должно ждать: ВЕРДИКТ человеку — письмо о падении выхода.
-        # An Amnezia Premium server: a fresh config of its country first (premium_refresh) — the owner restarts the exit on it, and
-        # the next tick judges a carrier that is seconds old (slot_young) instead of this dead one.
-        if ! slot_boot_window && premium_refresh "$scfg"; then
-            log "slot-health: awg-выход №$sid ($scfg): handshake ${_age}с — выход перезапущен на новом конфиге Amnezia, вердикт следующим тиком"
-            continue
-        fi
         log "slot-health: awg-выход №$sid ($scfg) мёртв (handshake ${_age}с) → гашу несущую → fallback=$sfb"
+        # An Amnezia Premium server: a new key in the background (premium_kick) — the exit's retry raises it once it is laid out.
+        slot_boot_window || premium_kick "$scfg"
         if slot_boot_window; then
             [ -f "$TRANSPORT_SH" ] && sh "$TRANSPORT_SH" slot-down "$sid" >>"$LOG" 2>&1
             slot_retry_arm "$sid" "" "$st"
@@ -2284,6 +2310,9 @@ stamp_age() {
 # Запустить перебор резервов через switch-vpn.sh и выставить STATE по коду:
 # 0 — встали на резерв (NORMAL); 1 — прямой режим (FAILOPEN). Письма шлёт switch-vpn.
 run_failover() {
+    # A switch started after this tick's gate wins, as in tsw: the reserve sweep over it would undo the person's choice — or run beside
+    # a background raise of a server's new config (subs-update.sh refresh_awg; review s.136 r2, L3).
+    if [ -e "$SWITCH_LOCK" ]; then log "идёт смена транспорта или сервера (лок) — перебор резервов не начинаю, тик дальше не ведёт"; finish; fi
     date +%s > "$FAILOVER_STAMP"
     if sh "$SWITCH_VPN" failover >>"$LOG" 2>&1; then
         off_bail "перебора серверов AmneziaWG"
@@ -2907,6 +2936,10 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
                 if tsw awg; then
                     failback_event transport "$(transport_label awg)"
                 fi
+            else
+                # The warm awg0 is silent: an Amnezia Premium home gets its kick here too — a new key laid out under this transport
+                # raises the warm reserve on it (subs-update.sh refresh_awg), and the handshake above can come back (review s.136 r3, M1).
+                premium_kick "$(cat "$ACTIVE_NAME" 2>/dev/null | tr -d ' \r\n')"
             fi
         fi
         finish
@@ -3027,12 +3060,10 @@ if [ -n "$TRANSPORT" ] && [ "$TRANSPORT" != "awg" ] && [ -f "$TRANSPORT_SH" ]; t
         fi
     fi
 
-    # An Amnezia Premium server under Xray: a fresh config of its country before the ladder (premium_refresh). The owner restarts
-    # the carrier on it (subs-update.sh refresh_active), and the carrier's grace gives it the next tick.
-    if [ "$TRANSPORT" = xray ] && premium_refresh "$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')"; then
-        log "$TRANSPORT: несущая перезапущена на новом конфиге Amnezia — вердикт следующим тиком"
-        finish
-    fi
+    # An Amnezia Premium server under Xray: a new key in the background (premium_kick) — nothing is restarted here, the ladder goes
+    # on (review s.136, H2: the in-tick refresh pulled the router out of direct mode every 30 min). The job lays the key out once it
+    # carries; the owner restarts the carrier then, under the switching lock.
+    [ "$TRANSPORT" = xray ] && premium_kick "$(cat "$ENODIA_STATE/.xray-active" 2>/dev/null | tr -d ' \r\n"\\')"
 
     mode=$(fo_mode)
     fo_mode_note "$mode"
@@ -3699,26 +3730,12 @@ back up; once it answers, the VPN returns by itself and a second email arrives."
             sh "$SWITCH_VPN" safety-off >>"$LOG" 2>&1
         fi
     fi
-    # AN AMNEZIA PREMIUM SERVER: a fresh config of its country before the ladder (premium_refresh). The owner raises it at once
-    # (switch-vpn.sh refresh: the new text up, else the previous back) — the handshake is asked as the re-raise above asks it. Not
-    # under our switch lock: the owner takes the lock itself and would refuse under ours.
-    if [ -f "$ENODIA_STATE/awg.conf" ] && premium_refresh "$(cat "$ACTIVE_NAME" 2>/dev/null | tr -d ' \r\n')"; then
-        off_bail "нового конфига Amnezia"
-        i=0
-        while [ "$i" -lt 25 ]; do
-            hs2=$($WG show awg0 latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
-            case "$hs2" in
-                ''|0) ;;
-                *)  if [ "$(age_since "$hs2")" -lt "$HS_DEAD" ]; then
-                        log "новый конфиг Amnezia помог: handshake вернулся — резервы не трогаю"
-                        finish
-                    fi ;;
-            esac
-            sleep 1
-            i=$((i + 1))
-        done
-        log "новый конфиг Amnezia не ожил (handshake так и не пришёл) — иду по лестнице failover"
-    fi
+    # AN AMNEZIA PREMIUM SERVER: a new key in the background (premium_kick), and the ladder goes on now. The tick does not wait: a fresh
+    # key carries ~2 min after issue, and the 25-s handshake wait here rolled back to the key Amnezia had just superseded (review
+    # s.136, H1). Once it carries, the job lays it out and the owner raises the active server on it under the switching lock — after
+    # this tick's ladder when that holds the lock; a reserve the ladder chose meanwhile hands back only by the return home of mode
+    # «home» (premium_kick says who brings what back).
+    [ -f "$ENODIA_STATE/awg.conf" ] && premium_kick "$(cat "$ACTIVE_NAME" 2>/dev/null | tr -d ' \r\n')"
     mode=$(fo_mode)
     nbk=$(count_backups)
     if [ "$cur" != "FAILOPEN" ]; then
@@ -3905,7 +3922,7 @@ External IP: ${ip:-unknown}."
                && [ "$(stamp_age "$FAILBACK_STAMP")" -ge "$FAILBACK_INTERVAL" ]; then
                 date +%s > "$FAILBACK_STAMP"
                 ep=$(grep -E '^Endpoint' "$CONFIGS_DIR/$home.conf" 2>/dev/null | head -1 | awk -F'= *' '{print $2}' | sed 's/:[0-9]*$//' | tr -d ' ')
-                if [ -n "$ep" ] && ping -c 1 -W 2 "$ep" >/dev/null 2>&1; then
+                if [ -n "$ep" ] && home_back "$home" "$ep"; then
                     log "home-failback: основной '$home' (endpoint $ep) ожил → возврат"
                     # Вернулись ли — по ФАКТУ `.active`, а не по попытке: пинг домашний принял, а рукопожатия
                     # не дал — switch-vpn откатывается на резерв сам (и пишет своё событие об откате).

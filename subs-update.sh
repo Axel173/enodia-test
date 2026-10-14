@@ -72,6 +72,17 @@ if [ -f "$ENODIA_DIR/label-lib.sh" ]; then . "$ENODIA_DIR/label-lib.sh"; fi   # 
 command -v lbl_commit_out_as >/dev/null 2>&1 || { lbl_commit_out_as() { _lct=$1; _lcf=$2; shift 2; "$@" > "$_lct" && mv -f "$_lct" "$_lcf" && return 0; rm -f "$_lct"; return 1; }; lbl_commit_out() { _lcf=$1; shift; lbl_commit_out_as "$_lcf.$$.new" "$_lcf" "$@"; }; lbl_grep() { grep "$@" || [ "$?" -le 1 ]; }; lbl_without() { if [ -f "$1" ]; then lbl_grep -v -- "$2" "$1" || return 1; fi; [ -z "${3:-}" ] || printf '%s\n' "$3"; }; }   # write-blind: the shim of a missing library is the old line
 # Возраст отметок (clock-lib.sh) — нужен ровно одному месту, локу в take_lock; шим = прежнее.
 if [ -f "$ENODIA_DIR/clock-lib.sh" ]; then . "$ENODIA_DIR/clock-lib.sh"; fi
+# switch_hold — the carrier is restarted under the switching lock, as every other restarter does (refresh_active; review s.136, M5).
+if [ -f "$ENODIA_DIR/daemon-lib.sh" ]; then . "$ENODIA_DIR/daemon-lib.sh"; fi
+command -v switch_hold >/dev/null 2>&1 || switch_hold() { ( set -C; echo $$ > "$1" ) 2>/dev/null; }
+SWITCH_LOCK=/tmp/enodia-switching.lock
+# WHOSE NEWS a config in use carries — the owner's words and events. A subscription run: the server «изменился в подписке». An Amnezia
+# Premium refresh (premium.sh put, SUBS_PUT_WHY=premium): the router took a NEW KEY itself — «изменился в подписке» read as if the
+# provider had changed something (walk 14.10.2026).
+CHG="изменился в подписке"; CHG_D=" (адрес/креды)"
+case "${SUBS_PUT_WHY:-}" in premium) CHG="получил новый ключ Amnezia"; CHG_D="" ;; esac
+# How long a restart of the active carrier waits for the switching lock (switch_hold: no tick, no heal, no foreign switch).
+CARRIER_HOLD_MAX=${CARRIER_HOLD_MAX:-120}
 command -v age_since >/dev/null 2>&1 || age_since() {
 	case "$1" in ''|*[!0-9]*) echo 999999; return ;; esac
 	[ "$1" -gt 0 ] && echo $(( $(date +%s) - $1 )) || echo 999999
@@ -1282,15 +1293,23 @@ refresh_active() {   # $1 = the subscription's tag
 			# VPN ВЫКЛЮЧЕН ВРУЧНУЮ — несущей нет, и поднимать её обновление подписки не вправе (плагин при флаге и сам откажет,
 			# daemon-lib.sh::carrier_run; здесь — чтобы не писать «несущая перезапущена» про то, чего не было).
 			if [ -f "$ENODIA_STATE/.vpn-off" ]; then
-				say "  активный сервер «$_act» изменился в подписке — VPN выключен вручную, применится при включении"
+				say "  активный сервер «$_act» $CHG — VPN выключен вручную, применится при включении"
 				continue
 			fi
 			[ -f "$ENODIA_DIR/$FAM_TSH" ] || { say "  активный сервер «$_act» изменился, но $FAM_TSH не найден"; continue; }
-			say "  активный сервер «$_act» изменился в подписке — перезапускаю несущую"
+			# UNDER THE SWITCHING LOCK, once no watchdog tick and no heal run drives the carrier (daemon-lib.sh::switch_hold): a
+			# down+up beside the watchdog's ladder or a manual switch had two writers of the same live config and socks (review
+			# s.136, M5). Not ours within the wait — the config is laid out already and comes up at the next raise.
+			if ! switch_hold "$SWITCH_LOCK" "$CARRIER_HOLD_MAX"; then
+				say "  активный сервер «$_act» $CHG, но роутер сейчас сам ведёт туннель — применится при следующем подъёме"
+				continue
+			fi
+			say "  активный сервер «$_act» $CHG — перезапускаю несущую"
 			sh "$ENODIA_DIR/$FAM_TSH" down >/dev/null 2>&1
 			sh "$ENODIA_DIR/$FAM_TSH" up   >/dev/null 2>&1
+			rm -f "$SWITCH_LOCK" 2>/dev/null
 			ev "subs-active-changed" 3600 "Подписка обновила активный сервер" \
-				"Сервер «$_act» изменился в подписке (адрес/креды). Конфиг обновлён, несущая перезапущена."
+				"Сервер «$_act» $CHG$CHG_D. Конфиг обновлён, несущая перезапущена."
 		else
 			say "  активный конфиг «$_act» обновлён (применится при переключении на $FAM_TNAME)"
 		fi
@@ -1326,25 +1345,43 @@ refresh_awg() {
 		fi
 		return 0
 	fi
-	if [ -e /tmp/enodia-switching.lock ]; then
-		# The lock is most often the watchdog's failover, and that one begins with safety_off — «работает прежний» would be the
-		# R4 lie in this branch's words (review s.134, round 2).
+	[ -f "$ENODIA_DIR/switch-vpn.sh" ] || { say "  активный сервер «$_rwd» изменился, но switch-vpn.sh не найден"; return 0; }
+	# UNDER THE SWITCHING LOCK, once no watchdog tick and no heal run drives the carrier (daemon-lib.sh::switch_hold) — the Xray
+	# half's rule (review s.136, M5). A look at the lock FILE alone let this switch start beside a tick that had passed its own check
+	# on its way to the ladder (review s.136 r2, L3). Not ours within the wait — most often the watchdog's failover, which begins
+	# with safety_off: «работает прежний» would be the R4 lie here (review s.134, round 2). AWG_DEFER says so to the caller: a run
+	# applies it next run, an Amnezia Premium job asks again once the switch is over (`settle`) — no run ever comes for a key
+	# subscription, and «при следующем обновлении» was a promise nobody kept (review s.136 r2, H1).
+	if ! switch_hold "$SWITCH_LOCK" "$CARRIER_HOLD_MAX"; then
+		_rwn="применю при следующем обновлении"; [ "${SUBS_PUT_WHY:-}" = premium ] && _rwn="подниму, когда она закончится"
 		if awg_direct; then
-			say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера, а роутер в прямом режиме — применю при следующем обновлении"
+			say "  активный сервер «$_rwd» $CHG, но идёт смена транспорта или сервера, а роутер в прямом режиме — $_rwn"
 			AWG_LAGS=2
 		else
-			say "  активный сервер «$_rwd» изменился в подписке, но идёт смена транспорта или сервера — применю при следующем обновлении"
+			say "  активный сервер «$_rwd» $CHG, но идёт смена транспорта или сервера — $_rwn"
 			AWG_LAGS=1
 		fi
+		AWG_DEFER=1
 		return 0
 	fi
-	[ -f "$ENODIA_DIR/switch-vpn.sh" ] || { say "  активный сервер «$_rwd» изменился, но switch-vpn.sh не найден"; return 0; }
 	# Does AmneziaWG carry right now — the same question `refresh` asks itself; here it only chooses the words.
+	_rwt=$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')
 	_rwc=0
-	[ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = awg ] && [ ! -f "$ENODIA_STATE/.vpn-off" ] && _rwc=1
-	[ "$_rwc" = 1 ] && say "  активный сервер «$_rwd» изменился в подписке — поднимаю новый конфиг"
+	[ "$_rwt" = awg ] && [ ! -f "$ENODIA_STATE/.vpn-off" ] && _rwc=1
+	[ "$_rwc" = 1 ] && say "  активный сервер «$_rwd» $CHG — поднимаю новый конфиг"
 	# stdin from /dev/null: we run inside cmd_update's `while read` over the tags file, and a child that reads would eat it.
 	sh "$ENODIA_DIR/switch-vpn.sh" refresh "$_rwa" > "$TMPD/refresh.out" 2>&1 </dev/null; _rwr=$?
+	# THE WARM RESERVE: another transport carries and awg0 stands by for the return home (the watchdog reads ITS handshake) — on the
+	# key it was raised with. A new key of the same server only stages awg.conf, and the reserve went on with a key the server no
+	# longer takes: its handshake never came back, nor the return (review s.136 r2, M1). Raised again on the new copy — road.sh's
+	# «warm» rule — under the same lock.
+	_rwr2=""
+	case "$_rwt" in ''|awg) ;; *)
+		if [ "$(cfg_sig "$FAM_LIVE")" = "$_rws" ] && [ -e /sys/class/net/awg0 ] && [ ! -f "$ENODIA_STATE/.vpn-off" ] && [ -f "$ENODIA_DIR/transport.sh" ]; then
+			sh "$ENODIA_DIR/transport.sh" rewarm awg >/dev/null 2>&1 </dev/null && _rwr2="; тёплый резерв AmneziaWG поднят на нём"
+		fi ;;
+	esac
+	rm -f "$SWITCH_LOCK" 2>/dev/null
 	# THE VERDICT IS THE WORKING COPY, not the code: the code of a switch speaks of the carrier, and the copy may have been laid
 	# out with the carrier left alone (another transport, the VPN switched off in the middle).
 	if [ "$(cfg_sig "$FAM_LIVE")" = "$_rws" ]; then
@@ -1352,11 +1389,11 @@ refresh_awg() {
 		if [ "$_rwc" = 1 ] && [ "$_rwr" = 0 ]; then
 			say "  новый конфиг сервера «$_rwd» поднят"
 			ev "subs-active-changed" 3600 "Подписка обновила активный сервер" \
-				"Сервер «$_rwd» изменился в подписке. Роутер поднял его новый конфиг."
-		elif [ "$(cat "$ENODIA_STATE/.transport" 2>/dev/null | tr -d ' \r\n')" = awg ]; then
+				"Сервер «$_rwd» $CHG. Роутер поднял его новый конфиг."
+		elif [ "$_rwt" = awg ]; then
 			say "  активный конфиг «$_rwd» обновлён (поднимется при включении VPN)"
 		else
-			say "  активный конфиг «$_rwd» обновлён (применится при переключении на awg)"
+			say "  активный конфиг «$_rwd» обновлён (применится при переключении на awg$_rwr2)"
 		fi
 		return 0
 	fi
@@ -1384,7 +1421,7 @@ refresh_awg() {
 		_rwx="разложить его новый конфиг не удалось — рабочая копия осталась прежней"
 	fi
 	ev "subs-active-refused" 21600 "Новый конфиг активного сервера не применён" \
-		"Сервер «$_rwd» изменился в подписке, но $_rwx.${_rww:+ Причина: $_rww.} Роутер попробует снова после перезагрузки или когда конфиг в подписке изменится ещё раз; сразу — выберите этот сервер в панели заново."
+		"Сервер «$_rwd» $CHG, но $_rwx.${_rww:+ Причина: $_rww.} Роутер попробует снова после перезагрузки или когда конфиг в подписке изменится ещё раз; сразу — выберите этот сервер в панели заново."
 	return 0
 }
 
@@ -1408,10 +1445,10 @@ reup_exits() {
 			IFS=$_oifs
 			_rxo=$(sh "$ENODIA_DIR/slots.sh" set "$_rxi" config "$_rxn" 2>&1 </dev/null); _rxr=$?
 			_rxl=$(printf '%s\n' "$_rxo" | tail -n 1 | sed 's/^\[slots\] //' | tr -d '\r\n\t')
-			say "  выход №$_rxi: сервер «$(disp_of "$_rxn")» изменился в подписке — ${_rxl:-перезапущен}"
+			say "  выход №$_rxi: сервер «$(disp_of "$_rxn")» $CHG — ${_rxl:-перезапущен}"
 			if [ "$_rxr" != 0 ] || printf '%s' "$_rxo" | grep -q 'не поднялась'; then
 				ev_log "subs-exit-reup" 3600 "Выход №$_rxi не поднялся после обновления подписки" \
-					"Сервер «$(disp_of "$_rxn")» изменился в подписке, выход №$_rxi перезапущен с новым конфигом и не поднялся: ${_rxl:-причина не названа}."
+					"Сервер «$(disp_of "$_rxn")» $CHG, выход №$_rxi перезапущен с новым конфигом и не поднялся: ${_rxl:-причина не названа}."
 			fi
 		done
 		IFS=$_oifs
@@ -1443,6 +1480,8 @@ update_one() {
 			_pmo=$(printf '%s\n' "$_pmo" | tail -n 1 | tr -d '\r\t')
 			say "  $_pmo"
 			if [ "$_pmr" = 0 ]; then SUMMARY="$SUMMARY«$_lab»: $_pmo. "; return 0; fi
+			# Code 2 — another Amnezia work runs right now (a pick waiting for THIS run's lock): skipped, not failed (review s.136 r2, M4).
+			if [ "$_pmr" = 2 ]; then SUMMARY="$SUMMARY«$_lab»: пропущена ($_pmo). "; return 0; fi
 			SUMMARY="$SUMMARY«$_lab»: не обновилась ($_pmo). "; FAILED=$((FAILED+1))
 			return 1 ;;
 	esac
@@ -1664,6 +1703,13 @@ cmd_list() {
 cmd_drop() {
 	_dt="$1"
 	case "$_dt" in ''|*[!a-z0-9-]*) echo "плохая метка подписки" >&2; return 1 ;; esac
+	# AN AMNEZIA PREMIUM WORK RUNS (a pick, a new key): it would take the router's place again after the give-back below — a place
+	# held with no config on the router and no subscription to free it from (review s.136 r2, L7). Code 3, the caller says it.
+	case "$(sub_url_of "$_dt")" in vpn://*)
+		if [ -f "$ENODIA_DIR/premium.sh" ] && sh "$ENODIA_DIR/premium.sh" busy </dev/null >/dev/null 2>&1; then
+			echo "идёт работа с Amnezia Premium"; return 3
+		fi ;;
+	esac
 	_dkept=0
 	for _dfam in $FAMS; do
 		fam_set "$_dfam"
@@ -1752,6 +1798,11 @@ cmd_put() {
 	[ -s "$_pus" ] || { echo "нет конфига"; return 1; }
 	_pud=$(san_txt "$5" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'); [ -n "$_pud" ] || _pud=$_pun
 	fam_set "$_pufam"
+	# A Premium work that ends after its subscription was removed (the removal holds this lock; the work waited for it) lays out
+	# nothing: a half-removed line keeps «-» for its link, and the file would be a country of a key that is gone (review s.136, L5).
+	case "${SUBS_PUT_WHY:-}" in premium)
+		case "$(sub_url_of "$_put")" in vpn://*) ;; *) echo "подписки «$_put» уже нет — конфиг не разложен"; return 1 ;; esac ;;
+	esac
 	if name_elsewhere "$_pun"; then echo "имя «$_pun» занято конфигом другого протокола"; return 1; fi
 	( umask 077; mkdir -p "$FAM_DIR" ) 2>/dev/null
 	_puf="$FAM_DIR/$_pun.$FAM_EXT"
@@ -1759,9 +1810,26 @@ cmd_put() {
 	chmod 600 "$_puf" 2>/dev/null
 	lbl_commit_out "$NAMES" lbl_without "$NAMES" "^$_pun$TAB" "$_pun$TAB$_pud" 2>/dev/null && chmod 600 "$NAMES" 2>/dev/null
 	printf '%s\t%s\n' "$FAM_TNAME" "$_pun" > "$TMPD/changed"
+	AWG_DEFER=0
 	refresh_active "$_put"
 	reup_exits
 	echo "конфиг «$_pud» на месте"
+	# Code 4 — laid out, but the ACTIVE AmneziaWG copy waits for a switch to end: the caller asks again (`settle`).
+	[ "$AWG_DEFER" = 1 ] && return 4
+	return 0
+}
+# settle <tag> — the ACTIVE AmneziaWG config of this subscription brought into the working copy BY STATE (refresh_awg), nothing
+# else: no file written, no exit restarted. The Amnezia Premium job's second ask after `put` answered 4 (review s.136 r2, H1).
+# Code 4 — a switch still holds the lock; 0 — in line, refused in words, or the active server is not this subscription's now.
+cmd_settle() {
+	case "$1" in ''|*[!a-z0-9-]*) echo "плохая метка подписки"; return 1 ;; esac
+	fam_set awg
+	_sta=$(cat "$FAM_ACT" 2>/dev/null | tr -d ' \r\n"\\')
+	[ -n "$_sta" ] || return 0
+	AWG_DEFER=0
+	refresh_awg "$1" "$_sta"
+	[ "$AWG_DEFER" = 1 ] && return 4
+	return 0
 }
 # unput <tag> <family> <name> — that server removed. A config in use stays: the active server, the reserve's home, an exit's — the
 # same three guards a run keeps (prune_stale), said in words and code 2.
@@ -1859,10 +1927,14 @@ case "$1" in
 	name)  cmd_name "$2" ;;
 	vpn-json) cmd_vpn_json "$2" "$3" ;;
 	vpn-conf) cmd_vpn_conf "$2" "$3" "$4" ;;
-	put|unput)
+	put|unput|settle)
 		# The run's lock, as `drop`: these write a run's files. Its refusal is the caller's answer (code 1, words on stdout).
 		take_lock || exit 1
-		if [ "$1" = put ]; then cmd_put "$2" "$3" "$4" "$5" "$6"; else cmd_unput "$2" "$3" "$4"; fi
+		case "$1" in
+			put) cmd_put "$2" "$3" "$4" "$5" "$6" ;;
+			unput) cmd_unput "$2" "$3" "$4" ;;
+			settle) cmd_settle "$2" ;;
+		esac
 		rc=$?
 		drop_lock
 		exit $rc ;;
@@ -1874,7 +1946,7 @@ case "$1" in
 		drop_lock
 		exit $rc ;;
 	*)
-		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | drop <tag> | parse <ссылка> | name <ссылка> | vpn-json <in> <out> | vpn-conf <in> <out> [key] | put <tag> <fam> <name> <src> <имя> | unput <tag> <fam> <name>" >&2
+		echo "usage: subs-update.sh update [tag] | fetch <tag> | list | drop <tag> | parse <ссылка> | name <ссылка> | vpn-json <in> <out> | vpn-conf <in> <out> [key] | put <tag> <fam> <name> <src> <имя> | unput <tag> <fam> <name> | settle <tag>" >&2
 		echo "       расписание — update-sched.sh set subs <off|6h|12h|daily|weekly>" >&2
 		exit 1 ;;
 esac

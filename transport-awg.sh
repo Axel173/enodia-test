@@ -678,6 +678,12 @@ cmd_slot_probe() {   # $1 = id, $2 = cfg
 # and without a route the kernel sends it by the device binding. Cleanup — in the verb process's EXIT trap (rule, daemon, interface,
 # key-copy directory, lock). stdout — the answer body only, reasons — stderr. Codes: 0 — an answer · 1 — no answer · 4 — the interface didn't
 # come up (no config, no AmneziaWG programs, no address; Endpoint not IPv4 — nothing to take past the marks) · 5 — another probe runs.
+# TRY_ROAD=<config name> — the probed config's ROAD (road.sh): its server's address rides another exit, and the probe goes the same
+# way. Directly it met the ISP's block (a false «never carried» of an Amnezia Premium standby key), and its pref-51 rule took the LIVE
+# carrier's packets to the same address off the road for the probe's seconds (review s.136 r2, M3). The road in effect (road.sh
+# mtu-cap answers only for a working one) and its exit carrying (its table has a route) — by that table, the probe's MTU capped as a
+# rider's; the road exit down — direct, as the carrier itself then goes (fail-open). A road rule that already stands for the ADDRESS
+# (road.sh's pref 82–87 — per address, whichever config) wins over the config's own: a live carrier to that address rides it.
 TRY_IF=awgt0
 TRY_PREF=51
 TRY_LOCK=/tmp/enodia-awg-try.lock
@@ -689,7 +695,7 @@ TRY_CONF="$TRY_DIR/conf"
 try_clean() {
     awg_kill_daemon "$TRY_IF"
     ip link del "$TRY_IF" 2>/dev/null
-    [ -n "$_tep" ] && ip rule del to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null
+    [ -n "$_tep" ] && ip rule del to "$_tep" lookup "${_ttab:-main}" pref "$TRY_PREF" 2>/dev/null
     [ "${_tdir:-0}" = 1 ] && rm -rf "$TRY_DIR"
     lbl_lock_drop "$TRY_LOCK"
 }
@@ -698,7 +704,7 @@ cmd_try() {   # $1 = путь конфига ; $2 = URL ; $3 = потолок з
     [ -x "$ENODIA_BIN/amneziawg-go" ] && [ -x "$ENODIA_BIN/awg" ] || { log >&2 "проба: нет программ AmneziaWG"; return 4; }
     command -v lbl_lock_take >/dev/null 2>&1 || { log >&2 "проба: нет label-lib.sh — обновите скрипты"; return 4; }
     lbl_lock_take "$TRY_LOCK" 'transport-awg\.sh' || { log >&2 "проба: идёт другая проба"; return 5; }
-    _tep=""; _tdir=0
+    _tep=""; _tdir=0; _ttab=main
     trap try_clean EXIT
     trap 'exit 1' INT TERM HUP PIPE
     # Under our lock a leftover is a killed probe's (its pid is gone) — removed, then made anew; mkdir refuses a planted name.
@@ -709,13 +715,43 @@ cmd_try() {   # $1 = путь конфига ; $2 = URL ; $3 = потолок з
     [ -n "$(printf '%s' "$_tam" | cut -f1)" ] || { log >&2 "проба: в конфиге нет Address"; return 4; }
     _tep=$(ifconf_ep_host "$TRY_CONF")
     printf '%s' "$_tep" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { _tep=""; log >&2 "проба: Endpoint не IPv4"; return 4; }
+    _trv=""; _trc=""
+    if [ -n "${TRY_ROAD:-}" ] && [ -f "$ENODIA_DIR/road.sh" ]; then
+        _trv=$(sh "$ENODIA_DIR/road.sh" get awg "$TRY_ROAD" 2>/dev/null </dev/null | tr -cd '2-7' | cut -c1)
+        _trc=$(sh "$ENODIA_DIR/road.sh" mtu-cap awg "$TRY_ROAD" 2>/dev/null </dev/null | tr -cd '0-9')
+        if [ -n "$_trv" ] && [ -n "$_trc" ] && [ -n "$(ip route show table "$(slot_table "$_trv")" 2>/dev/null | head -n 1)" ]; then   # not-wan: the road exit's own table (100N), not the uplink
+            _ttab=$(slot_table "$_trv")
+        fi
+    fi
+    # THE ROAD THIS ADDRESS TAKES NOW wins: road.sh's rule is per ADDRESS (pref 82–87), so a live carrier to it rides that road
+    # whichever config is probed — a probe going its own way took that carrier off its road for the probe's seconds (review s.136 r3,
+    # L2). Its table empty (the road exit is down) — the carrier goes direct, and so does the probe.
+    _trk=$(ip rule show 2>/dev/null | awk -v a="$_tep" '{ p = $1; sub(/:$/, "", p) } p ~ /^8[2-7]$/ { for (i = 2; i < NF; i++) if ($i == "to" && $(i + 1) == a) { for (j = i; j < NF; j++) if ($j == "lookup") { print $(j + 1); exit } } }')   # not-wan: road.sh's own rules
+    case "$_trk" in
+        100[2-7]) if [ -n "$(ip route show table "$_trk" 2>/dev/null | head -n 1)" ]; then _ttab=$_trk; else _ttab=main; fi ;;   # not-wan: the road exit's own table
+    esac
+    # A rider's MTU ceiling — the config's own road's (road.sh mtu-cap), when that is the road taken.
+    if [ "$_ttab" != main ] && [ -n "$_trc" ] && [ "$_ttab" = "$(slot_table "${_trv:-0}")" ]; then
+        _tmu=$(printf '%s' "$_tam" | cut -f2); [ -n "$_tmu" ] || _tmu=$AWG_MTU_DEFAULT
+        [ "$_tmu" -gt "$_trc" ] 2>/dev/null && _tam=$(printf '%s\t%s' "$(printf '%s' "$_tam" | cut -f1)" "$_trc")
+    fi
     ip rule del to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null   # a killed probe's trace: `ip rule add` doesn't dedupe
-    ip rule add to "$_tep" lookup main pref "$TRY_PREF" 2>/dev/null || { _tep=""; log >&2 "проба: правило к серверу не встало"; return 4; }
+    for _trn in 2 3 4 5 6 7; do ip rule del to "$_tep" lookup "$(slot_table "$_trn")" pref "$TRY_PREF" 2>/dev/null; done   # …by any road table it took
+    ip rule add to "$_tep" lookup "$_ttab" pref "$TRY_PREF" 2>/dev/null || { _tep=""; log >&2 "проба: правило к серверу не встало"; return 4; }
     awg_if_start "$TRY_IF" "$TRY_CONF" "$_tam" "проба" >&2 || return 4
     _tca=$(curl_ca_opt "$2" --interface "$TRY_IF")   # the CA probe — by the probe's own path, not the default route
     # shellcheck disable=SC2086
-    curl -s $_tca --interface "$TRY_IF" --connect-timeout 6 --max-time "${3:-10}" "$2" 2>/dev/null && return 0
-    return 1
+    curl -s $_tca --interface "$TRY_IF" --connect-timeout 6 --max-time "${3:-10}" "$2" 2>/dev/null || return 1
+    # THE TUNNEL'S OWN DELAY (TRY_MS=1 — cgi-bin/ping, an Amnezia Premium server whose relay answers no ping): a TCP connect to the
+    # URL's host through the same interface, AFTER the request above — the handshake is done by then, and the number is the path's,
+    # not the handshake's. One line `try_ms=<ms>` after the body; nothing when it did not connect.
+    if [ "${TRY_MS:-}" = 1 ]; then
+        _tmh=$(printf '%s' "$2" | sed 's#^[a-z]*://##; s#[/:].*##')
+        _tmc=$(curl -s -o /dev/null --interface "$TRY_IF" --connect-timeout 4 --max-time 6 -w '%{time_connect}' "http://$_tmh:443" 2>/dev/null)
+        _tmm=$(awk -v t="$_tmc" 'BEGIN{ if (t + 0 > 0) printf "%.0f", t * 1000 }')
+        [ -z "$_tmm" ] || printf '\ntry_ms=%s\n' "$_tmm"
+    fi
+    return 0
 }
 
 # ---- команды контракта ----------------------------------------------------
