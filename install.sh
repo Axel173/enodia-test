@@ -72,10 +72,16 @@ NC='\033[0m' # No Color
 # Из пакета обновления (pkg-install.sh) наш вывод уходит в журнал экрана «Обновление» — escape-коды там мусор.
 if [ -n "$INSTALL_FROM_PKG" ]; then RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''; fi
 
-log()  { printf "${BLUE}[INFO]${NC}  %s\n" "$1"; }
-ok()   { printf "${GREEN}[ OK ]${NC}  %s\n" "$1"; }
-warn() { printf "${YELLOW}[WARN]${NC}  %s\n" "$1"; }
-err()  { printf "${RED}[FAIL]${NC}  %s\n" "$1" >&2; }
+log()  { _ILAST=$1; printf "${BLUE}[INFO]${NC}  %s\n" "$1"; }
+ok()   { _ILAST=$1; printf "${GREEN}[ OK ]${NC}  %s\n" "$1"; }
+warn() { _ILAST=$1; printf "${YELLOW}[WARN]${NC}  %s\n" "$1"; }
+err()  { _IERR=1; printf "${RED}[FAIL]${NC}  %s\n" "$1" >&2; }
+# A STOP UNDER `set -e` IS NEVER SILENT: a command that fails without a word (busybox `find` over a directory an entry vanished from
+# mid-walk, a guard idiom as the last command) ended the installer with nothing in its log but the line before — the update said
+# «установщик кончился ошибкой» and nobody could tell where (BE7000, the test release of 15.10.2026: the log held «Проверяю
+# окружение…» alone). The exit trap names the last thing it said; an `err` already said why.
+_ILAST=""; _IERR=0
+trap '_irc=$?; if [ "$_irc" != 0 ] && [ "$_IERR" = 0 ]; then printf "%s\n" "[FAIL]  установщик оборвался молча (код $_irc) после шага «${_ILAST:-начало}» — повторите установку; если повторится, пришлите диагностику" >&2; fi' EXIT
 
 ENODIA_DIR=${ENODIA_DIR:-/data/usr/app/enodia}
 ENODIA_STATE=${ENODIA_STATE:-/data/usr/app/enodia-state}
