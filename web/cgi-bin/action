@@ -2660,14 +2660,14 @@ EOF
 		owner_relay premium.sh info "$tag" ;;
 	premium_account|premium_pick|premium_unpick|premium_refresh|premium_revoke)
 		tag=$(field tag); cc=$(field cc); proto=$(field proto); name=$(field name); dev=$(field dev)
-		case "$action" in premium_refresh) ;; *) echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки" ;; esac
-		case "$action" in premium_pick|premium_unpick)
+		case "$act" in premium_refresh) ;; *) echo "$tag" | grep -qE '^[a-z0-9-]{1,16}$' || fail "плохая метка подписки" ;; esac
+		case "$act" in premium_pick|premium_unpick)
 			echo "$cc" | grep -qE '^[a-z][a-z0-9-]{1,15}$' || fail "плохой код страны"
 			case "$proto" in awg|vless) ;; *) fail "протокол — awg или vless" ;; esac ;;
 		esac
 		[ -f "$ENODIA_DIR/premium.sh" ] || fail "premium.sh не установлен (обновите скрипты роутера)"
 		premium_job
-		case "$action" in
+		case "$act" in
 			premium_account) run premium.sh account "$tag" ;;
 			premium_pick)    run premium.sh pick "$tag" "$cc" "$proto" ;;
 			premium_unpick)  run premium.sh unpick "$tag" "$cc" "$proto" ;;

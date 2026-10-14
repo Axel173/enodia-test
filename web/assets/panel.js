@@ -11705,6 +11705,7 @@
     "Править этот конфиг незачем: Amnezia выдаст его заново по кнопке выше. Адрес Endpoint — промежуточный узел Amnezia, он один у всех стран; выход в стране — за ним.":"There is no need to edit this config: Amnezia issues it anew by the button above. The Endpoint is an Amnezia relay, one for all countries; the exit in the country is behind it.",
     "роутер не отвечает — работа с Amnezia идёт на нём сама: обновите экран позже":"the router does not answer — the work with Amnezia goes on there by itself: refresh the screen later",
     "последняя страна:":"last country:",
+    "Ключ":"A key","из приложения AmneziaVPN или личного кабинета) вставляется сюда же. Серверов в нём нет: роутер сам спросит Amnezia о подписке и покажет её страны — вы отметите нужные.":"from the AmneziaVPN app or the personal dashboard) goes here too. It holds no servers: the router asks Amnezia about the subscription itself and shows its countries — you pick the ones you need.",
     "[warp] нет текста маскировки":"[warp] no masking text",
     "[warp] недопустимое имя конфига":"[warp] invalid config name",
     "[warp] нет места для работы":"[warp] no room to work",
@@ -15739,7 +15740,9 @@
       // ЧТО подписка может принести: форма одна — ссылка, а транспорт роутер узнаёт по каждой строке сам; человеку надо знать,
       // что приедет и где это потом искать. Строки, которых роутер не понял, он называет числом в итоге прогона.
       h+='<div class="card wfull"><div class="wt">Добавить подписку</div>'+subAddInputs()
-        + '<div class="cline">Одна ссылка может нести серверы разных транспортов — роутер разложит их по вкладкам «Серверов»: Xray (<span class="mono">vless · vmess · trojan · ss</span>), Hysteria2 (<span class="mono">hy2</span>) и AmneziaWG с обычным WireGuard (<span class="mono">vpn:// · wireguard://</span> — так их отдаёт 3x-ui с версии 3.7). Серверы транспорта, который на роутере не установлен, тоже встанут в список — выбрать их можно после установки в «Компонентах».</div></div>';
+        + '<div class="cline">Одна ссылка может нести серверы разных транспортов — роутер разложит их по вкладкам «Серверов»: Xray (<span class="mono">vless · vmess · trojan · ss</span>), Hysteria2 (<span class="mono">hy2</span>) и AmneziaWG с обычным WireGuard (<span class="mono">vpn:// · wireguard://</span> — так их отдаёт 3x-ui с версии 3.7). Серверы транспорта, который на роутере не установлен, тоже встанут в список — выбрать их можно после установки в «Компонентах».</div>'
+        // An Amnezia Premium key goes into the same field (importSub recognizes it) — said here, where the person looks for the door.
+        + '<div class="cline">Ключ <b>Amnezia Premium</b> (<span class="mono">vpn://…</span> из приложения AmneziaVPN или личного кабинета) вставляется сюда же. Серверов в нём нет: роутер сам спросит Amnezia о подписке и покажет её страны — вы отметите нужные.</div></div>';
       body.innerHTML=h+'</div>';
       wireCacts(body);
       subsSchedFill(t0);
