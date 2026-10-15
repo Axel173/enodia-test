@@ -782,11 +782,22 @@ EOF
 # decision 15.10.2026: the router returns to stock; the stock makes its copy again on its next pass). purge only.
 step_stockbak() {
     [ -f "$ENODIA_STATE/.stock-backup-off" ] || return 0
-    if [ -f "$ENODIA_DIR/stock-backup.sh" ] && sh "$ENODIA_DIR/stock-backup.sh" uninstall >> "$REPORT" 2>&1; then
-        log "Копия настроек прошивки: флаг возвращён, каким был до нас — прошивка сделает копию сама в ближайшие 6 часов."
-    else
-        log "Копия настроек прошивки: вернуть флаг не вышло (uci set misc.features.sec_cfg_bak=1; uci commit misc)."
-    fi
+    # The log says what the OWNER did (its one word), not what we hoped: a flag that was off before us stays off (review s.139).
+    _sbu=""
+    [ -f "$ENODIA_DIR/stock-backup.sh" ] && _sbu=$(sh "$ENODIA_DIR/stock-backup.sh" uninstall 2>> "$REPORT")
+    case "$_sbu" in
+        restored)    log "Копия настроек прошивки: флаг возвращён (1) — прошивка сделает копию сама в ближайшие 6 часов." ;;
+        kept)        log "Копия настроек прошивки: до нас она была выключена — так и оставлена." ;;
+        kept-absent) log "Копия настроек прошивки: у этой прошивки её больше нет — флаг не трогал." ;;
+        "fail-flag 1") log "Копия настроек прошивки: вернуть флаг не вышло (uci set misc.features.sec_cfg_bak=1; uci commit misc)." ;;
+        fail-mark*)  # the flag is as it should be (restored or kept); only the marker stayed — said so, no advice to change the flag
+                     log "Копия настроек прошивки: флаг на месте (${_sbu#fail-mark }), но запись выбора снять не вышло — её снимет снос каталога настроек." ;;
+        *)           # no owner here (the wizard turned it off with the PACKAGE's owner, the install never landed): the choice as it was
+                     # recorded goes into the report, so nothing is advised blind (review s.139 r2 — a fixed «=1» could turn ON a copy
+                     # the stock had off).
+                     log "Копия настроек прошивки: владельца нет — флаг не тронут; запись выбора (was= — значение до нас) ниже."
+                     cat "$ENODIA_STATE/.stock-backup-off" >> "$REPORT" 2>/dev/null ;;
+    esac
     return 0
 }
 
