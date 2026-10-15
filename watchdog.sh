@@ -196,6 +196,7 @@ WAN_RECHECK=${WAN_RECHECK:-10}              # пауза перед ПОДТВЕ
 WANOUT_MAX=${WANOUT_MAX:-3600}              # не реже раза в N сек всё же пробуем перебор вслепую (предохранитель)
 REUP_STAMP=/tmp/enodia-reup.stamp           # троттл переподъёма awg-несущей ПЕРЕД перебором резервов (см. ниже)
 REUP_RETRY=${REUP_RETRY:-1800}              # не чаще раза в N сек: reup рвёт awg0, крутить его каждый тик нельзя
+REUP_WAIT=${REUP_WAIT:-25}                  # s: how long a reup of awg0 waits for its handshake, one ask a second
 RULEHEAL_STAMP=/tmp/enodia-ruleheal.stamp   # троттл письма о rule-heal (fw3-reload снёс правила сплита)
 RULEHEAL_NOTIFY=${RULEHEAL_NOTIFY:-1800}    # не чаще раза в N сек слать письмо о восстановлении правил (анти-спам, если repair не помог)
 WIPE_SEEN=/tmp/enodia-splitwipe.seen        # первый (ещё не подтверждённый) детект «правила сплита снесены»
@@ -3709,7 +3710,7 @@ back up; once it answers, the VPN returns by itself and a second email arrives."
         wd_switch_drop
         off_bail "переподъёма awg0"
         i=0
-        while [ "$i" -lt 25 ]; do
+        while [ "$i" -lt "$REUP_WAIT" ]; do
             sleep 1
             hs2=$($WG show awg0 latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
             case "$hs2" in

@@ -629,15 +629,19 @@ run_pick() {   # $1 tag  $2 cc  $3 proto  [$4 refresh]  [$5 auto]
     # pool lasts tens of minutes, and a job that gave up in its middle left the new key unused — in FAILOPEN the retries skip the
     # current name, so «the router chooses it again» never came (review s.136 r3, L3). While a switch or a tick runs — up to
     # PM_SETTLE_HARD.
+    # …AND GIVES UP ONLY ON AN ANSWER ASKED WHILE NOTHING DROVE IT (`_psq`): a switch that ended while `settle` was asking left its
+    # «4» behind, and the check «nothing drives it now» right after it gave up on a key it could raise that very second, saying the
+    # switch «идёт дольше» (the busybox lane hit the window, s.138).
     if [ "$_prr" = 4 ]; then
-        _pse=$(( $(uptime_s) + PM_SETTLE_MAX )); _psh=$(( $(uptime_s) + PM_SETTLE_HARD ))
+        _pse=$(( $(uptime_s) + PM_SETTLE_MAX )); _psh=$(( $(uptime_s) + PM_SETTLE_HARD )); _psq=0
         while [ "$_prr" = 4 ]; do
             say "новый конфиг «$_prd» на месте; роутер сейчас сам меняет сервер — подниму новый, когда смена закончится"
             _psn=$(uptime_s)
             [ "$_psn" -lt "$_psh" ] || break
-            if [ "$_psn" -ge "$_pse" ] && [ ! -e "$SWLOCK" ] && ! carrier_busy; then break; fi
+            if [ "$_psn" -ge "$_pse" ] && [ "$_psq" = 1 ] && [ ! -e "$SWLOCK" ] && ! carrier_busy; then break; fi
             sleep "$PM_LIVE_STEP"
             subs_wait "$PM_SUBS_WAIT" || continue
+            _psq=0; if [ ! -e "$SWLOCK" ] && ! carrier_busy; then _psq=1; fi
             _pso=$(SUBS_PUT_WHY=premium sh "$ENODIA_DIR/subs-update.sh" settle "$1" 2>&1 </dev/null); _prr=$?
             [ "$_prr" = 1 ] && subs_busy && _prr=4       # a run took the lock in between — wait on
             _prw=$(printf '%s\n' "$_pso" | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/^[[:space:]]*//' | jline 300)

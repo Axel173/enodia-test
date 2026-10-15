@@ -8105,6 +8105,9 @@
     "— бесплатно и за минуту.":"— free, and it takes a minute.",
     "В приложении":"In the","нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл":"app tap «+» → «Scan QR code» and point the camera at this code. For AmneziaVPN and for another router — the link; the file",
     "примет и обычный WireGuard, если в конфиге нет полей обфускации.":"is taken by plain WireGuard too, if the config has no obfuscation fields.",
+    "Для приложения":"For the","код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG и обычному WireGuard — файл":"app the code below is a series of frames («+» → «QR code»); for the AmneziaWG app and plain WireGuard — the file",
+    ", другому роутеру — ссылка.":", for another router — the link.",
+    "Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG и WireGuard серию не читают — им файл.":"The config is longer than one QR code, so the code comes as a series of frames — the next one every second. The AmneziaVPN app puts it together («+» → «QR code»): keep the camera on the code until every frame is in. AmneziaWG and WireGuard do not read a series — give them the file.",
     "Один конфиг — одно устройство одновременно.":"One config — one device at a time.",
     "У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.":"The server has one seat for this key: turn the config on on a phone while the router rides on it — they start kicking each other out, and the connection breaks for both. A phone needs its own config: issue one at the provider or on your own server. And the config itself is the key to the server: do not send it over messengers or mail, show the QR code from the screen or carry the file yourself.",
     "Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл":"Scan the code in an app (v2rayNG, Hiddify) or copy the link; on another router with Enodia it is pasted on «Servers». The file",
@@ -16924,20 +16927,25 @@
     var awg=(m.tpt==='awg'), KEEP='Конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.';
     // Раскрытая карточка высока (код, плашка, текст): `r2` — два ряда колоды, и соседние короткие карточки встают друг под другом
     // рядом с ней, а не оставляют под собой пустоту в её высоту (замер 1440 px: 514 px пустой колонки).
+    // The code FIRST: whether it went as one code or as a series for AmneziaVPN decides the hint above it («AmneziaWG: scan» or «the
+    // series is for AmneziaVPN, AmneziaWG takes the file») — qrShareHtml says what it drew (`drew`), so the hint never names a series
+    // that could not be built (s.138).
+    var qo={qr:awg ? m.raw : m.link, ser:awg ? QRS_NOTE : '',
+      long:awg ? 'Конфиг оказался слишком длинным для QR-кода — скачайте файл или скопируйте ссылку: у AmneziaWG 1.5 и новее строки I1–I5 бывают длиннее, чем код вмещает.'
+               : 'Ссылка оказалась слишком длинной для QR-кода — скопируйте её или скачайте файл.',
+      acts:(m.link ? '<button type="button" class="btn" data-sv="expcopy"><span>Скопировать ссылку</span> <span class="mono kw">'+esc(m.sch)+'</span></button>' : '')
+        + '<button type="button" class="btn" data-sv="expdl">'+icUse('i-dl','s','',true)+'<span>Скачать</span> <span class="mono kw">'+esc(m.ext)+'</span></button>',
+      sum:awg ? 'Показать текст конфига' : 'Показать ссылку', txt:awg ? m.raw : m.link, open:!!o.txtOpen}, qh=qrShareHtml(qo);
     var h='<div class="card w2 r2" id="srv-exp" data-exp="open"><div class="wt">Экспорт конфига</div>';
-    if(awg) h+='<div class="tiny" style="margin-bottom:11px"><span>В приложении</span> <b>AmneziaWG</b> <span>нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл</span> <span class="mono kw">.conf</span> <span>примет и обычный WireGuard, если в конфиге нет полей обфускации.</span></div>'
+    if(awg) h+=(qo.drew!=='ser' ? '<div class="tiny" style="margin-bottom:11px"><span>В приложении</span> <b>AmneziaWG</b> <span>нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл</span> <span class="mono kw">.conf</span> <span>примет и обычный WireGuard, если в конфиге нет полей обфускации.</span></div>'
+                              : '<div class="tiny" style="margin-bottom:11px"><span>Для приложения</span> <b>AmneziaVPN</b> <span>код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG и обычному WireGuard — файл</span> <span class="mono kw">.conf</span><span>, другому роутеру — ссылка.</span></div>')
       + noteBox('<b>Один конфиг — одно устройство одновременно.</b> У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.', 'warn');
     else h+='<div class="tiny" style="margin-bottom:11px"><span>'+(m.tpt==='xray' ? 'Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл'
                                                                                  : 'Отсканируйте код в приложении или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл')
       + '</span> <span class="mono kw">'+esc(m.ext)+'</span> <span>— конфиг как есть.</span></div>'+noteBox(KEEP, 'warn');
     // Ссылки нет — не «код не влез», а «собрать нечего»: причина своей плашкой, из действий остаётся файл.
     if(!m.link) h+='<div style="margin-top:11px">'+noteBox('Ссылку для этого конфига панель не соберёт: его сервер записан не так, как несёт ссылка. Конфиг целиком — в файле.', 'info')+'</div>';
-    h+=qrShareHtml({qr:awg ? m.raw : m.link,
-      long:awg ? 'Конфиг оказался слишком длинным для QR-кода — скачайте файл или скопируйте ссылку: у AmneziaWG 1.5 и новее строки I1–I5 бывают длиннее, чем код вмещает.'
-               : 'Ссылка оказалась слишком длинной для QR-кода — скопируйте её или скачайте файл.',
-      acts:(m.link ? '<button type="button" class="btn" data-sv="expcopy"><span>Скопировать ссылку</span> <span class="mono kw">'+esc(m.sch)+'</span></button>' : '')
-        + '<button type="button" class="btn" data-sv="expdl">'+icUse('i-dl','s','',true)+'<span>Скачать</span> <span class="mono kw">'+esc(m.ext)+'</span></button>',
-      sum:awg ? 'Показать текст конфига' : 'Показать ссылку', txt:awg ? m.raw : m.link, open:!!o.txtOpen});
+    h+=qh;
     if(m.loss.length){
       var ls=m.loss.slice(0, SRV_EXP_LOSS_MAX).map(function(x){ return '<span class="mono kw">'+esc(x)+'</span>'; }).join(', ');
       h+='<div class="cline"><span>В ссылку не попало:</span> '+ls+(m.loss.length>SRV_EXP_LOSS_MAX ? ' <span>и ещё</span> <b>'+(m.loss.length-SRV_EXP_LOSS_MAX)+'</b>' : '')+'<span>. Это несёт только файл.</span></div>';
@@ -24632,17 +24640,23 @@
   var _vsConf=null;
   // КОД СЛЕВА, ДЕЙСТВИЯ СПРАВА — одна раскладка на «Доступ домой» (конфиг устройства) и «Экспорт конфига» сервера. `o.qr` — текст,
   // который несёт код (нет текста — нет и кода, без слов о длине), `o.long` — что сказать, когда он в код не влез, `o.acts` — кнопки,
-  // `o.sum`/`o.txt` — что раскрывает «Показать …» (нет текста — нет и строки), `o.open` — раскрыто ли.
+  // `o.sum`/`o.txt` — что раскрывает «Показать …» (нет текста — нет и строки), `o.open` — раскрыто ли. `o.ser` — what to say when the
+  // text goes as a SERIES for the AmneziaVPN app (an AmneziaWG config longer than one code, qrSeriesHtml); none — no series, «не влез».
+  // Answers in `o.drew` what it drew: 'one' — one code, 'ser' — a series, '' — no code.
   function qrShareHtml(o){
     var svg=o.qr ? qrSvg(o.qr, 320) : null;
+    var ser=(o.qr && !svg && o.ser) ? qrSeriesHtml(o.qr, 320) : null;
+    o.drew=svg ? 'one' : ser ? 'ser' : '';
     // QR — на белом при любой теме (тёмная подложка у кода ломает чтение камерой части телефонов).
-    return '<div class="vs-qr">'+(svg ? '<div class="qrbox">'+svg+'</div>' : '')
-      + '<div class="grow">'+((svg || !o.qr) ? '' : noteBox(o.long,'warn'))
+    return '<div class="vs-qr">'+(svg ? '<div class="qrbox">'+svg+'</div>' : (ser || ''))
+      + '<div class="grow">'+((svg || !o.qr) ? '' : noteBox(ser ? o.ser : o.long, ser ? 'info' : 'warn'))
       + '<div class="acts">'+o.acts+'</div>'
       + (o.txt ? '<details class="vs-txt"'+(o.open?' open':'')+'><summary class="act mut">'+o.sum+'</summary><pre class="mono">'+esc(o.txt)+'</pre></details>' : '')+'</div></div>';
   }
+  // What an AmneziaWG config's series says beside the code (qrSeriesHtml): who reads it, how, and who does not.
+  var QRS_NOTE='Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG и WireGuard серию не читают — им файл.';
   function vsConfHtml(conf, txtOpen){
-    return qrShareHtml({qr:conf, long:'Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.',
+    return qrShareHtml({qr:conf, ser:QRS_NOTE, long:'Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.',
       acts:'<button type="button" class="btn" data-pa="copy">Скопировать конфиг</button>'
         + '<button type="button" class="btn" data-pa="dl">'+icUse('i-dl','s','',true)+'<span>Скачать файлом</span></button>',
       sum:'Показать текст конфига', txt:conf, open:txtOpen});
@@ -31856,6 +31870,66 @@
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+tot+' '+tot+'" width="'+px+'" height="'+px+'" '
       +'shape-rendering="crispEdges" style="border-radius:8px"><rect width="'+tot+'" height="'+tot+'" fill="#fff"/>'
       +'<path d="'+d+'" fill="#000"/></svg>';
+  }
+
+  // ---------------- СЕРИЯ QR ДЛЯ AmneziaVPN ----------------
+  // WHY (s.138): an AmneziaWG config longer than one code (AmneziaWG 1.5+ writes long I1–I5) got only «не влез». The AmneziaVPN app
+  // reads a SERIES of frames, its own format (amnezia-client: core/utils/qrCodeUtils.cpp writes it, ImportController::parseQrCodeChunk
+  // reads it): a frame is base64url without padding of a big-endian QDataStream — qint16 magic 1984, quint8 frame count, quint8 frame
+  // number, QByteArray (quint32 length + bytes) with a piece of the text. The app takes the frames in any order, glues the pieces by
+  // number and imports the result as it imports a scanned .conf; it shows its own series a frame a second, and so do we. A piece is at
+  // most 431 bytes — 8 + 431 bytes are 586 characters of base64, the most our table (version 16) holds — and the pieces are even, so
+  // no frame is denser than it must be. AmneziaWG and WireGuard read no series: for them — the file. Stand: dev/qr-series-test.js
+  // reads the frames back the way the app does.
+  var QRS_MAGIC=1984, QRS_PIECE=431, QRS_STEP=1000;
+  function qrSeriesFrames(text){
+    var enc, b=[], i, k;
+    try{ enc=unescape(encodeURIComponent(String(text))); }catch(e){ enc=String(text); }
+    for(i=0;i<enc.length;i++) b.push(enc.charCodeAt(i)&0xff);
+    var n=Math.ceil(b.length/QRS_PIECE);
+    if(n<1 || n>255) return null;
+    var out=[];
+    for(k=0;k<n;k++){
+      var p=b.slice(Math.floor(k*b.length/n), Math.floor((k+1)*b.length/n)), L=p.length, s='';
+      var f=[(QRS_MAGIC>>8)&0xff, QRS_MAGIC&0xff, n, k, (L>>>24)&0xff, (L>>>16)&0xff, (L>>>8)&0xff, L&0xff].concat(p);
+      for(i=0;i<f.length;i++) s+=String.fromCharCode(f[i]);
+      out.push(btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''));
+    }
+    return out;
+  }
+  // The frames as one box: every frame's code drawn up front (a frame is a `.qrf`, all but the shown one hidden — a redraw of the
+  // screen gets the box whole), its number under the code; qrSeriesRun turns them. null — a frame our table cannot draw (qrSvg judges).
+  function qrSeriesHtml(text, px){
+    var fr=qrSeriesFrames(text), h='', i, svg;
+    if(!fr || fr.length<2) return null;
+    for(i=0;i<fr.length;i++){
+      svg=qrSvg(fr[i], px);
+      if(!svg) return null;
+      h+='<div class="qrf"'+(i ? ' hidden' : '')+'>'+svg+'</div>';
+    }
+    setTimeout(qrSeriesRun, 0);
+    return '<div class="qrs" data-qrs="0"><div class="qrbox">'+h+'</div><div class="qrs-n mono">1 / '+fr.length+'</div></div>';
+  }
+  // ONE ticker for every series on screen, a frame a second; it stops by itself once no series stands on a live screen (screenAlive) —
+  // a closed screen leaves no timer behind. Started by whoever drew a series (qrSeriesHtml), a second start is a no-op.
+  var _qrsTimer=null;
+  function qrSeriesRun(){
+    if(_qrsTimer) return;
+    _qrsTimer=setInterval(function(){
+      var live=0;
+      Array.prototype.forEach.call(document.querySelectorAll('.qrs'), function(b){
+        if(!screenAlive(b)) return;
+        var fr=b.querySelectorAll('.qrf'), n=fr.length, j, c, i;
+        if(n<2) return;
+        live++;
+        i=((parseInt(b.getAttribute('data-qrs'),10)||0)+1)%n;
+        for(j=0;j<n;j++){ if(j===i) fr[j].removeAttribute('hidden'); else fr[j].setAttribute('hidden',''); }
+        b.setAttribute('data-qrs', String(i));
+        c=b.querySelector('.qrs-n');
+        if(c) c.textContent=(i+1)+' / '+n;
+      });
+      if(!live){ clearInterval(_qrsTimer); _qrsTimer=null; }
+    }, QRS_STEP);
   }
 
   // ==================== КОНЕЦ СТАРТА — ПОСЛЕДНИЕ ИНСТРУКЦИИ ФАЙЛА ====================
