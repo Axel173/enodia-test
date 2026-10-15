@@ -778,6 +778,18 @@ EOF
 #     то есть печатал бы «снято» и тогда, когда шаг снятия правил на самом деле провалился. Так
 #     мы теряем ровно ту диагностику, ради которой step_verify и написан. Поэтому здесь только
 #     uci (её вердикт как раз проверяет), а перезагрузка — `fwzone_reload` ПОСЛЕ вердикта.
+# 4c. The stock settings backup (stock-backup.sh): turned off through us — the flag goes back to what it was before us (user's
+# decision 15.10.2026: the router returns to stock; the stock makes its copy again on its next pass). purge only.
+step_stockbak() {
+    [ -f "$ENODIA_STATE/.stock-backup-off" ] || return 0
+    if [ -f "$ENODIA_DIR/stock-backup.sh" ] && sh "$ENODIA_DIR/stock-backup.sh" uninstall >> "$REPORT" 2>&1; then
+        log "Копия настроек прошивки: флаг возвращён, каким был до нас — прошивка сделает копию сама в ближайшие 6 часов."
+    else
+        log "Копия настроек прошивки: вернуть флаг не вышло (uci set misc.features.sec_cfg_bak=1; uci commit misc)."
+    fi
+    return 0
+}
+
 step_fwzone() {
     FW_RELOAD=0
     command -v uci >/dev/null 2>&1 || { log "firewall: uci не найден — зону не трогаю."; return 0; }
@@ -979,6 +991,10 @@ step_verify() {      # $1 = дополнительные демоны (как у
     else _cn=$(cron_ours -c /etc/crontabs/root 2>/dev/null); fi
     case "$_cn" in ''|*[!0-9]*) _cn=0 ;; esac
     [ "$_cn" = 0 ] || _left="$_left cron($_cn)"
+    # The stock settings backup the person turned off through us: purge puts the flag back (step_stockbak) and the owner drops its
+    # marker only after that — a marker still here = the router left with a stock setting we changed. Not on deactivate (keep):
+    # files and settings stay, the person's choice with them.
+    [ "$2" = keep ] || { [ -f "$ENODIA_STATE/.stock-backup-off" ] && _left="$_left копия-настроек-прошивки"; }
     # Сниппеты dnsmasq — самое дорогое из уцелевшего: наш 00-upstream.conf ЗАПИРАЕТ upstream в
     # туннель, которого больше нет, то есть «деактивация» оставила бы сеть вообще без DNS.
     _dso=$(dnsmasq_ours)
@@ -1134,6 +1150,7 @@ cmd_purge() {
     step_cron
     step_dnsmasq
     step_fwzone         # ДО вердикта: он про uci-след спрашивает (и только purge — см. шаг 4b)
+    step_stockbak       # ДО вердикта и ДО сноса каталога настроек: метка «выключена вами» лежит там
     step_hosts          # ДО вердикта: RAM-след ниже идёт последним, а вердикт про hosts спрашивает
     # Проверяем ДО стирания каталога: `set_state` пишет ВНУТРЬ $ENODIA_DIR, после rm писать будет
     # некуда, а отметка «снялось не всё» нужна ровно тому, кто потом придёт разбираться.

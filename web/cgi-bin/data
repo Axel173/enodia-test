@@ -1456,6 +1456,10 @@ case "$sec" in
 	# обязан быть ОДИН, иначе панель предложит снести не то, что движок снесёт.
 	disk) if [ -f "$D/clean.sh" ]; then sh "$D/clean.sh" json
 	      else printf '{"engine":false,"total_b":0,"used_b":0,"free_b":0,"awg_b":0,"cats":[],"junk":[],"junk_b":0,"snaps_b":0,"snaps_n":0,"ramlogs_b":0,"ramlogs_n":0,"stocklogs_b":0,"stocklogs_n":0}\n'; fi ;;
+	# stockbak — THE STOCK SETTINGS BACKUP (stock-backup.sh status): is it on, what it holds, may it be turned off / back on.
+	# The owner decides `offer`/`can_on`; the panel only shows. No owner yet — engine false (an older code set).
+	stockbak) if [ -f "$D/stock-backup.sh" ]; then sh "$D/stock-backup.sh" status
+	          else printf '{"engine":false,"present":false,"offer":false,"can_on":false}\n'; fi ;;
 	# ram — КТО ЕСТ ОПЕРАТИВНУЮ ПАМЯТЬ (ram-usage.sh json). Отдельной секцией, а не полем в
 	# sysinfo: тот опрашивается раз в 5 с ради температуры и ЦП, а здесь обход всего /proc —
 	# полсотни forks, которые незачем платить в таком ритме. Панель тянет это ЛЕНИВО, по клику.

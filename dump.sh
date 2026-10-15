@@ -1188,6 +1188,14 @@ fi
 # NB для читателя дампа: UBIFS СЖИМАЕТ, поэтому суммы du выше и «занято» из df — РАЗНЫЕ единицы,
 # вычитать одно из другого нельзя (на BE7000 замерено du 21046 КБ при df-занято 15888 КБ).
 echo "NB: du (разбивка выше) — ЛОГИЧЕСКИЙ размер, df — реально занятые блоки; UBIFS жмёт, разница штатна."
+# The stock's copy of its settings container — 3.8 MB of BE6500's flash, the answer to «why does nothing fit» there. The owner
+# answers (read-only `status`): the flag, the copy, whether the person turned it off through us.
+sub "копия настроек прошивки (stock-backup.sh status — только показывает)"
+if [ -f "$ENODIA_DIR/stock-backup.sh" ]; then
+    sh "$ENODIA_DIR/stock-backup.sh" status 2>/dev/null || echo "(stock-backup.sh status не отработал)"
+else
+    echo "(stock-backup.sh нет — установка до этой функции)"
+fi
 
 # «Не забивается ли память?» — самый частый вопрос по дампу, и ОДНОЙ строкой free на него не
 # ответить: MemFree штатно падает под страничный кэш и на роутере с ним всё в порядке. Судить

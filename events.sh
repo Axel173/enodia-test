@@ -123,6 +123,9 @@ level_of() {
 		# server an exit stands on left its subscription (the config is kept); subs-exit-reup — an exit did not come up on its
 		# config changed by a subscription (subs-update.sh).
 		subs-active-refused|subs-held-gone|subs-exit-reup) echo warn ;;
+		# stockbak-reoff — a firmware update turned the stock settings backup on again; the person had it off, heal turned it off
+		# again (stock-backup.sh): done, but the stock changed a choice behind the person's back.
+		stockbak-reoff)           echo warn ;;
 		transport-missing|geo-snap-skip|geo-want-snap-skip|doh-auto-off|doh-dot-fallback|subs-active-gone|cross-switch|rule-heal|hev-restart-*|sched-clock|sched-filter) echo warn ;;
 		*)                        echo info ;;
 	esac
@@ -148,7 +151,7 @@ class_of() {
 		iplist-*|ipblock-*|geo-*) echo lists ;;
 		task-*)                   echo tasks ;;   # the user's own tasks (tasks.sh): failure / done — the mail choice is also per task
 		# sched-<id> / sched-clock — access schedules (access-sched.sh): the journal only, it sends no mail
-		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*|sched-*) echo system ;;
+		rule-heal|clock-step|store-mode-fail|doh-auto-off|doh-enable-failed|doh-dot-fallback|doh-dot-back|hev-restart-*|sched-*|stockbak-reoff) echo system ;;
 		*)                        echo system ;;
 	esac
 }

@@ -143,6 +143,9 @@ dump.sh
 # Чистка флеша + разбивка занятого. Это ЕДИНСТВЕННЫЙ владелец списка «что считается мусором»:
 # карточка «Компоненты» зовёт его вербами json/clean, второй копии списка в CGI нет намеренно.
 clean.sh
+# The stock settings backup (Xiaomi's copy of its settings container): offer, off, back on, boot heal, uninstall. The wizard
+# runs this file from the package before the install, so it carries shims of its libraries.
+stock-backup.sh
 # «Кто ест ОЗУ» — тот же по форме ответ, но про живые процессы; зовёт карточка «О роутере»
 # (data?section=ram) ЛЕНИВО, по клику. Ничего не меняет и ничего не запускает.
 ram-usage.sh

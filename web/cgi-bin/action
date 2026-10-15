@@ -2942,6 +2942,17 @@ EOF
 		[ -n "$dout" ] || fail "чистка не отработала"
 		printf '%s\n' "$dout"; exit 0 ;;
 
+	# --- THE STOCK SETTINGS BACKUP (stock-backup.sh — the one owner of the stock flag and its copy). Through owner_relay: «off»
+	# is flag → removal → marker, and a closed tab (uhttpd's SIGKILL) must not cut it halfway; the owner answers one JSON line,
+	# a refusal by its code (`why`), which the panel words.
+	stock_backup)
+		[ -f "$ENODIA_DIR/stock-backup.sh" ] || fail "stock-backup.sh не установлен (обновите скрипты с GitHub)"
+		case "$(field op)" in
+			off) owner_relay stock-backup.sh off ;;
+			on)  owner_relay stock-backup.sh on ;;
+			*)   fail "нужно off|on" ;;
+		esac ;;
+
 	# --- ВНЕШНИЙ НАКОПИТЕЛЬ (usb-offload.sh — единственная истина; переезд с проверкой копии).
 	# Синхронно, как disk_clean: движок копирует 13 МБ максимум (секунды), НИЧЕГО не качает и
 	# несущую не переподнимает, поэтому общий лок установки тут занимать не за что. Прогресса

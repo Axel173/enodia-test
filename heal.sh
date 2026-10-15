@@ -878,6 +878,15 @@ if [ -f "$ENODIA_DIR/tasks.sh" ] && [ -d "$ENODIA_STATE/tasks" ]; then
     [ "$REPLAY" = 0 ] && sh "$ENODIA_DIR/tasks.sh" boot 2>&1 3>&- || true
 fi
 
+# 5.19. THE STOCK SETTINGS BACKUP (stock-backup.sh). The person turned the stock's copy off to free the flash; a firmware update
+# may bring the flag back, and the copy would quietly take megabytes Xray has filled meanwhile — so the person's choice is applied
+# again (user's decision 15.10.2026), with an event. Without their marker the verb does nothing. Last: a copier at work (BE6500's
+# boot hook) is waited for up to a minute, and nothing above should wait behind it. Not VPN — runs under «VPN off» too.
+if [ -f "$ENODIA_DIR/stock-backup.sh" ] && [ -f "$ENODIA_STATE/.stock-backup-off" ]; then
+    echo "--- копия настроек прошивки: выключена вами — проверяю, не вернула ли её прошивка ---"
+    sh "$ENODIA_DIR/stock-backup.sh" heal 2>&1 3>&- || true
+fi
+
 # КОНЕЦ REPLAY. Дальше — только бутовое: диагностический срез в лог и письмо «загрузка OK».
 # Первое в переигрыше не нужно, второе было бы ложью (роутер не перезагружался).
 if [ "$REPLAY" = 1 ]; then

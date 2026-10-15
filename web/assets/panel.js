@@ -9242,6 +9242,27 @@
     "Бинари протоколов":"Protocol binaries","Веб-панель":"Web panel","Скрипты":"Scripts",
     "Конфиги и подписки":"Configs and subscriptions","Списки и гео":"Lists and geo",
     "Состояние и прочее":"State and misc","Мусор":"Junk",
+    // The stock settings backup (stock-backup.sh): the row under the cleaning, its question, the router's answers.
+    "Копия настроек прошивки":"Firmware settings backup","копии пока нет":"no copy yet","Выключить…":"Turn off…",
+    "не наша: прошивка держит вторую копию своего хранилища настроек и обновляет её раз в 6 часов. Выключить — освободит место; цена — если основное хранилище повредится, роутер сбросит все настройки":"not ours: the firmware keeps a second copy of its settings store and refreshes it every 6 hours. Turning it off frees space; the price — if the main store breaks, the router resets all its settings",
+    "прошивка сделает её при следующем проходе, раз в 6 часов. Выключить сейчас — копия не займёт места; цена — если основное хранилище повредится, роутер сбросит все настройки":"the firmware makes it on its next pass, every 6 hours. Turned off now, the copy takes no space; the price — if the main store breaks, the router resets all its settings",
+    "прошивка как раз делает копию — выключить можно через минуту":"the firmware is making the copy right now — it can be turned off in a minute",
+    "выключена вами":"turned off by you","освобождено":"freed",
+    "включить обратно можно, когда на флеше будет свободно":"it can be turned back on once the flash has free",
+    "вторая копия хранилища настроек — выключается строкой «Копия настроек прошивки» в карточке «Что можно освободить»":"a second copy of the settings store — turned off by the «Firmware settings backup» row in the «What can be freed» card",
+    "не компонент: копию своих настроек держит прошивка — выключить её можно на экране «Место и накопитель»":"not a component: the firmware keeps this copy of its settings — it can be turned off on the «Space and drive» screen",
+    "Включить копию настроек прошивки обратно? Прошивка сразу сделает новую копию — она займёт место на флеше.":"Turn the firmware settings backup back on? The firmware makes a new copy at once — it takes room on the flash.",
+    "копия настроек прошивки выключена; место флеш отдаст чуть позже":"the firmware settings backup is off; the flash will give the space back a little later",
+    "копия настроек прошивки включена и сделана":"the firmware settings backup is on and made",
+    "копия настроек прошивки включена — прошивка сделает её при следующем проходе":"the firmware settings backup is on — the firmware makes it on its next pass",
+    "у этой прошивки нет копии настроек":"this firmware has no settings backup",
+    "хранилище настроек роутера не открылось при загрузке — копию не трогаю: она может быть единственной целой":"the router's settings store did not open at boot — the copy is left alone: it may be the only intact one",
+    "прошивка как раз делает копию — повторите через минуту":"the firmware is making the copy right now — try again in a minute",
+    "копия настроек прошивки уже выключена":"the firmware settings backup is already off",
+    "на флеше не хватит места на новую копию — сперва освободите место":"the flash has no room for a new copy — free some space first",
+    "прошивка не приняла смену настройки":"the firmware did not accept the setting change",
+    "копию выключил, но удалить её не вышло — место не освободилось":"the backup is off, but the copy could not be removed — no space was freed",
+    "копию выключали не через панель — включить её отсюда нельзя":"the backup was not turned off through the panel — it cannot be turned on from here",
     // Два раздела с подытогами вместо плоского списка: «наше» отделено от стокового, потому что
     // распоряжаться человек может только первым. Названия кусков стокового приходят по ПУТИ.
     "VPN и панель":"VPN and panel","наше":"ours",
@@ -11870,6 +11891,11 @@
   // буквы внутри слов). i18nStr применяет их подряд и, если в итоге остаётся кириллица, ВОЗВРАЩАЕТ
   // оригинал (не показываем ru/en-мешанину).
   var I18N_RULES=[
+    // ─── The stock settings backup (stock-backup.sh): its question carries the estimated size, the router's answer the freed one.
+    //     FIRST: whole lines and a line's head, seen before any token rule below rewrites a piece of them (a later place missed). ───
+    [/^Выключить копию настроек прошивки и удалить её\? Освободится около (\d[\d.,]*\s*(?:ГБ|МБ|КБ|Б))\. Цена: если основное хранилище настроек повредится \(например, свет погаснет во время записи\), роутер при загрузке сбросит все настройки — Wi-Fi, пароли и автозапуск панели, — восстанавливать будет не из чего\. Включить копию обратно можно здесь же\.$/,
+     "Turn off the firmware settings backup and remove it? About $1 is freed. The price: if the main settings store breaks (say, the power goes off during a write), the router resets all its settings at boot — Wi-Fi, passwords and the panel's autostart — and there is nothing to restore them from. The backup can be turned back on right here."],
+    [/^копия настроек прошивки выключена: /,"the firmware settings backup is off: "],
     // ─── Amnezia Premium (14.10.2026): the router's words with a country, a name or a number (premium.sh, subs-update.sh put/unput),
     //     and the screen's lines built from them. Whole lines — anchored; the parts of a joined line («· »-separated) — tokens. ───
     [/^\[premium\] «(.+)» — не сервер подписки Amnezia Premium$/,"[premium] «$1» is not a server of an Amnezia Premium subscription"],
@@ -27076,7 +27102,7 @@
      клик писал всё тело заново, и фокус клавиатуры после пробела уходил в начало страницы. */
   // pkgUpd — «обновить эту связку» (id → true): второй выбор строки рядом с переключателем. Обновление = установка устаревших файлов
   // стоящей связки (разбор у packages.sh::bin_needs), в план оно уходит той же стороной «ставим».
-  var pkgData=null, pkgSel={}, pkgSelKeep=null, pkgUpd={}, pkgUpdKeep=null, pkgPlanSeq=0, pkgRunning=false, storeData=null, pkgOp=null, pkgUpPick=false;
+  var pkgData=null, pkgSel={}, pkgSelKeep=null, pkgUpd={}, pkgUpdKeep=null, pkgPlanSeq=0, pkgRunning=false, storeData=null, pkgOp=null, pkgUpPick=false, pkgSbk=null;
   // ЧТО ЭТО — одной фразой, без названий технологий (вопрос тестера: «что это и зачем оно мне»). Ключ — id связки движка;
   // незнакомая связка (движок новее панели) остаётся без фразы, а не с чужой.
   var PKG_DS={
@@ -27102,9 +27128,10 @@
     var b=document.getElementById('modal-body'); loading(b);
     var fail=function(e){ return {__err:(e && e.net) ? 'net' : 'form'}; };
     Promise.all([fetchJson('/cgi-bin/data?section=packages').then(null, fail), fetchJson('/cgi-bin/data?section=update').then(null, fail),
-                 fetchJson('/cgi-bin/data?section=pkg_op').then(null, fail)])
+                 fetchJson('/cgi-bin/data?section=pkg_op').then(null, fail), fetchJson('/cgi-bin/data?section=stockbak').then(null, fail)])
       .then(function(r){
         if(!screenAlive(b)) return;   // экран показан заново (openModal подменяет тело) — ответ не этого показа
+        pkgSbk=sbkOk(r[3]) ? r[3] : null;   // the stock settings copy: a door for a plan short of flash (renderPkgPlan)
         if(!pkgListOk(r[0])){
           // Ответ не пришёл — ожидания этого показа (тост сверки, выбор «обновить») не переносятся на следующий: иначе через час
           // открытый экран сказал бы «не обновился» ни к чему и показал бы заранее нажатое обновление (ревью ветки, круг 2).
@@ -27203,10 +27230,12 @@
     loading(body);
     // Отказ сети и ответ не той формы — разные беды (разбор у noteText): первому поможет «ещё раз», второму — нет.
     var fail=function(e){ return {__err:(e && e.net) ? 'net' : 'form'}; };
-    Promise.all([fetchJson('/cgi-bin/data?section=store').then(null, fail), fetchJson('/cgi-bin/data?section=disk').then(null, fail)]).then(function(r){
+    Promise.all([fetchJson('/cgi-bin/data?section=store').then(null, fail), fetchJson('/cgi-bin/data?section=disk').then(null, fail),
+                 fetchJson('/cgi-bin/data?section=stockbak').then(null, fail)]).then(function(r){
       if(!screenAlive(body)) return;   // экран показан заново (openModal подменяет тело) — ответ не этого показа
       storeData=dkStoreOk(r[0]) ? r[0] : {__err:(r[0] && r[0].__err) || 'form'};
       diskData=dkDiskOk(r[1]) ? r[1] : {__err:(r[1] && r[1].__err) || 'form'};
+      sbkData=sbkOk(r[2]) ? r[2] : null;   // the stock copy's row is an offer: no answer — no row (the rest of the screen says why)
       body.innerHTML=dkScrHtml();
       // Пришли «к чистке» (экран памяти, строка «Наши логи в памяти») — фокус клавиатуры на переключатель логов в ОЗУ: взгляд
       // довести мало, Tab начинал бы с заголовка экрана (разбор у setFocusKbd). Логов нет — на первый живой переключатель.
@@ -27505,7 +27534,34 @@
     });
     var any=dkGain(dk).any;
     return h+'<div class="acts"><button type="button" class="btn" id="dk-clean-go" data-dk="clean" data-busy="1"'+(any?'':' data-na="1"')+((busy||!any)?' disabled':'')+'>'+esc(dkCleanLabel(dk))+'</button></div>'
-      + dkLine('Сколько освободилось на самом деле, роутер скажет после чистки: заранее известен только вес файлов, а место считает файловая система.')+'</div>';
+      + dkLine('Сколько освободилось на самом деле, роутер скажет после чистки: заранее известен только вес файлов, а место считает файловая система.')
+      + dkSbkHtml()+'</div>';
+  }
+  // ---- КОПИЯ НАСТРОЕК ПРОШИВКИ (stock-backup.sh) — строкой ПОД чисткой, своей кнопкой с вопросом ----
+  // Не мусор, а настройка прошивки с ценой: группой чистки её не сделать — переключатель там «выбрать», а здесь каждый шаг
+  // спрашивает цену. Что показать, решает РОУТЕР (`offer`, `can_on`): нет копии у прошивки — строки нет вовсе; выключена через нас —
+  // «выключена вами» и «Включить обратно», а без места на новую копию — причина вместо кнопки (дверь — чистка выше и «Компоненты»).
+  var sbkData=null;
+  var SBK_PRICE='если основное хранилище повредится, роутер сбросит все настройки';
+  function sbkOk(d){ return !!d && typeof d==='object' && typeof d.offer==='boolean' && typeof d.can_on==='boolean'; }
+  function dkSbkHtml(){
+    var s=sbkData;
+    if(!s || (s.offer!==true && s.mine!==true)) return '';
+    var nm='<div class="nm">Копия настроек прошивки ', ds, right='';
+    if(s.offer===true){
+      nm+=(s.copy===true ? '<span class="chip">≈ '+humanBytes(Number(s.est_b)||0)+'</span>' : '<span class="chip">копии пока нет</span>');
+      ds=(s.copy===true ? '<span>не наша: прошивка держит вторую копию своего хранилища настроек и обновляет её раз в 6 часов. Выключить — освободит место; цена — '+SBK_PRICE+'</span>'
+                        : '<span>прошивка сделает её при следующем проходе, раз в 6 часов. Выключить сейчас — копия не займёт места; цена — '+SBK_PRICE+'</span>')
+        + (s.busy===true ? ' · <span>прошивка как раз делает копию — выключить можно через минуту</span>' : '');
+      right='<button type="button" class="btn sm" data-dk="sbk-off" data-busy="1"'+(busy?' disabled':'')+'>Выключить…</button>';
+    } else {
+      var at=Number(s.at)||0, fr=Number(s.freed_b)||0;
+      nm+='<span class="chip">выключена</span>';
+      ds='<span>выключена вами</span>'+(at ? ' '+esc(subDate(at)) : '')+(fr ? ' · <span>освобождено</span> '+humanBytes(fr) : '')
+        + (s.can_on===true ? '' : ' · <span>включить обратно можно, когда на флеше будет свободно</span> '+humanBytes(Number(s.need_b)||0));
+      if(s.can_on===true) right='<button type="button" class="btn sm gh" data-dk="sbk-on" data-busy="1"'+(busy?' disabled':'')+'>Включить обратно</button>';
+    }
+    return DK_SEP+'<div class="lrow" id="dk-sbk"><div class="grow">'+nm+'</div><div class="ds">'+ds+'</div></div>'+right+'</div>';
   }
   // Что даст выбранное. Стоковый лог — ТЕКСТ, а флеш сжимает его втрое: обещать «освободится 3.8 МБ» нельзя, поэтому его вес
   // в сумму не кладём (кнопка говорит «лог до N»), а факт после чистки роутер отдаёт дельтой df — его и покажет тост.
@@ -27558,6 +27614,15 @@
               ? ('Держать «'+nm+'» на флеше роутера'+(dp?(' вместе с «'+dp+'» — без него он не поднимется'):'')+'? Файл переедет с накопителя, и обновления будут класть его туда же.')
               : ('Отпустить «'+nm+'» на накопитель? На флеше роутера освободится место.'), 'store_place', 'переношу…', {bin:nm, to:to}, x,
              ['[data-dk="'+selVal(a)+'"]', '#dk-bins [data-dk]', '[data-dk]', '[data-dkm]']);
+        } else if(a==='sbk-off'){
+          // ЦЕНА — В ВОПРОСЕ, до ответа роутера: после выключения назвать её уже некому (копии нет).
+          go('Выключить копию настроек прошивки и удалить её? Освободится около '+humanBytes(Number((sbkData||{}).est_b)||0)+'. '
+             + 'Цена: если основное хранилище настроек повредится (например, свет погаснет во время записи), роутер при загрузке сбросит '
+             + 'все настройки — Wi-Fi, пароли и автозапуск панели, — восстанавливать будет не из чего. Включить копию обратно можно здесь же.',
+             'stock_backup', 'выключаю…', {op:'off'}, x, ['#dk-sbk [data-dk]', '#dk-clean-go', '[data-dk]', '[data-dkm]']);
+        } else if(a==='sbk-on'){
+          go('Включить копию настроек прошивки обратно? Прошивка сразу сделает новую копию — она займёт место на флеше.',
+             'stock_backup', 'включаю…', {op:'on'}, x, ['#dk-sbk [data-dk]', '#dk-clean-go', '[data-dk]', '[data-dkm]']);
         } else if(a==='clean'){
           var gs=DK_GROUPS.filter(function(g){ return diskSel[g.id] && Number((diskData||{})[g.k]); }).map(function(g){ return g.id; });
           // Подтверждение — на каждой РИСКОВАННОЙ группе, а не на верхней: выбрав обе, человек иначе прочитал бы про одну.
@@ -27615,6 +27680,8 @@
     // трогать нельзя, и обобщать «не трогаем» на весь раздел было бы уже неправдой.
     '/data/usr/log':  {l:'Логи роутера',               h:'системный журнал прошивки — снимается переключателем «Системный лог роутера» в карточке «Что можно освободить»'},
     '/data/etc':      {l:'Настройки роутера',          h:'конфиги прошивки: сеть, Wi-Fi, расписания cron'},
+    // Вторая стоковая строка, которую человек может снять сам (stock-backup.sh) — отсылает к своей строке под чисткой.
+    '/data/usr/sec_cfg': {l:'Копия настроек прошивки',  h:'вторая копия хранилища настроек — выключается строкой «Копия настроек прошивки» в карточке «Что можно освободить»'},
     '/data/userdisk': {l:'Служебный раздел',           h:''}
   };
   function diskCatB(d, id){
@@ -28048,6 +28115,11 @@
             + '<span class="chip">освободит '+humanBytes(Number(c.del_b)||0)+'</span></div>';
         });
       } else h+=dkLine('Снять больше нечего: остальное несёт трафик, держит дополнительный выход или включено — причина у каждой строки в списке.');
+      // НЕ КОМПОНЕНТ, НО МЕСТО: прошивка держит копию своих настроек (на BE6500 — 3,8 МБ, и Xray не влезал). Снимается не здесь — дверь
+      // на экран «Место и накопитель», где цена названа в вопросе. Предлагать ли — решил роутер (`offer`).
+      if(pkgSbk && pkgSbk.offer===true)
+        h+=lrowGo('disk')+'<div class="grow"><div class="nm">Копия настроек прошивки'+(pkgSbk.copy===true ? ' <span class="chip">≈ '+humanBytes(Number(pkgSbk.est_b)||0)+'</span>' : '')
+          + '</div><div class="ds"><span>не компонент: копию своих настроек держит прошивка — выключить её можно на экране «Место и накопитель»</span></div></div>'+CHEV+'</div>';
     }
     var can=(p.ok===true) && !pkgRunning;
     h+='<div class="acts"><div class="grow"></div><button type="button" class="btn gh" data-pka="reset">Сбросить</button>'
