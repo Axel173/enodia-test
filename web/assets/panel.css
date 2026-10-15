@@ -1339,6 +1339,9 @@
   .vs-qr{display:flex;flex-wrap:wrap;align-items:flex-start;gap:14px 16px;margin-top:12px;min-width:0}
   .vs-qr>.grow{flex:1 1 200px;min-width:0}
   .vs-qr .acts{margin-top:0}
+  /* A note beside the code (the series, «не влез») stands ABOVE the buttons — 10 px between, the column's rhythm in the mockup;
+     without it the note lay right on the buttons (s.138, seen on BE7000). */
+  .vs-qr>.grow>.note2{margin-bottom:10px}
   .qrbox{background:#fff;padding:10px;border-radius:10px;line-height:0;max-width:100%;box-sizing:border-box}
   .qrbox svg{max-width:100%;height:auto}
   /* A series of frames for AmneziaVPN (qrSeriesHtml): one frame shown at a time, its number under the code. */

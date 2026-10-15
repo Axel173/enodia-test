@@ -640,10 +640,12 @@ run_pick() {   # $1 tag  $2 cc  $3 proto  [$4 refresh]  [$5 auto]
             [ "$_psn" -lt "$_psh" ] || break
             if [ "$_psn" -ge "$_pse" ] && [ "$_psq" = 1 ] && [ ! -e "$SWLOCK" ] && ! carrier_busy; then break; fi
             sleep "$PM_LIVE_STEP"
+            _psq=0                                       # a round without an ask (subs lock busy) proves nothing either
             subs_wait "$PM_SUBS_WAIT" || continue
-            _psq=0; if [ ! -e "$SWLOCK" ] && ! carrier_busy; then _psq=1; fi
+            if [ ! -e "$SWLOCK" ] && ! carrier_busy; then _psq=1; fi
             _pso=$(SUBS_PUT_WHY=premium sh "$ENODIA_DIR/subs-update.sh" settle "$1" 2>&1 </dev/null); _prr=$?
-            [ "$_prr" = 1 ] && subs_busy && _prr=4       # a run took the lock in between — wait on
+            # a run took the lock in between — wait on; that «4» is no switch's, so no ground to give up on (review s.138)
+            if [ "$_prr" = 1 ] && subs_busy; then _prr=4; _psq=0; fi
             _prw=$(printf '%s\n' "$_pso" | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/^[[:space:]]*//' | jline 300)
         done
         [ "$_prr" != 4 ] || _prw="смена сервера идёт дольше $(( (_psn - _pse + PM_SETTLE_MAX) / 60 )) мин — новый конфиг поднимется, когда роутер снова выберет этот сервер; сразу — выберите его в панели"

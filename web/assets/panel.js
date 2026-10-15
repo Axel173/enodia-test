@@ -8096,7 +8096,7 @@
     "Экспорт конфига":"Config export","Ссылка, QR-код или файл":"Link, QR code or file","Показать":"Show",
     "перенести этот сервер в приложение на телефоне или на другой роутер":"move this server into an app on a phone or onto another router",
     "Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.":"What is given is the server itself, not the subscription link: the router does not show that one to the panel. One config — one device at a time.",
-    "QR-код и файл":"The QR code and the","— приложению AmneziaWG или WireGuard, ссылка":"file are for the AmneziaWG or WireGuard app, the","— AmneziaVPN и другому роутеру.":"link is for AmneziaVPN and for another router.",
+    "QR-код и файл":"The QR code and the","— приложению AmneziaWG (длинный конфиг идёт серией кадров — её читает AmneziaVPN), ссылка":"file are for the AmneziaWG app (a long config comes as a series of frames — AmneziaVPN reads it), the","— AmneziaVPN и другому роутеру.":"link is for AmneziaVPN and for another router.",
     "Конфиг — ключ к серверу: панель берёт его с роутера только по этой кнопке и убирает с экрана, когда вы уходите.":"The config is the key to the server: the panel takes it from the router only by this button and takes it off the screen when you leave.",
     "и её QR-код — для приложений (v2rayNG, Hiddify); файл":"and its QR code are for apps (v2rayNG, Hiddify); the file",
     "— конфиг как есть. Ссылка собирается из стандартных полей: mux, routing и fragment из сырого JSON в неё не попадают — их несёт только файл, и панель скажет, если в этом конфиге такое есть.":"is the config as it is. The link is built from the standard fields: mux, routing and fragment of the raw JSON do not get into it — only the file carries them, and the panel will say if this config has any.",
@@ -8105,9 +8105,10 @@
     "— бесплатно и за минуту.":"— free, and it takes a minute.",
     "В приложении":"In the","нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл":"app tap «+» → «Scan QR code» and point the camera at this code. For AmneziaVPN and for another router — the link; the file",
     "примет и обычный WireGuard, если в конфиге нет полей обфускации.":"is taken by plain WireGuard too, if the config has no obfuscation fields.",
-    "Для приложения":"For the","код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG и обычному WireGuard — файл":"app the code below is a series of frames («+» → «QR code»); for the AmneziaWG app and plain WireGuard — the file",
+    "Для приложения":"For the","код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG — файл":"app the code below is a series of frames («+» → «QR code»); for the AmneziaWG app — the file",
     ", другому роутеру — ссылка.":", for another router — the link.",
-    "Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG и WireGuard серию не читают — им файл.":"The config is longer than one QR code, so the code comes as a series of frames — the next one every second. The AmneziaVPN app puts it together («+» → «QR code»): keep the camera on the code until every frame is in. AmneziaWG and WireGuard do not read a series — give them the file.",
+    "Кода нет — приложениям AmneziaWG и AmneziaVPN файл":"No code — for the AmneziaWG and AmneziaVPN apps the file",
+    "Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG серию не читает — ему файл.":"The config is longer than one QR code, so the code comes as a series of frames — the next one every second. The AmneziaVPN app puts it together («+» → «QR code»): keep the camera on the code until every frame is in. AmneziaWG does not read a series — give it the file.",
     "Один конфиг — одно устройство одновременно.":"One config — one device at a time.",
     "У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.":"The server has one seat for this key: turn the config on on a phone while the router rides on it — they start kicking each other out, and the connection breaks for both. A phone needs its own config: issue one at the provider or on your own server. And the config itself is the key to the server: do not send it over messengers or mail, show the QR code from the screen or carry the file yourself.",
     "Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл":"Scan the code in an app (v2rayNG, Hiddify) or copy the link; on another router with Enodia it is pasted on «Servers». The file",
@@ -8948,6 +8949,8 @@
     "связи ещё не было":"no connection yet","на связи":"connected",
     "включить/выключить":"turn on/off",
     "Установите на устройство приложение AmneziaWG (или AmneziaVPN), нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код.":"Install the AmneziaWG app (or AmneziaVPN) on the device, tap «+» → «Scan QR code» and point the camera at this code.",
+    "Код идёт серией кадров — её читает приложение AmneziaVPN («+» → «QR-код»); приложению AmneziaWG — файл.":"The code comes as a series of frames — the AmneziaVPN app reads it («+» → «QR code»); for the AmneziaWG app — the file.",
+    "На устройстве — приложение AmneziaVPN: «+» → «QR-код» (код идёт серией кадров) или импорт файла; приложению AmneziaWG — файл. Обычный WireGuard строк маскировки не понимает.":"On the device — the AmneziaVPN app: «+» → «QR code» (the code comes as a series of frames), or import the file; for the AmneziaWG app — the file. Plain WireGuard does not understand the masking lines.",
     "Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.":"The config turned out too long for a QR code — download the file and import it in the app by hand.",
     "Скопировать конфиг":"Copy the config",
     "Этот конфиг — ключ от вашей домашней сети. Не пересылайте его в мессенджерах и почтой: покажите QR-код прямо с экрана. Потеряли устройство — удалите его в списке, ключ сразу перестанет работать.":"This config is the key to your home network. Don't send it over messengers or email: show the QR code straight from the screen. Lost the device — delete it from the list and its key stops working at once.",
@@ -16908,7 +16911,7 @@
       // way for a phone is the subscription key itself — one more place of seven (mockup cn-server-prem).
       h+=o.prem ? '<div class="cline">Этот конфиг — ключ роутера: на другом устройстве он заберёт у роутера соединение. Для телефона лучше вставить в приложение AmneziaVPN сам ключ подписки — это ещё одно место из семи.</div>'
         : o.sub ? '<div class="cline">Отдаётся сам сервер, а не ссылка подписки: её роутер панели не показывает. Один конфиг — одно устройство одновременно.</div>'
-               : '<div class="cline"><span>QR-код и файл</span> <span class="mono kw">.conf</span> <span>— приложению AmneziaWG или WireGuard, ссылка</span> <span class="mono kw">vpn://</span> <span>— AmneziaVPN и другому роутеру.</span></div>'
+               : '<div class="cline"><span>QR-код и файл</span> <span class="mono kw">.conf</span> <span>— приложению AmneziaWG (длинный конфиг идёт серией кадров — её читает AmneziaVPN), ссылка</span> <span class="mono kw">vpn://</span> <span>— AmneziaVPN и другому роутеру.</span></div>'
                  + '<div class="cline">'+KEY+'</div>';
       if(o.warp) h+=srvExpWarpHtml();
     } else if(tpt==='xray'){
@@ -16937,8 +16940,9 @@
         + '<button type="button" class="btn" data-sv="expdl">'+icUse('i-dl','s','',true)+'<span>Скачать</span> <span class="mono kw">'+esc(m.ext)+'</span></button>',
       sum:awg ? 'Показать текст конфига' : 'Показать ссылку', txt:awg ? m.raw : m.link, open:!!o.txtOpen}, qh=qrShareHtml(qo);
     var h='<div class="card w2 r2" id="srv-exp" data-exp="open"><div class="wt">Экспорт конфига</div>';
-    if(awg) h+=(qo.drew!=='ser' ? '<div class="tiny" style="margin-bottom:11px"><span>В приложении</span> <b>AmneziaWG</b> <span>нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл</span> <span class="mono kw">.conf</span> <span>примет и обычный WireGuard, если в конфиге нет полей обфускации.</span></div>'
-                              : '<div class="tiny" style="margin-bottom:11px"><span>Для приложения</span> <b>AmneziaVPN</b> <span>код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG и обычному WireGuard — файл</span> <span class="mono kw">.conf</span><span>, другому роутеру — ссылка.</span></div>')
+    if(awg) h+=(qo.drew==='one' ? '<div class="tiny" style="margin-bottom:11px"><span>В приложении</span> <b>AmneziaWG</b> <span>нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код. Для AmneziaVPN и для другого роутера — ссылка; файл</span> <span class="mono kw">.conf</span> <span>примет и обычный WireGuard, если в конфиге нет полей обфускации.</span></div>'
+                              : qo.drew==='ser' ? '<div class="tiny" style="margin-bottom:11px"><span>Для приложения</span> <b>AmneziaVPN</b> <span>код ниже — серия кадров («+» → «QR-код»); приложению AmneziaWG — файл</span> <span class="mono kw">.conf</span><span>, другому роутеру — ссылка.</span></div>'
+                              : '<div class="tiny" style="margin-bottom:11px"><span>Кода нет — приложениям AmneziaWG и AmneziaVPN файл</span> <span class="mono kw">.conf</span><span>, другому роутеру — ссылка.</span></div>')
       + noteBox('<b>Один конфиг — одно устройство одновременно.</b> У сервера на этот ключ одно место: включите конфиг на телефоне, пока по нему ходит роутер, — они начнут выбивать друг друга, и связь будет рваться у обоих. Телефону нужен свой конфиг: выпустите его у провайдера или на своём сервере. И сам конфиг — ключ к серверу: не пересылайте его в мессенджерах и почтой, покажите QR-код с экрана или перенесите файл сами.', 'warn');
     else h+='<div class="tiny" style="margin-bottom:11px"><span>'+(m.tpt==='xray' ? 'Отсканируйте код в приложении (v2rayNG, Hiddify) или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл'
                                                                                  : 'Отсканируйте код в приложении или скопируйте ссылку; другому роутеру с Enodia её вставляют на «Серверах». Файл')
@@ -24654,13 +24658,19 @@
       + (o.txt ? '<details class="vs-txt"'+(o.open?' open':'')+'><summary class="act mut">'+o.sum+'</summary><pre class="mono">'+esc(o.txt)+'</pre></details>' : '')+'</div></div>';
   }
   // What an AmneziaWG config's series says beside the code (qrSeriesHtml): who reads it, how, and who does not.
-  var QRS_NOTE='Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG и WireGuard серию не читают — им файл.';
-  function vsConfHtml(conf, txtOpen){
-    return qrShareHtml({qr:conf, ser:QRS_NOTE, long:'Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.',
+  var QRS_NOTE='Конфиг длиннее одного QR-кода, поэтому код идёт серией кадров — раз в секунду следующий. Её собирает приложение AmneziaVPN («+» → «QR-код»): держите камеру на коде, пока не соберутся все кадры. AmneziaWG серию не читает — ему файл.';
+  // `out` (optional) gets `drew` — what qrShareHtml drew ('one' | 'ser' | ''): the screen's scanning words follow it.
+  function vsConfHtml(conf, txtOpen, out){
+    var o={qr:conf, ser:QRS_NOTE, long:'Конфиг оказался слишком длинным для QR-кода — скачайте файл и импортируйте его в приложении вручную.',
       acts:'<button type="button" class="btn" data-pa="copy">Скопировать конфиг</button>'
         + '<button type="button" class="btn" data-pa="dl">'+icUse('i-dl','s','',true)+'<span>Скачать файлом</span></button>',
-      sum:'Показать текст конфига', txt:conf, open:txtOpen});
+      sum:'Показать текст конфига', txt:conf, open:txtOpen}, h=qrShareHtml(o);
+    if(out) out.drew=o.drew;
+    return h;
   }
+  // The peer screen's scanning words by what its code is (vsConfHtml's `drew`): a series is read by AmneziaVPN only.
+  var VS_SCAN_ONE='Установите на устройство приложение AmneziaWG (или AmneziaVPN), нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код.';
+  var VS_SCAN_SER='Код идёт серией кадров — её читает приложение AmneziaVPN («+» → «QR-код»); приложению AmneziaWG — файл.';
   function openVpnSrvPeer(p, d, keep){
     var id=String(p.id), nm=vsPeerName(p), on=!!p.on, lan=!!p.lan, run=!!d.running, net=vsNetOf(d), fsig=focusMark();
     // Раскрытый «текст конфига» перерисовка не сворачивает: иначе всё ниже него уезжало вверх.
@@ -24674,7 +24684,7 @@
     openModal(nm, {route:'cn-peer', arg:id, deck:true, sens:vsPeerNamed(p)});
     var body=document.getElementById('modal-body');
     var h='<div class="vwrap"><div class="card w2"><div class="wt">QR-код и конфиг</div>'
-      + '<div class="cline">Установите на устройство приложение AmneziaWG (или AmneziaVPN), нажмите «+» → «Сканировать QR-код» и наведите камеру на этот код.</div>';
+      + '<div class="cline" id="vs-scan">'+VS_SCAN_ONE+'</div>';
     // ПРЕДУПРЕЖДЕНИЕ О СЕРОМ АДРЕСЕ — ЗДЕСЬ, а не только на экране списка: это экран, который человек видит после «Добавить
     // устройство», — он сканирует код и уходит пробовать, а баннер остался страницей выше. Ровно так тестер и дошёл до «с мобильной
     // сети даже не подключается» (12.08.2026). СУДИМ ПО ТОМУ, ЧТО РЕАЛЬНО УШЛО В КОНФИГ, а не по приватности WAN: адрес выбирает
@@ -24724,7 +24734,9 @@
     body.innerHTML=h+'</div>';
     focusBack(body, fsig);
     var qn=document.getElementById('vs-conf'), cached=(keep===true && _vsConf && _vsConf.id===id) ? _vsConf.conf : null;
-    if(cached!==null){ qn._conf=cached; qn.innerHTML=vsConfHtml(cached, txtOpen); }
+    function scan(drew){ var sc=document.getElementById('vs-scan'); if(sc) sc.textContent=(drew==='ser') ? VS_SCAN_SER : VS_SCAN_ONE; }
+    function fill(c){ var o={}; qn._conf=c; qn.innerHTML=vsConfHtml(c, txtOpen, o); scan(o.drew); }
+    if(cached!==null) fill(cached);
     tokPost('/cgi-bin/action', function(tok){
       return 'action=vpnsrv_peer_conf&token='+encodeURIComponent(tok)+'&id='+encodeURIComponent(id);
     }).then(function(r){
@@ -24733,8 +24745,8 @@
       if(okr) _vsConf={id:id, conf:conf}; else if(_vsConf && _vsConf.id===id) _vsConf=null;
       if(!screenAlive(qn)) return;
       // Роутер ответил «не собрать» — это ответ и на прежний код: показываем причину, а не старый QR.
-      if(!okr){ qn._conf=null; qn.innerHTML='<div style="margin-top:11px">'+noteBox(esc((r&&r.msg)||'не удалось собрать конфиг устройства'),'warn')+'</div>'; return; }
-      if(conf!==cached){ qn._conf=conf; qn.innerHTML=vsConfHtml(conf, txtOpen); }
+      if(!okr){ qn._conf=null; scan(''); qn.innerHTML='<div style="margin-top:11px">'+noteBox(esc((r&&r.msg)||'не удалось собрать конфиг устройства'),'warn')+'</div>'; return; }
+      if(conf!==cached) fill(conf);
     // Сеть моргнула при перерисовке — прежний код остаётся: минуту назад роутер его и выдал.
     }, function(){ if(screenAlive(qn) && cached===null) qn.innerHTML='<div style="margin-top:11px">'+noteBox('не удалось получить конфиг устройства','warn')+'</div>'; });
     function pickMode(v){
@@ -24927,9 +24939,11 @@
       + '<div class="cline">Дома, в сети этого роутера, такой WARP обычно попадает в туннель самого роутера — адреса Cloudflare есть в общем списке «в VPN» — и работает медленнее, чем вне дома. Когда конфиг получен, его можно пустить из дома напрямую: кнопка появится под ним.</div>';
     if(_wpDev){
       var epH='<span class="mono sens" translate="no">'+esc(_wpDevEp)+'</span>';
-      h+='<div class="sens" id="wp-devconf">'+vsConfHtml(_wpDev, txtOpen===true)+'</div>'
+      var wdo={};
+      h+='<div class="sens" id="wp-devconf">'+vsConfHtml(_wpDev, txtOpen===true, wdo)+'</div>'
         + '<div style="margin-top:11px">'+noteBox('<b>Конфиг показан один раз.</b> Сохраните его сейчас: уйдёте с экрана или скроете — понадобится получить новый. Один конфиг — одно устройство: на двух связь рвётся у обоих.', 'warn')+'</div>'
-        + '<div class="cline">На устройстве — приложение AmneziaWG или AmneziaVPN: «+» → «Сканировать QR-код» или импорт файла. Обычный WireGuard строк маскировки не понимает.</div>'
+        + '<div class="cline">'+(wdo.drew==='ser' ? 'На устройстве — приложение AmneziaVPN: «+» → «QR-код» (код идёт серией кадров) или импорт файла; приложению AmneziaWG — файл. Обычный WireGuard строк маскировки не понимает.'
+                                               : 'На устройстве — приложение AmneziaWG или AmneziaVPN: «+» → «Сканировать QR-код» или импорт файла. Обычный WireGuard строк маскировки не понимает.')+'</div>'
         // HOME: an ordinary rule, made by the same action as on «Маршрутизация», seen and removed there. Locked while a WARP
         // work runs: the rule flushes every established connection, and a pick's probe would read its lost handshake as «cut».
         // THE LINE LEADS WITH WHAT THE ROUTER SAID — the store has a line for this address or has none. Where the packets go
