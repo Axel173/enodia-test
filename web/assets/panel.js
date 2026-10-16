@@ -8823,6 +8823,7 @@
     "DoH напрямую":"DoH directly",
     "ни запросов, ни резолвера — всё внутри туннеля":"neither the queries nor the resolver — everything is inside the tunnel",
     "резолвер, но не запросы — они зашифрованы":"the resolver, but not the queries — they are encrypted",
+    "ретранслятор, но не запросы — они зашифрованы":"the relay, but not the queries — they are encrypted",
     "запросы открыты — видит и может подменить":"the queries are in the clear — it sees them and can tamper with them",
     "запросы открыты — идут к его серверам":"the queries are in the clear — they go to its servers",
     "запросы открыты — к его серверам, а .ru, .рф и .su — к российскому резолверу":"the queries are in the clear — to its servers, and .ru, .su and Cyrillic .rf names — to a Russian resolver",
@@ -26621,7 +26622,10 @@
   var DNS_SCR_WHO={dead:'шифрованный прокси на роутере — не запущен', nobin:'шифрованный прокси на роутере — не запущен',
                    tun:'серверы, заданные роутером, — через туннель', plain:'серверы, заданные роутером', ours:'серверы, заданные роутером',
                    stock:'стоковый, от провайдера'};
+  // Мимо туннеля при ODoH провайдер видит РЕТРАНСЛЯТОР — к резолверу-цели роутер не ходит вовсе (AX3600 16.10.2026: экран писал
+  // «резолвер»); на откате «DoH напрямую к цели» — снова резолвер.
   var DNS_SCR_SEES={doh_tunnel:'ни запросов, ни резолвера — всё внутри туннеля', doh_direct:'резолвер, но не запросы — они зашифрованы',
+                    odoh_direct:'ретранслятор, но не запросы — они зашифрованы',
                     tun:'ни запросов, ни резолвера — всё внутри туннеля', plain:'запросы открыты — видит и может подменить',
                     stock:'запросы открыты — идут к его серверам', stock_split:'запросы открыты — к его серверам, а .ru, .рф и .su — к российскому резолверу'};
   function dnsScrNowHtml(n, d){
@@ -26633,7 +26637,7 @@
       var nm = oN ? odohRelayName(d)+' → '+odohTargetName(d) : od ? odohTargetName(d)
              : (DOH_RES_L[d.resolver] || (dohCatRow(d.catalog, d.resolver)||{}).n || d.resolver || '?');
       who='<span>шифрованный прокси на роутере</span> · <span>'+(od && !oN ? 'DoH напрямую' : esc(n.pn))+'</span> → <span>'+esc(nm)+'</span>';
-      sees = n.via ? DNS_SCR_SEES['doh_'+n.via] : '';
+      sees = !n.via ? '' : (oN && n.via==='direct') ? DNS_SCR_SEES.odoh_direct : DNS_SCR_SEES['doh_'+n.via];
     } else {
       who='<span>'+DNS_SCR_WHO[n.k]+'</span>'+(n.addr ? ' · <span class="mono">'+esc(n.addr)+'</span>' : '');
       sees = bad ? DNS_SEES[n.k] : (n.k==='stock' && n.split) ? DNS_SCR_SEES.stock_split : (DNS_SCR_SEES[n.k]||'');

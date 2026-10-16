@@ -1612,10 +1612,15 @@ doh_odoh_forget() { rm -f "$DOH_ODOH_FALLBACK" "$DOH_ODOH_TRY" "$DOH_ODOH_RELAY_
 # ПРИЗНАК БЕДЫ У ODoH — по журналу прокси (дёшево: без пробы имён и сброса кэша dnsmasq у здорового ODoH): с эпохи $1 прокси
 # выбрасывал запросы без ключа, ключ не грузился, ответ не открывался, цель отказывала или ретранслятор не отвечал. Формат
 # журнала https-dns-proxy: «[W] <эпоха> src/… текст».
+# МОЛЧАЩИЙ РЕТРАНСЛЯТОР ПРОГРАММА ПИШЕТ НЕ ПРЕДУПРЕЖДЕНИЕМ (замер AX3600 16.10.2026, оба ретранслятора под DROP): `[I] … curl
+# request failed with 28: Timeout was reached (recoverable…)`, `[I] … but no response was sent back` и `[W] … Request was aborted`
+# — а прежний разбор брал только [W]/[E] с «curl request failed» и сверка 20 минут считала ODoH здоровым при доме без имён. Ложная
+# «беда» стоит одной пробы свежим именем (doh_odoh_tick зовёт doh_probe, без сброса кэша dnsmasq), а пропущенная — дома без DNS.
 doh_odoh_troubled() {
 	case "$1" in ''|*[!0-9]*) return 0 ;; esac
 	awk -v t="$1" '$2+0 < t {next}
-		($1 == "[W]" || $1 == "[E]") && /target key not loaded|no usable target key|did not open|refused the sealed query|curl request failed|No response/ {bad = 1}
+		($1 == "[W]" || $1 == "[E]") && /target key not loaded|no usable target key|did not open|refused the sealed query|curl request failed|No response|Request was aborted/ {bad = 1}
+		$1 == "[I]" && /curl request failed|no response was sent back/ {bad = 1}
 		END {exit !bad}' "$DOH_LOG" 2>/dev/null
 }
 
@@ -1643,7 +1648,9 @@ doh_odoh_tick() {
 		return 0
 	fi
 	doh_odoh_troubled "$_dotk" || return 0
-	doh_names_ok && return 0
+	# Проба свежим именем (кэшу неподвластна) — БЕЗ doh_names_ok: тот шлёт dnsmasq SIGHUP, а признак беды по [I]-строкам бывает
+	# и у здорового пути (перезаезд соединения), и кэш всего дома сбрасывался бы раз в DOH_PORT_EVERY.
+	doh_probe && return 0
 	if [ -n "$1" ] && ! "$1"; then return 0; fi
 	doh_odoh_rescue && return 3
 	return 5
