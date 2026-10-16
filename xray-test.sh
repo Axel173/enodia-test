@@ -29,6 +29,7 @@ command -v daemon_wait_port >/dev/null 2>&1 || daemon_wait_port() {
     DAEMON_WAIT_WHY=''; _dwi=0; while [ "$_dwi" -lt "$3" ]; do netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0; sleep 1; _dwi=$((_dwi+1)); done
     netstat -ltn 2>/dev/null | grep -q "$4:$5 " && return 0
     DAEMON_WAIT_WHY="не появился за $3 с"; return 1; }
+command -v daemon_wait_gone >/dev/null 2>&1 || daemon_wait_gone() { _dwg=0; while [ -d "/proc/$1" ]; do [ "$_dwg" -ge "${2:-5}" ] && return 1; sleep 1; _dwg=$((_dwg+1)); done; return 0; }
 XRAY=$(bin_path xray)
 # Канонический IP-литерал trace (ip-lib.sh): DNS-free, отвечает и на ядре 4.4, где hostname
 # api.ipify.org молча пустел (egress-тест ложно рапортовал «нет выхода»). Тут нужен ещё и
@@ -90,8 +91,18 @@ lock_take() {
 }
 cleanup() {
 	[ "$_lk" = 1 ] || return 0
-	[ -f "$TPID" ] && kill "$(cat "$TPID" 2>/dev/null)" 2>/dev/null
+	# The run's xray is GONE before the lock goes (xt_done removes it next): `kill` returns before the process dies, and a run
+	# that took the freed lock at once found the port still held by the old xray (s.143: the stand's check 7 under a full run).
+	# TERM not heard in 3 s — KILL, and only OUR xray (a pid from the file may have been reused), as slot-tun-lib.sh does with hev.
+	_xp=$(cat "$TPID" 2>/dev/null | tr -cd '0-9')
+	if [ -n "$_xp" ]; then
+		kill "$_xp" 2>/dev/null
+		if ! daemon_wait_gone "$_xp" 3; then
+			pid_runs "$_xp" xray && { kill -9 "$_xp" 2>/dev/null; daemon_wait_gone "$_xp" 2; }
+		fi
+	fi
 	rm -f "$TPID" "$TCONF" "$TOUT" "$TOUT".* "$TACC" 2>/dev/null
+	return 0
 }
 # Замок снимаем ПОСЛЕДНИМ и только свой: чужой (держатель жив) не наш, и снять его — ровно та гонка, от которой он.
 # Сигнал — выход после уборки: ловушка busybox на сигнале без `exit` вернула бы управление в середину скрипта.

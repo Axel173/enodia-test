@@ -268,6 +268,8 @@ one_line() { [ "$(printf '%s' "$1" | wc -l)" -eq 0 ]; }
 dot_fb_tail() {
 	command -v doh_proto_now >/dev/null 2>&1 || return 0
 	[ "$(doh_proto)" = dot ] && [ "$(doh_proto_now)" = doh ] && printf '%s' '; DoT этим путём не проходит — пока шифрую по DoH, вернусь на DoT сам'
+	# ODoH на откате (doh-lib.sh::doh_odoh_rescue): ни один ретранслятор не отдал имён — DoH напрямую к цели.
+	[ "$(doh_proto)" = odoh ] && [ "$(doh_proto_now)" = doh ] && printf '%s' '; ретрансляторы ODoH не отвечают — пока шифрую по DoH напрямую к цели, вернусь на ODoH сам'
 	return 0
 }
 # ПРИЧИНА ОТКАЗА ДВИЖКА ПРАВИЛ СЕТЕЙ — последняя строка его вывода (выше неё служебные строки сборки цепочек). Без
@@ -1238,13 +1240,20 @@ case "$act" in
 		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
 		dns_rewire_hold   # чужая операция — отказ, тик сторожа — подождать; дальше под своим локом
 		v=$(field value | tr -cd 'a-z')
-		case "$v" in doh|dot) : ;; *) fail "ожидается doh|dot" ;; esac
+		case "$v" in doh|dot|odoh) : ;; *) fail "ожидается doh|dot|odoh" ;; esac
 		prev=$(doh_proto)
 		if [ "$v" = "$prev" ]; then
 			# ПОВТОРНЫЙ ВЫБОР DoT, ПОКА РОУТЕР ШИФРУЕТ ПО DoH (переезд порта), — просьба «проверь DoT СЕЙЧАС», а не пустой клик:
 			# иначе человеку, починившему путь (сменил выход, провайдер открыл 853), оставалось ждать сверку сторожа до часа.
 			# Тот же ход, что у включения тумблера: забыть вердикт, поднять прокси под DoT, переиграть DNS — а решит проба
 			# имён в doh_apply_dns (не пошли — doh_dot_rescue переедет обратно, и хвост ответа это скажет).
+			# То же для ODoH на откате «DoH напрямую к цели»: повторный клик — «проверь ретрансляторы сейчас».
+			if [ "$v" = odoh ] && [ "$(doh_proto_now)" = doh ] && \
+			   { doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; }; then
+				doh_odoh_forget; doh_resolver_mark del; doh_resolver_bypass del; doh_restart
+				sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
+				doh_upstream_set || fail "Ни один ретранслятор не ответил, и DoH к цели тоже — вернул прежний DNS. Роутер проверит снова сам."
+			fi
 			if [ "$v" = dot ] && command -v doh_dot_forget >/dev/null 2>&1 && \
 			   { doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; } && doh_dot_forget; then
 				doh_resolver_mark del; doh_resolver_bypass del; doh_restart
@@ -1256,6 +1265,8 @@ case "$act" in
 			printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s%s"}\n' "$v" "$(dot_fb_tail)"; exit 0
 		fi
 		[ -x "$(doh_bin_for "$v")" ] || fail "бинарь для $v не установлен — нажмите «Установить» в карточке"
+		# ODoH умеет только новая сборка программы DoH (наш патч): прежняя ключа -O не знает и не стартует. Говорим ДО переключения.
+		[ "$v" = odoh ] && ! doh_odoh_capable && fail "программа DoH не умеет ODoH — обновите её в «Компонентах» (шифрованный DNS)"
 		# Свой резолвер, введённый ГОЛЫМ IP,c DoT несовместим (в SNI нечего предъявить, а `-s`
 		# обязателен). Сказать это ДО переключения — иначе doh_start молча не поднимется, проба
 		# провалится и человек увидит откат вместо причины.
@@ -1266,6 +1277,7 @@ case "$act" in
 		# Новый выбор человека — прежний вердикт о порте забыт: выбранный DoT сперва пробуем честно, а не
 		# продолжаем шифровать по DoH, куда его увела прошлая проверка (doh-lib.sh::doh_dot_fallback).
 		command -v doh_dot_forget >/dev/null 2>&1 && doh_dot_forget
+		command -v doh_odoh_forget >/dev/null 2>&1 && doh_odoh_forget
 		if doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; then
 			doh_restart
 			sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
@@ -1281,6 +1293,71 @@ case "$act" in
 			fi
 		fi
 		printf '{"ok":true,"code":0,"msg":"Протокол шифрованного DNS: %s%s"}\n' "$v" "$(dot_fb_tail)"; exit 0 ;;
+
+	# --- ODoH: цель и ретранслятор (doh-lib.sh, блок «OBLIVIOUS DoH»). Зеркало set_doh_resolver: разбор и якоря своих имён — ДО
+	# единой правки (пока DNS держит прежний путь), пара одного владельца — отказ, teardown правил по СТАРЫМ адресам, запись,
+	# при активном ODoH — перезапуск и проба имён с откатом на прежнюю пару. ODoH не выбран — просто персист, применится при выборе.
+	set_odoh)
+		[ -f "$ENODIA_DIR/doh-lib.sh" ] || fail "doh-lib.sh не установлен (обновите панель)"
+		ENODIA_DIR="$ENODIA_DIR"; . "$ENODIA_DIR/doh-lib.sh"
+		command -v doh_odoh_target >/dev/null 2>&1 || fail "библиотека DoH старше ODoH (обновите панель)"
+		dns_rewire_hold
+		t=$(field target | tr -cd 'a-z0-9'); r=$(field relay | tr -cd 'a-z0-9')
+		{ [ "$t" = custom ] || [ -n "$(doh_tab "$DOH_ODOH_TARGETS" "$t" 5)" ]; } || fail "неизвестная цель"
+		{ [ "$r" = auto ] || [ "$r" = custom ] || [ -n "$(doh_tab "$DOH_ODOH_RELAYS" "$r" 5)" ]; } || fail "неизвестный ретранслятор"
+		ct=''; cr=''
+		if [ "$t" = custom ]; then
+			ct=$(doh_odoh_parse_url "$(urldecode "$(field custom_target | cut -c1-900)" | cut -c1-300)" target) || \
+				fail "адрес цели не подходит: ждём https://имя/путь — без порта и не IP"
+		fi
+		if [ "$r" = custom ]; then
+			cr=$(doh_odoh_parse_url "$(urldecode "$(field custom_relay | cut -c1-900)" | cut -c1-300)" relay) || \
+				fail "адрес ретранслятора не подходит: ждём https://имя/путь — без порта и не IP"
+		fi
+		# URL пары, как она встанет (для проверки владельцев): цель и каждый ретранслятор списка.
+		turl=$ct; [ -n "$turl" ] || turl=$(doh_tab "$DOH_ODOH_TARGETS" "$t" 5)
+		if [ "$r" = custom ]; then rurls=$cr; elif [ "$r" = auto ]; then rurls=$(for k in $(doh_tab_keys "$DOH_ODOH_RELAYS"); do doh_tab "$DOH_ODOH_RELAYS" "$k" 5; done); else rurls=$(doh_tab "$DOH_ODOH_RELAYS" "$r" 5); fi
+		for ru in $rurls; do
+			doh_odoh_same_owner "$turl" "$ru" && fail "цель и ретранслятор у одного владельца ($(doh_url_host "$ru")): он увидит и адрес, и вопросы — выберите другой ретранслятор"
+		done
+		# Якоря СВОИХ имён — сейчас, пока DNS ещё работает: после переключения резолвить было бы нечем. Пусто — отказ (без якорей в
+		# прямом режиме запросы к ним ушли бы под десинк). Каталожные считает перерезолв (стартовые — в таблице).
+		newips=$(cat "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)
+		for cu in $ct $cr; do
+			ch=$(doh_url_host "$cu")
+			ci=$(doh_anchor_ips "$ch" | tr '\n' ' ' | sed 's/ $//')
+			[ -n "$ci" ] || fail "не удалось узнать адреса $ch — проверьте имя (сейчас DNS ещё работает через прежний путь)"
+			newips=$(printf '%s\n%s %s\n' "$(printf '%s\n' "$newips" | awk -v h="$ch" '($1 "") != (h "")')" "$ch" "$ci" | grep -v '^$' | sort -u)
+		done
+		# Прежнее — для отката.
+		pt=$(cat "$ENODIA_STATE/.doh-odoh-target" 2>/dev/null); pr=$(cat "$ENODIA_STATE/.doh-odoh-relay" 2>/dev/null)
+		pct=$(cat "$ENODIA_STATE/.doh-odoh-custom-target" 2>/dev/null); pcr=$(cat "$ENODIA_STATE/.doh-odoh-custom-relay" 2>/dev/null)
+		pips=$(cat "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)
+		odoh_put() {   # <цель> <ретранслятор> <свой адрес цели> <свой ретранслятора> <якоря>
+			echo "$1" > "$ENODIA_STATE/.doh-odoh-target"; echo "$2" > "$ENODIA_STATE/.doh-odoh-relay"
+			if [ -n "$3" ]; then echo "$3" > "$ENODIA_STATE/.doh-odoh-custom-target"; else rm -f "$ENODIA_STATE/.doh-odoh-custom-target" 2>/dev/null; fi
+			if [ -n "$4" ]; then echo "$4" > "$ENODIA_STATE/.doh-odoh-custom-relay"; else rm -f "$ENODIA_STATE/.doh-odoh-custom-relay" 2>/dev/null; fi
+			if [ -n "$5" ]; then printf '%s\n' "$5" > "$ENODIA_STATE/.doh-odoh-ips"; else rm -f "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null; fi
+		}
+		active=0
+		[ "$(doh_proto)" = odoh ] && { doh_enabled || { command -v doh_auto_active >/dev/null 2>&1 && doh_auto_active; }; } && active=1
+		# Teardown по СТАРЫМ адресам — до записи (правила снимаются по текущему файлу якорей и текущей паре).
+		[ "$active" = 1 ] && { doh_resolver_mark del; doh_resolver_bypass del; }
+		odoh_put "$t" "$r" "$ct" "$cr" "$newips"
+		doh_odoh_forget   # новое намерение: прежние вердикты лестницы были про другую пару
+		if [ "$active" = 1 ]; then
+			doh_restart
+			sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
+			if ! doh_upstream_set || ! doh_probe 4; then
+				doh_resolver_mark del; doh_resolver_bypass del
+				doh_odoh_forget
+				odoh_put "$pt" "$pr" "$pct" "$pcr" "$pips"
+				doh_restart
+				sh "$ENODIA_DIR/transport.sh" dns >/dev/null 2>&1
+				fail "ODoH через эту пару не отвечает — возвращена прежняя"
+			fi
+		fi
+		printf '{"ok":true,"code":0,"msg":"ODoH: цель %s, ретранслятор %s%s"}\n' "$t" "$r" "$(dot_fb_tail)"; exit 0 ;;
 
 	# --- Доустановка бинарей DoH ПО ВОЗДУХУ. Установка с ПК несёт их в payload, но обновившиеся
 	# из панели (apply-scripts тянет только скрипты из манифеста) остаются без бинаря — карточка

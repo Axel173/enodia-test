@@ -8712,7 +8712,6 @@
     "Путь DNS узнать не удалось: роутер ответил ошибкой — возможно, сессия панели истекла.":"Could not find out the DNS path: the router answered with an error — the panel session may have expired.",
     "Резолвер уведён мимо туннеля: туннель или резолвер через него не прошли проверку, а без резолвера у сети не открылось бы ничего.":"The resolver has been moved around the tunnel: the tunnel, or the resolver through it, failed the check, and without a resolver nothing on the network would open.",
     "Запросы по-прежнему шифруются — провайдер видит лишь, что вы обращаетесь к резолверу. Сторож вернёт его в туннель, когда проверка пройдёт.":"Queries are still encrypted — the ISP only sees that you talk to the resolver. The watchdog moves it back into the tunnel once the check passes.",
-    "когда туннеля нет — работает десинк без сервера, туннель упал или VPN выключен: там запросы иначе идут открытыми":"when there is no tunnel — desync without a server is running, the tunnel is down or the VPN is off: otherwise queries go out in the clear there",
     "Идёт установка компонента:":"Installing the component:","устанавливается…":"installing…",
     "Выбор ещё не сохранён — нажмите «Применить».":"The choice is not saved yet — press «Apply».",
     "Выбор ещё не применён — роутер резолвит прежним. Нажмите «Применить».":"The choice is not applied yet — the router still resolves with the previous one. Press «Apply».",
@@ -8765,7 +8764,7 @@
     "Переведён на DoH":"Switched to DoH",
     "Роутер снова проверит DoT на ближайшей проверке сторожа и вернётся на него сам, когда тот заработает.":"The router checks DoT again at the next watchdog check and switches back to it by itself once it works.",
     "Роутер проверяет DoT сам и вернётся на него, когда тот заработает.":"The router checks DoT by itself and switches back to it once it works.",
-    "Проверить DoT сейчас — нажмите его плитку в «Чем шифровать».":"To check DoT now, click its tile under “Encrypt with”.",
+    "Проверить DoT сейчас — нажмите его плитку в «Протокол и резолвер».":"To check DoT now, click its tile under “Protocol and resolver”.",
     "Резолвер не ответил на проверку, и роутер вернул прежний DNS — запросы сейчас не шифруются.":"The resolver failed the check, and the router went back to the previous DNS — queries are not encrypted right now.",
     "Роутер попробует снова на ближайшей проверке сторожа.":"The router tries again at the next watchdog check.",
     "Шифрование включилось само: работает прямой режим.":"Encryption turned on by itself: direct mode is active.",
@@ -8774,26 +8773,16 @@
     "Авто-шифрование на паузе: резолвер не ответил на проверки подряд, и роутер вернул обычный DNS.":"Auto-encryption is paused: the resolver failed the checks in a row, and the router went back to plain DNS.",
     "Снова попробует на ближайшей проверке сторожа.":"It will try again at the next watchdog check.",
     "Когда попробует снова, роутер скажет, как только выставит часы.":"When it tries again, the router will tell as soon as it sets its clock.",
-    "Путь меняется сам: при включённом шифровании — к выбранному резолверу, в прямом режиме — к серверам, которые задал роутер, без наших правил — к серверам провайдера.":"The path changes by itself: with encryption on — to the chosen resolver, in a direct mode — to the servers the router set, with no rules of ours — to the ISP servers.",
-    "Шифрование запросов":"Query encryption",
     "Компонент шифрованного DNS ещё не установлен — шифрование заработает после его установки.":"The encrypted DNS component is not installed yet — encryption starts once it is installed.",
     "Шифровать всегда":"Always encrypt",
-    "все DNS-запросы сети уходят к выбранному резолверу шифрованными — и в туннеле, и без него":"all DNS queries of the network go encrypted to the chosen resolver — with or without the tunnel",
     "Включать само в прямых режимах":"Turn on by itself in direct modes",
     "сейчас ни на что не влияет: шифрование включено всегда":"has no effect right now: encryption is always on",
-    "Чем шифровать":"Encrypt with","поверх HTTPS · порт 443":"over HTTPS · port 443","поверх TLS · порт 853":"over TLS · port 853",
-    "DoH неотличим от обычного веб-трафика и рекомендован; у DoT выделенный порт 853, его провайдеру проще заблокировать целиком. Если новый протокол не заработает, роутер сам вернёт прежний.":"DoH is indistinguishable from regular web traffic and recommended; DoT has a dedicated port 853, which is easier for the ISP to block outright. If the new protocol does not work, the router reverts to the previous one automatically.",
+ "поверх HTTPS · порт 443":"over HTTPS · port 443","поверх TLS · порт 853":"over TLS · port 853",
     "Весь DNS сети пойдёт через этот сервер — он видит все ваши запросы и может отвечать на них чем угодно. Указывайте только тот, которому доверяете.":"All DNS on your network will go through this server — it sees every query and can answer them with anything. Only enter one you trust.",
     "Свой резолвер — одно поле на все формы (https://…, tls://…, имя или IP), тип определит роутер; рядом — куда прокси ходит на самом деле. Для DoT нужно ИМЯ: у голого IP нечего предъявить в SNI.":"A custom resolver is one field for every form (https://…, tls://…, a name or an IP), the router works out the type; next to it — where the proxy actually goes. DoT needs a NAME: a bare IP has nothing to present in SNI.",
-    "Если новый резолвер не отвечает, роутер проверит и сам вернёт прежний. Проверять работу — на странице СВОЕГО резолвера.":"If the new resolver does not respond, the router probes it and reverts to the previous one automatically. Verify it on YOUR resolver's own page.",
     "не установлен · нажмите, чтобы поставить":"not installed · click to install",
-    "Именно в прямых режимах провайдер видит и может подменять DNS-запросы: в туннеле они и так спрятаны. При включении роутер проверяет резолвер: не ответил — шифрование не включится, связь не потеряется. Дальше следит за ним только «Включать само» — при сбоях сам вернёт обычный DNS; при «Шифровать всегда» резолвер, переставший отвечать позже, сменить или выключить придётся вам.":"It is in direct modes that the ISP sees and can tamper with DNS queries: inside the tunnel they are hidden anyway. When encryption is turned on, the router checks the resolver: if it does not answer, encryption stays off and the connection is not lost. After that only «Turn on by itself» keeps watching it — on failures it brings plain DNS back by itself; with «Encrypt always», a resolver that stops answering later has to be changed or turned off by you.",
     "ID профиля NextDNS":"NextDNS profile ID","Куда прокси ходит на самом деле":"Where the proxy actually goes",
-    "Российские сайты":"Russian sites","Резолвить напрямую":"Resolve directly",
-    "домены .ru, .рф и .su спрашиваем у российского резолвера, минуя туннель":"Russian domain zones (.ru, .su and the Cyrillic .rf) are asked from a Russian resolver, bypassing the tunnel",
-    "Резолвить российские сайты напрямую":"Resolve Russian sites directly",
-    "При включённом шифровании имена в этих зонах всё равно уходят открытыми — к российскому резолверу, мимо прокси: правило зоны сильнее общего.":"With encryption on, names in these zones still go out in the clear — to the Russian resolver, bypassing the proxy: the zone rule is stronger than the general one.",
-    "Быстрее и точнее: сайт отдаёт ближний узел своей сети доставки, а не тот, что виден из-за границы. Остальные домены идут прежним путём. По умолчанию выключено.":"Faster and more accurate: the site serves the nearest node of its delivery network, not the one seen from abroad. Other domains go the same way as before. Off by default.",
+    "Российские сайты":"Russian sites",
     "DNS и сеть":"DNS and network","Сеть…":"Network…",
     "не удалось получить параметры сети":"failed to get the network settings",
     "Сплит-туннель работает по IPv4: IPv6-трафик клиентов шёл бы мимо него напрямую. Локальный IPv6 внутри домашней сети не трогается.":"The split tunnel works over IPv4: clients' IPv6 traffic would go around it directly. Local IPv6 inside the home network is not touched.",
@@ -8827,6 +8816,55 @@
     "Резолвер":"Resolver","NextDNS (свой профиль)":"NextDNS (your profile)",
     "ID профиля NextDNS (напр. abc123)":"NextDNS profile ID (e.g. abc123)",
     "Свой резолвер":"Custom resolver","укажите адрес своего резолвера":"enter your resolver's address",
+    // — Экран по макету nw-dns (с.144): «Сейчас DNS» коротко, «Шифрование» тремя тумблерами, «Протокол и резолвер», ODoH —
+    "серверы, заданные роутером, — через туннель":"servers set by the router — through the tunnel",
+    "серверы, заданные роутером":"servers set by the router","стоковый, от провайдера":"stock, from the ISP",
+    "шифрованный прокси на роутере":"the encrypted proxy on the router","шифрованный прокси на роутере — не запущен":"the encrypted proxy on the router — not running",
+    "DoH напрямую":"DoH directly",
+    "ни запросов, ни резолвера — всё внутри туннеля":"neither the queries nor the resolver — everything is inside the tunnel",
+    "резолвер, но не запросы — они зашифрованы":"the resolver, but not the queries — they are encrypted",
+    "запросы открыты — видит и может подменить":"the queries are in the clear — it sees them and can tamper with them",
+    "запросы открыты — идут к его серверам":"the queries are in the clear — they go to its servers",
+    "запросы открыты — к его серверам, а .ru, .рф и .su — к российскому резолверу":"the queries are in the clear — to its servers, and .ru, .su and Cyrillic .rf names — to a Russian resolver",
+    "Что видит резолвер":"What the resolver sees",
+    "цель — вопросы, но не чьи они; ретранслятор — адрес, но не вопросы":"the target — the questions, but not whose; the relay — the address, but not the questions",
+    "вопросы — с адресом сервера VPN, не дома":"the questions — with the VPN server's address, not your home's",
+    "вопросы и адрес роутера":"the questions and the router's address",
+    "и в туннеле, и без него; замолчавший резолвер меняете вы":"with or without the tunnel; a resolver that goes silent is yours to replace",
+    "Само, когда туннеля нет":"By itself when there is no tunnel",
+    "десинк, VPN выключен или упал; при сбое само вернёт обычный DNS":"desync, VPN off or down; on failure it returns to plain DNS by itself",
+    "Российские сайты напрямую":"Russian sites directly",
+    ".ru, .рф, .su — у российского резолвера, мимо туннеля":".ru, .su and Cyrillic .rf — from a Russian resolver, past the tunnel",
+    "При включённом шифровании имена .ru, .рф и .su всё равно уходят открытыми — к российскому резолверу, мимо прокси: правило зоны сильнее общего.":"With encryption on, .ru, .su and Cyrillic .rf names still go out in the clear — to the Russian resolver, past the proxy: the zone rule beats the general one.",
+    "Протокол и резолвер":"Protocol and resolver","через посредника · порт 443":"through an intermediary · port 443",
+    "нужна новая программа DoH · нажмите, чтобы обновить":"needs a newer DoH program · click to update",
+    "Неотличим от обычного веб-трафика — рекомендован.":"Indistinguishable from ordinary web traffic — recommended.",
+    "Свой порт 853 — провайдеру его проще закрыть целиком.":"Its own port 853 — easier for the ISP to block outright.",
+    "Резолвер видит все ваши DNS-запросы — рядом с именем его владелец и страна.":"The resolver sees all your DNS queries — its owner and country stand next to its name.",
+    "Ретранслятор видит адрес роутера, цель — вопросы, но не чьи они. Ретрансляторы молчат — DoH напрямую к цели, потом сам назад.":"The relay sees the router's address, the target sees the questions, but not whose. If the relays go silent — DoH straight to the target, then back by itself.",
+    "Цель":"Target","Ретранслятор":"Relay","Своя цель":"Your own target","Свой ретранслятор":"Your own relay",
+    "Авто — оба по очереди":"Auto — both in turn","Авто — все по очереди":"Auto — all in turn",
+    "Адрес своей цели":"Your target's address","Адрес своего ретранслятора":"Your relay's address",
+    "Свой адрес — https://имя/путь, без порта и не IP. У цели и ретранслятора должны быть разные владельцы: один видел бы и адрес, и вопросы.":"Your own address — https://name/path, no port and not an IP. The target and the relay must have different owners: one would see both the address and the questions.",
+    "укажите адрес своей цели":"enter your target's address","укажите адрес своего ретранслятора":"enter your relay's address",
+    "переключаю на ODoH…":"switching to ODoH…","проверяю ретрансляторы ODoH…":"checking the ODoH relays…",
+    "сохраняю цель и ретранслятор ODoH…":"saving the ODoH target and relay…",
+    "Ретрансляторы ODoH не ответили: роутер шифрует по DoH напрямую к цели — она видит, чьи вопросы. Выбор ODoH сохранён.":"The ODoH relays did not answer: the router encrypts over DoH straight to the target — it sees whose questions they are. The ODoH choice is kept.",
+    "Роутер снова спросит ретрансляторы на ближайшей проверке сторожа и вернётся на ODoH сам, когда они ответят.":"The router asks the relays again at the next watchdog check and switches back to ODoH by itself once they answer.",
+    "Роутер спрашивает ретрансляторы сам и вернётся на ODoH, когда они ответят.":"The router asks the relays by itself and switches back to ODoH once they answer.",
+    "Проверить ретрансляторы сейчас — нажмите плитку ODoH.":"To check the relays now, click the ODoH tile.",
+    // ответы роутера про ODoH (cgi-bin/action: set_doh_proto odoh, set_odoh)
+    "Ни один ретранслятор не ответил, и DoH к цели тоже — вернул прежний DNS. Роутер проверит снова сам.":"No relay answered, and neither did DoH to the target — the previous DNS is back. The router will check again by itself.",
+    "программа DoH не умеет ODoH — обновите её в «Компонентах» (шифрованный DNS)":"the DoH program cannot do ODoH — update it in «Components» (encrypted DNS)",
+    "библиотека DoH старше ODoH (обновите панель)":"the DoH library predates ODoH (update the panel)",
+    "неизвестная цель":"unknown target","неизвестный ретранслятор":"unknown relay",
+    "адрес цели не подходит: ждём https://имя/путь — без порта и не IP":"the target address does not fit: expected https://name/path — no port and not an IP",
+    "адрес ретранслятора не подходит: ждём https://имя/путь — без порта и не IP":"the relay address does not fit: expected https://name/path — no port and not an IP",
+    "ODoH через эту пару не отвечает — возвращена прежняя":"ODoH does not answer through this pair — the previous one is back",
+    // Страны владельцев резолверов (подпись в списке: имя · [владелец, ]страна; код страны приходит от роутера).
+    "США":"USA","Швейцария":"Switzerland","Кипр":"Cyprus","Канада":"Canada","Германия":"Germany","Швеция":"Sweden",
+    "Чехия":"Czechia","Австрия":"Austria","Греция":"Greece","Нидерланды":"Netherlands","Франция":"France",
+    "Великобритания":"United Kingdom","Финляндия":"Finland","Япония":"Japan","Сингапур":"Singapore",
     "https://dns.example.com/dns-query, имя или IP":"https://dns.example.com/dns-query, hostname or IP",
     "включаю шифрованный DNS…":"enabling encrypted DNS…","выключаю шифрованный DNS…":"disabling encrypted DNS…",
     "Установить":"Install","Устанавливаю…":"Installing…","скачиваю компонент DoH…":"downloading the DoH component…",
@@ -8848,7 +8886,7 @@
     //  дубль убран, живой остался один; проверка дублей — dev/i18n-audit.js)
     // — протокол DoH/DoT —
     "переключаю на DoT…":"switching to DoT…","переключаю на DoH…":"switching to DoH…","проверяю DoT…":"checking DoT…",
-    "ожидается doh|dot":"expected doh|dot",
+    "ожидается doh|dot|odoh":"expected doh|dot|odoh",
     // — Доступ к панели: HTTPS (panel-tls) + вход снаружи по WAN —
     "Доступ к панели":"Panel access",
     "Пароль панели":"Panel password",
@@ -9247,6 +9285,8 @@
     "не наша: прошивка держит вторую копию своего хранилища настроек и обновляет её раз в 6 часов. Выключить — освободит место; цена — если основное хранилище повредится, роутер сбросит все настройки":"not ours: the firmware keeps a second copy of its settings store and refreshes it every 6 hours. Turning it off frees space; the price — if the main store breaks, the router resets all its settings",
     "прошивка сделает её при следующем проходе, раз в 6 часов. Выключить сейчас — копия не займёт места; цена — если основное хранилище повредится, роутер сбросит все настройки":"the firmware makes it on its next pass, every 6 hours. Turned off now, the copy takes no space; the price — if the main store breaks, the router resets all its settings",
     "прошивка как раз делает копию — выключить можно через минуту":"the firmware is making the copy right now — it can be turned off in a minute",
+    "прошивка как раз делает копию — удалить можно через минуту":"the firmware is making the copy right now — it can be removed in a minute",
+    "Удалить…":"Remove…",
     "не наша: прошивка оставила вторую копию своего хранилища настроек — сама она её больше не обновляет, а место копия занимает. Удалить — освободит место; цена — если основное хранилище повредится, роутер сбросит все настройки":"not ours: the firmware left a second copy of its settings store — it no longer refreshes it, but the copy takes space. Removing it frees space; the price — if the main store breaks, the router resets all its settings",
     "это сделали вы":"by you","освобождено":"freed","на флеше":"on the flash","Копия настроек прошивки (файлы)":"Firmware settings backup (files)",
     "вы её выключали, а прошивка включила её снова; выключить снова нельзя: хранилище настроек не открылось при загрузке":"you turned it off, and the firmware turned it back on; it cannot be turned off again: the settings store did not open at boot",
@@ -11909,6 +11949,8 @@
     //     FIRST: whole lines and a line's head, seen before any token rule below rewrites a piece of them (a later place missed). ───
     [/^Выключить копию настроек прошивки и удалить её\? Освободится около (\d[\d.,]*\s*(?:ГБ|МБ|КБ|Б))\. Цена: если основное хранилище настроек повредится \(например, свет погаснет во время записи\), роутер при загрузке сбросит все настройки — Wi-Fi, пароли и автозапуск панели, — восстанавливать будет не из чего\. Включить копию обратно можно здесь же\.$/,
      "Turn off the firmware settings backup and remove it? About $1 is freed. The price: if the main settings store breaks (say, the power goes off during a write), the router resets all its settings at boot — Wi-Fi, passwords and the panel's autostart — and there is nothing to restore them from. The backup can be turned back on right here."],
+    [/^Удалить копию настроек прошивки\? Прошивка её уже не обновляет\. Освободится около (\d[\d.,]*\s*(?:ГБ|МБ|КБ|Б))\. Цена: если основное хранилище настроек повредится \(например, свет погаснет во время записи\), роутер при загрузке сбросит все настройки — Wi-Fi, пароли и автозапуск панели, — восстанавливать будет не из чего\. Включить копию обратно можно здесь же\.$/,
+     "Remove the firmware settings backup? The firmware no longer refreshes it. About $1 is freed. The price: if the main settings store breaks (say, the power goes off during a write), the router resets all its settings at boot — Wi-Fi, passwords and the panel's autostart — and there is nothing to restore them from. The backup can be turned back on right here."],
     // The router appends «the choice was not remembered» to any «off» answer — its tail first, then the head the line starts with.
     [/; выбор не запомнился — после обновления прошивки копия может вернуться, а включить её обратно можно только вручную: (uci set misc\.features\.sec_cfg_bak=1; uci commit misc)$/,
      "; the choice was not remembered — after a firmware update the backup may come back, and it can be turned back on only by hand: $1"],
@@ -12266,6 +12308,7 @@
     [/^Возврат уже пробовали: через туннель резолвер не ответил\. Следующая попытка — не раньше чем через (\d+) мин\.$/,"A move back has already been tried: the resolver did not answer through the tunnel. Next attempt — in $1 min at the earliest."],
     [/^Снова попробует через (\d+) мин\.$/,"It will try again in $1 min."],
     [/^Роутер снова проверит DoT не раньше чем через (\d+) мин и вернётся на него сам, когда тот заработает\.$/,"The router checks DoT again in $1 min at the earliest and switches back to it by itself once it works."],
+    [/^Роутер снова спросит ретрансляторы не раньше чем через (\d+) мин и вернётся на ODoH сам, когда они ответят\.$/,"The router asks the relays again in $1 min at the earliest and switches back to ODoH by itself once they answer."],
     [/^Роутер попробует снова не раньше чем через (\d+) мин\.$/,"The router tries again in $1 min at the earliest."],
     // Отказ «Попробовать сейчас» (cgi-bin/action, doh_retry) — срок паузы роутера числом.
     [/^Резолвер снова не ответил — DNS остался на прежнем пути\. Роутер попробует сам через (\d+) мин\.$/,"The resolver did not answer again — DNS stays on the previous path. The router will try on its own in $1 min."],
@@ -13319,6 +13362,11 @@
     ["Резолвер DoH: ","DoH resolver: "],
     // протокол-фразы ВЫШЕ токена «резолвер » — иначе тот съел бы «(резолвер не отвечает…» изнутри
     ["Протокол шифрованного DNS: ","Encrypted DNS protocol: "],
+    // set_odoh: «ODoH: цель <ключ>, ретранслятор <ключ>[; хвост отката]» — ключи латиницей, хвост — своим правилом ниже.
+    ["ODoH: цель ","ODoH: target "],[", ретранслятор ",", relay "],
+    ["; ретрансляторы ODoH не отвечают — пока шифрую по DoH напрямую к цели, вернусь на ODoH сам","; the ODoH relays do not answer — encrypting over DoH straight to the target for now, will return to ODoH by itself"],
+    [/^цель и ретранслятор у одного владельца \(([^()]*)\): он увидит и адрес, и вопросы — выберите другой ретранслятор$/,"the target and the relay have one owner ($1): it would see both the address and the questions — pick another relay"],
+    [/^не удалось узнать адреса (\S+) — проверьте имя \(сейчас DNS ещё работает через прежний путь\)$/,"could not find the addresses of $1 — check the name (DNS still works over the previous path right now)"],
     // busy-подписи ПЕРЕКЛЮЧЕНИЯ протокола — ПРАВИЛАМИ, а не exact-ключами: в журнале у них
     // префикс «→ », поэтому точное совпадение не срабатывало и строка молча оставалась русской
     // (та же грабля, что с «включаю выход» в dev33; поймано в браузере 2026-07-27).
@@ -26153,7 +26201,8 @@
   // экрана шифрованного DNS. Ответ приходит в двух видах (секция `tech` — опрос ленты, секция `doh` — экран), и фразы у них
   // обязаны совпадать: разбор «что значит ours» в двух местах разошёлся бы при первой правке.
   // Вход — поля секции `tech`: dns_src (doh|ours|stock), dns_addr, dns_via (tunnel|direct; пусто у роутера старше шага 5a),
-  // dns_proto, dns_resolver, dns_proxy (0 — прокси не запущен), dns_bin ("0" — программы прокси нет), dns_split (1 — раздельный
+  // dns_proto (doh|dot|odoh — ЧЕМ шифрует сейчас), dns_resolver (при ODoH — цель: к ней идёт и откат «DoH напрямую»), dns_proxy (0 —
+  // прокси не запущен), dns_bin ("0" — программы прокси нет), dns_split (1 — раздельный
   // резолв рунета). Выход — null (роутер не назвал путь) либо {k, via, split, addr, pn, res}: k — doh | dead (DNS отдан прокси,
   // а тот не запущен) | nobin (…и поднять его нечем) | tun | plain | ours (роутер старше) | stock.
   function dnsNowOf(t){
@@ -26167,7 +26216,7 @@
     // Адрес при шифровании не печатаем: там наш же 127.0.0.1#5053, «твой DNS — ты сам».
     return {k:k, via:via, split:(t.dns_split===1 || t.dns_split==='1' || t.dns_split===true),
             addr:(s==='doh') ? '' : String(t.dns_addr||'').replace(/\s+/g,', ').replace(/^, |, $/g,''),
-            pn:(t.dns_proto==='dot') ? 'DoT' : 'DoH', res:String(t.dns_resolver||'')};
+            pn:(t.dns_proto==='dot') ? 'DoT' : (t.dns_proto==='odoh') ? 'ODoH' : 'DoH', res:String(t.dns_resolver||'')};
   }
   // Значение чипа ленты для незашифрованных путей (шифрованные несут имя резолвера — их слова собирает paintTech).
   var DNS_CHIP={tun:'через туннель', plain:'открытый · задан роутером', ours:'задан роутером', stock:'стоковый · от провайдера'};
@@ -26389,12 +26438,46 @@
   }
 
   // ---- ЭКРАН «ШИФРОВАННЫЙ DNS» (`nw-dns`) ----
-  // Подписи резолверов каталога — имена на роутере (`doh_resolver_list`) это латинские ключи.
-  var DOH_RES_L={cloudflare:'Cloudflare (1.1.1.1)', google:'Google (dns.google)', quad9:'Quad9 (9.9.9.9)', adguard:'AdGuard DNS',
-                 nextdns:'NextDNS (свой профиль)', custom:'Свой резолвер'};
+  // ПОДПИСИ РЕЗОЛВЕРОВ — от роутера: одна таблица каталога (doh-lib.sh::DOH_CATALOG) отдаёт имя, владельца (пусто — он и есть
+  // имя) и страну кодом (`catalog` в cgi-bin/data). Своей копии каталога у панели нет — новый резолвер не требует правки здесь.
+  // Панели остаются СЛОВА: у NextDNS и своего резолвера смысл строки — поле, которое человек заполнит, и название страны на
+  // языке экрана. Роутер старше таблицы (`catalog` нет) — подпись = ключ.
+  var DOH_RES_L={nextdns:'NextDNS (свой профиль)', custom:'Свой резолвер'};
+  var DOH_CC={US:'США', CH:'Швейцария', CY:'Кипр', CA:'Канада', DE:'Германия', SE:'Швеция', CZ:'Чехия', AT:'Австрия', GR:'Греция',
+              NL:'Нидерланды', FR:'Франция', GB:'Великобритания', FI:'Финляндия', JP:'Япония', SG:'Сингапур'};
+  // Строка таблицы роутера по ключу: каталог резолверов и обе таблицы ODoH (цели, ретрансляторы) отдают одни поля {k, n, op, cc}.
+  function dohCatRow(list, k){ return (list || []).filter(function(x){ return x && x.k===k; })[0] || null; }
+  // Подпись в списке: имя · [владелец, ]страна — одно правило на резолверы, цели и ретрансляторы. Строки нет — ключ.
+  function dohCatLabel(list, k){
+    var c=dohCatRow(list, k);
+    if(!c || !c.n) return k;
+    var cc=c.cc ? (DOH_CC[c.cc] ? trNow(DOH_CC[c.cc]) : c.cc) : '';
+    return c.n + ((c.op || cc) ? ' · ' + (c.op ? c.op + (cc ? ', ' : '') : '') + cc : '');
+  }
+  function dohResLabel(d, k){ return DOH_RES_L[k] || dohCatLabel(d && d.catalog, k); }
   // Выбор резолвера отличается от применённого: сам резолвер — или, у NextDNS и своего, его поле.
   function dohResDirty(d, r, n, c){
     return (r!==(d.resolver||'cloudflare')) || (r==='nextdns' && n!==(d.nextdns_id||'')) || (r==='custom' && c!==(d.custom_url||''));
+  }
+  // ODoH (doh-lib.sh, блок «OBLIVIOUS DoH») — цели и ретрансляторы из таблиц роутера (`odoh_targets`/`odoh_relays`, поля как у
+  // каталога). Роутер старше ODoH таблиц не отдаёт — плитки ODoH нет: выбор, который роутер отвергнет, не предлагаем.
+  function dohHasOdoh(d){ return Array.isArray(d.odoh_targets) && d.odoh_targets.length>0 && Array.isArray(d.odoh_relays); }
+  // Имена для строки «Кто отвечает» — коротко (владелец и страна — в списках ниже): цель — имя, ретранслятор — имя (владелец);
+  // свой — имя хоста из адреса, который назвал роутер (это подпись, своей проверки адреса у панели нет).
+  function odohHost(u){ return String(u||'').replace(/^https:\/\//, '').replace(/[\/:].*$/, ''); }
+  function odohTargetName(d){
+    var k=d.odoh_target||'cloudflare', c=dohCatRow(d.odoh_targets, k);
+    return k==='custom' ? (odohHost(d.odoh_custom_target) || 'Своя цель') : ((c && c.n) || k);
+  }
+  // Ретранслятор — тот, через который прокси идёт СЕЙЧАС (`odoh_relay_now`: при «авто» лестница могла перейти на второй).
+  function odohRelayName(d){
+    var k=d.odoh_relay_now||d.odoh_relay||'', c=dohCatRow(d.odoh_relays, k);
+    return k==='custom' ? (odohHost(d.odoh_custom_relay) || 'Свой ретранслятор') : (c && c.n) ? c.n+(c.op ? ' ('+c.op+')' : '') : k;
+  }
+  // Выбор цели и ретранслятора отличается от применённого: сами ключи — или, у своих, их адреса.
+  function odohDirty(d, t, r, ct, cr){
+    return (t!==(d.odoh_target||'cloudflare')) || (r!==(d.odoh_relay||'auto'))
+      || (t==='custom' && ct!==(d.odoh_custom_target||'')) || (r==='custom' && cr!==(d.odoh_custom_relay||''));
   }
   // ЖДАТЬ ЛИ ДВИЖОК КОМПОНЕНТОВ: идёт наша установка — или чужая операция, пока у DNS не хватает программы (кнопки и плитки
   // заперты до её конца, и экран должен их отпереть сам). Ответ роутера без `pkg_busy` (старше) — только наша.
@@ -26414,7 +26497,11 @@
       // Ключ того, что нарисовано в «Сейчас DNS» (разбор у dnsScrTick): лента сверит его со своим ответом.
       var dn=document.getElementById('dns-now'); if(dn){ dn._k=dnsScrKey(dnsNowOf(dohAsTech(d))); dn._t0=t0; }
       nwFocusBack(body, fsig);
-      nwDraftWire(body, function(){ nwDirtyShow('doh-res-dirty', dohResDirty(d, nwVal('doh-res'), nwVal('doh-nid'), nwVal('doh-cust'))); });
+      // Под плитками — выбор ОДНОГО протокола (резолвер у DoH/DoT, цель и ретранслятор у ODoH): чьих полей нет, того и не сверяем.
+      nwDraftWire(body, function(){
+        if(nwVal('doh-res')!==null) nwDirtyShow('doh-res-dirty', dohResDirty(d, nwVal('doh-res'), nwVal('doh-nid'), nwVal('doh-cust')));
+        if(nwVal('odoh-t')!==null) nwDirtyShow('odoh-dirty', odohDirty(d, nwVal('odoh-t'), nwVal('odoh-r'), nwVal('odoh-ct'), nwVal('odoh-cr')));
+      });
       dnsWire(body, d, rep);
       // Установка идёт (начата отсюда или в «Компонентах», экран открыт заново) — ход опрашивается снова: без этого кнопка
       // оставалась запертой «Устанавливаю…», пока экран не откроют уже после конца установки (ревью шага 5a, круг 1).
@@ -26424,7 +26511,8 @@
   // Ответ секции `doh` — в виде ответа ленты: разбор пути один (`dnsNowOf`). «Программа есть» — у АКТИВНОГО протокола.
   function dohAsTech(d){
     // Протокол — ЧЕМ ШИФРУЕТ СЕЙЧАС (`proto_now`), как у ленты: выбранный DoT при закрытом 853 работает по DoH (doh_dot_fallback).
-    return {dns_src:d.cur_src, dns_addr:d.cur_dns, dns_via:d.cur_via, dns_proto:(d.proto_now||d.proto), dns_resolver:d.resolver,
+    // Резолвер при ODoH — цель (как у ленты: cgi-bin/data, emit_tech).
+    return {dns_src:d.cur_src, dns_addr:d.cur_dns, dns_via:d.cur_via, dns_proto:(d.proto_now||d.proto), dns_resolver:(d.proto==='odoh' ? d.odoh_target : d.resolver),
             dns_proxy:(d.running?1:0), dns_bin:(d.installed===false ? '0' : '1'), dns_split:(d.split_on===true ? 1 : 0)};
   }
   // Протокол в ключе: сторож переводит DoT на DoH (и обратно) при открытом экране, путь при этом прежний — без него экран
@@ -26496,7 +26584,19 @@
       h+=N+(d.dotfb_retry>0 ? 'Роутер снова проверит DoT не раньше чем через '+Math.ceil(d.dotfb_retry/60)+' мин и вернётся на него сам, когда тот заработает.'
            : d.dotfb_retry===0 ? 'Роутер снова проверит DoT на ближайшей проверке сторожа и вернётся на него сам, когда тот заработает.'
            : 'Роутер проверяет DoT сам и вернётся на него, когда тот заработает.')+E
-        +N+'Проверить DoT сейчас — нажмите его плитку в «Чем шифровать».'+E;
+        +N+'Проверить DoT сейчас — нажмите его плитку в «Протокол и резолвер».'+E;
+    }
+    // ВЫБРАН ODoH, А ШИФРУЕТ DoH НАПРЯМУЮ К ЦЕЛИ — ни один ретранслятор не отдал имён (doh-lib.sh::doh_odoh_rescue; решение человека
+    // 16.10.2026: оба молчат — DoH к той же цели). Запросы шифруются по-прежнему, но разнесения больше нет: цель видит адрес роутера
+    // (в туннеле — сервера VPN), и экран обязан это сказать. Плитка ODoH остаётся выбранной, её клик — «проверь ретрансляторы
+    // сейчас» (cgi-bin/action, set_doh_proto). Сроки — роутера.
+    if(want && d.odohfb===true){
+      h+=W+'Ретрансляторы ODoH не ответили: роутер шифрует по DoH напрямую к цели — она видит, чьи вопросы. Выбор ODoH сохранён.'+E;
+      if(d.odohfb_age>=0) h+=N+'<span>Переведён на DoH</span> <span>'+fmtAge(d.odohfb_age)+'</span>'+E;
+      h+=N+(d.odohfb_retry>0 ? 'Роутер снова спросит ретрансляторы не раньше чем через '+Math.ceil(d.odohfb_retry/60)+' мин и вернётся на ODoH сам, когда они ответят.'
+           : d.odohfb_retry===0 ? 'Роутер снова спросит ретрансляторы на ближайшей проверке сторожа и вернётся на ODoH сам, когда они ответят.'
+           : 'Роутер спрашивает ретрансляторы сам и вернётся на ODoH, когда они ответят.')+E
+        +N+'Проверить ретрансляторы сейчас — нажмите плитку ODoH.'+E;
     }
     if(d.auto_active){
       if(d.cur_src==='doh' || !d.cur_src) h+=N+'Шифрование включилось само: работает прямой режим.'+E;
@@ -26514,23 +26614,60 @@
     }
     return h;
   }
+  // «СЕЙЧАС DNS» ЭКРАНА — три коротких ответа (макет nw-dns, с.144, по слову человека «много текста… пустого места»): кто отвечает,
+  // что видит провайдер, что видит резолвер. Разбор пути — тот же `dnsNowOf` (один на три места); слова короче, чем у полосы
+  // раздела: там «DNS сейчас» одна над дверями, здесь — карточка ряда из равных. Аварии (`dead`/`nobin`) — фразами полосы: в них
+  // действие, а не описание. Роутер старше `via` — о провайдере и резолвере молчим, а не угадываем.
+  var DNS_SCR_WHO={dead:'шифрованный прокси на роутере — не запущен', nobin:'шифрованный прокси на роутере — не запущен',
+                   tun:'серверы, заданные роутером, — через туннель', plain:'серверы, заданные роутером', ours:'серверы, заданные роутером',
+                   stock:'стоковый, от провайдера'};
+  var DNS_SCR_SEES={doh_tunnel:'ни запросов, ни резолвера — всё внутри туннеля', doh_direct:'резолвер, но не запросы — они зашифрованы',
+                    tun:'ни запросов, ни резолвера — всё внутри туннеля', plain:'запросы открыты — видит и может подменить',
+                    stock:'запросы открыты — идут к его серверам', stock_split:'запросы открыты — к его серверам, а .ru, .рф и .su — к российскому резолверу'};
+  function dnsScrNowHtml(n, d){
+    var who, sees, res='', bad=(n.k==='dead' || n.k==='nobin');
+    if(n.k==='doh'){
+      // Имя — коротко, без владельца и страны (они в списке ниже). ODoH — ретранслятор, через который идём сейчас, и цель; на откате
+      // «DoH напрямую к цели» — сама цель: выбор резолвера DoH при ODoH не участвует.
+      var od=(d.proto==='odoh'), oN=od && n.pn==='ODoH';
+      var nm = oN ? odohRelayName(d)+' → '+odohTargetName(d) : od ? odohTargetName(d)
+             : (DOH_RES_L[d.resolver] || (dohCatRow(d.catalog, d.resolver)||{}).n || d.resolver || '?');
+      who='<span>шифрованный прокси на роутере</span> · <span>'+(od && !oN ? 'DoH напрямую' : esc(n.pn))+'</span> → <span>'+esc(nm)+'</span>';
+      sees = n.via ? DNS_SCR_SEES['doh_'+n.via] : '';
+    } else {
+      who='<span>'+DNS_SCR_WHO[n.k]+'</span>'+(n.addr ? ' · <span class="mono">'+esc(n.addr)+'</span>' : '');
+      sees = bad ? DNS_SEES[n.k] : (n.k==='stock' && n.split) ? DNS_SCR_SEES.stock_split : (DNS_SCR_SEES[n.k]||'');
+    }
+    // Что видит резолвер: при ODoH разнесено на двоих — в этом и смысл протокола; через туннель — адрес сервера VPN; иначе — роутера.
+    if(n.k==='doh' && n.pn==='ODoH') res='цель — вопросы, но не чьи они; ретранслятор — адрес, но не вопросы';
+    else if((n.k==='doh' || n.k==='tun') && n.via==='tunnel') res='вопросы — с адресом сервера VPN, не дома';
+    else if(n.via && (n.k==='doh' || n.k==='plain' || n.k==='stock')) res='вопросы и адрес роутера';
+    var note = (sees && n.split && (n.k==='doh' || n.k==='tun')) ? '<div class="v wr">'+DNS_SPLIT_NOTE+'</div>' : '';
+    return '<div class="kv"><div class="grow"><div class="k">Кто отвечает</div><div class="v">'+who+'</div></div></div>'
+      + (sees ? '<div class="kv"><div class="grow"><div class="k">Что видит провайдер</div><div class="v'+(bad?' wr':'')+'">'+sees+'</div>'+note+'</div></div>' : '')
+      + (res ? '<div class="kv"><div class="grow"><div class="k">Что видит резолвер</div><div class="v">'+res+'</div></div></div>' : '');
+  }
+  // ЭКРАН — макет nw-dns (с.144): РЯД ИЗ РАВНЫХ («Сейчас DNS», «Шифрование» — `.eq`, тянутся до самой высокой) и под ним во всю
+  // ширину «Протокол и резолвер»: ЧЕМ — три плитки, под ними выбор ВЫБРАННОГО протокола (резолвер у DoH/DoT, цель и ретранслятор у
+  // ODoH). Третьей в ряду макета стоит «Свой сервер дома» — «скоро», панель её не рисует; чтобы ряд не кончался пустой колонкой,
+  // «Сейчас DNS» берёт две (в ней ещё и строки здоровья слоя — самая длинная карточка ряда). Решение — в разборе переноса.
   function dnsScrHtml(d, fresh){
-    var on=!!d.on, auto=(d.auto!==false), dot=(d.proto==='dot'), dRES=d.resolver||'cloudflare';
+    var on=!!d.on, auto=(d.auto!==false), hasO=dohHasOdoh(d);
+    var P=(d.proto==='dot') ? 'dot' : (d.proto==='odoh' && hasO) ? 'odoh' : 'doh';
     var n=dnsNowOf(dohAsTech(d));
     var h='<div class="vwrap">';
-    h+='<div class="card w2" id="dns-now"><div class="wt">Сейчас DNS</div>'
-      + (n ? dnsNowHtml(n) : '<div class="cline">Роутер не сообщает, чем резолвит: на нём нет слоя шифрованного DNS — обновите систему.</div>')
-      + dohHealthHtml(d)
-      + '<div class="cline">Путь меняется сам: при включённом шифровании — к выбранному резолверу, в прямом режиме — к серверам, которые задал роутер, без наших правил — к серверам провайдера.</div></div>';
-    // ШИФРОВАНИЕ — когда (два тумблера) и чем (плитки). Без бинаря тумблер персистится, но шифрования нет — так и сказано,
-    // и поставить можно прямо отсюда (движок компонентов, связка doh — обе программы разом). Ход установки виден, пока она идёт,
-    // — и тогда, когда ставится одна DoT при стоящем DoH (иначе у человека нет ни строки о том, что происходит).
+    h+='<div class="card w2 eq" id="dns-now"><div class="wt">Сейчас DNS</div>'
+      + (n ? dnsScrNowHtml(n, d) : '<div class="cline">Роутер не сообщает, чем резолвит: на нём нет слоя шифрованного DNS — обновите систему.</div>')
+      + dohHealthHtml(d)+'</div>';
+    // ШИФРОВАНИЕ — КОГДА: три тумблера (раздельный резолв рунета — третьим: это тоже правило пути DNS). Без бинаря тумблер
+    // персистится, но шифрования нет — так и сказано, и поставить можно прямо отсюда (движок компонентов, связка doh — обе программы
+    // разом). Ход установки виден, пока она идёт, — и тогда, когда ставится одна DoT при стоящем DoH.
     // ЧЬЯ операция идёт — говорит роутер: `installing` — движок ставит ИМЕННО связку doh, `pkg_busy` — занят чем-то другим
     // (Xray из «Компонентов»): её ход не наш, и выдавать его за установку DoT было неправдой (ревью шага 5a, круг 2). В это
     // время движок откажет в любой установке — кнопка и плитки заперты, и сказано почему. `data-inst` — чем нарисован экран
     // (опрос перерисует его, когда установка пошла, а экран нарисован до неё).
     var busyO=(d.pkg_busy===true && !d.installing);
-    h+='<div class="card w2" id="dns-enc"'+(d.installing?' data-inst="1"':'')+'><div class="wt">Шифрование запросов</div>';
+    h+='<div class="card eq" id="dns-enc"'+(d.installing?' data-inst="1"':'')+'><div class="wt">Шифрование</div>';
     var imsg='<span id="doh-inst-msg">'+esc(d.install_msg||'')+'</span>';
     if(!d.installed)
       h+=noteBox('Компонент шифрованного DNS ещё не установлен — шифрование заработает после его установки.'
@@ -26543,47 +26680,75 @@
       h+='<div class="cline wr"><span>Последняя установка компонента:</span> '+imsg+'</div>';
     if(busyO && dohNeedsInst(d))
       h+='<div class="cline wr">Сейчас идёт другая операция с компонентами — поставить шифрованный DNS можно будет, когда она закончится.</div>';
-    h+='<div class="kv swrow"><div class="grow"><div class="k">Шифровать всегда</div><div class="v">все DNS-запросы сети уходят к выбранному резолверу шифрованными — и в туннеле, и без него</div></div>'
+    h+='<div class="kv swrow"><div class="grow"><div class="k">Шифровать всегда</div><div class="v">и в туннеле, и без него; замолчавший резолвер меняете вы</div></div>'
       + '<label class="sw"><input type="checkbox" id="dns-on" aria-label="Шифровать всегда"'+(on?' checked':'')+'><i></i></label></div>'
-      + '<div class="kv swrow"><div class="grow"><div class="k">Включать само в прямых режимах</div><div class="v">'
-      + (on ? 'сейчас ни на что не влияет: шифрование включено всегда' : 'когда туннеля нет — работает десинк без сервера, туннель упал или VPN выключен: там запросы иначе идут открытыми')+'</div></div>'
-      + '<label class="sw"><input type="checkbox" id="dns-auto" aria-label="Включать само в прямых режимах"'+(auto?' checked':'')+'><i></i></label></div>';
-    // Протокол без своей программы — плитка «недоступна», и клик ставит компонент: переключение на него роутер отвергнет всё
-    // равно. Программа DoH отдельным полем (`doh_bin`): «установлен» — про АКТИВНЫЙ протокол.
+      + '<div class="kv swrow"><div class="grow"><div class="k">Само, когда туннеля нет</div><div class="v">'
+      + (on ? 'сейчас ни на что не влияет: шифрование включено всегда' : 'десинк, VPN выключен или упал; при сбое само вернёт обычный DNS')+'</div></div>'
+      + '<label class="sw"><input type="checkbox" id="dns-auto" aria-label="Само, когда туннеля нет"'+(auto?' checked':'')+'><i></i></label></div>'
+      // Тумблер рунета — по ответу НАСТРОЕК (`prefs`): не пришли — строка без тумблера, положение по чужому ответу было бы выдумкой.
+      + '<div class="kv'+(fresh?' swrow':'')+'"><div class="grow"><div class="k">Российские сайты напрямую</div><div class="v">'
+      + (fresh ? '.ru, .рф, .su — у российского резолвера, мимо туннеля' : 'роутер не сообщил настройки')+'</div></div>'
+      + (fresh ? '<label class="sw"><input type="checkbox" id="dns-ru-on" aria-label="Российские сайты напрямую"'+(PREFS.split_runet?' checked':'')+'><i></i></label>' : '')+'</div>'
+      // Конфликт с шифрованием называет роутер (`dns-split.sh conflict`): правило зоны сильнее общего апстрима.
+      + (d.split_conflict===true ? '<div class="cline wr">При включённом шифровании имена .ru, .рф и .su всё равно уходят открытыми — к российскому резолверу, мимо прокси: правило зоны сильнее общего.</div>' : '')
+      + '</div>';
+    // ПРОТОКОЛ — плитки ВЫБОРА (`proto`), а не того, чем шифрует сейчас: на откате выбранный остаётся выбранным, и экран говорит
+    // почему (строки здоровья выше). Протокол без своей программы — плитка «недоступна», и клик ставит компонент: переключение на
+    // него роутер отвергнет всё равно. Программа DoH отдельным полем (`doh_bin`): «установлен» — про АКТИВНЫЙ протокол.
+    // ODoH умеет только новая программа DoH (`odoh_capable` — по факту её справки): нет программы — как у DoH (поставить); прежняя
+    // сборка — дверь в «Компоненты», где её обновляют (связку doh здесь ставить нечем: программа есть).
     var naT=function(){ return d.installing ? 'устанавливается…' : busyO ? 'дождитесь конца другой операции с компонентами' : 'не установлен · нажмите, чтобы поставить'; };
-    var dohNa=(d.doh_bin===false), dotNa=(d.dot_installed===false);
-    h+='<div class="wt" style="margin-top:14px">Чем шифровать</div><div class="opt c2">'
-      + optTile('data-dnsp', 'doh', !dot, 'i-lock', 'DoH', dohNa ? naT() : 'поверх HTTPS · порт 443', dohNa)
-      + optTile('data-dnsp', 'dot', dot, 'i-lock', 'DoT', dotNa ? naT() : 'поверх TLS · порт 853', dotNa)+'</div>'
-      + '<div class="cline">DoH неотличим от обычного веб-трафика и рекомендован; у DoT выделенный порт 853, его провайдеру проще заблокировать целиком. Если новый протокол не заработает, роутер сам вернёт прежний.</div>'
-      + '<div style="margin-top:11px">'+noteBox('Именно в прямых режимах провайдер видит и может подменять DNS-запросы: в туннеле они и так спрятаны. При включении роутер проверяет резолвер: не ответил — шифрование не включится, связь не потеряется. Дальше следит за ним только «Включать само» — при сбоях сам вернёт обычный DNS; при «Шифровать всегда» резолвер, переставший отвечать позже, сменить или выключить придётся вам.','info')+'</div></div>';
-    // РЕЗОЛВЕР — выбор виден всегда: при выключенном шифровании он сохранится и применится при включении. Выбор и поля — из
-    // черновика, пока он есть (разбор у _nwDraft), и тогда экран говорит, что это ещё не применено.
-    var dList=(d.resolvers && d.resolvers.length) ? d.resolvers : ['cloudflare','google','quad9','adguard','nextdns','custom'];
-    var sRES=nwDraftGet('dns-res', dRES), sNID=nwDraftGet('doh-nid', d.nextdns_id||''), sCU=nwDraftGet('doh-cust', d.custom_url||'');
+    var dohNa=(d.doh_bin===false), dotNa=(d.dot_installed===false), odNa=hasO && (dohNa || d.odoh_capable===false);
+    h+='<div class="card wfull" id="dns-res"><div class="wt">Протокол и резолвер</div><div class="opt '+(hasO?'c3':'c2')+'">'
+      + optTile('data-dnsp', 'doh', P==='doh', 'i-lock', 'DoH', dohNa ? naT() : 'поверх HTTPS · порт 443', dohNa)
+      + optTile('data-dnsp', 'dot', P==='dot', 'i-lock', 'DoT', dotNa ? naT() : 'поверх TLS · порт 853', dotNa)
+      + (hasO ? optTile('data-dnsp', 'odoh', P==='odoh', 'i-shield', 'ODoH', !odNa ? 'через посредника · порт 443' : dohNa ? naT() : 'нужна новая программа DoH · нажмите, чтобы обновить', odNa) : '')
+      + '</div>' + (P==='odoh' ? odohPaneHtml(d) : dohResPaneHtml(d, P==='dot'));
+    return h+'</div></div>';
+  }
+  // РЕЗОЛВЕР DoH и DoT — один выбор на оба протокола: при выключенном шифровании он сохранится и применится при включении. Выбор и
+  // поля — из черновика, пока он есть (разбор у _nwDraft), и тогда экран говорит, что это ещё не применено.
+  function dohResPaneHtml(d, dot){
+    var dList=(d.catalog && d.catalog.length) ? d.catalog.map(function(x){ return x.k; })
+            : (d.resolvers && d.resolvers.length) ? d.resolvers : ['cloudflare','google','quad9','adguard','nextdns','custom'];
+    var dRES=d.resolver||'cloudflare', sRES=nwDraftGet('dns-res', dRES), sNID=nwDraftGet('doh-nid', d.nextdns_id||''), sCU=nwDraftGet('doh-cust', d.custom_url||'');
     var dirty=dohResDirty(d, sRES, sNID, sCU);
-    h+='<div class="card" id="dns-res"><div class="wt">Резолвер</div><div class="lnkrow"><select id="doh-res" class="inp" aria-label="Резолвер" data-nwd="dns-res">';
-    dList.forEach(function(x){ h+='<option value="'+esc(x)+'"'+(x===sRES?' selected':'')+'>'+esc(DOH_RES_L[x]||x)+'</option>'; });
-    h+='</select><button type="button" class="btn" data-dnsa="res">Применить</button></div>'
+    var h='<div class="cline dnsp-why">'+(dot ? 'Свой порт 853 — провайдеру его проще закрыть целиком.' : 'Неотличим от обычного веб-трафика — рекомендован.')+'</div>'
+      + '<div class="lnkrow"><select id="doh-res" class="inp" aria-label="Резолвер" data-nwd="dns-res">';
+    dList.forEach(function(x){ h+='<option value="'+esc(x)+'"'+(x===sRES?' selected':'')+'>'+esc(dohResLabel(d, x))+'</option>'; });
+    return h+'</select><button type="button" class="btn" data-dnsa="res">Применить</button></div>'
       + '<div class="cline wr" id="doh-res-dirty"'+(dirty?'':' style="display:none"')+'>'+(((d.on && d.installed!==false) || d.auto_active) ? 'Выбор ещё не применён — роутер резолвит прежним. Нажмите «Применить».' : 'Выбор ещё не сохранён — нажмите «Применить».')+'</div>'
       + '<div id="doh-nid-wrap"'+(sRES==='nextdns'?'':' style="display:none"')+'><input id="doh-nid" class="inp mono" placeholder="ID профиля NextDNS (напр. abc123)" aria-label="ID профиля NextDNS" value="'+esc(sNID)+'" spellcheck="false" data-nwd="doh-nid" data-nwgo="dnsa=res"></div>'
-      // Свой резолвер: одно поле на все формы (тип определит роутер). Адреса — единственное подтверждение, что роутер знает,
-      // куда ходит прокси: на них висят правила :443/853. Предупреждение обязательно: резолвер видит ВЕСЬ DNS дома.
+      // Свой резолвер: одно поле на все формы (тип определит роутер) — что в него можно вписать, сказано у поля. Адреса — единственное
+      // подтверждение, что роутер знает, куда ходит прокси: на них висят правила :443/853. Предупреждение обязательно: резолвер видит
+      // ВЕСЬ DNS дома.
       + '<div id="doh-cust-wrap"'+(sRES==='custom'?'':' style="display:none"')+'><input id="doh-cust" class="inp mono" placeholder="https://dns.example.com/dns-query, имя или IP" aria-label="Свой резолвер" value="'+esc(sCU)+'" spellcheck="false" autocapitalize="off" data-nwd="doh-cust" data-nwgo="dnsa=res">'
+      + '<div class="cline">Свой резолвер — одно поле на все формы (https://…, tls://…, имя или IP), тип определит роутер; рядом — куда прокси ходит на самом деле. Для DoT нужно ИМЯ: у голого IP нечего предъявить в SNI.</div>'
       + '<div class="cline wr">Весь DNS сети пойдёт через этот сервер — он видит все ваши запросы и может отвечать на них чем угодно. Указывайте только тот, которому доверяете.</div>'
       + ((dRES==='custom' && d.custom_ips) ? '<div class="kv"><div class="grow"><div class="k">Куда прокси ходит на самом деле</div><div class="v"><span class="mono">'+esc(d.custom_ips)+'</span></div></div></div>' : '')+'</div>'
-      // Про своё поле — строкой всегда (макет): что в него можно вписать, человек узнаёт до того, как выберет «Свой резолвер».
-      + '<div class="cline">Свой резолвер — одно поле на все формы (https://…, tls://…, имя или IP), тип определит роутер; рядом — куда прокси ходит на самом деле. Для DoT нужно ИМЯ: у голого IP нечего предъявить в SNI.</div>'
-      + '<div class="cline">Если новый резолвер не отвечает, роутер проверит и сам вернёт прежний. Проверять работу — на странице СВОЕГО резолвера.</div></div>';
-    // РОССИЙСКИЕ САЙТЫ — отдельной карточкой: это не про приватность, а про скорость и гео-корректность. Конфликт с шифрованием
-    // называет роутер (`dns-split.sh conflict`): правило зоны сильнее общего апстрима, и эти имена уходят открытыми.
-    h+='<div class="card" id="dns-ru"><div class="wt">Российские сайты</div>'
-      + (fresh ? '<div class="kv swrow"><div class="grow"><div class="k">Резолвить напрямую</div><div class="v">домены .ru, .рф и .su спрашиваем у российского резолвера, минуя туннель</div></div>'
-               + '<label class="sw"><input type="checkbox" id="dns-ru-on" aria-label="Резолвить российские сайты напрямую"'+(PREFS.split_runet?' checked':'')+'><i></i></label></div>'
-               : '<div class="cline">роутер не сообщил настройки</div>')
-      + (d.split_conflict===true ? '<div class="cline wr">При включённом шифровании имена в этих зонах всё равно уходят открытыми — к российскому резолверу, мимо прокси: правило зоны сильнее общего.</div>' : '')
-      + '<div style="margin-top:11px">'+noteBox('Быстрее и точнее: сайт отдаёт ближний узел своей сети доставки, а не тот, что виден из-за границы. Остальные домены идут прежним путём. По умолчанию выключено.','info')+'</div></div>';
-    return h+'</div>';
+      + '<div class="cline">Резолвер видит все ваши DNS-запросы — рядом с именем его владелец и страна.</div>';
+  }
+  // ЦЕЛЬ И РЕТРАНСЛЯТОР ODoH — списки из таблиц роутера и свои адреса; «авто» — все ретрансляторы списка по очереди (лестница роутера).
+  // Чей адрес годится и не один ли у пары владелец — решает роутер (set_odoh): своей копии разбора адреса у панели нет, отказ
+  // приходит его словами. Черновик и «ещё не применено» — как у резолвера.
+  function odohPaneHtml(d){
+    var T=d.odoh_targets||[], R=d.odoh_relays||[];
+    var sT=nwDraftGet('odoh-t', d.odoh_target||'cloudflare'), sR=nwDraftGet('odoh-r', d.odoh_relay||'auto');
+    var sCT=nwDraftGet('odoh-ct', d.odoh_custom_target||''), sCR=nwDraftGet('odoh-cr', d.odoh_custom_relay||'');
+    var o=function(v, l, s){ return '<option value="'+esc(v)+'"'+(v===s?' selected':'')+'>'+esc(l)+'</option>'; };
+    var dirty=odohDirty(d, sT, sR, sCT, sCR), act=(d.proto==='odoh' && ((d.on && d.installed!==false) || d.auto_active));
+    return '<div class="cline dnsp-why">Ретранслятор видит адрес роутера, цель — вопросы, но не чьи они. Ретрансляторы молчат — DoH напрямую к цели, потом сам назад.</div>'
+      + '<div class="fpair"><div class="f"><label for="odoh-t">Цель</label><select id="odoh-t" data-nwd="odoh-t">'
+      + T.map(function(x){ return o(x.k, dohCatLabel(T, x.k), sT); }).join('') + o('custom', 'Своя цель', sT)
+      + '</select></div><div class="f"><label for="odoh-r">Ретранслятор</label><select id="odoh-r" data-nwd="odoh-r">'
+      + o('auto', R.length===2 ? 'Авто — оба по очереди' : 'Авто — все по очереди', sR)
+      + R.map(function(x){ return o(x.k, dohCatLabel(R, x.k), sR); }).join('') + o('custom', 'Свой ретранслятор', sR)
+      + '</select></div><button type="button" class="btn" data-dnsa="odoh">Применить</button></div>'
+      + '<div class="cline wr" id="odoh-dirty"'+(dirty?'':' style="display:none"')+'>'+(act ? 'Выбор ещё не применён — роутер резолвит прежним. Нажмите «Применить».' : 'Выбор ещё не сохранён — нажмите «Применить».')+'</div>'
+      + '<div id="odoh-ct-wrap" class="f"'+(sT==='custom'?'':' style="display:none"')+'><label for="odoh-ct">Адрес своей цели</label><input id="odoh-ct" class="mono" placeholder="https://odoh.example.com/dns-query" value="'+esc(sCT)+'" spellcheck="false" autocapitalize="off" data-nwd="odoh-ct" data-nwgo="dnsa=odoh"></div>'
+      + '<div id="odoh-cr-wrap" class="f"'+(sR==='custom'?'':' style="display:none"')+'><label for="odoh-cr">Адрес своего ретранслятора</label><input id="odoh-cr" class="mono" placeholder="https://relay.example.com/proxy" value="'+esc(sCR)+'" spellcheck="false" autocapitalize="off" data-nwd="odoh-cr" data-nwgo="dnsa=odoh"></div>'
+      + '<div class="cline" id="odoh-cu-note"'+((sT==='custom' || sR==='custom')?'':' style="display:none"')+'>Свой адрес — https://имя/путь, без порта и не IP. У цели и ретранслятора должны быть разные владельцы: один видел бы и адрес, и вопросы.</div>'
+      + (((d.odoh_target==='custom' || d.odoh_relay==='custom') && d.odoh_ips) ? '<div class="kv"><div class="grow"><div class="k">Куда прокси ходит на самом деле</div><div class="v"><span class="mono">'+esc(d.odoh_ips)+'</span></div></div></div>' : '');
   }
   function dnsWire(body, d, rep){
     // Тумблеры — `swPost`: действие не началось (панель занята) — переключатель возвращается как был; отказ сети — экран
@@ -26600,6 +26765,14 @@
       var w=document.getElementById('doh-nid-wrap'); if(w) w.style.display=(sel.value==='nextdns')?'':'none';
       var c=document.getElementById('doh-cust-wrap'); if(c) c.style.display=(sel.value==='custom')?'':'none';
     });
+    // Свои адреса ODoH — поле под списком, когда в нём выбрано «своё»; строка о форме адреса — пока виден хоть один.
+    var oT=document.getElementById('odoh-t'), oR=document.getElementById('odoh-r');
+    function odohCu(){
+      var t=oT && oT.value==='custom', r=oR && oR.value==='custom';
+      nwDirtyShow('odoh-ct-wrap', t); nwDirtyShow('odoh-cr-wrap', r); nwDirtyShow('odoh-cu-note', t || r);
+    }
+    if(oT) oT.addEventListener('change', odohCu);
+    if(oR) oR.addEventListener('change', odohCu);
     // Протокол без программы — установка ПЕРВЫМ делом, и раньше сверки «уже выбран»: выбранный DoT без dot-proxy иначе молчал бы
     // на клик, хотя плитка зовёт «нажмите, чтобы поставить». Установка уже идёт — так и сказано, второй не запускаем.
     function pick(v){
@@ -26610,13 +26783,18 @@
         else dohInstall(null, '[data-dnsp="'+v+'"]', rep);
         return;
       }
-      if(v===(d.proto==='dot'?'dot':'doh')){
+      // ODoH на прежней программе DoH — её обновляют в «Компонентах» (движок сверяет программу с манифестом); переключение роутер
+      // отверг бы: прежняя сборка ключа ODoH не знает.
+      if(v==='odoh' && d.odoh_capable===false){ openPackages(); return; }
+      if(v===((d.proto==='dot' || d.proto==='odoh') ? d.proto : 'doh')){
         // Выбранный DoT, пока роутер шифрует по DoH (переезд порта), — клик значит «проверь DoT сейчас»: роутер забудет вердикт
-        // и попробует DoT пробой имён (cgi-bin/action, set_doh_proto). Без шифрования проверять нечего — клик пустой, как был.
+        // и попробует DoT пробой имён (cgi-bin/action, set_doh_proto). То же у ODoH на откате «DoH напрямую к цели» — «проверь
+        // ретрансляторы сейчас». Без шифрования проверять нечего — клик пустой, как был.
         if(v==='dot' && d.dotfb===true && (d.on || d.auto_active)) postAction('set_doh_proto', null, 'проверяю DoT…', {value:v}, rep, rep);
+        else if(v==='odoh' && d.odohfb===true && (d.on || d.auto_active)) postAction('set_doh_proto', null, 'проверяю ретрансляторы ODoH…', {value:v}, rep, rep);
         return;
       }
-      postAction('set_doh_proto', null, v==='dot'?'переключаю на DoT…':'переключаю на DoH…', {value:v}, rep, rep);
+      postAction('set_doh_proto', null, v==='dot'?'переключаю на DoT…':v==='odoh'?'переключаю на ODoH…':'переключаю на DoH…', {value:v}, rep, rep);
     }
     body.addEventListener('click', function(ev){
       for(var x=ev.target; x && x!==body; x=x.parentNode){
@@ -26625,6 +26803,7 @@
         var a=x.getAttribute('data-dnsa'); if(!a) continue;
         if(a==='inst') dohInstall(x, '#dns-on', rep);
         else if(a==='res') dohResSave(rep);
+        else if(a==='odoh') odohSave(rep);
         else if(a==='retry') postAction('doh_retry', null, 'пробую резолвер снова…', {}, rep, rep);
         return;
       }
@@ -26645,6 +26824,15 @@
     if(r==='nextdns' && !nid){ showToast('укажите ID профиля NextDNS', false); return; }
     if(r==='custom' && !cu){ showToast('укажите адрес своего резолвера', false); return; }
     postAction('set_doh_resolver', null, 'сохраняю резолвер DoH…', {resolver:r, nextdns_id:nid, custom_url:cu}, function(x){ if(x && x.ok){ nwDraftDrop(['dns-res','doh-nid','doh-cust']); rep(); } }, rep);
+  }
+  // Цель и ретранслятор ODoH (cgi-bin/action, set_odoh) — тем же складом: пустое своё поле ловим здесь, всё прочее (форма адреса, один
+  // ли владелец у пары, отвечает ли она) решает роутер. Черновик стирает только успех.
+  function odohSave(rep){
+    var t=val('odoh-t')||'cloudflare', r=val('odoh-r')||'auto', ct=val('odoh-ct')||'', cr=val('odoh-cr')||'';
+    if(t==='custom' && !ct){ showToast('укажите адрес своей цели', false); return; }
+    if(r==='custom' && !cr){ showToast('укажите адрес своего ретранслятора', false); return; }
+    postAction('set_odoh', null, 'сохраняю цель и ретранслятор ODoH…', {target:t, relay:r, custom_target:(t==='custom'?ct:''), custom_relay:(r==='custom'?cr:'')},
+      function(x){ if(x && x.ok){ nwDraftDrop(['odoh-t','odoh-r','odoh-ct','odoh-cr']); rep(); } }, rep);
   }
   // ДОУСТАНОВКА ПО ВОЗДУХУ (связка doh движка компонентов качает обе программы). Кнопка запирается — фокус с неё уйдёт, поэтому
   // действие назначает, куда его вернуть после перерисовки (`focusSel`). Ход — опросом (`dohPollStart`). Экран перечитывает
@@ -27609,14 +27797,18 @@
     var moving=!!(storeData && storeData.switching===true), na=(moving ? ' data-na="1" disabled' : '');
     var nm='<div class="nm">Копия настроек прошивки ', ds, right='';
     if(s.offer===true){
+      // Флаг уже 0, а копия лежит (прошивку выключили, копию не убрали): выключать нечего — кнопка и слова говорят «удалить»
+      // (обход BE7000 dev.25: строка звала «Удалить», а кнопка — «Выключить…»).
+      var left=(s.copy===true && s.flag!=='1');
       nm+=(s.copy===true ? '<span class="chip">≈ '+humanBytes(Number(s.est_b)||0)+' <span>на флеше</span></span>' : '<span class="chip">копии пока нет</span>');
       ds=(s.copy!==true ? '<span>прошивка сделает её при следующем проходе, раз в 6 часов. Выключить сейчас — копия не займёт места; цена — '+SBK_PRICE+'</span>'
           : s.flag==='1' ? '<span>не наша: прошивка держит вторую копию своего хранилища настроек и обновляет её раз в 6 часов. Выключить — освободит место; цена — '+SBK_PRICE+'</span>'
           : '<span>не наша: прошивка оставила вторую копию своего хранилища настроек — сама она её больше не обновляет, а место копия занимает. Удалить — освободит место; цена — '+SBK_PRICE+'</span>')
-        + (s.busy===true ? ' · <span>прошивка как раз делает копию — выключить можно через минуту</span>' : '');
+        + (s.busy===true ? (left ? ' · <span>прошивка как раз делает копию — удалить можно через минуту</span>'
+                                 : ' · <span>прошивка как раз делает копию — выключить можно через минуту</span>') : '');
       // Копировщик прошивки работает — роутер откажет «busy»: кнопка заперта, причина уже в строке (data-na: разблокировка «панель
       // освободилась» её не отопрёт).
-      right='<button type="button" class="btn sm" data-dk="sbk-off" data-busy="1"'+((s.busy===true||moving)?' data-na="1"':'')+((busy||s.busy===true||moving)?' disabled':'')+'>Выключить…</button>';
+      right='<button type="button" class="btn sm" data-dk="sbk-off" data-busy="1"'+((s.busy===true||moving)?' data-na="1"':'')+((busy||s.busy===true||moving)?' disabled':'')+'>'+(left?'Удалить…':'Выключить…')+'</button>';
     } else if(s.off_mine===true){
       var at=Number(s.at)||0, fr=Number(s.freed_b)||0, why=(s.can_on===true ? '' : sbkOnWhy(s));
       nm+='<span class="chip">выключена</span>';
@@ -27690,11 +27882,14 @@
         } else if(a==='sbk-off'){
           // ЦЕНА — В ВОПРОСЕ, до ответа роутера: после выключения назвать её уже некому (копии нет). Копии ещё нет — и освобождать
           // нечего: «освободится около 0 Б» обещало бы пустое.
-          go(((sbkData||{}).copy===true ? 'Выключить копию настроек прошивки и удалить её? Освободится около '+humanBytes(Number((sbkData||{}).est_b)||0)+'. '
-                                        : 'Выключить копию настроек прошивки? Копии пока нет — места она и не займёт. ')
+          // Копия осталась при флаге 0 — выключать нечего, вопрос о том, что будет сделано: удалить (как строка и кнопка).
+          var sd=sbkData||{}, sl=(sd.copy===true && sd.flag!=='1');
+          go((sd.copy!==true ? 'Выключить копию настроек прошивки? Копии пока нет — места она и не займёт. '
+              : sl ? 'Удалить копию настроек прошивки? Прошивка её уже не обновляет. Освободится около '+humanBytes(Number(sd.est_b)||0)+'. '
+              : 'Выключить копию настроек прошивки и удалить её? Освободится около '+humanBytes(Number(sd.est_b)||0)+'. ')
              + 'Цена: если основное хранилище настроек повредится (например, свет погаснет во время записи), роутер при загрузке сбросит '
              + 'все настройки — Wi-Fi, пароли и автозапуск панели, — восстанавливать будет не из чего. Включить копию обратно можно здесь же.',
-             'stock_backup', 'выключаю…', {op:'off'}, x, ['#dk-sbk [data-dk]', '#dk-clean-go', '[data-dk]', '[data-dkm]'],
+             'stock_backup', (sl ? 'удаляю…' : 'выключаю…'), {op:'off'}, x, ['#dk-sbk [data-dk]', '#dk-clean-go', '[data-dk]', '[data-dkm]'],
              // «Выбор не запомнился» (`marked:false`) — 4-секундного тоста мало для единственного пути назад (uci вручную), а строки
              // после такого выключения роутер уже не отдаст: держим его слова на экране (sbkSaid), пока роутер не скажет иное.
              function(d){ sbkSaid=(d && d.ok===true && d.marked===false) ? String(d.msg||'') : ''; rep(); });

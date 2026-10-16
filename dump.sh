@@ -478,6 +478,12 @@ _drs=$(cat /tmp/enodia-doh-retunnel.stamp 2>/dev/null | tr -cd '0-9')
 # только при установленной программе DoH, и «протокол: dot» строкой выше без этой строки спорил бы со списком
 # процессов ниже (там https_dns_proxy). Подоболочка: библиотека сорсится без побочек, но дампу её имена ни к чему.
 _dhs=$( [ -f "$ENODIA_DIR/doh-lib.sh" ] && . "$ENODIA_DIR/doh-lib.sh" && command -v doh_health_state >/dev/null 2>&1 && doh_health_state )
+# ODoH: цель, ретранслятор (выбор и текущий по лестнице), якоря; откат «DoH напрямую к цели» — у владельца (doh_health_state).
+_dho() { printf '%s\n' "$_dhs" | sed -n "s/^$1=//p"; }
+[ "$(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null)" = odoh ] && echo "ODoH: цель $(cat "$ENODIA_STATE/.doh-odoh-target" 2>/dev/null || echo '(деф. cloudflare)')   ретранслятор: $(cat "$ENODIA_STATE/.doh-odoh-relay" 2>/dev/null || echo auto) (сейчас: $(_dho odoh_relay))   якоря: $(tr '\n' ';' < "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)"
+case "$_dhs" in *odohfb=1*)
+    echo "Выбран ODoH, а шифрует DoH напрямую к цели: ни один ретранслятор не отдал имён — откат $(_dho odohfb_age) с назад, проверка ретрансляторов через $(_dho odohfb_retry) с (-1 = неизвестно)" ;;
+esac
 case "$_dhs" in *dotfb=1*)
     echo "Выбран DoT, а шифрует DoH: порт 853 текущим путём не проходил — переехал $(printf '%s\n' "$_dhs" | sed -n 's/^dotfb_age=//p') с назад, повтор DoT через $(printf '%s\n' "$_dhs" | sed -n 's/^dotfb_retry=//p') с (-1 = неизвестно)" ;;
 esac

@@ -1198,6 +1198,28 @@ emit_doh() {
 	doh_bin=false
 	[ -x "$(bin_path https-dns-proxy)" ] && doh_bin=true
 	arr=$(printf '%s' "$list" | awk '{for(i=1;i<=NF;i++) printf "%s\"%s\"", (i>1?",":""), $i}')
+	# КАТАЛОГ С ПОДПИСЯМИ — у владельца одна таблица (doh-lib.sh::DOH_CATALOG): имя, владелец (пусто = он и есть имя) и страна, а
+	# слова «свой профиль»/«свой резолвер» и название страны — панели. Своей копии списка у панели больше нет. Библиотека старше
+	# таблицы — пустой каталог, и панель подписывает ключами из `resolvers`. Строки — наши, кавычек в них не бывает.
+	cat_json=$(printf '%s\n' "${DOH_CATALOG:-}" | awk -F'|' 'NF > 1 { printf "%s{\"k\":\"%s\",\"n\":\"%s\",\"op\":\"%s\",\"cc\":\"%s\"}", (n++ ? "," : ""), $1, $2, $3, $4 }')
+	# ODoH (doh-lib.sh, блок «OBLIVIOUS DoH»): выбор цели и ретранслятора, свои адреса, чем идём сейчас, откат и обе таблицы — те же
+	# четыре поля, что у каталога резолверов. `odoh_capable` — умеет ли программа DoH ODoH (прежняя сборка — нет: плитка зовёт
+	# обновить её в «Компонентах»). Библиотека старше ODoH — пустые поля, и панель ODoH не предлагает.
+	o_cap=false; o_t=''; o_r=''; o_ct=''; o_cr=''; o_now=''; o_ips=''; o_tj=''; o_rj=''
+	if command -v doh_odoh_target >/dev/null 2>&1; then
+		doh_odoh_capable && o_cap=true
+		o_t=$(doh_odoh_target); o_r=$(doh_odoh_relay_pick); o_now=$(doh_odoh_relay_now)
+		o_ct=$(cat "$DS/.doh-odoh-custom-target" 2>/dev/null | tr -d '\r\n' | jesc 300)
+		o_cr=$(cat "$DS/.doh-odoh-custom-relay" 2>/dev/null | tr -d '\r\n' | jesc 300)
+		[ "$(doh_proto)" = odoh ] && o_ips=$(doh_odoh_ips | jesc 200)
+		o_tj=$(printf '%s\n' "$DOH_ODOH_TARGETS" | awk -F'|' 'NF > 1 && $1 != "custom" { printf "%s{\"k\":\"%s\",\"n\":\"%s\",\"op\":\"%s\",\"cc\":\"%s\"}", (n++ ? "," : ""), $1, $2, $3, $4 }')
+		o_rj=$(printf '%s\n' "$DOH_ODOH_RELAYS" | awk -F'|' 'NF > 1 && $1 != "custom" { printf "%s{\"k\":\"%s\",\"n\":\"%s\",\"op\":\"%s\",\"cc\":\"%s\"}", (n++ ? "," : ""), $1, $2, $3, $4 }')
+	fi
+	h_ofb=false; h_ofba=-1; h_ofbr=-1
+	if [ -n "${_hs:-}" ]; then
+		[ "$(dns_num "$_hs" odohfb)" = 1 ] && h_ofb=true
+		h_ofba=$(dns_num "$_hs" odohfb_age); h_ofbr=$(dns_num "$_hs" odohfb_retry)
+	fi
 	# installing/install_msg — фоновая доустановка бинарей по воздуху (верб doh_fetch_bin). Панель
 	# по ним крутит кнопку и показывает прогресс; msg = последняя строка лога (там же и причина
 	# неудачи, если сеть не дала). Кавычки/бэкслеши режем — строка едет в JSON без эскейпа.
@@ -1218,8 +1240,8 @@ emit_doh() {
 	if [ "$pbc" = 2 ] && [ -f /tmp/enodia-proto-install.pid ] && [ -d "/proc/$(cat /tmp/enodia-proto-install.pid 2>/dev/null)" ]; then pkg_busy=true; fi
 	[ "$pkg_busy" = true ] && [ "$pmine" = 1 ] && installing=true
 	[ "$pmine" = 1 ] && [ -f "$DS/.proto-install.log" ] && imsg=$(tail -n1 "$DS/.proto-install.log" 2>/dev/null | jesc 160)
-	printf '{"on":%s,"auto":%s,"auto_active":%s,"installed":%s,"dot_installed":%s,"proto":"%s","proto_now":"%s","running":%s,"installing":%s,"pkg_busy":%s,"install_msg":"%s","resolver":"%s","nextdns_id":"%s","custom_url":"%s","custom_ips":"%s","cur_src":"%s","cur_dns":"%s","cur_via":"%s","untun":%s,"untun_age":%s,"retun_in":%s,"cool":%s,"miss":%s,"miss_max":%s,"dotfb":%s,"dotfb_age":%s,"dotfb_retry":%s,"bail_in":%s,"split_conflict":%s,"split_on":%s,"doh_bin":%s,"resolvers":[%s]}\n' \
-		"$on" "$auto" "$auto_active" "$installed" "$dot_inst" "$proto" "$proto_now" "$running" "$installing" "$pkg_busy" "$imsg" "$res" "$nid" "$cust" "$custips" "$cur_src" "$cur_dns" "$cur_via" "$h_untun" "$h_uage" "$h_retun" "$h_cool" "$h_miss" "$h_mmax" "$h_dfb" "$h_dfba" "$h_dfbr" "$h_bail" "$split_conflict" "$split_on" "$doh_bin" "$arr"
+	printf '{"on":%s,"auto":%s,"auto_active":%s,"installed":%s,"dot_installed":%s,"proto":"%s","proto_now":"%s","running":%s,"installing":%s,"pkg_busy":%s,"install_msg":"%s","resolver":"%s","nextdns_id":"%s","custom_url":"%s","custom_ips":"%s","cur_src":"%s","cur_dns":"%s","cur_via":"%s","untun":%s,"untun_age":%s,"retun_in":%s,"cool":%s,"miss":%s,"miss_max":%s,"dotfb":%s,"dotfb_age":%s,"dotfb_retry":%s,"bail_in":%s,"split_conflict":%s,"split_on":%s,"doh_bin":%s,"resolvers":[%s],"catalog":[%s],"odoh_capable":%s,"odoh_target":"%s","odoh_relay":"%s","odoh_relay_now":"%s","odoh_custom_target":"%s","odoh_custom_relay":"%s","odoh_ips":"%s","odohfb":%s,"odohfb_age":%s,"odohfb_retry":%s,"odoh_targets":[%s],"odoh_relays":[%s]}\n' \
+		"$on" "$auto" "$auto_active" "$installed" "$dot_inst" "$proto" "$proto_now" "$running" "$installing" "$pkg_busy" "$imsg" "$res" "$nid" "$cust" "$custips" "$cur_src" "$cur_dns" "$cur_via" "$h_untun" "$h_uage" "$h_retun" "$h_cool" "$h_miss" "$h_mmax" "$h_dfb" "$h_dfba" "$h_dfbr" "$h_bail" "$split_conflict" "$split_on" "$doh_bin" "$arr" "$cat_json" "$o_cap" "$o_t" "$o_r" "$o_now" "$o_ct" "$o_cr" "$o_ips" "$h_ofb" "$h_ofba" "$h_ofbr" "$o_tj" "$o_rj"
 }
 
 # --- ЛЕНТА ТЕХНИЧЕСКОГО СОСТОЯНИЯ «Обзора» (техбар): факты, которые меняются САМИ, без участия
@@ -1249,6 +1271,9 @@ emit_tech() {
 		# Имя резолвера — тем же путём: без `tr -d` оно приезжало как «cloudflare » (замер на
 		# железе 10.09.2026), и чип ленты печатал лишний пробел перед закрывающим тегом.
 		command -v doh_resolver_name >/dev/null 2>&1 && dres=$(doh_resolver_name | tr -d '\r\n' | jesc 40)
+		# Выбран ODoH — отвечает ЦЕЛЬ (doh-lib.sh::doh_odoh_target), и на ODoH, и на откате «DoH напрямую к цели»: выбор резолвера DoH
+		# при этом лежит нетронутым, и лента назвала бы резолвер, к которому прокси не ходит.
+		command -v doh_odoh_target >/dev/null 2>&1 && [ "$(doh_proto)" = odoh ] && dres=$(doh_odoh_target | tr -d '\r\n' | jesc 40)
 		# ЖИВ ЛИ ТОТ, КОМУ ОТДАН DNS. Класс пути `doh` считает конфиг dnsmasq (upstream =
 		# 127.0.0.1#5053), и он остаётся `doh`, даже когда прокси УМЕР — а это уже не «шифруется»,
 		# это СЕТЬ БЕЗ ИМЁН: dnsmasq форвардит в мёртвый порт, пока сторож не поднимет демона.

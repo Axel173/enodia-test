@@ -91,6 +91,7 @@ SETTINGS="$SETTINGS .probe-pool .probe-pool-s2 .probe-pool-s3 .probe-pool-s4 .pr
 SETTINGS="$SETTINGS .split-runet .notify-off .notify-mute"                           # раздельный резолв рунета; «уведомления выключены»; выключенные поводы писем
 SETTINGS="$SETTINGS .doh-on .doh-proto .doh-resolver .doh-auto .doh-nextdns-id"      # шифрованный DNS
 SETTINGS="$SETTINGS .doh-custom-url .doh-custom-sni .doh-custom-ips .doh-custom-dot-port"   # ...и СВОЙ резолвер (адрес + якоря + порт DoT)
+SETTINGS="$SETTINGS .doh-odoh-target .doh-odoh-relay .doh-odoh-custom-target .doh-odoh-custom-relay .doh-odoh-ips"   # ...и ODoH (цель, ретранслятор, их якоря)
 SETTINGS="$SETTINGS .dns-hosts .ipv6-block .tun-mtu .go-memlimit"                    # DNS-hosts, IPv6-блок, MTU, потолок ОЗУ демона
 SETTINGS="$SETTINGS iplist.conf iplist.custom lists"                                 # списки и их источники
 SETTINGS="$SETTINGS .gh-ref .gh-bin-tag .update-interval .subs-interval"  # обновления

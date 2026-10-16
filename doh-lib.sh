@@ -106,22 +106,34 @@ DOH_COOLDOWN_SEC=${DOH_COOLDOWN_SEC:-3600}        # на сколько посл
 DOH_PLAIN_DNS1=${DOH_PLAIN_DNS1:-1.1.1.1}         # открытый upstream прямого режима (как в safety_off)
 DOH_PLAIN_DNS2=${DOH_PLAIN_DNS2:-8.8.8.8}
 
-# --- Протокол: doh (HTTPS/:443, дефолт) | dot (TLS/:853). Один слой, один порт 5053, один
-# pidfile — меняется ТОЛЬКО запускаемый бинарь и порт форс-марки. Whitelist как у резолвера.
+# --- Протокол: doh (HTTPS/:443, дефолт) | dot (TLS/:853) | odoh (Oblivious DoH, RFC 9230 — та же программа DoH через
+# ретранслятор, блок «OBLIVIOUS DoH» ниже). Один слой, один порт 5053, один pidfile — меняется ТОЛЬКО запускаемый бинарь,
+# его аргументы и порт форс-марки. Whitelist как у резолвера.
 # ДВА ВОПРОСА — ДВЕ ФУНКЦИИ, и путать их нельзя (разбор — у doh_dot_fallback):
 #   doh_proto     — НАМЕРЕНИЕ человека (`.doh-proto`): что выбрано на экране и куда возвращаться;
 #   doh_proto_now — чем прокси шифрует СЕЙЧАС. Выбран DoT, а порт 853 через текущий путь не проходит
 #                   (замер 09.09.2026: у VLESS-выхода 853 не выпускает сервер, 443 идеален) ⇒ DoH ТОГО
 #                   ЖЕ резолвера, пока DoT не заработает снова. Нет программы DoH — переезжать не на что.
+#                   Выбран ODoH, а ни один ретранслятор не отвечает ⇒ DoH напрямую к ТОЙ ЖЕ цели (решение человека 16.10.2026:
+#                   шифрование сохранено, цель видит адрес — doh_odoh_rescue), пока ретранслятор не оживёт.
 # Всё, что поднимает демона и ставит правила, спрашивает doh_proto_now; экран выбора и вербы смены — doh_proto.
 DOH_DOT_FALLBACK="/tmp/.enodia-dot-fallback.stamp"
-doh_proto()     { [ "$(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null)" = dot ] && echo dot || echo doh; }
+DOH_ODOH_FALLBACK="/tmp/.enodia-odoh-fallback.stamp"
+doh_proto() {
+	case "$(cat "$ENODIA_STATE/.doh-proto" 2>/dev/null)" in dot) echo dot ;; odoh) echo odoh ;; *) echo doh ;; esac
+}
 doh_proto_now() {
-	[ "$(doh_proto)" = dot ] || { echo doh; return 0; }
-	[ -f "$DOH_DOT_FALLBACK" ] && [ -x "$DOH_BIN" ] && { echo doh; return 0; }
-	echo dot
+	case "$(doh_proto)" in
+		dot)  [ -f "$DOH_DOT_FALLBACK" ] && [ -x "$DOH_BIN" ] && { echo doh; return 0; }; echo dot ;;
+		odoh) [ -f "$DOH_ODOH_FALLBACK" ] && { echo doh; return 0; }; echo odoh ;;
+		*)    echo doh ;;
+	esac
 }
 doh_bin_for() { [ "${1:-$(doh_proto_now)}" = dot ] && echo "$DOT_BIN" || echo "$DOH_BIN"; }
+# ДЕЙСТВУЮЩИЙ РЕЗОЛВЕР — тот, чьи адреса несут правила и чей URL у прокси. Выбран ODoH — псевдоимя `odoh`: адреса — все
+# ретрансляторы списка и цель (doh_odoh_ips), DoH-URL — сама цель (её берёт откат «DoH напрямую к цели»). Иначе — выбор
+# человека для DoH/DoT (doh_resolver_name): его ODoH не трогает, и вернуться на DoH — значит вернуться к нему.
+doh_eff() { [ "$(doh_proto)" = odoh ] && echo odoh || doh_resolver_name; }
 
 # ПОРТ И ИМЯ НА ПРОВОДЕ — ЕДИНСТВЕННЫЙ ответ «куда прокси протокола X ходит» (форс-марка/RETURN, проба провода,
 # переезд порта). Прежде порт был литералом по протоколу (DoT=853, DoH=443), и свой резолвер с портом в адресе
@@ -136,8 +148,11 @@ doh_url_port() {
 }
 doh_url_host() { _duh=${1#https://}; _duh=${_duh%%/*}; printf '%s\n' "${_duh%%:*}"; }
 doh_proto_port() {
+	# ODoH: прокси ходит к РЕТРАНСЛЯТОРУ (запросы) и к цели (ключ) — обоим по 443: свой адрес верб берёт только без порта
+	# (относительно RFC 9230 цель и так названа ретранслятору без порта).
+	if [ "$1" = odoh ]; then doh_url_port "$(doh_odoh_relay_url)"; return 0; fi
 	if [ "$1" = dot ]; then
-		if [ "${2:-$(doh_resolver_name)}" = custom ]; then
+		if [ "${2:-$(doh_eff)}" = custom ]; then
 			_dpp=$(cat "$ENODIA_STATE/.doh-custom-dot-port" 2>/dev/null | tr -cd '0-9')
 			[ -n "$_dpp" ] && { echo "$_dpp"; return 0; }
 		fi
@@ -149,6 +164,7 @@ doh_proto_port() {
 # curl его в SNI не шлёт, и проба провода обязана вести себя так же).
 doh_proto_sni() {
 	if [ "$1" = dot ]; then dot_resolver_sni "$2"; return 0; fi
+	if [ "$1" = odoh ]; then _dpsn=$(doh_url_host "$(doh_odoh_relay_url)"); case "$_dpsn" in *[!0-9.]*) printf '%s\n' "$_dpsn" ;; esac; return 0; fi
 	_dpsn=$(doh_resolver_spec "$2"); _dpsn=$(doh_url_host "${_dpsn%%$(printf '\t')*}")
 	case "$_dpsn" in *[!0-9.]*) printf '%s\n' "$_dpsn" ;; esac
 	return 0
@@ -160,8 +176,12 @@ doh_wire_port() { doh_proto_port "$(doh_proto_now)"; }
 doh_all_ports() { printf '%s\n' 443 853 "$(doh_proto_port doh "$1")" "$(doh_proto_port dot "$1")" | sort -u | tr '\n' ' '; }
 
 # «Установлен» = есть бинарь АКТИВНОГО протокола (гейт doh_enabled/doh_auto: выбрал dot без
-# бинаря → шифрование честно не включается, DNS остаётся на прежнем пути транспорта).
-doh_installed() { [ -x "$(doh_bin_for)" ]; }
+# бинаря → шифрование честно не включается, DNS остаётся на прежнем пути транспорта). У ODoH — ещё и УМЕЕТ ли он ODoH:
+# прежняя сборка программы DoH ключа -O не знает и не стартует вовсе (doh_odoh_capable).
+doh_installed() {
+	[ -x "$(doh_bin_for)" ] || return 1
+	[ "$(doh_proto_now)" != odoh ] || doh_odoh_capable
+}
 doh_enabled()   { [ "$(cat "$ENODIA_STATE/.doh-on" 2>/dev/null)" = on ] && doh_installed; }
 doh_upstream()  { echo "$DOH_UPSTREAM"; }
 
@@ -258,11 +278,42 @@ doh_auto_active() { [ -f "$DOH_AUTO_STAMP" ]; }
 # «DoH должен быть поднят» = тумблер ИЛИ активный авто-режим. Гейт для doh_start/keepalive.
 doh_want()        { doh_enabled || doh_auto_active; }
 
-# Каталог резолверов (whitelist для верба set_doh_resolver; неизвестное имя → cloudflare).
-# `custom` — СВОЙ резолвер: адрес вводит человек, мы за него не ручаемся. Он намеренно ПОСЛЕДНИЙ
-# и намеренно НЕ пресет: список готовых имён — это наша рекомендация, а рекомендовать чужой
+# КАТАЛОГ РЕЗОЛВЕРОВ — ОДНА ТАБЛИЦА. Прежде он жил в четырёх `case` (список, URL+bootstrap, якоря, SNI DoT) и ещё в
+# подписях панели — новый резолвер был шестью правками, и любая забытая давала резолвер без якорей (марка и RETURN мимо)
+# или без SNI (DoT не встаёт). Теперь каждая строка — всё, что слой знает о резолвере; панель берёт подписи отсюда же
+# (cgi-bin/data, `catalog`). Поля через `|` (в URL и адресах его не бывает):
+#   ключ | имя | владелец — кто видит запросы (пусто = он и есть имя) | страна (ISO) | DoH URL | якоря (через пробел) |
+#   SNI DoT | bootstrap
+# ЯКОРЯ — адреса, на которых стоят правила резолвера и куда doh_pin_hosts прибивает его имя (c-ares читает /etc/hosts
+# раньше DNS): у резолвера по ИМЕНИ прокси ходит ровно туда. BOOTSTRAP поэтому почти не спрашивается, но обязан отвечать
+# ОБЫЧНЫМ :53: у резолверов «только DoH/DoT» (Wikimedia, Mullvad, Applied Privacy) их собственный адрес на :53 молчит
+# (замер 16.10.2026, заметки разработки «ODoH-дизайн» §1) — им bootstrap 1.1.1.1.
+# NextDNS и `custom` — строки с особым полем (профиль / свой адрес), их разбирают функции ниже. `custom` — СВОЙ резолвер:
+# адрес вводит человек, мы за него не ручаемся; он намеренно ПОСЛЕДНИЙ и намеренно НЕ пресет — рекомендовать чужой
 # SNI-прокси, который видит весь DNS дома, мы не готовы (разбор — заметки разработки «DoH-план»).
-doh_resolver_list() { echo "cloudflare google quad9 adguard nextdns custom"; }
+# Каждая каталожная строка замерена на роутере нашими программами (dev/doh/resolver-probe-router.sh, тот же набор строк).
+DOH_CATALOG='cloudflare|Cloudflare (1.1.1.1)||US|https://1.1.1.1/dns-query|1.1.1.1 1.0.0.1|cloudflare-dns.com|1.1.1.1
+google|Google (dns.google)||US|https://dns.google/dns-query|8.8.8.8 8.8.4.4|dns.google|8.8.8.8
+quad9|Quad9 (9.9.9.9)||CH|https://dns.quad9.net/dns-query|9.9.9.9 149.112.112.112|dns.quad9.net|9.9.9.9
+adguard|AdGuard DNS||CY|https://dns.adguard-dns.com/dns-query|94.140.14.14 94.140.15.15|dns.adguard-dns.com|94.140.14.14
+controld|Control D||CA|https://freedns.controld.com/p0|76.76.2.11|p0.freedns.controld.com|1.1.1.1
+dnssb|DNS.SB|xTom|DE|https://doh.dns.sb/dns-query|185.222.222.222 45.11.45.11|dot.sb|185.222.222.222
+mullvad|Mullvad DNS||SE|https://dns.mullvad.net/dns-query|194.242.2.2|dns.mullvad.net|1.1.1.1
+wikimedia|Wikimedia DNS||US|https://wikimedia-dns.org/dns-query|185.71.138.138|wikimedia-dns.org|1.1.1.1
+dns4eu|DNS4EU|Whalebone|CZ|https://unfiltered.joindns4.eu/dns-query|86.54.11.100 86.54.11.200|unfiltered.joindns4.eu|86.54.11.100
+opendns|OpenDNS|Cisco|US|https://doh.opendns.com/dns-query|208.67.222.222 208.67.220.220|dns.opendns.com|208.67.222.222
+appliedprivacy|Applied Privacy||AT|https://doh.applied-privacy.net/query|146.255.56.98|dot1.applied-privacy.net|1.1.1.1
+libredns|LibreDNS|LibreOps|GR|https://doh.libredns.gr/dns-query|116.202.176.26|dot.libredns.gr|1.1.1.1
+nextdns|NextDNS||US|https://dns.nextdns.io/|45.90.28.0 45.90.30.0|dns.nextdns.io|45.90.28.0
+custom|||||||'
+# doh_cat <ключ> <поле 1..8> — поле строки каталога; нет ключа — пусто. Ключ сравнивается ТЕКСТОМ (`($1 "")`): awk сравнивает
+# похожее на число значение `-v` как число (грабля проекта).
+doh_tab() { printf '%s\n' "$1" | awk -F'|' -v k="$2" -v f="$3" '($1 "") == (k "") { print $f; exit }'; }   # <таблица> <ключ> <поле>
+doh_cat() { doh_tab "$DOH_CATALOG" "$1" "$2"; }
+# Ключи таблицы по порядку, без `custom` (его выбирают отдельно).
+doh_tab_keys() { printf '%s\n' "$1" | awk -F'|' 'NF > 1 && ($1 "") != "custom" { printf "%s%s", (n++ ? " " : ""), $1 } END { print "" }'; }
+# Каталог резолверов (whitelist для верба set_doh_resolver; неизвестное имя → cloudflare) — ключи в порядке таблицы.
+doh_resolver_list() { printf '%s\n' "$DOH_CATALOG" | awk -F'|' 'NF > 1 { printf "%s%s", (n++ ? " " : ""), $1 } END { print "" }'; }
 
 # --- СВОЙ резолвер: разбор ввода -------------------------------------------------------------
 # ОДНО поле на всё, тип выводим сами (человеку незачем знать, что DoH — это URL, а DoT — имя+SNI):
@@ -336,15 +387,13 @@ doh_resolver_name() {
 # echo "<DoH-URL>\t<bootstrap-IP>" для текущего (или заданного $1) резолвера. Bootstrap = сервер,
 # которым c-ares резолвит ИМЯ резолвера при старте (для IP-литеральных URL не используется).
 doh_resolver_spec() {
-	name="${1:-$(doh_resolver_name)}"
+	name="${1:-$(doh_eff)}"
 	case "$name" in
-		cloudflare) printf '%s\t%s\n' 'https://1.1.1.1/dns-query'           '1.1.1.1' ;;
-		google)     printf '%s\t%s\n' 'https://dns.google/dns-query'         '8.8.8.8' ;;
-		quad9)      printf '%s\t%s\n' 'https://dns.quad9.net/dns-query'       '9.9.9.9' ;;
-		adguard)    printf '%s\t%s\n' 'https://dns.adguard-dns.com/dns-query' '94.140.14.14' ;;
+		# ODoH: DoH-URL — сама цель (его зовёт лишь откат «DoH напрямую к цели»); bootstrap не нужен — имена прибиты (doh_pin_hosts).
+		odoh)    printf '%s\t%s\n' "$(doh_odoh_target_url)" '1.1.1.1' ;;
 		nextdns)
 			id=$(cat "$ENODIA_STATE/.doh-nextdns-id" 2>/dev/null | tr -cd 'a-f0-9')
-			printf '%s\t%s\n' "https://dns.nextdns.io/$id" '45.90.28.0' ;;
+			printf '%s%s\t%s\n' "$(doh_cat nextdns 5)" "$id" "$(doh_cat nextdns 8)" ;;
 		custom)
 			# Bootstrap своему резолверу нужен не всегда (URL по IP-литералу его не использует), а
 			# когда нужен — берём ПЕРВЫЙ якорный адрес: он уже посчитан и это ОН САМ, то есть ни
@@ -358,7 +407,10 @@ doh_resolver_spec() {
 			cboot=$(doh_resolver_ips custom | awk '{print $1; exit}')
 			[ -n "$cboot" ] || cboot=1.1.1.1
 			printf '%s\t%s\n' "$curl_url" "$cboot" ;;
-		*)          printf '%s\t%s\n' 'https://1.1.1.1/dns-query'           '1.1.1.1' ;;
+		*)
+			# Каталожная строка; ключа нет в таблице (doh_resolver_name такого не отдаст, но спрашивают и с аргументом) — cloudflare.
+			_drsn=$name; [ -n "$(doh_cat "$_drsn" 5)" ] || _drsn=cloudflare
+			printf '%s\t%s\n' "$(doh_cat "$_drsn" 5)" "$(doh_cat "$_drsn" 8)" ;;
 	esac
 }
 
@@ -367,12 +419,11 @@ doh_resolver_spec() {
 # соединение на второй (немаркированный) IP в tunnel-режиме уходило МИМО туннеля (провайдер видит/
 # режет :443 резолвера), в direct-режиме могло попасть под десинк ciadpi. Списки статичны — это
 # публичные anycast-адреса самих резолверов (2026-07; сменятся — DoH не падает, деградирует якорь).
+# Каталожные — колонка якорей таблицы; у cloudflare DoH-URL литеральный (только 1.1.1.1), но DoT ходит на оба.
 doh_resolver_ips() {
-	case "${1:-$(doh_resolver_name)}" in
-		google)  echo '8.8.8.8 8.8.4.4' ;;
-		quad9)   echo '9.9.9.9 149.112.112.112' ;;
-		adguard) echo '94.140.14.14 94.140.15.15' ;;
-		nextdns) echo '45.90.28.0 45.90.30.0' ;;
+	case "${1:-$(doh_eff)}" in
+		# ODoH: ВСЕ ретрансляторы списка и цель — правила не переставляются ни при смене ретранслятора, ни на откате к цели.
+		odoh)    doh_odoh_ips ;;
 		# Свой резолвер: адреса ТОЛЬКО из файла, никакого резолва ЗДЕСЬ. Эту функцию крутят в
 		# цикле `for _ip in $(doh_resolver_ips)` при расстановке правил — сетевой вызов внутри
 		# сделал бы iptables-проход платным и (в busybox нет `local`) затёр бы `_ip` вызывающему.
@@ -381,7 +432,10 @@ doh_resolver_ips() {
 		# превращает пробелы в запятые — dot-proxy получал `-r 1.0.0.1,1.1.1.1,` (замер 29.09.2026; пустой элемент он пропускал,
 		# но другой потребитель вправе не прощать).
 		custom)  cat "$ENODIA_STATE/.doh-custom-ips" 2>/dev/null | tr -s '\r\n\t ' '    ' | sed 's/^ //; s/ $//' ;;
-		*)       echo '1.1.1.1 1.0.0.1' ;;   # DoH-URL литеральный (только 1.1.1.1), но DoT ходит на оба
+		*)
+			_drik=${1:-$(doh_eff)}; _drii=$(doh_cat "$_drik" 6)
+			[ -n "$_drii" ] || _drii=$(doh_cat cloudflare 6)   # нет такого ключа — как у doh_resolver_spec: cloudflare
+			echo "$_drii" ;;
 	esac
 }
 
@@ -415,6 +469,8 @@ doh_anchor_ips() {
 }
 
 doh_custom_refresh() {
+	# ODoH: его имена — ретрансляторы и цель, у Fastly anycast ⇒ перерезолв того же склада (doh_odoh_refresh).
+	if [ "$(doh_proto)" = odoh ]; then doh_odoh_refresh "$1"; return 0; fi
 	[ "$(doh_resolver_name)" = custom ] || return 0
 	_dcr_h=$(doh_custom_host)
 	[ -n "$_dcr_h" ] || return 0          # IP-литерал: якорь известен из самого URL, дрейфа нет
@@ -467,17 +523,151 @@ doh_custom_refresh() {
 # не нужен ВООБЩЕ). NextDNS: профиль зашит в SNI (<id>.dns.nextdns.io); нет ID → пусто ⇒
 # doh_start откажется поднимать (валидацию ID делает панельный верб, это лишь страховка).
 dot_resolver_sni() {
-	case "${1:-$(doh_resolver_name)}" in
-		google)  echo 'dns.google' ;;
-		quad9)   echo 'dns.quad9.net' ;;
-		adguard) echo 'dns.adguard-dns.com' ;;
+	case "${1:-$(doh_eff)}" in
+		odoh)    return 0 ;;   # у ODoH DoT нет
 		nextdns) _id=$(cat "$ENODIA_STATE/.doh-nextdns-id" 2>/dev/null | tr -cd 'a-f0-9')
-		         [ -n "$_id" ] && echo "$_id.dns.nextdns.io" ;;
+		         [ -n "$_id" ] && echo "$_id.$(doh_cat nextdns 7)" ;;
 		# Свой резолвер: пусто = введён IP-литерал ⇒ doh_start честно откажется поднимать DoT
 		# (та же логика, что у NextDNS без ID: предъявлять в SNI нечего, а `-s` обязателен).
 		custom)  doh_custom_host ;;
-		*)       echo 'cloudflare-dns.com' ;;
+		*)
+			_drsk=${1:-$(doh_eff)}; _drss=$(doh_cat "$_drsk" 7)
+			[ -n "$_drss" ] || _drss=$(doh_cat cloudflare 7)   # нет такого ключа — cloudflare, как у соседей
+			echo "$_drss" ;;
 	esac
+}
+
+# --- OBLIVIOUS DoH (RFC 9230): цель и ретранслятор -------------------------------------------------------------------------
+# ЗАЧЕМ (заметки разработки «ODoH-дизайн»). DoH/DoT прячут DNS от провайдера, но резолвер видит и вопросы, и адрес — в прямом
+# режиме адрес дома, в туннельном адрес своего VPS (тоже твой). ODoH разносит это на двоих: запрос запечатан для ЦЕЛИ и идёт
+# через РЕТРАНСЛЯТОР — тот видит адрес, но не вопрос, цель видит вопрос, но не адрес. Свойство держится, только пока у них
+# РАЗНЫЕ владельцы: свою пару одного владельца верб не примет (doh_odoh_same_owner).
+# Программа — та же https-dns-proxy (наш патч, dev/doh/odoh/: -O цель, -W её адрес, -r ретранслятор, -R его адрес).
+# Таблицы — как DOH_CATALOG: ключ | имя | владелец (пусто = он и есть имя) | страна | URL | стартовые якоря (замер 16.10.2026;
+# живые — перерезолвом doh_odoh_refresh: у Fastly anycast). `custom` — адрес вводит человек (файлы .doh-odoh-custom-*).
+DOH_ODOH_TARGETS='cloudflare|Cloudflare||US|https://odoh.cloudflare-dns.com/dns-query|162.159.62.1 172.64.42.1
+dnscryptpt|dnscry.pt||DE|https://fra01.dnscry.pt/dns-query|45.82.120.61
+custom|||||'
+DOH_ODOH_RELAYS='fastly|crypto.sx|Fastly|US|https://odoh-relay.edgecompute.app/|151.101.1.51 151.101.65.51 151.101.129.51 151.101.193.51
+numa|numa||DE|https://odoh-relay.numa.rs/relay|178.104.229.30
+custom|||||'
+DOH_ODOH_RELAY_NOW="/tmp/.enodia-odoh-relay"       # через какой ретранслятор списка идём СЕЙЧАС (лестница doh_odoh_rescue)
+DOH_ODOH_TRY="/tmp/.enodia-odoh-try.stamp"         # когда в последний раз пробовали вернуться с отката на ODoH (эпоха)
+DOH_ODOH_STAMP="/tmp/.enodia-doh-odoh.stamp"       # когда перерезолвили якоря (троттл, как у своего резолвера)
+DOH_ODOH_CAP="/tmp/.enodia-doh-odoh-cap"           # «размер mtime да|нет»: умеет ли ODoH программа DoH (doh_odoh_capable)
+DOH_ODOH_RETRY=${DOH_ODOH_RETRY:-900}              # как часто с отката пробовать ретрансляторы снова (сек)
+DOH_PIN_RELAY=enodia-doh-relay                     # владельцы закрепления имён ретрансляторов: …1, …2 (doh_pin_hosts)
+
+doh_odoh_target() {
+	_dot=$(cat "$ENODIA_STATE/.doh-odoh-target" 2>/dev/null | tr -d ' \r\n')
+	[ -n "$_dot" ] && { [ "$_dot" = custom ] || [ -n "$(doh_tab "$DOH_ODOH_TARGETS" "$_dot" 5)" ]; } && { echo "$_dot"; return 0; }
+	echo cloudflare
+}
+# Выбор ретранслятора: auto (все списка по очереди) | ключ | custom.
+doh_odoh_relay_pick() {
+	_dor=$(cat "$ENODIA_STATE/.doh-odoh-relay" 2>/dev/null | tr -d ' \r\n')
+	case "$_dor" in ''|auto) echo auto; return 0 ;; custom) echo custom; return 0 ;; esac
+	[ -n "$(doh_tab "$DOH_ODOH_RELAYS" "$_dor" 5)" ] && echo "$_dor" || echo auto
+}
+# Ретрансляторы, через которые прокси вправе ходить, в порядке попыток: «авто» — все каталожные, иначе — выбранный.
+doh_odoh_relays() { _dorp=$(doh_odoh_relay_pick); if [ "$_dorp" = auto ]; then doh_tab_keys "$DOH_ODOH_RELAYS"; else echo "$_dorp"; fi; }
+doh_odoh_relay_now() {
+	_drn=$(cat "$DOH_ODOH_RELAY_NOW" 2>/dev/null | tr -d ' \r\n')
+	for _drk in $(doh_odoh_relays); do [ "$_drk" = "$_drn" ] && { echo "$_drk"; return 0; }; done
+	doh_odoh_relays | awk '{print $1}'
+}
+# doh_odoh_url <relay|target> <ключ> — URL из таблицы или из файла своего адреса.
+doh_odoh_url() {
+	if [ "$2" = custom ]; then cat "$ENODIA_STATE/.doh-odoh-custom-$1" 2>/dev/null | tr -d ' \r\n'; return 0; fi
+	if [ "$1" = relay ]; then doh_tab "$DOH_ODOH_RELAYS" "$2" 5; else doh_tab "$DOH_ODOH_TARGETS" "$2" 5; fi
+}
+doh_odoh_target_url() { doh_odoh_url target "$(doh_odoh_target)"; }
+doh_odoh_relay_url()  { doh_odoh_url relay "${1:-$(doh_odoh_relay_now)}"; }
+# Якоря ИМЕНИ ретранслятора или цели: перерезолвленные (файл .doh-odoh-ips: «имя адрес адрес…»), иначе стартовые из таблицы.
+# IP-литерал — сам себе якорь.
+doh_odoh_host_ips() {
+	case "$1" in '') return 0 ;; *[!0-9.]*) : ;; *) echo "$1"; return 0 ;; esac
+	_dhi=$(awk -v h="$1" '($1 "") == (h "") { $1 = ""; sub(/^ +/, ""); print; exit }' "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)
+	[ -n "$_dhi" ] && { echo "$_dhi"; return 0; }
+	printf '%s\n%s\n' "$DOH_ODOH_TARGETS" "$DOH_ODOH_RELAYS" | \
+		awk -F'|' -v h="$1" '{ u = $5; sub(/^https:\/\//, "", u); sub(/[:\/].*$/, "", u) } (u "") == (h "") && $6 != "" { print $6; exit }'
+}
+# Все имена, к которым ходит прокси ODoH: ретрансляторы списка, затем цель.
+doh_odoh_hosts() {
+	for _dok in $(doh_odoh_relays); do doh_url_host "$(doh_odoh_relay_url "$_dok")"; done
+	doh_url_host "$(doh_odoh_target_url)"
+}
+# Адреса для правил — РОВНО «адрес пробел адрес» (как у doh_resolver_ips: её крутят в `for _ip in $(…)`).
+doh_odoh_ips() {
+	for _doh in $(doh_odoh_hosts); do doh_odoh_host_ips "$_doh"; done | tr ' ' '\n' | \
+		grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+# doh_odoh_parse_url <ввод> <target|relay> — свой адрес цели или ретранслятора: строго https://имя[/путь], БЕЗ порта (RFC 9230
+# называет цель ретранслятору без порта, а правила резолвера стоят на одном порту — doh_proto_port) и без IP-литерала (сертификат
+# на IP — редкость, а закрепление имени — наш путь мимо системного резолвера). Цели без пути — /dns-query (де-факто стандарт),
+# ретранслятору — «/». Печатает канонический URL или НИЧЕГО. Валидация строгая и живёт ЗДЕСЬ: значение уезжает в argv демона.
+doh_odoh_parse_url() {
+	case "$1" in *"
+"*) return 1 ;; esac
+	_dpu=$(printf '%s' "$1" | tr -d '\r' | sed 's#^[[:space:]]*##; s#[[:space:]]*$##')
+	echo "$_dpu" | grep -qE '^https://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(/[A-Za-z0-9._~/-]*)?$' || return 1
+	_dpuh=$(doh_url_host "$_dpu")
+	case "$_dpuh" in *.*) : ;; *) return 1 ;; esac
+	case "$_dpuh" in *[!0-9.]*) : ;; *) return 1 ;; esac
+	case "$_dpu" in
+		https://*/?*) printf '%s\n' "$_dpu" ;;
+		*) _dpu=${_dpu%/}; if [ "$2" = target ]; then printf '%s/dns-query\n' "$_dpu"; else printf '%s/\n' "$_dpu"; fi ;;
+	esac
+}
+# Цель и ретранслятор одного владельца? Сравниваем РЕГИСТРИРУЕМЫЙ домен (два последних слова имени): odoh.cloudflare-dns.com и
+# relay.cloudflare-dns.com — один владелец. Каталожные пары — разных владельцев по построению; это судит своих.
+doh_odoh_same_owner() {
+	_dsa=$(doh_url_host "$1" | awk -F. 'NF >= 2 { print $(NF-1) "." $NF }'); _dsb=$(doh_url_host "$2" | awk -F. 'NF >= 2 { print $(NF-1) "." $NF }')
+	[ -n "$_dsa" ] && [ "$_dsa" = "$_dsb" ]
+}
+# УМЕЕТ ЛИ программа DoH ODoH — ПО ФАКТУ: её справка называет -O. Прежняя сборка ключа не знает и не стартует; ответ кэшируем
+# по размеру и mtime бинаря (справка — запуск программы, а спрашивают нас из горячих путей: data, heal, сторож).
+doh_odoh_capable() {
+	[ -x "$DOH_BIN" ] || return 1
+	_doc_k=$(stat -c '%s %Y' "$DOH_BIN" 2>/dev/null)
+	_doc_c=$(cat "$DOH_ODOH_CAP" 2>/dev/null)
+	if [ -n "$_doc_k" ] && [ "${_doc_c% *}" = "$_doc_k" ]; then [ "${_doc_c##* }" = yes ]; return $?; fi
+	if "$DOH_BIN" -h 2>&1 | grep -q -- '-O odoh_target_url'; then _doc_v=yes; else _doc_v=no; fi
+	[ -n "$_doc_k" ] && echo "$_doc_k $_doc_v" > "$DOH_ODOH_CAP" 2>/dev/null
+	[ "$_doc_v" = yes ]
+}
+
+# Перерезолв якорей ODoH — того же склада, что doh_custom_refresh (разбор асимметрии протухшего якоря — у него): успех = адреса
+# ЕСТЬ, не нарезолвилось имя — его прежние адреса остаются; сменился набор — правила снимаются ПО СТАРОМУ файлу, пишется новый,
+# ставятся по новому, имена перезакрепляются, живой прокси ODoH перезапускается (адрес ретранслятора у него в -R с запуска).
+doh_odoh_refresh() {
+	[ "$(doh_proto)" = odoh ] || return 0
+	if [ "$1" != force ]; then
+		_dorf_t=$(cat "$DOH_ODOH_STAMP" 2>/dev/null | tr -cd '0-9')
+		[ -n "$_dorf_t" ] && [ "$(age_since "$_dorf_t")" -lt "$DOH_CUSTOM_EVERY" ] && return 0
+	fi
+	_dorf_new=''
+	for _dorf_h in $(doh_odoh_hosts); do
+		case "$_dorf_h" in *[!0-9.]*) : ;; *) continue ;; esac
+		_dorf_i=$(doh_anchor_ips "$_dorf_h" | tr '\n' ' ' | sed 's/ $//')
+		[ -n "$_dorf_i" ] || _dorf_i=$(awk -v h="$_dorf_h" '($1 "") == (h "") { $1 = ""; sub(/^ +/, ""); print; exit }' "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)
+		[ -n "$_dorf_i" ] && _dorf_new="$_dorf_new$_dorf_h $_dorf_i
+"
+	done
+	_dorf_new=$(printf '%s' "$_dorf_new" | sort -u)
+	[ -n "$_dorf_new" ] || return 0
+	doh_clock_ok && date +%s > "$DOH_ODOH_STAMP" 2>/dev/null
+	[ "$_dorf_new" = "$(cat "$ENODIA_STATE/.doh-odoh-ips" 2>/dev/null)" ] && return 0
+	if doh_want; then
+		doh_resolver_mark del; doh_resolver_bypass del
+		printf '%s\n' "$_dorf_new" > "$ENODIA_STATE/.doh-odoh-ips"
+		doh_anchor_apply
+		doh_pin_hosts
+		if [ "$(doh_proto_now)" = odoh ] && doh_running; then doh_restart; fi
+	else
+		printf '%s\n' "$_dorf_new" > "$ENODIA_STATE/.doh-odoh-ips"
+	fi
+	return 0
 }
 
 doh_running() {
@@ -562,8 +752,35 @@ doh_log_rotate() {
 # если набор сменился (на AX3600 /etc — флеш). IP-литерал в URL (cloudflare, свой по IP) и DoT закреплять нечего —
 # строки снимаем. Нет dns-lib — прежний путь (bootstrap) байт-в-байт.
 DOH_PIN_OWNER=enodia-doh-resolver
+# ODoH: имён ДВА рода — цель (владелец DOH_PIN_OWNER, как у резолвера: на откате DoH идёт к ней) и ретрансляторы списка (свои
+# владельцы DOH_PIN_RELAY1/2: метка сравнивается ПОДСТРОКОЙ, и «enodia-doh-resolver-r1» снималась бы вместе с основной).
+# Закреплены ВСЕ ретрансляторы списка — смена ретранслятора лестницей не трогает /etc/hosts.
+doh_pin_relays() {   # $1 = put | clear
+	_dpr_n=0
+	if [ "$1" = put ]; then
+		for _dpr_k in $(doh_odoh_relays); do
+			_dpr_n=$((_dpr_n + 1)); _dpr_h=$(doh_url_host "$(doh_odoh_relay_url "$_dpr_k")")
+			case "$_dpr_h" in
+				*[!0-9.]*) seed_hosts_put "$_dpr_h" "$(doh_odoh_host_ips "$_dpr_h")" "$DOH_PIN_RELAY$_dpr_n" ;;
+				*)         seed_hosts_clear "$DOH_PIN_RELAY$_dpr_n" >/dev/null 2>&1 ;;
+			esac
+		done
+	fi
+	while [ "$_dpr_n" -lt 2 ]; do _dpr_n=$((_dpr_n + 1)); seed_hosts_clear "$DOH_PIN_RELAY$_dpr_n" >/dev/null 2>&1; done
+	return 0
+}
 doh_pin_hosts() {
 	command -v seed_hosts_put >/dev/null 2>&1 || return 0
+	if [ "$(doh_proto)" = odoh ]; then
+		doh_pin_relays put
+		_dph_h=$(doh_url_host "$(doh_odoh_target_url)")
+		case "$_dph_h" in
+			*[!0-9.]*) seed_hosts_put "$_dph_h" "$(doh_odoh_host_ips "$_dph_h")" "$DOH_PIN_OWNER" ;;
+			*)         seed_hosts_clear "$DOH_PIN_OWNER" >/dev/null 2>&1 ;;
+		esac
+		return 0
+	fi
+	doh_pin_relays clear
 	_dph_h=''; [ "$(doh_proto_now)" = dot ] || _dph_h=$(doh_proto_sni doh)
 	_dph_i=$(doh_resolver_ips)
 	if [ -n "$_dph_h" ] && [ -n "$(printf '%s' "$_dph_i" | tr -d ' ')" ]; then
@@ -603,6 +820,22 @@ doh_start() {
 		# `-P` — порт резолвера (свой `tls://хост:порт`); 853 передаём тоже: ключ знают все сборки dot-proxy.
 		start-stop-daemon -S -b -m -p "$DOH_PID" -x "$DOT_BIN" -- \
 			-a "$DOH_ADDR" -p "$DOH_PORT" -r "$_ips" -P "$(doh_proto_port dot)" -s "$_sni" -C "$_ca" -l "$DOH_LOG"
+		return $?
+	fi
+	if [ "$(doh_proto_now)" = odoh ]; then
+		# ODoH: -r — РЕТРАНСЛЯТОР (текущий по лестнице), -O — цель. Адреса обоих — АРГУМЕНТАМИ (-R/-W), а не только закреплением:
+		# ключ цели программа берёт сама, и без -W её имя спрашивалось бы у системы — то есть у dnsmasq, который смотрит на ЭТОТ
+		# прокси, ещё не знающий ключа (тупик; разбор — заметки разработки «ODoH-дизайн» §4). Программа, не умеющая ODoH, сюда не
+		# доходит: её отсекает doh_installed первой строкой doh_start.
+		_dso_r=$(doh_odoh_relay_url); _dso_t=$(doh_odoh_target_url)
+		[ -n "$_dso_r" ] && [ -n "$_dso_t" ] || return 1
+		_dso_ca=$(doh_ca_file) || return 1
+		doh_pin_hosts
+		set -- -C "$_dso_ca"
+		_dso_i=$(doh_odoh_host_ips "$(doh_url_host "$_dso_r")" | awk '{print $1}'); [ -n "$_dso_i" ] && set -- "$@" -R "$_dso_i"
+		_dso_i=$(doh_odoh_host_ips "$(doh_url_host "$_dso_t")" | awk '{print $1}'); [ -n "$_dso_i" ] && set -- "$@" -W "$_dso_i"
+		start-stop-daemon -S -b -m -p "$DOH_PID" -x "$DOH_BIN" -- \
+			-a "$DOH_ADDR" -p "$DOH_PORT" -4 -v -v -r "$_dso_r" -O "$_dso_t" -b 1.1.1.1 -l "$DOH_LOG" "$@"
 		return $?
 	fi
 	spec=$(doh_resolver_spec)
@@ -693,6 +926,7 @@ doh_resolver_mark() {
 # «сначала правила, потом флаг» — иначе RETURN :53, поставленный на время DoH, пережил бы возврат на DoT.
 doh_bootstrap_ip() {
 	[ "$2" != any ] && [ "$(doh_proto_now)" = dot ] && return 0
+	[ "${1:-$(doh_eff)}" = odoh ] && return 0   # ODoH: адреса — аргументами и закреплением, bootstrap не спрашивается
 	_dbs=$(doh_resolver_spec "$1")
 	_dbu=${_dbs%%$(printf '\t')*}; _dbi=${_dbs#*$(printf '\t')}
 	_dbh=${_dbu#https://}; _dbh=${_dbh%%/*}; _dbh=${_dbh%%:*}
@@ -888,7 +1122,7 @@ doh_retunnel() {
 			# ПОРТ, А НЕ ПУТЬ? Несущая везёт (health прошёл, маршрут на месте), а резолвер через неё молчит — у
 			# альт-выхода это закрытый сервером 853 при живом 443 (09.09.2026). Тогда в туннель возвращаемся
 			# по DoH того же резолвера, а не уходим обратно мимо несущей на полчаса.
-			if doh_dot_rescue; then rm -f "$DOH_RETUNNEL_STAMP" 2>/dev/null; return 0; fi
+			if doh_dot_rescue || doh_odoh_rescue; then rm -f "$DOH_RETUNNEL_STAMP" 2>/dev/null; return 0; fi
 			# Отказ увода не глотаем МОЛЧА: dnsmasq в этот момент уже смотрит в :5053, и «прокси не
 			# поднялся» — единственный след того, почему дом остался без имён (ревью 3, 06.09.2026).
 			# Пишем в лог самого прокси: своего лога у библиотеки нет, а вызывающий (сторож) видит
@@ -920,7 +1154,7 @@ doh_dns_bailout() {
 	# бы до doh_anchor_apply через keepalive сторожа и ставил RETURN вместо марки.
 	rm -f "$DOH_UNTUNNELED" "$DOH_RETUNNEL_STAMP" 2>/dev/null
 	# Закрепление имени резолвера — проводка того же прокси: DNS отдан прежнему пути, и держать имя прибитым незачем.
-	command -v seed_hosts_clear >/dev/null 2>&1 && seed_hosts_clear "$DOH_PIN_OWNER" >/dev/null 2>&1
+	command -v seed_hosts_clear >/dev/null 2>&1 && { seed_hosts_clear "$DOH_PIN_OWNER" >/dev/null 2>&1; doh_pin_relays clear; }
 	return 0
 }
 
@@ -1031,6 +1265,12 @@ doh_wire_ok() {
 	_dwpr=${1:-$(doh_proto_now)}
 	_dwp=$(doh_proto_port "$_dwpr"); _dwsn=$(doh_proto_sni "$_dwpr")
 	_dwt=''; _dwl=''; _dwips=$(doh_resolver_ips)
+	# ODoH: адресов у «резолвера» два рода — проводом протокола ходят к одному из них: ODoH — к ретранслятору, его откат DoH — к цели.
+	# Чужой адрес с этим SNI «доказал» бы жизнь не того провода.
+	if [ "$(doh_eff)" = odoh ]; then
+		if [ "$_dwpr" = odoh ]; then _dwips=$(doh_odoh_host_ips "$(doh_url_host "$(doh_odoh_relay_url)")")
+		else _dwips=$(doh_odoh_host_ips "$(doh_url_host "$(doh_odoh_target_url)")"); fi
+	fi
 	if [ "$_dwp" != "$(doh_wire_port)" ]; then
 		_dwt=$(doh_anchor_state)
 		case "$_dwt" in
@@ -1272,6 +1512,120 @@ doh_dot_rescue() {
 	[ -x "$DOH_BIN" ] || return 1                 # переезжать не на что
 	doh_wire_ok doh || return 1                   # путь мёртв целиком — не порт
 	doh_dot_fallback
+}
+
+# ---- ЛЕСТНИЦА ODoH: другой ретранслятор → DoH напрямую к цели → прежний путь ---------------------------------------------
+# Ретранслятор — чужой сервис, и их всего два публичных: один лёг или его режет провайдер — естественный шаг сперва ДРУГОЙ
+# ретранслятор (цель по-прежнему не видит адреса), потом — РЕШЕНИЕ ЧЕЛОВЕКА 16.10.2026: DoH напрямую к ТОЙ ЖЕ цели (шифрование
+# сохранено, цель видит адрес роутера, в туннеле — адрес VPS), и лишь затем прежний откат слоя (doh_apply_fail). Намерение
+# (`.doh-proto=odoh`) не трогаем: откат живёт в ОЗУ, и сторож раз в DOH_ODOH_RETRY пробует ретрансляторы снова (doh_odoh_tick).
+# Каждый шаг засчитывается, только если ИМЕНА ПОШЛИ (doh_names_ok, мимо кэша dnsmasq) — по той же причине, что у переезда DoT.
+# Правила не переставляются ни на одном шаге: их адреса — все ретрансляторы списка и цель (doh_odoh_ips).
+
+# Событие — в журнал панели. $1 = relay|fallback|back, $2 — ключ ретранслятора (relay/back).
+doh_odoh_event() {
+	[ -n "$ENODIA_DIR" ] && [ -f "$ENODIA_DIR/events.sh" ] || return 0
+	_doe_t=$(doh_odoh_target); _doe_tn=$(doh_tab "$DOH_ODOH_TARGETS" "$_doe_t" 2); [ -n "$_doe_tn" ] || _doe_tn=$(doh_url_host "$(doh_odoh_target_url)")
+	_doe_rn=''; [ -n "$2" ] && { _doe_rn=$(doh_tab "$DOH_ODOH_RELAYS" "$2" 2); [ -n "$_doe_rn" ] || _doe_rn=$(doh_url_host "$(doh_odoh_relay_url "$2")"); }
+	case "$1" in
+		relay)
+			sh "$ENODIA_DIR/events.sh" add odoh-relay 86400 "ODoH идёт через другой ретранслятор" \
+"Прежний ретранслятор не ответил — запросы к $_doe_tn идут через $_doe_rn. Цель по-прежнему не видит адреса роутера." >/dev/null 2>&1 || true ;;
+		fallback)
+			sh "$ENODIA_DIR/events.sh" add odoh-fallback 86400 "ODoH не работает — DNS шифруется по DoH напрямую к $_doe_tn" \
+"Ни один ретранслятор не ответил. Роутер перевёл шифрованный DNS на обычный DoH к той же цели ($_doe_tn): запросы по-прежнему шифруются, но цель видит адрес роутера (в туннеле — адрес сервера VPN). Раз в $((DOH_ODOH_RETRY / 60)) мин роутер проверяет ретрансляторы и вернётся на ODoH сам." >/dev/null 2>&1 || true ;;
+		back)
+			sh "$ENODIA_DIR/events.sh" add odoh-back 86400 "ODoH снова работает" \
+"Ретранслятор $_doe_rn снова отвечает — шифрованный DNS к $_doe_tn вернулся на ODoH." >/dev/null 2>&1 || true ;;
+	esac
+	return 0
+}
+
+# Прокси под текущую ступень (перезапуск с ожиданием порта — по процессу, doh_restart_wait) и проба имён мимо кэша. 0 = имена пошли.
+doh_odoh_step_ok() { doh_restart_wait && doh_names_ok; }
+
+# doh_odoh_rescue — имена не пошли при выбранном ODoH. Код 0 = после шага имена идут; 1 = не помогло ничто (вызывающему —
+# его прежний путь: увод мимо несущей, откат).
+doh_odoh_rescue() {
+	[ "$(doh_proto)" = odoh ] || return 1
+	doh_odoh_capable || return 1
+	if [ "$(doh_proto_now)" = doh ]; then
+		# Уже на откате, и молчит уже DoH к цели: путь мог смениться так, что ретранслятор доступен, а цель напрямую — нет.
+		doh_odoh_back
+		return $?
+	fi
+	_dor_cur=$(doh_odoh_relay_now)
+	for _dor_k in $(doh_odoh_relays); do
+		[ "$_dor_k" = "$_dor_cur" ] && continue
+		echo "$_dor_k" > "$DOH_ODOH_RELAY_NOW" 2>/dev/null
+		if doh_odoh_step_ok; then doh_odoh_event relay "$_dor_k"; return 0; fi
+	done
+	echo "$_dor_cur" > "$DOH_ODOH_RELAY_NOW" 2>/dev/null
+	date +%s > "$DOH_ODOH_FALLBACK" 2>/dev/null || : > "$DOH_ODOH_FALLBACK"
+	rm -f "$DOH_ODOH_TRY" 2>/dev/null
+	if doh_odoh_step_ok; then doh_odoh_event fallback; return 0; fi
+	rm -f "$DOH_ODOH_FALLBACK" 2>/dev/null
+	doh_odoh_step_ok >/dev/null 2>&1
+	return 1
+}
+
+# С отката — обратно на ODoH, с первого ретранслятора списка. Не пошли имена — откат остаётся с ПРЕЖНИМ временем, попытка
+# отмечена (следующая — через DOH_ODOH_RETRY). Код 0 = вернулись.
+doh_odoh_back() {
+	_dob_t=$(cat "$DOH_ODOH_FALLBACK" 2>/dev/null | tr -cd '0-9')
+	rm -f "$DOH_ODOH_FALLBACK" "$DOH_ODOH_RELAY_NOW" 2>/dev/null
+	for _dob_k in $(doh_odoh_relays); do
+		echo "$_dob_k" > "$DOH_ODOH_RELAY_NOW" 2>/dev/null
+		if doh_odoh_step_ok; then rm -f "$DOH_ODOH_TRY" 2>/dev/null; doh_odoh_event back "$_dob_k"; return 0; fi
+	done
+	rm -f "$DOH_ODOH_RELAY_NOW" 2>/dev/null
+	if [ -n "$_dob_t" ]; then echo "$_dob_t" > "$DOH_ODOH_FALLBACK" 2>/dev/null; else date +%s > "$DOH_ODOH_FALLBACK" 2>/dev/null; fi
+	date +%s > "$DOH_ODOH_TRY" 2>/dev/null
+	doh_odoh_step_ok >/dev/null 2>&1
+	return 1
+}
+
+# Забыть лестницу — НОВОЕ НАМЕРЕНИЕ человека (сменил цель, ретранслятор или протокол): прежние вердикты были про другую пару.
+doh_odoh_forget() { rm -f "$DOH_ODOH_FALLBACK" "$DOH_ODOH_TRY" "$DOH_ODOH_RELAY_NOW" 2>/dev/null; return 0; }
+
+# ПРИЗНАК БЕДЫ У ODoH — по журналу прокси (дёшево: без пробы имён и сброса кэша dnsmasq у здорового ODoH): с эпохи $1 прокси
+# выбрасывал запросы без ключа, ключ не грузился, ответ не открывался, цель отказывала или ретранслятор не отвечал. Формат
+# журнала https-dns-proxy: «[W] <эпоха> src/… текст».
+doh_odoh_troubled() {
+	case "$1" in ''|*[!0-9]*) return 0 ;; esac
+	awk -v t="$1" '$2+0 < t {next}
+		($1 == "[W]" || $1 == "[E]") && /target key not loaded|no usable target key|did not open|refused the sealed query|curl request failed|No response/ {bad = 1}
+		END {exit !bad}' "$DOH_LOG" 2>/dev/null
+}
+
+# СВЕРКА ODoH — зовёт сторож (finish(), рядом с doh_port_tick). Два направления:
+#   откат (DoH к цели)  — с отката (или прошлой попытки) прошло DOH_ODOH_RETRY и TLS к ретранслятору встаёт ⇒ назад на ODoH
+#                         (код 4; не пошли имена — doh_odoh_back вернул откат и отметил попытку, код 0);
+#   ODoH активен        — журнал прокси говорит о беде, и имена мимо кэша не идут ⇒ лестница (код 3 — помогла, 5 — нет).
+# $1 — ИМЯ функции «жив ли аплинк» (как у doh_health_tick): при мёртвом аплинке молчащий ретранслятор о себе не говорит.
+DOH_ODOH_TICK_STAMP="/tmp/.enodia-odoh-tick.stamp"
+doh_odoh_tick() {
+	if [ "$(doh_proto)" != odoh ]; then doh_odoh_forget; return 0; fi
+	doh_want && doh_running || return 0
+	doh_upstream_set || return 0
+	doh_odoh_capable || return 0
+	doh_clock_ok || return 0
+	_dotk=$(cat "$DOH_ODOH_TICK_STAMP" 2>/dev/null | tr -cd '0-9'); [ -n "$_dotk" ] || _dotk=0
+	[ "$(age_since "$_dotk")" -ge "$DOH_PORT_EVERY" ] || return 0
+	date +%s > "$DOH_ODOH_TICK_STAMP"
+	if [ -f "$DOH_ODOH_FALLBACK" ]; then
+		_dotl=$(cat "$DOH_ODOH_TRY" 2>/dev/null | tr -cd '0-9')
+		[ -n "$_dotl" ] || _dotl=$(cat "$DOH_ODOH_FALLBACK" 2>/dev/null | tr -cd '0-9')
+		[ "$(age_since "$_dotl")" -ge "$DOH_ODOH_RETRY" ] || return 0
+		doh_wire_ok odoh || { date +%s > "$DOH_ODOH_TRY" 2>/dev/null; return 0; }
+		doh_odoh_back && return 4
+		return 0
+	fi
+	doh_odoh_troubled "$_dotk" || return 0
+	doh_names_ok && return 0
+	if [ -n "$1" ] && ! "$1"; then return 0; fi
+	doh_odoh_rescue && return 3
+	return 5
 }
 
 # ПЕРИОДИЧЕСКАЯ СВЕРКА DoT — зовёт сторож (finish(), РАНЬШЕ doh_health_tick: сперва чиним протокол, потом
@@ -1559,8 +1913,21 @@ doh_health_state() {
 		_hsba=$(age_since "$(cat "$DOH_BAIL_STAMP" 2>/dev/null | tr -cd '0-9')")
 		if [ "$_hsba" -lt 999999 ] 2>/dev/null; then _hsb=$((DOH_BAIL_BACKOFF - _hsba)); [ "$_hsb" -ge 0 ] || _hsb=0; fi
 	fi
-	printf 'untun=%s\nuntun_age=%s\nretun_in=%s\ncool=%s\nmiss=%s\nmiss_max=%s\ndotfb=%s\ndotfb_age=%s\ndotfb_retry=%s\nbail_in=%s\n' \
-		"$_hsu" "$_hsua" "$_hsri" "$_hsc" "$_hsm" "$DOH_HEALTH_MISS_MAX" "$_hsf" "$_hsfa" "$_hsfr" "$_hsb"
+	# ODoH: откат «DoH напрямую к цели» — с какого времени и через сколько сторож попробует ретрансляторы; ретранслятор сейчас.
+	_hso=0; _hsoa=-1; _hsor=-1; _hsrn=''
+	if [ "$(doh_proto)" = odoh ]; then
+		_hsrn=$(doh_odoh_relay_now)
+		if doh_want && doh_upstream_set && [ -f "$DOH_ODOH_FALLBACK" ]; then
+			_hso=1
+			_hsoa=$(age_since "$(cat "$DOH_ODOH_FALLBACK" 2>/dev/null | tr -cd '0-9')")
+			[ "$_hsoa" -lt 999999 ] 2>/dev/null || _hsoa=-1
+			_hsol=$(cat "$DOH_ODOH_TRY" 2>/dev/null | tr -cd '0-9'); [ -n "$_hsol" ] || _hsol=$(cat "$DOH_ODOH_FALLBACK" 2>/dev/null | tr -cd '0-9')
+			_hsol=$(age_since "$_hsol")
+			if [ "$_hsol" -lt 999999 ] 2>/dev/null; then _hsor=$((DOH_ODOH_RETRY - _hsol)); [ "$_hsor" -ge 0 ] || _hsor=0; fi
+		fi
+	fi
+	printf 'untun=%s\nuntun_age=%s\nretun_in=%s\ncool=%s\nmiss=%s\nmiss_max=%s\ndotfb=%s\ndotfb_age=%s\ndotfb_retry=%s\nbail_in=%s\nodohfb=%s\nodohfb_age=%s\nodohfb_retry=%s\nodoh_relay=%s\n' \
+		"$_hsu" "$_hsua" "$_hsri" "$_hsc" "$_hsm" "$DOH_HEALTH_MISS_MAX" "$_hsf" "$_hsfa" "$_hsfr" "$_hsb" "$_hso" "$_hsoa" "$_hsor" "$_hsrn"
 }
 
 # doh_apply_dns <tunnel|direct> — ЗОВУТ dns-сеттеры транспортов ПЕРВОЙ строкой.
@@ -1686,8 +2053,17 @@ doh_apply_dns() {
 			fi
 			return 0
 		fi
+		# ODoH: другой ретранслятор, затем DoH напрямую к цели (doh_odoh_rescue) — тот же вопрос «порт/посредник или путь».
+		if doh_odoh_rescue; then
+			if [ "$(doh_proto_now)" = odoh ]; then
+				DOH_APPLY_NOTE="ретранслятор ODoH не отдавал имён — иду через другой"
+			else
+				DOH_APPLY_NOTE="ни один ретранслятор ODoH не отдаёт имён — шифрую по DoH напрямую к цели; сторож проверит ретрансляторы и вернётся на ODoH сам"
+			fi
+			return 0
+		fi
 		_doh_pb=$(doh_proto_now)
-		if [ "$1" = tunnel ] && doh_untunnel_apply && { doh_probe || doh_dot_rescue; }; then
+		if [ "$1" = tunnel ] && doh_untunnel_apply && { doh_probe || doh_dot_rescue || doh_odoh_rescue; }; then
 			DOH_APPLY_NOTE="резолвер уведён мимо несущей — та ещё не везёт (рукопожатие/сервер); сторож вернёт его в туннель, когда health пройдёт"
 			# …И О ПРОТОКОЛЕ (бэклог ветки fix/dot-port-fallback, (11)): после увода имена мог дать только ДРУГОЙ протокол
 			# (doh_dot_rescue), и слово «уведён» молчало бы о том, что DNS теперь шифруется не тем, что выбрано.
